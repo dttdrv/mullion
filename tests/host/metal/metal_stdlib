@@ -1,0 +1,88 @@
+// what src/airconv/shaders/air_tessellation.metal uses of the Metal shading language, for a host build
+#pragma once
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+typedef unsigned int uint;
+typedef unsigned char uchar;
+typedef unsigned short ushort;
+typedef float half;
+// address spaces, which the host has one of
+#define object_data
+#define threadgroup
+#define thread
+#define constant const
+#define asm(name)
+using std::atomic_fetch_add_explicit;
+using std::atomic_int;
+using std::max;
+using std::memory_order_relaxed;
+using std::min;
+struct uint2 {
+  uint x, y;
+  uint2(uint a, uint b) : x(a), y(b) {}
+};
+struct float2 {
+  float x, y;
+  float2() = default;
+  float2(float a) : x(a), y(a) {}
+  float2(float a, float b) : x(a), y(b) {}
+  explicit float2(uint2 v) : x(v.x), y(v.y) {}
+  float2 operator/(float d) const { return {x / d, y / d}; }
+};
+struct float4 {
+  float x, y, z, w;
+};
+struct short3 {
+  short v[3];
+  short3(int a, int b, int c) : v{short(a), short(b), short(c)} {}
+  short operator[](int i) const { return v[i]; }
+};
+template <typename T, typename U>
+T
+as_type(U u) {
+  T t;
+  memcpy(&t, &u, sizeof(t));
+  return t;
+}
+inline int
+clz(int x) {
+  return x ? __builtin_clz(x) : 32;
+}
+inline int
+ctz(int x) {
+  return x ? __builtin_ctz(x) : 32;
+}
+inline bool
+simd_all(bool b) {
+  return b;
+}
+namespace metal {
+enum class mem_flags { mem_none };
+enum class topology { triangle };
+inline void simdgroup_barrier(mem_flags) {}
+// a mesh is a handle: what it is given goes to the recorder it points to
+struct recorder {
+  std::vector<uint> indices;
+  std::vector<bool> culled;
+  uint primitives = 0;
+};
+template <typename V, typename P, int, int, topology>
+struct mesh {
+  recorder *to;
+  void set_index(uint at, uint vertex) const {
+    if (to->indices.size() <= at)
+      to->indices.resize(at + 1, ~0u);
+    to->indices[at] = vertex;
+  }
+  void set_primitive(uint at, P p) const {
+    if (to->culled.size() <= at)
+      to->culled.resize(at + 1);
+    to->culled[at] = p.culled;
+  }
+  void set_primitive_count(uint count) const { to->primitives = count; }
+};
+} // namespace metal

@@ -1,0 +1,1226 @@
+#include "com/com_guid.hpp"
+#include "d3d11_fence.hpp"
+#include "d3d11_input_layout.hpp"
+#include "d3d11_interfaces.hpp"
+#include "d3d11_multithread.hpp"
+#include "d3d11_pipeline.hpp"
+#include "d3d11_class_linkage.hpp"
+#include "d3d11_inspection.hpp"
+#include "d3d11_context.hpp"
+#include "d3d11_context_state.hpp"
+#include "d3d11_device.hpp"
+#include "d3d11_pipeline_cache.hpp"
+#include "d3d11_private.h"
+#include "d3d11_query.hpp"
+#include "d3d11_swapchain.hpp"
+#include "d3d11_state_object.hpp"
+#include "dxgi_interfaces.h"
+#include "../d3d10/d3d10_device.hpp"
+#include "dxmt_command_queue.hpp"
+#include "dxmt_device.hpp"
+#include "dxmt_format.hpp"
+#include "ftl.hpp"
+#include "d3d11_resource.hpp"
+#include "dxgi_object.hpp"
+#include <memory>
+#include "d3d11_4.h"
+#include "util_win32_compat.h"
+
+namespace dxmt {
+
+const GUID kRenderdocUUID = {0xa7aa6116,
+                             0x9c8d,
+                             0x4bba,
+                             {0x90, 0x83, 0xb4, 0xd8, 0x16, 0xb7, 0x1b, 0x78}};
+const GUID kPixUUID = {0x9f251514,
+                       0x9d4d,
+                       0x4902,
+                       {0x9d, 0x60, 0x18, 0x98, 0x8a, 0xb7, 0xd4, 0xb5}};
+const GUID kGpaUUID = {0xccffef16,
+                       0x7b69,
+                       0x468f,
+                       {0xbc, 0xe3, 0xcd, 0x95, 0x33, 0x69, 0xa3, 0x9a}};
+
+class MTLD3D11DeviceImpl final : public MTLD3D11Device, public IMTLD3D11DeviceExt, public IMTLSwapChainFactory {
+friend class MTLD3D11DXGIDevice;
+public:
+  MTLD3D11DeviceImpl(
+      MTLDXGIObject<IMTLDXGIDevice> *container, IMTLDXGIAdapter *pAdapter, D3D_FEATURE_LEVEL FeatureLevel,
+      UINT FeatureFlags, Device &device
+  ) :
+      container_(container),
+      feature_level_(FeatureLevel),
+      feature_flags_(FeatureFlags),
+      features_(container->GetMTLDevice()),
+      sampler_states_(this),
+      rasterizer_states_(this),
+      depthstencil_states_(this),
+      device_(device),
+      d3dmt_(static_cast<ID3D11Device *>(this), mutex) {
+    commandlist_pool_ = InitializeCommandListPool(this);
+    pipeline_cache_ = InitializePipelineCache(this);
+    context_ = InitializeImmediateContext(this, device_.queue());
+    d3d10_ = std::make_unique<MTLD3D10Device>(this, context_.get());
+    is_traced_ = !!::GetModuleHandle("dxgitrace.dll");
+    format_inspector_.Inspect(GetMTLDevice());
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                           void **ppvObject) override {
+    return container_->QueryInterface(riid, ppvObject);
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return container_->AddRef(); }
+
+  ULONG STDMETHODCALLTYPE Release() override { return container_->Release(); }
+
+  bool IsTraced() override { return is_traced_; }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
+               const D3D11_SUBRESOURCE_DATA *pInitialData,
+               ID3D11Buffer **ppBuffer) override {
+    InitReturnPtr(ppBuffer);
+
+    if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
+      return E_INVALIDARG; 
+
+    try {
+      switch (pDesc->Usage) {
+      case D3D11_USAGE_DEFAULT:
+      case D3D11_USAGE_IMMUTABLE:
+      case D3D11_USAGE_DYNAMIC:
+        return dxmt::CreateBuffer(this, pDesc, pInitialData, ppBuffer);
+      case D3D11_USAGE_STAGING:
+        return CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer);
+      default:
+        DXMT_UNREACHABLE
+      }
+    } catch (const MTLD3DError &err) {
+      ERR(err.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateTexture1D(const D3D11_TEXTURE1D_DESC *pDesc,
+                  const D3D11_SUBRESOURCE_DATA *pInitialData,
+                  ID3D11Texture1D **ppTexture1D) override {
+
+    InitReturnPtr(ppTexture1D);
+
+    if (!pDesc)
+      return E_INVALIDARG;
+
+    if (pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED)
+      return E_INVALIDARG; // not supported yet
+
+    try {
+      switch (pDesc->Usage) {
+      case D3D11_USAGE_DEFAULT:
+      case D3D11_USAGE_IMMUTABLE:
+        return CreateDeviceTexture1D(this, pDesc, pInitialData, ppTexture1D);
+      case D3D11_USAGE_DYNAMIC: {
+        HRESULT hr = CreateDynamicLinearTexture1D(this, pDesc, pInitialData, ppTexture1D);
+        if (SUCCEEDED(hr))
+          return hr;
+        return CreateDynamicTexture1D(this, pDesc, pInitialData, ppTexture1D);
+      }
+      case D3D11_USAGE_STAGING:
+        if (pDesc->BindFlags != 0) {
+          return E_INVALIDARG;
+        }
+        return CreateStagingTexture1D(this, pDesc, pInitialData, ppTexture1D);
+      }
+      return S_OK;
+    } catch (const MTLD3DError &err) {
+      ERR(err.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
+                  const D3D11_SUBRESOURCE_DATA *pInitialData,
+                  ID3D11Texture2D **ppTexture2D) override {
+    D3D11_TEXTURE2D_DESC1 desc1;
+    UpgradeResourceDescription(pDesc, desc1);
+    return CreateTexture2D1(&desc1, pInitialData,
+                            (ID3D11Texture2D1 **)ppTexture2D);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateTexture3D(const D3D11_TEXTURE3D_DESC *pDesc,
+                  const D3D11_SUBRESOURCE_DATA *pInitialData,
+                  ID3D11Texture3D **ppTexture3D) override {
+    D3D11_TEXTURE3D_DESC1 desc1;
+    UpgradeResourceDescription(pDesc, desc1);
+    return CreateTexture3D1(&desc1, pInitialData,
+                            (ID3D11Texture3D1 **)ppTexture3D);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateShaderResourceView(
+      ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC *pDesc,
+      ID3D11ShaderResourceView **ppSRView) override {
+    if (pDesc) {
+      D3D11_SHADER_RESOURCE_VIEW_DESC1 desc1;
+      UpgradeViewDescription(pDesc, desc1);
+      return CreateShaderResourceView1(pResource, &desc1,
+                                       (ID3D11ShaderResourceView1 **)ppSRView);
+    }
+    return CreateShaderResourceView1(pResource, nullptr,
+                                     (ID3D11ShaderResourceView1 **)ppSRView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView(
+      ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+      ID3D11UnorderedAccessView **ppUAView) override {
+    if (pDesc) {
+      D3D11_UNORDERED_ACCESS_VIEW_DESC1 desc1;
+      UpgradeViewDescription(pDesc, desc1);
+      return CreateUnorderedAccessView1(
+          pResource, &desc1, (ID3D11UnorderedAccessView1 **)ppUAView);
+    }
+    return CreateUnorderedAccessView1(pResource, nullptr,
+                                      (ID3D11UnorderedAccessView1 **)ppUAView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateRenderTargetView(
+      ID3D11Resource *pResource, const D3D11_RENDER_TARGET_VIEW_DESC *pDesc,
+      ID3D11RenderTargetView **ppRTView) override {
+    if (pDesc) {
+      D3D11_RENDER_TARGET_VIEW_DESC1 desc1;
+      UpgradeViewDescription(pDesc, desc1);
+      return CreateRenderTargetView1(pResource, &desc1,
+                                     (ID3D11RenderTargetView1 **)ppRTView);
+    }
+    return CreateRenderTargetView1(pResource, nullptr,
+                                   (ID3D11RenderTargetView1 **)ppRTView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDepthStencilView(
+      ID3D11Resource *pResource, const D3D11_DEPTH_STENCIL_VIEW_DESC *pDesc,
+      ID3D11DepthStencilView **ppDepthStencilView) override {
+    InitReturnPtr(ppDepthStencilView);
+
+    if (!pResource)
+      return E_INVALIDARG;
+
+    if (!ppDepthStencilView)
+      return S_FALSE;
+
+    return static_cast<D3D11ResourceCommon *>(pResource)->CreateDepthStencilView(pDesc, ppDepthStencilView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateInputLayout(
+      const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs, UINT NumElements,
+      const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
+      ID3D11InputLayout **ppInputLayout) override {
+    InitReturnPtr(ppInputLayout);
+
+    if (!pInputElementDescs)
+      return E_INVALIDARG;
+    if (!pShaderBytecodeWithInputSignature)
+      return E_INVALIDARG;
+
+    // TODO: must get shader reflection info
+
+    if (!ppInputLayout) {
+      return S_FALSE;
+    }
+
+    return pipeline_cache_->AddInputLayout(
+        pShaderBytecodeWithInputSignature, pInputElementDescs, NumElements,
+        (IMTLD3D11InputLayout **)ppInputLayout);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateVertexShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                     ID3D11ClassLinkage *pClassLinkage,
+                     ID3D11VertexShader **ppVertexShader) override {
+    InitReturnPtr(ppVertexShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    return pipeline_cache_->AddVertexShader(pShaderBytecode, BytecodeLength,
+                                            ppVertexShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateGeometryShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                       ID3D11ClassLinkage *pClassLinkage,
+                       ID3D11GeometryShader **ppGeometryShader) override {
+    InitReturnPtr(ppGeometryShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    if (!ppGeometryShader)
+      return S_FALSE;
+
+    return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength,
+                                              ppGeometryShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateGeometryShaderWithStreamOutput(
+      const void *pShaderBytecode, SIZE_T BytecodeLength,
+      const D3D11_SO_DECLARATION_ENTRY *pSODeclaration, UINT NumEntries,
+      const UINT *pBufferStrides, UINT NumStrides, UINT RasterizedStream,
+      ID3D11ClassLinkage *pClassLinkage,
+      ID3D11GeometryShader **ppGeometryShader) override {
+    InitReturnPtr(ppGeometryShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    if (!ppGeometryShader)
+      return S_FALSE;
+    if (!NumEntries)
+      return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
+
+    Com<IMTLD3D11StreamOutputLayout> so_layout;
+    HRESULT hr = pipeline_cache_->AddStreamOutputLayout(
+        pShaderBytecode, BytecodeLength, NumEntries, pSODeclaration, NumStrides, pBufferStrides, RasterizedStream,
+        &so_layout
+    );
+    if (FAILED(hr))
+      return hr;
+    return so_layout->QueryInterface(IID_PPV_ARGS(ppGeometryShader));
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreatePixelShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                    ID3D11ClassLinkage *pClassLinkage,
+                    ID3D11PixelShader **ppPixelShader) override {
+    InitReturnPtr(ppPixelShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    return pipeline_cache_->AddPixelShader(pShaderBytecode, BytecodeLength,
+                                           ppPixelShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateHullShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                   ID3D11ClassLinkage *pClassLinkage,
+                   ID3D11HullShader **ppHullShader) override {
+    InitReturnPtr(ppHullShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    if (!ppHullShader)
+      return S_FALSE;
+
+    return pipeline_cache_->AddHullShader(pShaderBytecode, BytecodeLength,
+                                          ppHullShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateDomainShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                     ID3D11ClassLinkage *pClassLinkage,
+                     ID3D11DomainShader **ppDomainShader) override {
+    InitReturnPtr(ppDomainShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    if (!ppDomainShader)
+      return S_FALSE;
+
+    return pipeline_cache_->AddDomainShader(pShaderBytecode, BytecodeLength,
+                                            ppDomainShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateComputeShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                      ID3D11ClassLinkage *pClassLinkage,
+                      ID3D11ComputeShader **ppComputeShader) override {
+    InitReturnPtr(ppComputeShader);
+    if (pClassLinkage != nullptr)
+      WARN("Class linkage not supported");
+
+    return pipeline_cache_->AddComputeShader(pShaderBytecode, BytecodeLength,
+                                             ppComputeShader);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateClassLinkage(ID3D11ClassLinkage **ppLinkage) override {
+    *ppLinkage = ref(new MTLD3D11ClassLinkage(this));
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateBlendState(const D3D11_BLEND_DESC *pBlendStateDesc,
+                   ID3D11BlendState **ppBlendState) override {
+    ID3D11BlendState1 *pBlendState1;
+    D3D11_BLEND_DESC1 desc;
+    desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
+    desc.IndependentBlendEnable = pBlendStateDesc->IndependentBlendEnable;
+
+    for (uint32_t i = 0; i < 8; i++) {
+      desc.RenderTarget[i].BlendEnable =
+          pBlendStateDesc->RenderTarget[i].BlendEnable;
+      desc.RenderTarget[i].LogicOpEnable = FALSE;
+      desc.RenderTarget[i].LogicOp = D3D11_LOGIC_OP_NOOP;
+      desc.RenderTarget[i].SrcBlend = pBlendStateDesc->RenderTarget[i].SrcBlend;
+      desc.RenderTarget[i].DestBlend =
+          pBlendStateDesc->RenderTarget[i].DestBlend;
+      desc.RenderTarget[i].BlendOp = pBlendStateDesc->RenderTarget[i].BlendOp;
+      desc.RenderTarget[i].SrcBlendAlpha =
+          pBlendStateDesc->RenderTarget[i].SrcBlendAlpha;
+      desc.RenderTarget[i].DestBlendAlpha =
+          pBlendStateDesc->RenderTarget[i].DestBlendAlpha;
+      desc.RenderTarget[i].BlendOpAlpha =
+          pBlendStateDesc->RenderTarget[i].BlendOpAlpha;
+      desc.RenderTarget[i].RenderTargetWriteMask =
+          pBlendStateDesc->RenderTarget[i].RenderTargetWriteMask;
+    }
+    auto hr = CreateBlendState1(&desc, &pBlendState1);
+    *ppBlendState = pBlendState1;
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDepthStencilState(
+      const D3D11_DEPTH_STENCIL_DESC *pDesc,
+      ID3D11DepthStencilState **ppDepthStencilState) override {
+    return depthstencil_states_.CreateStateObject(
+        pDesc, (IMTLD3D11DepthStencilState **)ppDepthStencilState);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateRasterizerState(const D3D11_RASTERIZER_DESC *pRasterizerDesc,
+                        ID3D11RasterizerState **ppRasterizerState) override {
+    ID3D11RasterizerState2 *pRasterizerState;
+    D3D11_RASTERIZER_DESC2 desc;
+    desc.FillMode = pRasterizerDesc->FillMode;
+    desc.CullMode = pRasterizerDesc->CullMode;
+    desc.FrontCounterClockwise = pRasterizerDesc->FrontCounterClockwise;
+    desc.DepthBias = pRasterizerDesc->DepthBias;
+    desc.DepthBiasClamp = pRasterizerDesc->DepthBiasClamp;
+    desc.SlopeScaledDepthBias = pRasterizerDesc->SlopeScaledDepthBias;
+    desc.DepthClipEnable = pRasterizerDesc->DepthClipEnable;
+    desc.ScissorEnable = pRasterizerDesc->ScissorEnable;
+    desc.MultisampleEnable = pRasterizerDesc->MultisampleEnable;
+    desc.AntialiasedLineEnable = pRasterizerDesc->AntialiasedLineEnable;
+    desc.ForcedSampleCount = 0;
+    desc.ConservativeRaster = D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    auto hr = CreateRasterizerState2(&desc, &pRasterizerState);
+    *ppRasterizerState = pRasterizerState;
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateSamplerState(const D3D11_SAMPLER_DESC *pSamplerDesc,
+                     ID3D11SamplerState **ppSamplerState) override {
+    return sampler_states_.CreateStateObject(
+        pSamplerDesc, (D3D11SamplerState **)ppSamplerState);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateQuery(const D3D11_QUERY_DESC *pQueryDesc, ID3D11Query **ppQuery) override {
+    D3D11_QUERY_DESC1 desc;
+    desc.Query = pQueryDesc->Query;
+    desc.MiscFlags = pQueryDesc->MiscFlags;
+    desc.ContextType = D3D11_CONTEXT_TYPE_ALL;
+    return CreateQuery1(&desc, reinterpret_cast<ID3D11Query1 **>(ppQuery));
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreatePredicate(const D3D11_QUERY_DESC *pPredicateDesc,
+                  ID3D11Predicate **ppPredicate) override {
+    InitReturnPtr(ppPredicate);
+    // the queries that are predicates (ID3D11Device::CreatePredicate)
+    if (!pPredicateDesc || (pPredicateDesc->Query != D3D11_QUERY_OCCLUSION_PREDICATE &&
+                            (pPredicateDesc->Query < D3D11_QUERY_SO_OVERFLOW_PREDICATE ||
+                             pPredicateDesc->Query > D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3)))
+      return E_INVALIDARG;
+    return CreateQuery(pPredicateDesc,
+                       reinterpret_cast<ID3D11Query **>(ppPredicate));
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateCounter(const D3D11_COUNTER_DESC *pCounterDesc,
+                ID3D11Counter **ppCounter) override {
+    InitReturnPtr(ppCounter);
+    // Direct3D 11's counters are all the device's own, of which it has none (ID3D11Device::CreateCounter:
+    // E_INVALIDARG for an out-of-range counter)
+    return E_INVALIDARG;
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDeferredContext(
+      UINT ContextFlags,
+      ID3D11DeviceContext **ppDeferredContext) override{
+    ID3D11DeviceContext3 *ppDeferredContext3;
+    HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
+    *ppDeferredContext = static_cast<ID3D11DeviceContext *>(ppDeferredContext3);
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  OpenSharedResource(HANDLE hResource, REFIID ReturnedInterface, void **ppResource) override {
+    return ImportSharedTexture(this, hResource, ReturnedInterface, ppResource);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+      CheckFormatSupport(DXGI_FORMAT Format, UINT *pFormatSupport) override {
+
+    if (pFormatSupport) {
+      *pFormatSupport = 0;
+    }
+
+    uint32_t support1, support2;
+    auto hr = MTLQueryDXGIFormatSupport(
+        GetMTLDevice(), Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
+    );
+    if (pFormatSupport && SUCCEEDED(hr))
+      *pFormatSupport = support1;
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckMultisampleQualityLevels(
+      DXGI_FORMAT Format, UINT SampleCount, UINT *pNumQualityLevels) override {
+    return CheckMultisampleQualityLevels1(Format, SampleCount, 0,
+                                          pNumQualityLevels);
+  }
+
+  void STDMETHODCALLTYPE
+  CheckCounterInfo(D3D11_COUNTER_INFO *pCounterInfo) override {
+    if (!pCounterInfo)
+      return;
+    // none (D3D11_COUNTER_INFO: "if the device doesn't support any device-dependent counters, this value is 0")
+    pCounterInfo->LastDeviceDependentCounter = D3D11_COUNTER(0);
+    pCounterInfo->NumSimultaneousCounters = 0;
+    pCounterInfo->NumDetectableParallelUnits = 0;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckCounter(const D3D11_COUNTER_DESC *pDesc,
+                                         D3D11_COUNTER_TYPE *pType,
+                                         UINT *pActiveCounters, LPSTR szName,
+                                         UINT *pNameLength, LPSTR szUnits,
+                                         UINT *pUnitsLength,
+                                         LPSTR szDescription,
+                                         UINT *pDescriptionLength) override {
+    return E_INVALIDARG;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CheckFeatureSupport(D3D11_FEATURE Feature, void *pFeatureSupportData,
+                      UINT FeatureSupportDataSize) override {
+    switch (Feature) {
+    // Format support queries are special in that they use in-out
+    // structs
+    case D3D11_FEATURE_FORMAT_SUPPORT: {
+      auto info =
+          static_cast<D3D11_FEATURE_DATA_FORMAT_SUPPORT *>(pFeatureSupportData);
+
+      if (FeatureSupportDataSize != sizeof(*info))
+        return E_INVALIDARG;
+
+      return CheckFormatSupport(info->InFormat, &info->OutFormatSupport);
+    }
+    case D3D11_FEATURE_FORMAT_SUPPORT2: {
+      auto info = static_cast<D3D11_FEATURE_DATA_FORMAT_SUPPORT2 *>(
+          pFeatureSupportData);
+
+      if (FeatureSupportDataSize != sizeof(*info))
+        return E_INVALIDARG;
+      uint32_t support1;
+      return MTLQueryDXGIFormatSupport(
+          GetMTLDevice(), info->InFormat, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1,
+          *reinterpret_cast<uint32_t *>(&info->OutFormatSupport2)
+      );
+    }
+    default:
+      // For everything else, we can use the device feature struct
+      // that we already initialized during device creation.
+      return features_.GetFeatureData(Feature, FeatureSupportDataSize,
+                                       pFeatureSupportData);
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize,
+                                           void *pData) override {
+    return container_->GetPrivateData(guid, pDataSize, pData);
+  }
+
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize,
+                                           const void *pData) override {
+    return container_->SetPrivateData(guid, DataSize, pData);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override {
+    return container_->SetPrivateDataInterface(guid, pData);
+  }
+
+  D3D_FEATURE_LEVEL STDMETHODCALLTYPE GetFeatureLevel() override {
+    return feature_level_;
+  }
+
+  UINT STDMETHODCALLTYPE GetCreationFlags() override { return feature_flags_ & 0x7fffffff; }
+
+  HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override {
+    // unless we are deal with eGPU, this method should awalys return S_OK?
+    return S_OK;
+  }
+
+  void STDMETHODCALLTYPE
+  GetImmediateContext(ID3D11DeviceContext **ppImmediateContext) override {
+    context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
+  }
+
+  // which errors would be thrown as exceptions: none is raised here, so the flags are only kept
+  // (D3D11_RAISE_FLAG has one)
+  HRESULT STDMETHODCALLTYPE SetExceptionMode(UINT RaiseFlags) override {
+    if (RaiseFlags & ~D3D11_RAISE_FLAG_DRIVER_INTERNAL_ERROR)
+      return E_INVALIDARG;
+    exception_mode_ = RaiseFlags;
+    return S_OK;
+  }
+
+  UINT STDMETHODCALLTYPE GetExceptionMode() override {
+    return exception_mode_;
+  }
+
+  void STDMETHODCALLTYPE
+  GetImmediateContext1(ID3D11DeviceContext1 **ppImmediateContext) override {
+    context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDeferredContext1(
+      UINT ContextFlags,
+      ID3D11DeviceContext1 **ppDeferredContext) override{
+    ID3D11DeviceContext3 *ppDeferredContext3;
+    HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
+    *ppDeferredContext = static_cast<ID3D11DeviceContext1 *>(ppDeferredContext3);
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+      CreateBlendState1(const D3D11_BLEND_DESC1 *pBlendStateDesc,
+                        ID3D11BlendState1 **ppBlendState) override {
+    return pipeline_cache_->AddBlendState(pBlendStateDesc,
+                                          (IMTLD3D11BlendState **)ppBlendState);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateRasterizerState1(const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
+                         ID3D11RasterizerState1 **ppRasterizerState) override {
+    ID3D11RasterizerState2 *pRasterizerState;
+    D3D11_RASTERIZER_DESC2 desc;
+    desc.FillMode = pRasterizerDesc->FillMode;
+    desc.CullMode = pRasterizerDesc->CullMode;
+    desc.FrontCounterClockwise = pRasterizerDesc->FrontCounterClockwise;
+    desc.DepthBias = pRasterizerDesc->DepthBias;
+    desc.DepthBiasClamp = pRasterizerDesc->DepthBiasClamp;
+    desc.SlopeScaledDepthBias = pRasterizerDesc->SlopeScaledDepthBias;
+    desc.DepthClipEnable = pRasterizerDesc->DepthClipEnable;
+    desc.ScissorEnable = pRasterizerDesc->ScissorEnable;
+    desc.MultisampleEnable = pRasterizerDesc->MultisampleEnable;
+    desc.AntialiasedLineEnable = pRasterizerDesc->AntialiasedLineEnable;
+    desc.ForcedSampleCount = pRasterizerDesc->ForcedSampleCount;
+    desc.ConservativeRaster = D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    auto hr = CreateRasterizerState2(&desc, &pRasterizerState);
+    *ppRasterizerState = pRasterizerState;
+    return hr;
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDeviceContextState(
+      UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels,
+      UINT SDKVersion, REFIID EmulatedInterface,
+      D3D_FEATURE_LEVEL *pChosenFeatureLevel,
+      ID3DDeviceContextState **ppContextState) override {
+    InitReturnPtr(ppContextState);
+
+    // TODO: validation
+
+    if (ppContextState == nullptr) {
+      return S_FALSE;
+    }
+    *ppContextState = ref(new MTLD3D11DeviceContextState(this));
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  OpenSharedResource1(HANDLE hResource, REFIID ReturnedInterface, void **ppResource) override {
+    return ImportSharedTextureFromNtHandle(this, hResource, ReturnedInterface, ppResource);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  OpenSharedResourceByName(LPCWSTR lpName, DWORD dwDesiredAccess, REFIID ReturnedInterface, void **ppResource)
+      override {
+    return ImportSharedTextureByName(this, lpName, dwDesiredAccess, ReturnedInterface, ppResource);
+  }
+
+  void STDMETHODCALLTYPE
+  GetImmediateContext2(ID3D11DeviceContext2 **ppImmediateContext) override {
+    context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateDeferredContext2(UINT ContextFlags, ID3D11DeviceContext2 **ppDeferredContext) override {
+    ID3D11DeviceContext3 *ppDeferredContext3;
+    HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
+    *ppDeferredContext = static_cast<ID3D11DeviceContext2 *>(ppDeferredContext3);
+    return hr;
+  }
+
+  void STDMETHODCALLTYPE GetResourceTiling(
+      ID3D11Resource *resource, UINT *tile_count,
+      D3D11_PACKED_MIP_DESC *mip_desc, D3D11_TILE_SHAPE *tile_shape,
+      UINT *subresource_tiling_count, UINT first_subresource_tiling,
+      D3D11_SUBRESOURCE_TILING *subresource_tiling) override{
+    // no tiled resource can be created (TiledResourcesTier), so none is asked about
+    if (tile_count)
+      *tile_count = 0;
+    if (subresource_tiling_count)
+      *subresource_tiling_count = 0;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CheckMultisampleQualityLevels1(DXGI_FORMAT Format, UINT SampleCount, UINT Flags, UINT *pNumQualityLevels) override {
+    if (!pNumQualityLevels)
+      return E_INVALIDARG;
+    *pNumQualityLevels = 0;
+    MTL_DXGI_FORMAT_DESC desc;
+    if (FAILED(MTLQueryDXGIFormat(GetMTLDevice(), Format, desc)) ||
+        desc.PixelFormat == WMTPixelFormatInvalid) {
+      return E_INVALIDARG;
+    }
+    // a positive answer says the format and count can be created (ID3D11Device::CheckMultisampleQualityLevels),
+    // which is what CheckFormatSupport says of the format and Metal of the count; Metal has one quality. no tiled
+    // resource is multisampled
+    bool multisample = any_bit_set(GetMTLPixelFormatCapability(desc.PixelFormat) & FormatCapability::MSAA);
+    if (!Flags && SampleCount && (SampleCount == 1 || multisample) &&
+        GetMTLDevice().supportsTextureSampleCount(SampleCount))
+      *pNumQualityLevels = 1;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateTexture2D1(const D3D11_TEXTURE2D_DESC1 *pDesc,
+                   const D3D11_SUBRESOURCE_DATA *pInitialData,
+                   ID3D11Texture2D1 **ppTexture2D) override {
+    InitReturnPtr(ppTexture2D);
+
+    if (!pDesc)
+      return E_INVALIDARG;
+
+    if ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED))
+      return E_INVALIDARG; // not supported yet
+
+    try {
+      switch (pDesc->Usage) {
+      case D3D11_USAGE_DEFAULT:
+      case D3D11_USAGE_IMMUTABLE:
+        return CreateDeviceTexture2D(this, pDesc, pInitialData, ppTexture2D);
+      case D3D11_USAGE_DYNAMIC: {
+        HRESULT hr = CreateDynamicLinearTexture2D(this, pDesc, pInitialData, ppTexture2D);
+        if (SUCCEEDED(hr))
+          return hr;
+        return CreateDynamicTexture2D(this, pDesc, pInitialData, ppTexture2D);
+      }
+      case D3D11_USAGE_STAGING:
+        if (pDesc->BindFlags != 0) {
+          return E_INVALIDARG;
+        }
+        return CreateStagingTexture2D(this, pDesc, pInitialData, ppTexture2D);
+      }
+      return S_OK;
+    } catch (const MTLD3DError &err) {
+      ERR(err.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateTexture3D1(const D3D11_TEXTURE3D_DESC1 *pDesc,
+                   const D3D11_SUBRESOURCE_DATA *pInitialData,
+                   ID3D11Texture3D1 **ppTexture3D) override {
+    InitReturnPtr(ppTexture3D);
+
+    if (!pDesc)
+      return E_INVALIDARG;
+
+    if ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED))
+      return E_INVALIDARG; // not supported yet
+
+    try {
+      switch (pDesc->Usage) {
+      case D3D11_USAGE_DEFAULT:
+      case D3D11_USAGE_IMMUTABLE:
+        return CreateDeviceTexture3D(this, pDesc, pInitialData, ppTexture3D);
+      case D3D11_USAGE_DYNAMIC:
+        return CreateDynamicTexture3D(this, pDesc, pInitialData, ppTexture3D);
+      case D3D11_USAGE_STAGING:
+        if (pDesc->BindFlags != 0) {
+          return E_INVALIDARG;
+        }
+        return CreateStagingTexture3D(this, pDesc, pInitialData, ppTexture3D);
+      }
+      return S_OK;
+    } catch (const MTLD3DError &err) {
+      ERR(err.message());
+      return E_FAIL;
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateRasterizerState2(const D3D11_RASTERIZER_DESC2 *pRasterizerDesc,
+                         ID3D11RasterizerState2 **ppRasterizerState) override {
+    return rasterizer_states_.CreateStateObject(
+        pRasterizerDesc, (IMTLD3D11RasterizerState **)ppRasterizerState);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateShaderResourceView1(
+      ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC1 *pDesc,
+      ID3D11ShaderResourceView1 **ppSRView) override {
+    InitReturnPtr(ppSRView);
+
+    if (!pResource)
+      return E_INVALIDARG;
+
+    if (!ppSRView)
+      return S_FALSE;
+
+    return static_cast<D3D11ResourceCommon *>(pResource)->CreateShaderResourceView(pDesc, ppSRView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView1(
+      ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC1 *pDesc,
+      ID3D11UnorderedAccessView1 **ppUAView) override {
+    InitReturnPtr(ppUAView);
+
+    if (!pResource)
+      return E_INVALIDARG;
+
+    if (!ppUAView)
+      return S_FALSE;
+
+    return static_cast<D3D11ResourceCommon *>(pResource)->CreateUnorderedAccessView(pDesc, ppUAView);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateRenderTargetView1(
+      ID3D11Resource *pResource, const D3D11_RENDER_TARGET_VIEW_DESC1 *pDesc,
+      ID3D11RenderTargetView1 **ppRTView) override {
+    InitReturnPtr(ppRTView);
+
+    if (!pResource)
+      return E_INVALIDARG;
+
+    if (!ppRTView)
+      return S_FALSE;
+
+    return static_cast<D3D11ResourceCommon *>(pResource)->CreateRenderTargetView(pDesc, ppRTView);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateQuery1(const D3D11_QUERY_DESC1 *pQueryDesc, ID3D11Query1 **ppQuery) override {
+    InitReturnPtr(ppQuery);
+
+    if (!pQueryDesc)
+      return E_INVALIDARG;
+
+    if (!ppQuery)
+      return S_FALSE;
+
+    switch (pQueryDesc->Query) {
+    case D3D11_QUERY_EVENT:
+      *ppQuery = ref(new MTLD3D11EventQueryImpl<BOOL>(this, pQueryDesc));
+      return S_OK;
+    case D3D11_QUERY_OCCLUSION:
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+      return CreateOcclusionQuery(this, pQueryDesc, ppQuery);
+    case D3D11_QUERY_TIMESTAMP:
+      return CreateTimestampQuery(this, pQueryDesc, ppQuery);
+    case D3D11_QUERY_TIMESTAMP_DISJOINT: {
+      *ppQuery = ref(new MTLD3D11EventQueryImpl<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(this, pQueryDesc));
+      return S_OK;
+    }
+    case D3D11_QUERY_PIPELINE_STATISTICS: {
+      *ppQuery = ref(new MTLD3D11DummyQuery<D3D11_QUERY_DATA_PIPELINE_STATISTICS>(this, pQueryDesc));
+      return S_OK;
+    }
+    case D3D11_QUERY_SO_STATISTICS:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
+    case D3D11_QUERY_SO_STATISTICS_STREAM0:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+    case D3D11_QUERY_SO_STATISTICS_STREAM1:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+    case D3D11_QUERY_SO_STATISTICS_STREAM2:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+    case D3D11_QUERY_SO_STATISTICS_STREAM3:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+      return CreateStreamOutputQuery(this, pQueryDesc, ppQuery);
+    default:
+      ERR("CreateQuery1: query type not implemented: ", pQueryDesc->Query);
+      return E_NOTIMPL;
+    }
+  }
+
+  void STDMETHODCALLTYPE
+  GetImmediateContext3(ID3D11DeviceContext3 **ppImmediateContext) override{
+    context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDeferredContext3(
+    UINT ContextFlags, ID3D11DeviceContext3 **ppDeferredContext) override {
+    *ppDeferredContext = std::move(dxmt::CreateDeferredContext(this, ContextFlags));
+    return S_OK;
+  }
+
+  void STDMETHODCALLTYPE
+  WriteToSubresource(
+      ID3D11Resource *pDstResource, UINT DstSubresource, const D3D11_BOX *pDstBox, const void *pSrcData,
+      UINT SrcRowPitch, UINT SrcDepthPitch
+  ) override {
+    // default textures are not mapped (MapOnDefaultTextures is not offered), which these two are for
+    ERR("WriteToSubresource: the device does not map default textures");
+  }
+
+  void STDMETHODCALLTYPE
+  ReadFromSubresource(
+      void *pDstData, UINT DstRowPitch, UINT DstDepthPitch, ID3D11Resource *SrcResource, UINT SrcSubresource,
+      const D3D11_BOX *pSrcBox
+  ) override {
+    ERR("ReadFromSubresource: the device does not map default textures");
+  }
+
+  WMT::Device STDMETHODCALLTYPE GetMTLDevice() override {
+    return container_->GetMTLDevice();
+  }
+
+  D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() override {
+    return container_->GetLocalD3DKMT();
+  }
+
+  HRESULT
+  CreateGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC *pDesc,
+                         MTLCompiledGraphicsPipeline **ppPipeline) override {
+    pipeline_cache_->GetGraphicsPipeline(pDesc, ppPipeline);
+    return S_OK;
+  };
+
+  HRESULT
+  CreateComputePipeline(MTL_COMPUTE_PIPELINE_DESC *pDesc,
+                        MTLCompiledComputePipeline **ppPipeline) override {
+    pipeline_cache_->GetComputePipeline(pDesc, ppPipeline);
+    return S_OK;
+  };
+
+  virtual HRESULT
+  CreateGeometryPipeline(MTL_GRAPHICS_PIPELINE_DESC *pDesc,
+                         MTLCompiledGeometryPipeline **ppPipeline) override {
+    pipeline_cache_->GetGeometryPipeline(pDesc, ppPipeline);
+    return S_OK;
+  };
+
+  HRESULT
+  CreateTessellationMeshPipeline(MTL_GRAPHICS_PIPELINE_DESC *pDesc,
+                         MTLCompiledTessellationMeshPipeline **ppPipeline) override {
+    pipeline_cache_->GetTessellationPipeline(pDesc, ppPipeline);
+    return S_OK;
+  };
+
+  Device &GetDXMTDevice() override { return device_; };
+
+  void CreateCommandList(ID3D11CommandList** pCommandList) final {
+    commandlist_pool_->CreateCommandList(pCommandList);
+  };
+
+  virtual void STDMETHODCALLTYPE SetShaderExtensionSlot(UINT Slot) final {
+    // TODO
+  };
+
+  virtual FormatCapability
+  GetMTLPixelFormatCapability(WMTPixelFormat Format) final {
+    Format = ORIGINAL_FORMAT(Format);
+    if (!format_inspector_.textureCapabilities.contains(Format))
+      return FormatCapability(0);
+    return format_inspector_.textureCapabilities.at(Format);
+  };
+
+  virtual IMTLD3D11DeviceContext *GetImmediateContextPrivate() final {
+    return context_.get();
+  };
+
+  virtual unsigned int GetDirectXVersion() final {
+    return feature_flags_ & 0x80000000 ? 10 : 11;
+  };
+
+  virtual HRESULT STDMETHODCALLTYPE RegisterDeviceRemovedEvent(HANDLE Event,
+                                                               DWORD *pCookie) final {
+    // no device to remove
+    return S_OK;
+  };
+
+  virtual void STDMETHODCALLTYPE UnregisterDeviceRemoved(DWORD Cookie) final {
+    // just do nothing
+  };
+
+  virtual HRESULT STDMETHODCALLTYPE OpenSharedFence(HANDLE Handle, REFIID riid,
+                                                    void **ppFence) final {
+    return dxmt::OpenSharedFence(this, Handle, riid, ppFence);
+  };
+
+  virtual HRESULT STDMETHODCALLTYPE CreateFence(UINT64 InitialValue,
+                                                D3D11_FENCE_FLAG Flags,
+                                                REFIID riid, void **ppFence) final {
+    if (feature_flags_ & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
+      return E_FAIL;
+    return dxmt::CreateFence(this, InitialValue, Flags, riid, ppFence);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  CreateSwapChain(
+      IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
+  ) override {
+    return dxmt::CreateSwapChain(pFactory, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
+  }
+
+private:
+  MTLDXGIObject<IMTLDXGIDevice> *container_;
+  D3D_FEATURE_LEVEL feature_level_;
+  UINT feature_flags_;
+  UINT exception_mode_ = 0;
+  MTLD3D11Inspection features_;
+  FormatCapabilityInspector format_inspector_;
+
+  bool is_traced_;
+
+  StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState> sampler_states_;
+  StateObjectCache<D3D11_RASTERIZER_DESC2, IMTLD3D11RasterizerState> rasterizer_states_;
+  StateObjectCache<D3D11_DEPTH_STENCIL_DESC, IMTLD3D11DepthStencilState> depthstencil_states_;
+
+  std::unique_ptr<MTLD3D11CommandListPoolBase> commandlist_pool_;
+  std::unique_ptr<MTLD3D11PipelineCacheBase> pipeline_cache_;
+
+  Device& device_;
+  /** ensure destructor called first */
+  std::unique_ptr<MTLD3D11DeviceContextBase> context_;
+  std::unique_ptr<MTLD3D10Device> d3d10_;
+  D3D11Multithread d3dmt_;
+};
+
+/**
+ * \brief D3D11 device container
+ *
+ * Stores all the objects that contribute to the D3D11
+ * device implementation, including the DXGI device.
+ */
+class MTLD3D11DXGIDevice final : public MTLDXGIObject<IMTLDXGIDevice> {
+public:
+  friend class MTLDXGIMetalLayerFactory;
+
+  MTLD3D11DXGIDevice(std::unique_ptr<Device> &&device, IMTLDXGIAdapter *adapter,
+                     D3D_FEATURE_LEVEL feature_level, UINT feature_flags)
+      : adapter_(adapter), device(std::move(device)),
+        cmd_queue_(this->device->queue()),
+        d3d11_device_(this, adapter, feature_level, feature_flags,
+                      *this->device.get()) {
+    if (adapter_->GetLocalD3DKMT()) {
+      D3DKMT_CREATEDEVICE create = {};
+      create.hAdapter = adapter_->GetLocalD3DKMT();
+      if (D3DKMTCreateDevice(&create))
+        WARN("Failed to create D3DKMT device");
+      else
+        local_kmt_ = create.hDevice;
+    }
+  }
+
+  ~MTLD3D11DXGIDevice() {
+    if (local_kmt_) {
+      D3DKMT_DESTROYDEVICE destroy = {};
+      destroy.hDevice = local_kmt_;
+      D3DKMTDestroyDevice(&destroy);
+    }
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  QueryInterface(REFIID riid, void **ppvObject) override {
+    if (ppvObject == nullptr)
+      return E_POINTER;
+
+    *ppvObject = nullptr;
+
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(IDXGIObject) ||
+        riid == __uuidof(IDXGIDevice) || riid == __uuidof(IDXGIDevice1) ||
+        riid == __uuidof(IDXGIDevice2) || riid == __uuidof(IDXGIDevice3) ||
+        riid == __uuidof(IMTLDXGIDevice)) {
+      *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D11Device) || riid == __uuidof(ID3D11Device1) ||
+        riid == __uuidof(ID3D11Device2) || riid == __uuidof(ID3D11Device3) ||
+        riid == __uuidof(ID3D11Device4) || riid == __uuidof(ID3D11Device5)) {
+      *ppvObject = ref_and_cast<ID3D11Device>(&d3d11_device_);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D10Device) || riid == __uuidof(ID3D10Device1)) {
+      *ppvObject = ref_and_cast<ID3D10Device>(d3d11_device_.d3d10_.get());
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IMTLSwapChainFactory)) {
+      *ppvObject = ref_and_cast<IMTLSwapChainFactory>(&d3d11_device_);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IMTLD3D11DeviceExt)) {
+      *ppvObject = ref_and_cast<IMTLD3D11DeviceExt>(&d3d11_device_);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D11Multithread)) {
+      *ppvObject = ref_and_cast<ID3D11Multithread>(&d3d11_device_.d3dmt_);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D11Debug) || riid == __uuidof(ID3D11InfoQueue) || riid == __uuidof(IMTLD3D11ContextExt))
+      return E_NOINTERFACE;
+
+    if (riid == kRenderdocUUID || riid == kPixUUID || riid == kGpaUUID)
+      return E_NOINTERFACE;
+
+    if (logQueryInterfaceError(__uuidof(IMTLDXGIDevice), riid)) {
+      WARN("D3D11Device: Unknown interface query ", str::format(riid));
+    }
+
+    return E_NOINTERFACE;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void **ppParent) override {
+    return adapter_->QueryInterface(riid, ppParent);
+  }
+
+  HRESULT STDMETHODCALLTYPE GetAdapter(IDXGIAdapter **pAdapter) override {
+    if (pAdapter == nullptr)
+      return DXGI_ERROR_INVALID_CALL;
+
+    *pAdapter = adapter_.ref();
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateSurface(const DXGI_SURFACE_DESC *desc, UINT surface_count,
+                DXGI_USAGE usage, const DXGI_SHARED_RESOURCE *shared_resource,
+                IDXGISurface **surface) override{
+    if (!surface || (!desc && !shared_resource))
+      return E_INVALIDARG;
+    // each surface is a 2D texture of its own, bound as the usage says (IDXGIDevice::CreateSurface: "the runtime
+    // automatically creates an IDXGISurface interface when it creates a Direct3D resource object that represents a
+    // surface"), or the shared one opened
+    for (UINT i = 0; i < surface_count; i++) {
+      HRESULT hr;
+      if (shared_resource) {
+        hr = d3d11_device_.OpenSharedResource(shared_resource->Handle, IID_PPV_ARGS(&surface[i]));
+      } else {
+        D3D11_TEXTURE2D_DESC texture_desc{desc->Width, desc->Height, 1, 1, desc->Format, desc->SampleDesc};
+        texture_desc.BindFlags = (usage & DXGI_USAGE_RENDER_TARGET_OUTPUT ? D3D11_BIND_RENDER_TARGET : 0) |
+                                 (usage & DXGI_USAGE_SHADER_INPUT ? D3D11_BIND_SHADER_RESOURCE : 0) |
+                                 (usage & DXGI_USAGE_UNORDERED_ACCESS ? D3D11_BIND_UNORDERED_ACCESS : 0);
+        Com<ID3D11Texture2D> texture;
+        hr = d3d11_device_.CreateTexture2D(&texture_desc, nullptr, &texture);
+        if (SUCCEEDED(hr))
+          hr = texture->QueryInterface(IID_PPV_ARGS(&surface[i]));
+      }
+      if (FAILED(hr)) {
+        while (i--)
+          surface[i]->Release();
+        return hr;
+      }
+    }
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  QueryResourceResidency(IUnknown *const *ppResources, DXGI_RESIDENCY *pResidency, UINT ResourceCount) override {
+    if (!ppResources || !pResidency)
+      return E_INVALIDARG;
+
+    // Basically in DXMT D3D11 implementation, all resources are assumed to be resident.
+    for (uint32_t i = 0; i < ResourceCount; i++)
+      pResidency[i] = DXGI_RESIDENCY_FULLY_RESIDENT;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE SetGPUThreadPriority(INT Priority) override {
+    if (Priority < -7 || Priority > 7)
+      return E_INVALIDARG;
+
+    WARN("SetGPUThreadPriority: Ignoring");
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetGPUThreadPriority(INT *pPriority) override {
+    *pPriority = 0;
+    return S_OK;
+  }
+
+  // IDXGIDevice1::SetMaximumFrameLatency: "can range from 1 to 16. A value of 0 will reset latency to the default"
+  HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT MaxLatency) override {
+    if (MaxLatency > 16)
+      return DXGI_ERROR_INVALID_CALL;
+    cmd_queue_.SetMaxLatency(MaxLatency);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT *pMaxLatency) override {
+    if (!pMaxLatency)
+      return DXGI_ERROR_INVALID_CALL;
+    *pMaxLatency = cmd_queue_.GetMaxLatency();
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+      OfferResources(UINT NumResources, IDXGIResource *const *ppResources,
+                     DXGI_OFFER_RESOURCE_PRIORITY Priority) override {
+    // stub
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE ReclaimResources(UINT NumResources,
+                                             IDXGIResource *const *ppResources,
+                                             WINBOOL *pDiscarded) override {
+    // stub
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE EnqueueSetEvent(HANDLE hEvent) override {
+    return E_FAIL;
+  }
+
+  void STDMETHODCALLTYPE Trim() override { WARN("DXGIDevice3::Trim: no-op"); };
+
+  WMT::Device STDMETHODCALLTYPE GetMTLDevice() override {
+    return adapter_->GetMTLDevice();
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateSwapChain(
+      IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
+      IDXGISwapChain1 **ppSwapChain) override {
+
+    return dxmt::CreateSwapChain(pFactory, &d3d11_device_, hWnd, pDesc, pFullscreenDesc,
+                                 ppSwapChain);
+  }
+
+  D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
+
+private:
+  Com<IMTLDXGIAdapter> adapter_;
+  D3DKMT_HANDLE local_kmt_ = 0;
+  std::unique_ptr<Device> device;
+  CommandQueue &cmd_queue_;
+  MTLD3D11DeviceImpl d3d11_device_;
+};
+
+Com<IMTLDXGIDevice> CreateD3D11Device(std::unique_ptr<Device> &&device,
+                                      IMTLDXGIAdapter *adapter,
+                                      D3D_FEATURE_LEVEL feature_level,
+                                      UINT feature_flags) {
+  return Com<IMTLDXGIDevice>::transfer(new MTLD3D11DXGIDevice(
+      std::move(device), adapter, feature_level, feature_flags));
+};
+} // namespace dxmt

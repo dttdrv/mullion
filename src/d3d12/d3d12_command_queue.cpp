@@ -1,0 +1,806 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#include <algorithm>
+#include "com/com_guid.hpp"
+#include "com/com_pointer.hpp"
+#include "d3d12_acceleration_structure.hpp"
+#include "d3d12_device.hpp"
+#include "d3d12_pageable.hpp"
+#include "dxgi_interfaces.h"
+#include "log/log.hpp"
+#include "util_env.hpp"
+#include <atomic>
+#include <optional>
+#include "d3d10_1.h"
+#include "d3d11_4.h"
+
+namespace dxmt {
+
+constexpr auto kCommandQueueSize = 32u;
+
+const GUID kD3D12CommandQueueDownlevelUUID = {
+    0x38a8c5ef, 0x7ccb, 0x4e81, {0x91, 0x4f, 0xa6, 0xe9, 0xd0, 0x72, 0xc4, 0x94}
+};
+
+class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory> {
+
+  D3D12_COMMAND_QUEUE_DESC desc_;
+
+  WMT::Reference<WMT::CommandQueue> queue_;
+  WMT::Reference<WMT::Fence> fence_;
+  // counts the timestamp resolves, which wait for the CPU to read their samples
+  Rc<Fence> timestamps_read_;
+  uint64_t timestamp_resolves_ = 0;
+
+  // the list the queue records on (LaterEncoderData), and the memory of the last build it recorded there
+  Com<ID3D12CommandAllocator> own_allocator_;
+  Com<ID3D12GraphicsCommandList4> own_list_;
+  std::vector<Com<ID3D12Resource>> own_buffers_;
+  // top-level structures deserialized before every structure their instances name was there, which a serialized
+  // structure's pointers need not be until it is used (DXR, "..._POSTBUILD_INFO_SERIALIZATION_DESC"): each is built
+  // again when they are, unless something else has filled its memory by then
+  struct Unresolved {
+    D3D12_GPU_VIRTUAL_ADDRESS destination;
+    std::shared_ptr<AccelerationStructure> structure;
+    std::shared_ptr<const AccelerationStructureInputs> inputs;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS described;
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
+  };
+  std::vector<Unresolved> unresolved_;
+
+  // tile mappings: a Metal 4 queue makes them, between a signal of the work before and the value the work after waits
+  // for (Metal 4's mappings hold for the classic queue's work ordered after them)
+  WMT::Reference<WMT::MTL4CommandQueue> mapping_queue_;
+  Rc<Fence> mapped_;
+  uint64_t mapping_value_ = 0, wait_for_mappings_ = 0;
+
+  // mapping work, in order with the queue's other work
+  template <typename Update>
+  void
+  Map(Update &&update) {
+    if (!mapping_queue_) {
+      mapping_queue_ = device_->GetMTLDevice().newMTL4CommandQueue();
+      mapped_ = new Fence(device_->GetMTLDevice());
+    }
+    {
+      auto scope = StartCommitting();
+      mapped_->signal(scope.inflight.cmdbuf, ++mapping_value_);
+    }
+    mapping_queue_.waitForEvent(mapped_->sharedEvent(), mapping_value_);
+    update(mapping_queue_);
+    mapping_queue_.signalEvent(mapped_->sharedEvent(), wait_for_mappings_ = ++mapping_value_);
+  }
+
+  std::atomic_uint64_t inflight_cmdbuf_seq_ = 1;
+  std::atomic_uint64_t inflight_cmdbuf_count_ = 0;
+  std::atomic_uint64_t inflight_cmdbuf_stop_ = 0;
+
+  struct InflightCommandBuffer {
+    WMT::Reference<WMT::CommandBuffer> cmdbuf{};
+    HANDLE semaphore{};
+    std::function<void()> completed{};
+  };
+
+  std::array<InflightCommandBuffer, kCommandQueueSize> inflight_cmdbuf_pool_;
+  dxmt::thread inflight_cmdbuf_wait_thread_;
+
+  dxmt::mutex mutex_commit_;
+
+  void
+  CommandBufferWaitingThread() {
+    env::setThreadName("dxmt-cmdbuf-waiting-thread");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    uint64_t internal_seq = 1;
+    for (;;) {
+      inflight_cmdbuf_seq_.wait(internal_seq, std::memory_order_acquire);
+      if (inflight_cmdbuf_stop_.load() == internal_seq)
+        break;
+      auto &inflight = inflight_cmdbuf_pool_[internal_seq % kCommandQueueSize];
+
+      if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
+        inflight.cmdbuf.waitUntilCompleted();
+      if (inflight.cmdbuf.status() == WMTCommandBufferStatusError)
+        ERR("Device error: ", inflight.cmdbuf.error().description().getUTF8String());
+
+      if (inflight.completed)
+        inflight.completed();
+      if (inflight.semaphore)
+        ReleaseSemaphore(inflight.semaphore, 1, nullptr);
+
+      inflight = {};
+
+      inflight_cmdbuf_count_.fetch_sub(1, std::memory_order_release);
+      inflight_cmdbuf_count_.notify_one();
+
+      internal_seq++;
+    }
+  };
+
+  struct CommittingScope {
+    MTLD3D12CommandQueueImpl *queue;
+    std::lock_guard<dxmt::mutex> lock;
+    uint64_t seq;
+    InflightCommandBuffer &inflight;
+    WMT::Reference<WMT::Object> pool;
+
+    CommittingScope(MTLD3D12CommandQueueImpl *queue) :
+        queue(queue),
+        lock(queue->mutex_commit_),
+        seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
+        inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
+        pool(WMT::MakeAutoreleasePool()) {
+      inflight.cmdbuf = queue->queue_.commandBuffer();
+      if (queue->wait_for_mappings_)
+        queue->mapped_->wait(inflight.cmdbuf, std::exchange(queue->wait_for_mappings_, 0));
+    };
+
+    ~CommittingScope() {
+      inflight.cmdbuf.commit();
+      queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
+      queue->inflight_cmdbuf_seq_.notify_one();
+      queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
+
+  CommittingScope
+  StartCommitting() {
+    inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+    return CommittingScope(this);
+  }
+
+public:
+  MTLD3D12CommandQueueImpl(MTLD3D12Device *pDevice) :
+      MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory>(pDevice),
+      inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
+
+  ~MTLD3D12CommandQueueImpl() {
+    std::lock_guard<dxmt::mutex> lock(mutex_commit_);
+    inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
+    inflight_cmdbuf_seq_.notify_one();
+    inflight_cmdbuf_wait_thread_.join();
+  }
+
+  HRESULT
+  Initialize(const D3D12_COMMAND_QUEUE_DESC *pDesc) {
+    // TODO: validate and normalize
+    desc_ = *pDesc;
+    desc_.NodeMask = 1; // typically 1 GPU only
+
+    auto metal_device = device_->GetMTLDevice();
+    queue_ = metal_device.newCommandQueue(kCommandQueueSize);
+    if (!queue_)
+      return E_FAIL;
+    queue_.addResidencySet(device_->GetGlobalResidencySet());
+
+    fence_ = metal_device.newFence();
+    timestamps_read_ = new Fence(metal_device);
+
+    return S_OK;
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  QueryInterface(REFIID riid, void **ppvObject) {
+    if (ppvObject == nullptr)
+      return E_POINTER;
+
+    *ppvObject = nullptr;
+
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12DeviceChild) ||
+        riid == __uuidof(ID3D12Pageable) || riid == __uuidof(ID3D12CommandQueue)) {
+      *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IMTLSwapChainFactory)) {
+      *ppvObject = ref_and_cast<IMTLSwapChainFactory>(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D10Device) || riid == __uuidof(ID3D10Device1))
+      return E_NOINTERFACE;
+
+    if (riid == __uuidof(ID3D11Device) || riid == __uuidof(ID3D11Device1) || riid == __uuidof(ID3D11Device2) ||
+        riid == __uuidof(ID3D11Device3) || riid == __uuidof(ID3D11Device4) || riid == __uuidof(ID3D11Device5))
+      return E_NOINTERFACE;
+
+    if (riid == kD3D12CommandQueueDownlevelUUID)
+      return E_NOINTERFACE;
+
+    if (logQueryInterfaceError(__uuidof(ID3D12CommandQueue), riid)) {
+      WARN("D3D12CommandQueue: Unknown interface query ", str::format(riid));
+    }
+
+    return E_NOINTERFACE;
+  }
+
+  void STDMETHODCALLTYPE UpdateTileMappings(
+      ID3D12Resource *resource, UINT region_count, const D3D12_TILED_RESOURCE_COORDINATE *region_start_coordinates,
+      const D3D12_TILE_REGION_SIZE *region_sizes, ID3D12Heap *heap, UINT range_count,
+      const D3D12_TILE_RANGE_FLAGS *range_flags, const UINT *heap_range_offsets, const UINT *range_tile_counts,
+      D3D12_TILE_MAPPING_FLAGS flags
+  ) {
+    // D3D12's regions and heap ranges, walked tile by tile together, become Metal operations over runs of tiles along
+    // x with consecutive heap tiles. Metal applies them in order, so a tile named twice keeps the last mapping
+    Tiling tiling(resource);
+    D3D12_TILED_RESOURCE_COORDINATE coordinate{};
+    D3D12_TILE_REGION_SIZE size{region_start_coordinates ? 1 : tiling.total};
+    D3D12_TILE_RANGE_FLAGS range_flag = D3D12_TILE_RANGE_FLAG_NONE;
+    UINT range_size = ~0u, range_offset = 0;
+    std::vector<WMTSparseTextureMapping> operations;
+    for (UINT region = 0, region_tile = 0, range = 0, range_tile = 0; region < region_count && range < range_count;) {
+      if (!range_tile) {
+        range_flag = range_flags ? range_flags[range] : D3D12_TILE_RANGE_FLAG_NONE;
+        // no counts: one range covers the regions, and several are a tile each
+        range_size = range_tile_counts ? range_tile_counts[range] : range_count == 1 ? ~0u : 1;
+        range_offset = heap_range_offsets ? heap_range_offsets[range] : 0;
+      }
+      if (!region_tile) {
+        coordinate = region_start_coordinates ? region_start_coordinates[region] : coordinate;
+        size = region_sizes ? region_sizes[region] : size;
+      }
+      if (range_flag != D3D12_TILE_RANGE_FLAG_SKIP) {
+        auto op = tiling.place(tiling.index(coordinate, size, region_tile));
+        op.mode = range_flag == D3D12_TILE_RANGE_FLAG_NULL ? WMTSparseMappingModeUnmap : WMTSparseMappingModeMap;
+        op.heap_tile = range_flag == D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE ? range_offset : range_offset + range_tile;
+        auto *last = operations.empty() ? nullptr : &operations.back();
+        if (last && last->mode == op.mode && last->level == op.level && last->slice == op.slice &&
+            last->origin.y == op.origin.y && last->origin.z == op.origin.z &&
+            last->origin.x + last->size.width == op.origin.x &&
+            (op.mode == WMTSparseMappingModeUnmap || last->heap_tile + last->size.width == op.heap_tile))
+          last->size.width++;
+        else
+          operations.push_back(op);
+      }
+      if (++range_tile == range_size)
+        range++, range_tile = 0;
+      if (++region_tile == size.NumTiles)
+        region++, region_tile = 0;
+    }
+    if (operations.empty())
+      return;
+    auto res = static_cast<MTLD3D12Resource *>(resource);
+    WMT::Object heap_handle = heap ? static_cast<MTLD3D12Heap *>(heap)->heap : WMT::Heap{};
+    Map([&](WMT::MTL4CommandQueue queue) {
+      if (tiling.texture) {
+        queue.updateMappings(res->texture->current()->texture(), true, heap_handle, operations);
+        return;
+      }
+      // a buffer's tiles are its x
+      std::vector<WMTSparseBufferMapping> ranges;
+      for (auto &op : operations)
+        ranges.push_back({op.mode, op.origin.x, op.size.width, op.heap_tile});
+      queue.updateMappings(res->buffer->current()->buffer(), false, heap_handle, ranges);
+    });
+  };
+
+  void STDMETHODCALLTYPE CopyTileMappings(
+      ID3D12Resource *dst_resource, const D3D12_TILED_RESOURCE_COORDINATE *dst_region_start_coordinate,
+      ID3D12Resource *src_resource, const D3D12_TILED_RESOURCE_COORDINATE *src_region_start_coordinate,
+      const D3D12_TILE_REGION_SIZE *region_size, D3D12_TILE_MAPPING_FLAGS flags
+  ) {
+    Tiling source(src_resource), destination(dst_resource);
+    if (source.texture != destination.texture) {
+      ERR("CopyTileMappings: Metal copies mappings between buffers or between textures only");
+      return;
+    }
+    std::vector<WMTSparseTextureMappingCopy> operations;
+    for (UINT n = 0; n < region_size->NumTiles; n++) {
+      auto from = source.place(source.index(*src_region_start_coordinate, *region_size, n));
+      auto to = destination.place(destination.index(*dst_region_start_coordinate, *region_size, n));
+      operations.push_back({from.origin, from.size, from.level, from.slice, to.origin, to.level, to.slice});
+    }
+    // regions of one resource may overlap, with the result of a copy through a temporary one. Metal copies the tiles
+    // in order, so a copy to later tiles goes from its last tile back, as memmove does
+    if (src_resource == dst_resource && region_size->NumTiles &&
+        destination.index(*dst_region_start_coordinate, *region_size, 0) >
+            source.index(*src_region_start_coordinate, *region_size, 0))
+      std::reverse(operations.begin(), operations.end());
+    auto src = static_cast<MTLD3D12Resource *>(src_resource), dst = static_cast<MTLD3D12Resource *>(dst_resource);
+    Map([&](WMT::MTL4CommandQueue queue) {
+      if (source.texture) {
+        queue.copyMappings(src->texture->current()->texture(), dst->texture->current()->texture(), true, operations);
+        return;
+      }
+      std::vector<WMTSparseBufferMappingCopy> ranges;
+      for (auto &op : operations)
+        ranges.push_back({op.origin.x, 1, op.destination_origin.x});
+      queue.copyMappings(src->buffer->current()->buffer(), dst->buffer->current()->buffer(), false, ranges);
+    });
+  };
+
+  void STDMETHODCALLTYPE
+  ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+    device_->CheckAtomicLocks();
+    std::optional<CommittingScope> scope;
+    auto start = [&] {
+      inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+      scope.emplace(this);
+    };
+    start();
+    WMT::CommandBuffer cmdbuf = scope->inflight.cmdbuf;
+    // ends the command buffer and waits for it: what the work so far leaves in memory is then there
+    auto settle = [&] {
+      WMT::Reference<WMT::CommandBuffer> ended = cmdbuf;
+      scope.reset();
+      ended.waitUntilCompleted();
+      start();
+      cmdbuf = scope->inflight.cmdbuf;
+    };
+    // whether the queue has run a build or a copy into the structure at the address
+    auto built = [&](D3D12_GPU_VIRTUAL_ADDRESS address) {
+      auto structure = device_->LookupAccelerationStructure(address);
+      return structure && structure->built;
+    };
+    auto resolved = [&](const std::vector<D3D12_RAYTRACING_INSTANCE_DESC> &instances) {
+      return std::ranges::all_of(instances, [&](auto &instance) {
+        return !instance.AccelerationStructure || built(instance.AccelerationStructure);
+      });
+    };
+    // how deep in the queue's own list the passes are
+    unsigned own = 0;
+    // a list's passes, and those of the list the queue records on
+    auto encode = [&](auto &encode, EncoderData *current) -> void {
+      // records commands on the queue's list, which is free once what it recorded before has run, as are that
+      // recording's buffers, and encodes them here
+      auto record = [&](auto &&commands) {
+        if (own_list_) {
+          own_allocator_->Reset();
+          own_list_->Reset(own_allocator_.ptr(), nullptr);
+        } else if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&own_allocator_))) ||
+                   FAILED(device_->CreateCommandList(
+                       0, D3D12_COMMAND_LIST_TYPE_DIRECT, own_allocator_.ptr(), nullptr, IID_PPV_ARGS(&own_list_)
+                   ))) {
+          return;
+        }
+        auto list = static_cast<MTLD3D12GraphicsCommandList *>(own_list_.ptr());
+        list->leaves_for_later = false;
+        own_buffers_.clear();
+        if (!commands(list))
+          return;
+        list->Close();
+        own++;
+        encode(encode, list->entry);
+        own--;
+      };
+      const uint32_t *decided = nullptr;
+      while (current) {
+        switch (current->type) {
+        case EncoderType::Null:
+          break;
+        case EncoderType::Clear: {
+          auto data = static_cast<ClearEncoderData *>(current);
+          {
+            WMTRenderPassInfo info;
+            WMT::InitializeRenderPassInfo(info);
+            if (data->clear_dsv) {
+              if (data->clear_dsv & 1) {
+                info.depth.clear_depth = data->depth_stencil.first;
+                info.depth.texture = data->attachment.texture();
+                info.depth.load_action = WMTLoadActionClear;
+                info.depth.store_action = WMTStoreActionStore;
+                info.depth.depth_plane = data->depth_plane;
+              }
+              if (data->clear_dsv & 2) {
+                info.stencil.clear_stencil = data->depth_stencil.second;
+                info.stencil.texture = data->attachment.texture();
+                info.stencil.load_action = WMTLoadActionClear;
+                info.stencil.store_action = WMTStoreActionStore;
+                info.stencil.depth_plane = data->depth_plane;
+              }
+              info.render_target_width = data->width;
+              info.render_target_height = data->height;
+            } else {
+              info.colors[0].clear_color = data->color;
+              info.colors[0].texture = data->attachment.texture();
+              info.colors[0].load_action = WMTLoadActionClear;
+              info.colors[0].store_action = WMTStoreActionStore;
+              info.colors[0].depth_plane = data->depth_plane;
+            }
+            info.render_target_array_length = data->array_length;
+            auto encoder = cmdbuf.renderCommandEncoder(info);
+            encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
+            encoder.waitForFence(fence_, WMTRenderStageFragment);
+            encoder.updateFence(fence_, WMTRenderStageFragment);
+            encoder.endEncoding();
+          }
+          break;
+        }
+        case EncoderType::Render: {
+          auto data = static_cast<RenderEncoderData *>(current);
+          WMTRenderPassInfo render_pass_info;
+          WMT::InitializeRenderPassInfo(render_pass_info);
+          {
+            for (unsigned i = 0; i < std::size(render_pass_info.colors); i++) {
+              auto &color_data = data->colors[i];
+              if (!color_data.attachment)
+                continue;
+              auto &color_info = render_pass_info.colors[i];
+              color_info.texture = color_data.attachment.texture();
+              color_info.load_action = color_data.load_action;
+              color_info.store_action = color_data.store_action;
+              color_info.level = color_data.level;
+              color_info.slice = color_data.slice;
+              color_info.depth_plane = color_data.depth_plane;
+              color_info.clear_color = color_data.clear_color;
+              color_info.resolve_texture = color_data.resolve_attachment.texture();
+              color_info.resolve_level = color_data.resolve_level;
+              color_info.resolve_slice = color_data.resolve_slice;
+              color_info.resolve_depth_plane = color_data.resolve_depth_plane;
+            }
+            if (data->depth.attachment) {
+              auto &depth_info = render_pass_info.depth;
+              auto &depth_data = data->depth;
+              depth_info.texture = depth_data.attachment.texture();
+              depth_info.load_action = depth_data.load_action;
+              depth_info.store_action = depth_data.store_action;
+              depth_info.level = depth_data.level;
+              depth_info.slice = depth_data.slice;
+              depth_info.depth_plane = depth_data.depth_plane;
+              depth_info.clear_depth = depth_data.clear_depth;
+            }
+            if (data->stencil.attachment) {
+              auto &stencil_info = render_pass_info.stencil;
+              auto &stencil_data = data->stencil;
+              stencil_info.texture = stencil_data.attachment.texture();
+              stencil_info.load_action = stencil_data.load_action;
+              stencil_info.store_action = stencil_data.store_action;
+              stencil_info.level = stencil_data.level;
+              stencil_info.slice = stencil_data.slice;
+              stencil_info.depth_plane = stencil_data.depth_plane;
+              stencil_info.clear_stencil = stencil_data.clear_stencil;
+            }
+            render_pass_info.default_raster_sample_count = data->default_raster_sample_count;
+            render_pass_info.render_target_array_length = data->render_target_array_length;
+            render_pass_info.render_target_width = data->render_target_width;
+            render_pass_info.render_target_height = data->render_target_height;
+            render_pass_info.visibility_buffer = data->visibility_buffer;
+          }
+          auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+          encoder.waitForFence(fence_, WMTRenderStageVertex);
+          encoder.encodeCommands(&data->cmd_head);
+          encoder.updateFence(fence_, WMTRenderStageFragment);
+          encoder.endEncoding();
+          break;
+        }
+        case EncoderType::Blit: {
+          auto data = static_cast<BlitEncoderData *>(current);
+          WMTSampleBufferAttachmentInfo sample{data->sample_buffer, data->sample_index, ~0ull /* MTLCounterDontSample */};
+          auto encoder = data->sample_buffer ? cmdbuf.blitCommandEncoderWithSampleBuffers(&sample, 1)
+                                             : cmdbuf.blitCommandEncoder();
+          encoder.waitForFence(fence_);
+          encoder.encodeCommands(&data->cmd_head);
+          encoder.updateFence(fence_);
+          encoder.endEncoding();
+          break;
+        }
+        case EncoderType::AccelerationStructure: {
+          auto data = static_cast<AccelerationStructureEncoderData *>(current);
+          for (auto filled = data->filled; filled; filled = filled->next) {
+            auto &structure = *filled->structure;
+            structure.built = true;
+            if (filled->kept)
+              structure.inputs = filled->kept->shared_from_this();
+            else if (filled->from)
+              structure.inputs = filled->from->inputs;
+            else
+              structure.inputs = nullptr;
+          }
+          auto encoder = cmdbuf.accelerationStructureCommandEncoder();
+          encoder.waitForFence(fence_);
+          encoder.encodeCommands(&data->cmd_head);
+          encoder.updateFence(fence_);
+          encoder.endEncoding();
+          break;
+        }
+        case EncoderType::Compute: {
+          auto data = static_cast<ComputeEncoderData *>(current);
+          auto encoder = cmdbuf.computeCommandEncoder(false);
+          encoder.waitForFence(fence_);
+          encoder.encodeCommands(&data->cmd_head);
+          encoder.updateFence(fence_);
+          encoder.endEncoding();
+          break;
+        }
+        case EncoderType::ResolveTimestamps: {
+          // the command buffer ends here; when it completes the CPU reads the samples, and the next one waits for them
+          auto data = static_cast<ResolveTimestampsData *>(current);
+          WMTBufferInfo info{data->count * sizeof(uint64_t), WMTResourceStorageModeShared};
+          auto staging = device_->GetMTLDevice().newBuffer(info);
+          auto value = ++timestamp_resolves_;
+          scope->inflight.completed = [samples = data->sample_buffer, staging,
+                                       mapped = info.memory.ptr, first = data->start, count = data->count,
+                                       read = timestamps_read_, value] {
+            samples.resolveCounterRange(first, count, mapped, count * sizeof(uint64_t));
+            read->signal(value);
+          };
+          scope.reset();
+          start();
+          cmdbuf = scope->inflight.cmdbuf;
+          timestamps_read_->wait(cmdbuf, value);
+          auto encoder = cmdbuf.blitCommandEncoder();
+          encoder.waitForFence(fence_);
+          encoder.copyFromBuffer(staging, 0, data->dst, data->dst_offset, data->count * sizeof(uint64_t));
+          encoder.updateFence(fence_);
+          encoder.endEncoding();
+          break;
+        }
+        case EncoderType::Predicate: {
+          // what its region's kernel decided is in memory once the command buffer with the kernel has completed
+          auto data = static_cast<PredicateEncoderData *>(current);
+          if (std::exchange(decided, data->skips) != data->skips)
+            settle();
+          if (*data->skips)
+            current = data->end;
+          break;
+        }
+        case EncoderType::Later: {
+          auto data = static_cast<LaterEncoderData *>(current);
+          // GPU memory, read once the work so far has run
+          auto read = [&](D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t length) {
+            uint64_t offset;
+            auto allocation = device_->LookupBufferByVA(address, &offset);
+            WMTBufferInfo info{length, WMTResourceStorageModeShared};
+            auto staging = device_->GetMTLDevice().newBuffer(info);
+            auto encoder = cmdbuf.blitCommandEncoder();
+            encoder.waitForFence(fence_);
+            if (allocation)
+              encoder.copyFromBuffer(allocation->buffer(), offset, staging, 0, length);
+            encoder.updateFence(fence_);
+            encoder.endEncoding();
+            settle();
+            auto bytes = static_cast<const char *>(info.memory.get());
+            return std::vector<char>(bytes, bytes + length);
+          };
+          bool deserialize = data->command == LaterEncoderData::Copy &&
+                             data->mode == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_DESERIALIZE;
+          D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = data->build;
+          std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+          std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
+          if (deserialize && !Deserialized(data->source, data->destination, read, desc, geometries, instances))
+            break;
+          // reading the serialized structure has waited already
+          if (!deserialize)
+            settle();
+          // instances of structures that are not there yet are of none until they are
+          bool waits = deserialize && !resolved(instances);
+          auto placed = instances;
+          for (auto &instance : placed)
+            if (!built(instance.AccelerationStructure))
+              instance.AccelerationStructure = 0;
+          record([&](MTLD3D12GraphicsCommandList *list) {
+            if (deserialize && !Place(desc, placed))
+              return false;
+            if (deserialize || data->command == LaterEncoderData::Build)
+              list->BuildRaytracingAccelerationStructure(&desc, data->information_count, data->information);
+            else if (data->command == LaterEncoderData::Copy)
+              list->CopyRaytracingAccelerationStructure(data->destination, data->source, data->mode);
+            else
+              list->EmitRaytracingAccelerationStructurePostbuildInfo(data->information, data->source_count, data->sources);
+            return true;
+          });
+          if (auto structure = waits ? device_->LookupAccelerationStructure(data->destination) : nullptr)
+            unresolved_.push_back({data->destination, structure, structure->inputs, desc.Inputs, std::move(instances)});
+          break;
+        }
+        case EncoderType::Resolve: {
+          auto data = static_cast<ResolveEncoderData *>(current);
+
+          WMTRenderPassInfo info;
+          WMT::InitializeRenderPassInfo(info);
+          info.colors[0].texture = data->src.texture();
+          info.colors[0].load_action = WMTLoadActionLoad;
+          info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.colors[0].resolve_texture = data->dst.texture();
+
+          auto encoder = cmdbuf.renderCommandEncoder(info);
+          encoder.waitForFence(fence_, WMTRenderStageFragment);
+          encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
+          encoder.updateFence(fence_, WMTRenderStageFragment);
+          encoder.endEncoding();
+
+          break;
+        }
+        }
+        current = current->next;
+        // what an application's pass has filled may be what a deserialized top-level structure waited for
+        for (size_t i = 0; !own && i < unresolved_.size();) {
+          auto &waiting = unresolved_[i];
+          bool there = device_->LookupAccelerationStructure(waiting.destination) == waiting.structure &&
+                       waiting.structure->inputs == waiting.inputs;
+          if (there && !resolved(waiting.instances)) {
+            i++;
+            continue;
+          }
+          auto ready = std::move(waiting);
+          unresolved_.erase(unresolved_.begin() + i);
+          if (!there)
+            continue;
+          settle();
+          record([&](MTLD3D12GraphicsCommandList *list) {
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{ready.destination, ready.described};
+            if (!Place(desc, ready.instances))
+              return false;
+            list->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
+            return true;
+          });
+        }
+      }
+    };
+    for (unsigned i = 0; i < Count; i++)
+      encode(encode, static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i])->entry);
+  };
+
+  // the build that gives back the structure serialized at `Source` (CopyRaytracingAccelerationStructure,
+  // DESERIALIZE): a serialized structure is its inputs. `read` gives GPU memory
+  template <typename Read>
+  bool
+  Deserialized(
+      D3D12_GPU_VIRTUAL_ADDRESS Source, D3D12_GPU_VIRTUAL_ADDRESS Destination, Read &&read,
+      D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC &desc, std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &geometries,
+      std::vector<D3D12_RAYTRACING_INSTANCE_DESC> &instances
+  ) {
+    D3D12_SERIALIZED_RAYTRACING_ACCELERATION_STRUCTURE_HEADER header;
+    memcpy(&header, read(Source, sizeof(header)).data(), sizeof(header));
+    if (device_->CheckDriverMatchingIdentifier(
+            D3D12_SERIALIZED_DATA_RAYTRACING_ACCELERATION_STRUCTURE, &header.DriverMatchingIdentifier
+        ) != D3D12_DRIVER_MATCHING_IDENTIFIER_COMPATIBLE_WITH_DEVICE) {
+      ERR("CopyRaytracingAccelerationStructure: nothing this device serialized is at the source address");
+      return false;
+    }
+    SerializedInputs described;
+    auto pointers = header.NumBottomLevelAccelerationStructurePointersAfterHeader;
+    memcpy(&described, read(Source + SerializedInputsOffset(pointers), sizeof(described)).data(), sizeof(described));
+    bool top = described.type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    auto bytes = read(Source, SerializedLayout(top, described.count, described.size).data);
+    desc = {Destination};
+    DeserializedInputs(described, bytes.data(), Source, desc.Inputs, geometries, instances);
+    return true;
+  }
+
+  // gives a deserialized structure's build the memory an application gives a build: its instances' and its scratch
+  bool
+  Place(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC &desc, const std::vector<D3D12_RAYTRACING_INSTANCE_DESC> &instances) {
+    auto buffer = [&](D3D12_HEAP_TYPE heap, UINT64 size, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
+      D3D12_HEAP_PROPERTIES props{heap};
+      D3D12_RESOURCE_DESC of{D3D12_RESOURCE_DIMENSION_BUFFER, 0, std::max<UINT64>(size, 1), 1, 1, 1, DXGI_FORMAT_UNKNOWN,
+                             {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags};
+      device_->CreateCommittedResource(
+          &props, D3D12_HEAP_FLAG_NONE, &of, state, nullptr, IID_PPV_ARGS(&own_buffers_.emplace_back())
+      );
+      return own_buffers_.back().ptr();
+    };
+    if (desc.Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+      auto placed = buffer(
+          D3D12_HEAP_TYPE_UPLOAD, instances.size() * sizeof(instances[0]), D3D12_RESOURCE_FLAG_NONE,
+          D3D12_RESOURCE_STATE_GENERIC_READ
+      );
+      void *mapped;
+      if (!placed || FAILED(placed->Map(0, nullptr, &mapped)))
+        return false;
+      memcpy(mapped, instances.data(), instances.size() * sizeof(instances[0]));
+      desc.Inputs.InstanceDescs = placed->GetGPUVirtualAddress();
+    }
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO sizes;
+    device_->GetRaytracingAccelerationStructurePrebuildInfo(&desc.Inputs, &sizes);
+    auto scratch = buffer(
+        D3D12_HEAP_TYPE_DEFAULT, sizes.ScratchDataSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+    );
+    if (scratch)
+      desc.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
+    return scratch;
+  }
+
+  void STDMETHODCALLTYPE SetMarker(UINT metadata, const void *data, UINT size) {};
+
+  void STDMETHODCALLTYPE BeginEvent(UINT metadata, const void *data, UINT size) {};
+
+  void STDMETHODCALLTYPE EndEvent() {};
+
+  HRESULT STDMETHODCALLTYPE
+  Signal(ID3D12Fence *pFence, UINT64 Value) {
+    auto scope = StartCommitting();
+    auto &cmdbuf = scope.inflight.cmdbuf;
+    static_cast<MTLD3D12Fence *>(pFence)->fence->signal(cmdbuf, Value);
+    return S_OK;
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  Wait(ID3D12Fence *pFence, UINT64 Value) {
+    auto scope = StartCommitting();
+    auto &cmdbuf = scope.inflight.cmdbuf;
+    static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
+    return S_OK;
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  GetTimestampFrequency(UINT64 *pFrequency) {
+    if (!pFrequency)
+      return E_INVALIDARG;
+    *pFrequency = kGPUTimestampFrequency;
+    return S_OK;
+  };
+
+  // the GPU timestamp paired with the performance counter halfway through taking it
+  HRESULT STDMETHODCALLTYPE
+  GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
+    if (!gpu_timestamp || !cpu_timestamp)
+      return E_INVALIDARG;
+    LARGE_INTEGER before, after;
+    uint64_t metal_cpu;
+    QueryPerformanceCounter(&before);
+    device_->GetMTLDevice().sampleTimestamps(metal_cpu, *gpu_timestamp);
+    QueryPerformanceCounter(&after);
+    *cpu_timestamp = before.QuadPart + (after.QuadPart - before.QuadPart) / 2;
+    return S_OK;
+  };
+
+  D3D12_COMMAND_QUEUE_DESC *STDMETHODCALLTYPE
+  GetDesc(D3D12_COMMAND_QUEUE_DESC *__ret) {
+    *__ret = desc_;
+    return __ret;
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  CreateSwapChain(
+      IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
+  ) {
+    return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
+  }
+
+  HRESULT
+  Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
+    auto scope = StartCommitting();
+    auto &cmdbuf = scope.inflight.cmdbuf;
+
+    auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
+    auto &view = g->texture->view(g->texture->fullView);
+
+    auto state = presenter->synchronizeLayerProperties();
+    auto drawable = presenter->encodeCommands(
+        cmdbuf, view.texture, state.metadata,
+        [&](auto encoder) { encoder.waitForFence(fence_, WMTRenderStageFragment); },
+        [&](auto encoder) { encoder.updateFence(fence_, WMTRenderStageFragment); }
+    );
+
+    if (!drawable)
+      scope.inflight.completed = [presenter = Rc(presenter), after] { presenter->drawToWindow(after); };
+    else if (after > 0)
+      cmdbuf.presentDrawableAfterMinimumDuration(drawable, after);
+    else
+      cmdbuf.presentDrawable(drawable);
+    scope.inflight.semaphore = hLantecyWaitable;
+
+    return S_OK;
+  }
+};
+
+HRESULT
+CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue) {
+  auto command_queue = Com(new MTLD3D12CommandQueueImpl(pDevice));
+  HRESULT hr = command_queue->Initialize(pDesc);
+  if (FAILED(hr))
+    return hr;
+  return command_queue->QueryInterface(riid, ppCommandQueue);
+};
+
+} // namespace dxmt

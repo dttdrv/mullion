@@ -1,0 +1,1608 @@
+#include "ftl.hpp"
+#include "dxmt_format.hpp"
+#include "util_error.hpp"
+#include "dxgi.h"
+#include "d3d11.h"
+#include <cassert>
+#include <cmath>
+#include <cfloat>
+#include <cstdint>
+
+#define APPEND_CAP(format, caps) textureCapabilities[format] = textureCapabilities[format] | caps;
+
+namespace dxmt {
+
+constexpr FormatCapability ALL_CAP = static_cast<FormatCapability>(
+    FormatCapability::Filter | FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA |
+    FormatCapability::Blend | FormatCapability::Sparse | FormatCapability::Resolve
+);
+constexpr FormatCapability TEXTURE_BUFFER_ALL_CAP = static_cast<FormatCapability>(
+    FormatCapability::TextureBufferRead | FormatCapability::TextureBufferWrite |
+    FormatCapability::TextureBufferReadWrite
+);
+constexpr FormatCapability TEXTURE_BUFFER_READ_OR_WRITE =
+    static_cast<FormatCapability>(FormatCapability::TextureBufferRead | FormatCapability::TextureBufferWrite);
+constexpr FormatCapability NO_ATOMIC_RESOLVE = static_cast<FormatCapability>(
+    FormatCapability::Filter | FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA |
+    FormatCapability::Blend | FormatCapability::Sparse
+);
+constexpr FormatCapability APPLE_INT_FORMAT_CAP =
+    FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | FormatCapability::Sparse;
+constexpr FormatCapability NONAPPLE_INT_FORMAT_CAP =
+    FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | FormatCapability::Sparse;
+
+constexpr FormatCapability APPLE_INT_FORMAT_CAP_32 =
+    FormatCapability::Write | FormatCapability::Color | FormatCapability::Sparse | FormatCapability::Atomic;
+
+void
+FormatCapabilityInspector::Inspect(WMT::Device device) {
+  if (device.supportsFamily(WMTGPUFamilyApple7)) {
+    // Apple 7: M1
+    APPEND_CAP(WMTPixelFormatA8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Unorm_sRGB, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR8Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    APPEND_CAP(WMTPixelFormatR16Unorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR16Snorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR16Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR16Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR16Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRG8Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Unorm_sRGB, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRG8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+
+    APPEND_CAP(WMTPixelFormatB5G6R5Unorm, NO_ATOMIC_RESOLVE)
+    APPEND_CAP(WMTPixelFormatA1BGR5Unorm, NO_ATOMIC_RESOLVE)
+    APPEND_CAP(WMTPixelFormatABGR4Unorm, NO_ATOMIC_RESOLVE)
+    APPEND_CAP(WMTPixelFormatBGR5A1Unorm, NO_ATOMIC_RESOLVE)
+
+    APPEND_CAP(WMTPixelFormatR32Uint, APPLE_INT_FORMAT_CAP_32 | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR32Sint, APPLE_INT_FORMAT_CAP_32 | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(
+        WMTPixelFormatR32Float, FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA |
+                                      FormatCapability::Blend | FormatCapability::Sparse | TEXTURE_BUFFER_ALL_CAP
+    )
+    APPEND_CAP(WMTPixelFormatRG16Unorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Snorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Float, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA8Unorm_sRGB, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA8Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA8Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatBGRA8Unorm, ALL_CAP | FormatCapability::TextureBufferRead)
+    APPEND_CAP(WMTPixelFormatBGRA8Unorm_sRGB, ALL_CAP)
+
+    // 32-bit packed
+    APPEND_CAP(WMTPixelFormatRGB10A2Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatBGR10A2Unorm, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGB10A2Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG11B10Float, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGB9E5Float, ALL_CAP)
+
+    // 64-bit
+    APPEND_CAP(WMTPixelFormatRG32Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG32Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(
+        WMTPixelFormatRG32Float, FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA |
+                                       FormatCapability::Blend | FormatCapability::Sparse | TEXTURE_BUFFER_READ_OR_WRITE
+    )
+    APPEND_CAP(WMTPixelFormatRGBA16Unorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA16Snorm, NO_ATOMIC_RESOLVE | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA16Uint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA16Sint, APPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA16Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    // 128-bit
+    APPEND_CAP(
+        WMTPixelFormatRGBA32Uint,
+        FormatCapability::Write | FormatCapability::Color | FormatCapability::Sparse | TEXTURE_BUFFER_ALL_CAP
+    )
+    APPEND_CAP(
+        WMTPixelFormatRGBA32Sint,
+        FormatCapability::Write | FormatCapability::Color | FormatCapability::Sparse | TEXTURE_BUFFER_ALL_CAP
+    )
+    APPEND_CAP(
+        WMTPixelFormatRGBA32Float, FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA |
+                                         FormatCapability::Sparse | FormatCapability::Blend | TEXTURE_BUFFER_ALL_CAP
+    )
+
+    // compressed
+    if (device.supportsBCTextureCompression()) {
+      // BC
+      APPEND_CAP(WMTPixelFormatBC1_RGBA, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC1_RGBA_sRGB, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC2_RGBA, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC2_RGBA_sRGB, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC3_RGBA, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC3_RGBA_sRGB, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC4_RUnorm, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC4_RSnorm, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC5_RGSnorm, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC5_RGUnorm, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC6H_RGBUfloat, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC6H_RGBFloat, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC7_RGBAUnorm, FormatCapability::Filter | FormatCapability::Sparse)
+      APPEND_CAP(WMTPixelFormatBC7_RGBAUnorm_sRGB, FormatCapability::Filter | FormatCapability::Sparse)
+    }
+
+    // YUV
+    APPEND_CAP(WMTPixelFormatGBGR422, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBGRG422, FormatCapability::Filter)
+
+    // depth & stencil
+    APPEND_CAP(
+        WMTPixelFormatDepth16Unorm,
+        FormatCapability::Filter | FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    APPEND_CAP(
+        WMTPixelFormatDepth32Float,
+        FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    APPEND_CAP(WMTPixelFormatStencil8, FormatCapability::MSAA | FormatCapability::DepthStencil)
+    // APPEND_CAP(WMTPixelFormatDepth24Unorm_Stencil8, 0); // not available
+    APPEND_CAP(
+        WMTPixelFormatDepth32Float_Stencil8,
+        FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    // APPEND_CAP(WMTPixelFormatX24_Stencil8, 0) // not available
+    APPEND_CAP(WMTPixelFormatX32_Stencil8, FormatCapability::MSAA | FormatCapability::DepthStencil)
+
+    // extended range
+    APPEND_CAP(WMTPixelFormatBGRA10_XR, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatBGRA10_XR_sRGB, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatBGR10_XR, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatBGR10_XR_sRGB, ALL_CAP)
+
+    if (!device.supportsFamily(WMTGPUFamilyApple8)) {
+      return;
+    }
+    // Apple 8: M2
+
+    APPEND_CAP(WMTPixelFormatRG32Uint, FormatCapability::Atomic)
+    APPEND_CAP(WMTPixelFormatRG32Sint, FormatCapability::Atomic)
+
+    APPEND_CAP(WMTPixelFormatDepth16Unorm, FormatCapability::Sparse)
+    APPEND_CAP(WMTPixelFormatStencil8, FormatCapability::Sparse)
+
+    if (!device.supportsFamily(WMTGPUFamilyApple9)) {
+      return;
+    }
+    // Apple 9: M3+
+
+    APPEND_CAP(WMTPixelFormatR32Float, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRG32Float, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA32Float, ALL_CAP)
+  } else if (device.supportsFamily(WMTGPUFamilyMac2)) {
+
+    APPEND_CAP(WMTPixelFormatA8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR8Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR8Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    APPEND_CAP(WMTPixelFormatR16Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR16Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatR16Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR16Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatR16Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    APPEND_CAP(WMTPixelFormatRG8Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG8Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+
+    APPEND_CAP(WMTPixelFormatR32Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP | FormatCapability::Atomic)
+    APPEND_CAP(WMTPixelFormatR32Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP | FormatCapability::Atomic)
+    APPEND_CAP(WMTPixelFormatR32Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    APPEND_CAP(WMTPixelFormatRG16Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG16Float, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+
+    APPEND_CAP(WMTPixelFormatRGBA8Unorm, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA8Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(
+        WMTPixelFormatRGBA8Unorm_sRGB, FormatCapability::Filter | FormatCapability::Color | FormatCapability::MSAA |
+                                             FormatCapability::Resolve | FormatCapability::Blend
+    )
+    APPEND_CAP(WMTPixelFormatRGBA8Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA8Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatBGRA8Unorm, ALL_CAP | FormatCapability::TextureBufferRead)
+    APPEND_CAP(
+        WMTPixelFormatBGRA8Unorm_sRGB, FormatCapability::Filter | FormatCapability::Color | FormatCapability::MSAA |
+                                             FormatCapability::Resolve | FormatCapability::Blend
+    )
+
+    // 32-bit packed
+    APPEND_CAP(WMTPixelFormatRGB10A2Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatBGR10A2Unorm, ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGB10A2Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG11B10Float, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGB9E5Float, FormatCapability::Filter)
+
+    // 64-bit
+    APPEND_CAP(WMTPixelFormatRG32Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG32Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRG32Float, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA16Unorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA16Snorm, ALL_CAP | TEXTURE_BUFFER_READ_OR_WRITE)
+    APPEND_CAP(WMTPixelFormatRGBA16Uint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA16Sint, NONAPPLE_INT_FORMAT_CAP | TEXTURE_BUFFER_ALL_CAP)
+    APPEND_CAP(WMTPixelFormatRGBA16Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    // 128-bit
+    APPEND_CAP(
+        WMTPixelFormatRGBA32Uint,
+        FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | TEXTURE_BUFFER_ALL_CAP
+    )
+    APPEND_CAP(
+        WMTPixelFormatRGBA32Sint,
+        FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | TEXTURE_BUFFER_ALL_CAP
+    )
+    APPEND_CAP(WMTPixelFormatRGBA32Float, ALL_CAP | TEXTURE_BUFFER_ALL_CAP)
+
+    // compressed : TODO
+
+    // BC
+    APPEND_CAP(WMTPixelFormatBC1_RGBA, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC1_RGBA_sRGB, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC2_RGBA, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC2_RGBA_sRGB, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC3_RGBA, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC3_RGBA_sRGB, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC4_RUnorm, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC4_RSnorm, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC5_RGSnorm, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC5_RGUnorm, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC6H_RGBUfloat, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC6H_RGBFloat, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC7_RGBAUnorm, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBC7_RGBAUnorm_sRGB, FormatCapability::Filter)
+
+    // YUV
+    APPEND_CAP(WMTPixelFormatGBGR422, FormatCapability::Filter)
+    APPEND_CAP(WMTPixelFormatBGRG422, FormatCapability::Filter)
+
+    // depth & stencil
+    APPEND_CAP(
+        WMTPixelFormatDepth16Unorm,
+        FormatCapability::Filter | FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    APPEND_CAP(
+        WMTPixelFormatDepth32Float,
+        FormatCapability::Filter | FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    APPEND_CAP(WMTPixelFormatStencil8, FormatCapability::MSAA | FormatCapability::DepthStencil)
+    // APPEND_CAP(
+    //     WMTPixelFormatDepth24Unorm_Stencil8,
+    //     FormatCapability::Filter | FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    // );
+    APPEND_CAP(
+        WMTPixelFormatDepth32Float_Stencil8,
+        FormatCapability::MSAA | FormatCapability::Resolve | FormatCapability::DepthStencil
+    )
+    // APPEND_CAP(WMTPixelFormatX24_Stencil8, FormatCapability::MSAA | FormatCapability::DepthStencil)
+    APPEND_CAP(WMTPixelFormatX32_Stencil8, FormatCapability::MSAA | FormatCapability::DepthStencil)
+
+    // extended range
+    // APPEND_CAP(WMTPixelFormatBGRA10_XR, ALL_CAP) // not available
+    // APPEND_CAP(WMTPixelFormatBGRA10_XR_sRGB, ALL_CAP)  // not available
+    // APPEND_CAP(WMTPixelFormatBGR10_XR, ALL_CAP)  // not available
+    // APPEND_CAP(WMTPixelFormatBGR10_XR_sRGB, ALL_CAP)  // not available
+
+    return;
+  } else {
+    throw MTLD3DError("Invalid MTLDevice");
+  }
+};
+
+WMTPixelFormat
+Forget_sRGB(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatR8Unorm_sRGB:
+    return WMTPixelFormatR8Unorm;
+  case WMTPixelFormatRG8Unorm_sRGB:
+    return WMTPixelFormatRG8Unorm;
+  case WMTPixelFormatRGBA8Unorm_sRGB:
+    return WMTPixelFormatRGBA8Unorm;
+  case WMTPixelFormatBGRA8Unorm_sRGB:
+    return WMTPixelFormatBGRA8Unorm;
+  case WMTPixelFormatBGRX8Unorm_sRGB:
+    return WMTPixelFormatBGRX8Unorm;
+  case WMTPixelFormatBGR10_XR_sRGB:
+    return WMTPixelFormatBGR10_XR;
+  case WMTPixelFormatBGRA10_XR_sRGB:
+    return WMTPixelFormatBGRA10_XR;
+  case WMTPixelFormatBC1_RGBA_sRGB:
+    return WMTPixelFormatBC1_RGBA;
+  case WMTPixelFormatBC2_RGBA_sRGB:
+    return WMTPixelFormatBC2_RGBA;
+  case WMTPixelFormatBC3_RGBA_sRGB:
+    return WMTPixelFormatBC3_RGBA;
+  case WMTPixelFormatBC7_RGBAUnorm_sRGB:
+    return WMTPixelFormatBC7_RGBAUnorm;
+  case WMTPixelFormatPVRTC_RGBA_2BPP_sRGB:
+    return WMTPixelFormatPVRTC_RGBA_2BPP;
+  case WMTPixelFormatPVRTC_RGBA_4BPP_sRGB:
+    return WMTPixelFormatPVRTC_RGBA_4BPP;
+  case WMTPixelFormatPVRTC_RGB_2BPP_sRGB:
+    return WMTPixelFormatPVRTC_RGB_2BPP;
+  case WMTPixelFormatPVRTC_RGB_4BPP_sRGB:
+    return WMTPixelFormatPVRTC_RGB_4BPP;
+  case WMTPixelFormatEAC_RGBA8_sRGB:
+    return WMTPixelFormatEAC_RGBA8;
+  case WMTPixelFormatETC2_RGB8_sRGB:
+    return WMTPixelFormatETC2_RGB8;
+  case WMTPixelFormatETC2_RGB8A1_sRGB:
+    return WMTPixelFormatETC2_RGB8A1;
+  default:
+    return format;
+  }
+}
+
+WMTPixelFormat
+Recall_sRGB(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatR8Unorm:
+    return WMTPixelFormatR8Unorm_sRGB;
+  case WMTPixelFormatRG8Unorm:
+    return WMTPixelFormatRG8Unorm_sRGB;
+  case WMTPixelFormatRGBA8Unorm:
+    return WMTPixelFormatRGBA8Unorm_sRGB;
+  case WMTPixelFormatBGRA8Unorm:
+    return WMTPixelFormatBGRA8Unorm_sRGB;
+  case WMTPixelFormatBGRX8Unorm:
+    return WMTPixelFormatBGRX8Unorm_sRGB;
+  case WMTPixelFormatBGR10_XR:
+    return WMTPixelFormatBGR10_XR_sRGB;
+  case WMTPixelFormatBGRA10_XR:
+    return WMTPixelFormatBGRA10_XR_sRGB;
+  case WMTPixelFormatBC1_RGBA:
+    return WMTPixelFormatBC1_RGBA_sRGB;
+  case WMTPixelFormatBC2_RGBA:
+    return WMTPixelFormatBC2_RGBA_sRGB;
+  case WMTPixelFormatBC3_RGBA:
+    return WMTPixelFormatBC3_RGBA_sRGB;
+  case WMTPixelFormatBC7_RGBAUnorm:
+    return WMTPixelFormatBC7_RGBAUnorm_sRGB;
+  case WMTPixelFormatPVRTC_RGBA_2BPP:
+    return WMTPixelFormatPVRTC_RGBA_2BPP_sRGB;
+  case WMTPixelFormatPVRTC_RGBA_4BPP:
+    return WMTPixelFormatPVRTC_RGBA_4BPP_sRGB;
+  case WMTPixelFormatPVRTC_RGB_2BPP:
+    return WMTPixelFormatPVRTC_RGB_2BPP_sRGB;
+  case WMTPixelFormatPVRTC_RGB_4BPP:
+    return WMTPixelFormatPVRTC_RGB_4BPP_sRGB;
+  case WMTPixelFormatEAC_RGBA8:
+    return WMTPixelFormatEAC_RGBA8_sRGB;
+  case WMTPixelFormatETC2_RGB8:
+    return WMTPixelFormatETC2_RGB8_sRGB;
+  case WMTPixelFormatETC2_RGB8A1:
+    return WMTPixelFormatETC2_RGB8A1_sRGB;
+  default:
+    return format;
+  }
+}
+
+bool
+IsBlockCompressionFormat(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatBC1_RGBA:
+  case WMTPixelFormatBC1_RGBA_sRGB:
+  case WMTPixelFormatBC2_RGBA:
+  case WMTPixelFormatBC2_RGBA_sRGB:
+  case WMTPixelFormatBC3_RGBA:
+  case WMTPixelFormatBC3_RGBA_sRGB:
+  case WMTPixelFormatBC4_RUnorm:
+  case WMTPixelFormatBC4_RSnorm:
+  case WMTPixelFormatBC5_RGUnorm:
+  case WMTPixelFormatBC5_RGSnorm:
+  case WMTPixelFormatBC6H_RGBUfloat:
+  case WMTPixelFormatBC6H_RGBFloat:
+  case WMTPixelFormatBC7_RGBAUnorm:
+  case WMTPixelFormatBC7_RGBAUnorm_sRGB:
+    return true;
+  default:
+    break;
+  }
+  return false;
+}
+
+uint32_t
+DepthStencilPlanarFlags(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatDepth32Float_Stencil8:
+    return 3;
+  case WMTPixelFormatDepth32Float:
+  case WMTPixelFormatDepth16Unorm:
+  case WMTPixelFormatR32X8X32:
+    return 1;
+  case WMTPixelFormatStencil8:
+  case WMTPixelFormatX32_Stencil8:
+  case WMTPixelFormatX32G8X32:
+    return 2;
+  default:
+    return 0;
+  }
+}
+
+int32_t
+MTLQueryDXGIFormat(WMT::Device device, uint32_t format, MTL_DXGI_FORMAT_DESC &description) {
+  description.PixelFormat = WMTPixelFormatInvalid;
+  description.AttributeFormat = WMTAttributeFormatInvalid;
+  description.BytesPerTexel = 0;
+  description.PlanarCount = 1;
+  description.Flag = 0;
+
+  switch (format) {
+  case DXGI_FORMAT_R32G32B32A32_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRGBA32Uint;
+    description.BytesPerTexel = 16;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32A32_UINT: {
+    description.PixelFormat = WMTPixelFormatRGBA32Uint;
+    description.AttributeFormat = WMTAttributeFormatUInt4;
+    description.BytesPerTexel = 16;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32A32_SINT: {
+    description.PixelFormat = WMTPixelFormatRGBA32Sint;
+    description.AttributeFormat = WMTAttributeFormatInt4;
+    description.BytesPerTexel = 16;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32A32_FLOAT: {
+    description.PixelFormat = WMTPixelFormatRGBA32Float;
+    description.AttributeFormat = WMTAttributeFormatFloat4;
+    description.BytesPerTexel = 16;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatR32Uint;
+    description.BytesPerTexel = 12;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32_UINT: {
+    description.PixelFormat = WMTPixelFormatR32Uint;
+    description.AttributeFormat = WMTAttributeFormatUInt3;
+    description.BytesPerTexel = 12;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32_SINT: {
+    description.PixelFormat = WMTPixelFormatR32Sint;
+    description.AttributeFormat = WMTAttributeFormatInt3;
+    description.BytesPerTexel = 12;
+    break;
+  }
+  case DXGI_FORMAT_R32G32B32_FLOAT: {
+    description.PixelFormat = WMTPixelFormatR32Float;
+    description.AttributeFormat = WMTAttributeFormatFloat3;
+    description.BytesPerTexel = 12;
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRGBA16Float;
+    description.BytesPerTexel = 8;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_FLOAT: {
+    description.PixelFormat = WMTPixelFormatRGBA16Float;
+    description.AttributeFormat = WMTAttributeFormatHalf4;
+    description.BytesPerTexel = 8;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_UNORM: {
+    description.PixelFormat = WMTPixelFormatRGBA16Unorm;
+    description.AttributeFormat = WMTAttributeFormatUShort4Normalized;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_UINT: {
+    description.PixelFormat = WMTPixelFormatRGBA16Uint;
+    description.AttributeFormat = WMTAttributeFormatUShort4;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_SNORM: {
+    description.PixelFormat = WMTPixelFormatRGBA16Snorm;
+    description.AttributeFormat = WMTAttributeFormatShort4Normalized;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R16G16B16A16_SINT: {
+    description.PixelFormat = WMTPixelFormatRGBA16Sint;
+    description.AttributeFormat = WMTAttributeFormatShort4;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R32G32_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRG32Uint;
+    description.BytesPerTexel = 8;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R32G32_FLOAT: {
+    description.PixelFormat = WMTPixelFormatRG32Float;
+    description.AttributeFormat = WMTAttributeFormatFloat2;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R32G32_UINT: {
+    description.PixelFormat = WMTPixelFormatRG32Uint;
+    description.AttributeFormat = WMTAttributeFormatUInt2;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R32G32_SINT: {
+    description.PixelFormat = WMTPixelFormatRG32Sint;
+    description.AttributeFormat = WMTAttributeFormatInt2;
+    description.BytesPerTexel = 8;
+    break;
+  }
+  case DXGI_FORMAT_R32G8X24_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatDepth32Float_Stencil8;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER |
+                       MTL_DXGI_FORMAT_EMULATED_LINEAR_DEPTH_STENCIL;
+    description.BytesPerTexel = 8;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: {
+    description.PixelFormat = WMTPixelFormatDepth32Float_Stencil8;
+    description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatR32X8X32;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_DEPTH_PLANER;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: {
+    description.PixelFormat = WMTPixelFormatX32G8X32;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_STENCIL_PLANER;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_R10G10B10A2_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRGB10A2Uint;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R10G10B10A2_UNORM: {
+    description.PixelFormat = WMTPixelFormatRGB10A2Unorm;
+    description.AttributeFormat = WMTAttributeFormatUInt1010102Normalized;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1
+    break;
+  }
+  case DXGI_FORMAT_R10G10B10A2_UINT: {
+    description.PixelFormat = WMTPixelFormatRGB10A2Uint;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R11G11B10_FLOAT: {
+    description.PixelFormat = WMTPixelFormatRG11B10Float;
+    description.AttributeFormat = WMTAttributeFormatFloatRG11B10;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRGBA8Unorm;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_UNORM: {
+    description.PixelFormat = WMTPixelFormatRGBA8Unorm;
+    description.AttributeFormat = WMTAttributeFormatUChar4Normalized;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1, swizzle from BGRA8Unorm
+    // FIXME: backbuffer format not supported!
+    // need some workaround for GetDisplayModeList
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatRGBA8Unorm_sRGB;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1, swizzle from BGRA8Unorm
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_UINT: {
+    description.PixelFormat = WMTPixelFormatRGBA8Uint;
+    description.AttributeFormat = WMTAttributeFormatUChar4;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_SNORM: {
+    description.PixelFormat = WMTPixelFormatRGBA8Snorm;
+    description.AttributeFormat = WMTAttributeFormatChar4Normalized;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R8G8B8A8_SINT: {
+    description.PixelFormat = WMTPixelFormatRGBA8Sint;
+    description.AttributeFormat = WMTAttributeFormatChar4;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRG16Uint;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_FLOAT: {
+    description.PixelFormat = WMTPixelFormatRG16Float;
+    description.AttributeFormat = WMTAttributeFormatHalf2;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_UNORM: {
+    description.PixelFormat = WMTPixelFormatRG16Unorm;
+    description.AttributeFormat = WMTAttributeFormatUShort2Normalized;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_UINT: {
+    description.PixelFormat = WMTPixelFormatRG16Uint;
+    description.AttributeFormat = WMTAttributeFormatUShort2;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_SNORM: {
+    description.PixelFormat = WMTPixelFormatRG16Snorm;
+    description.AttributeFormat = WMTAttributeFormatShort2Normalized;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R16G16_SINT: {
+    description.PixelFormat = WMTPixelFormatRG16Sint;
+    description.AttributeFormat = WMTAttributeFormatShort2;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R32_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatR32Uint;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_D32_FLOAT: {
+    description.PixelFormat = WMTPixelFormatDepth32Float;
+    description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R32_FLOAT: {
+    description.PixelFormat = WMTPixelFormatR32Float;
+    description.AttributeFormat = WMTAttributeFormatFloat;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R32_UINT: {
+    description.PixelFormat = WMTPixelFormatR32Uint;
+    description.AttributeFormat = WMTAttributeFormatUInt;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R32_SINT: {
+    description.PixelFormat = WMTPixelFormatR32Sint;
+    description.AttributeFormat = WMTAttributeFormatInt;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R24G8_TYPELESS: {
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER |
+                       MTL_DXGI_FORMAT_EMULATED_LINEAR_DEPTH_STENCIL | MTL_DXGI_FORMAT_EMULATED_D24;
+    description.PixelFormat = WMTPixelFormatDepth32Float_Stencil8;
+    description.BytesPerTexel = 4;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_D24_UNORM_S8_UINT: {
+    description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER | MTL_DXGI_FORMAT_EMULATED_D24;
+    description.PixelFormat = WMTPixelFormatDepth32Float_Stencil8;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: {
+    description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_EMULATED_D24;
+    description.PixelFormat = WMTPixelFormatR32X8X32;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_X24_TYPELESS_G8_UINT: {
+    description.Flag = MTL_DXGI_FORMAT_STENCIL_PLANER | MTL_DXGI_FORMAT_EMULATED_D24;
+    description.PixelFormat = WMTPixelFormatX32G8X32;
+    description.PlanarCount = 2;
+    break;
+  }
+  case DXGI_FORMAT_R8G8_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatRG8Uint;
+    description.BytesPerTexel = 2;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R8G8_UNORM: {
+    description.PixelFormat = WMTPixelFormatRG8Unorm;
+    description.AttributeFormat = WMTAttributeFormatUChar2Normalized;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R8G8_UINT: {
+    description.PixelFormat = WMTPixelFormatRG8Uint;
+    description.AttributeFormat = WMTAttributeFormatUChar2;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R8G8_SNORM: {
+    description.PixelFormat = WMTPixelFormatRG8Snorm;
+    description.AttributeFormat = WMTAttributeFormatChar2Normalized;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R8G8_SINT: {
+    description.PixelFormat = WMTPixelFormatRG8Sint;
+    description.AttributeFormat = WMTAttributeFormatChar2;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R16_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatR16Uint;
+    description.BytesPerTexel = 2;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R16_FLOAT: {
+    description.PixelFormat = WMTPixelFormatR16Float;
+    description.AttributeFormat = WMTAttributeFormatHalf;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_D16_UNORM: {
+    description.PixelFormat = WMTPixelFormatDepth16Unorm;
+    description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R16_UNORM: {
+    description.PixelFormat = WMTPixelFormatR16Unorm;
+    description.AttributeFormat = WMTAttributeFormatUShortNormalized;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R16_UINT: {
+    description.PixelFormat = WMTPixelFormatR16Uint;
+    description.AttributeFormat = WMTAttributeFormatUShort;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R16_SNORM: {
+    description.PixelFormat = WMTPixelFormatR16Snorm;
+    description.AttributeFormat = WMTAttributeFormatShortNormalized;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R16_SINT: {
+    description.PixelFormat = WMTPixelFormatR16Sint;
+    description.AttributeFormat = WMTAttributeFormatShort;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_R8_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatR8Uint;
+    description.BytesPerTexel = 1;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_R8_UNORM: {
+    description.PixelFormat = WMTPixelFormatR8Unorm;
+    description.AttributeFormat = WMTAttributeFormatUCharNormalized;
+    description.BytesPerTexel = 1;
+    break;
+  }
+  case DXGI_FORMAT_R8_UINT: {
+    description.PixelFormat = WMTPixelFormatR8Uint;
+    description.AttributeFormat = WMTAttributeFormatUChar;
+    description.BytesPerTexel = 1;
+    break;
+  }
+  case DXGI_FORMAT_R8_SNORM: {
+    description.PixelFormat = WMTPixelFormatR8Snorm;
+    description.AttributeFormat = WMTAttributeFormatCharNormalized;
+    description.BytesPerTexel = 1;
+    break;
+  }
+  case DXGI_FORMAT_R8_SINT: {
+    description.PixelFormat = WMTPixelFormatR8Sint;
+    description.AttributeFormat = WMTAttributeFormatChar;
+    description.BytesPerTexel = 1;
+    break;
+  }
+  case DXGI_FORMAT_A8_UNORM: {
+    description.PixelFormat = WMTPixelFormatA8Unorm;
+    description.BytesPerTexel = 1;
+    break;
+  }
+  case DXGI_FORMAT_R1_UNORM: {
+    return E_FAIL;
+  }
+  case DXGI_FORMAT_R9G9B9E5_SHAREDEXP: {
+    description.PixelFormat = WMTPixelFormatRGB9E5Float;
+    description.AttributeFormat = WMTAttributeFormatFloatRGB9E5;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  // Metal's BGRG422 and GBGR422 are not these: inside a row a texel reads red and blue that are neither its pair's
+  // nor a neighbour's (an M5 Pro), where D3D replicates the pair's (D3D11.3 19.4)
+  case DXGI_FORMAT_R8G8_B8G8_UNORM:
+  case DXGI_FORMAT_G8R8_G8B8_UNORM:
+    return E_FAIL;
+  case DXGI_FORMAT_BC1_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC1_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  /**
+  from doc:
+  Reinterpretation of image data between pixel formats is supported:
+  - sRGB and non-sRGB forms of the same compressed format
+  */
+  case DXGI_FORMAT_BC1_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC1_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  case DXGI_FORMAT_BC1_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBC1_RGBA_sRGB;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  case DXGI_FORMAT_BC2_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC2_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC2_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC2_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC2_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBC2_RGBA_sRGB;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC3_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC3_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC3_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC3_RGBA;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC3_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBC3_RGBA_sRGB;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC4_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC4_RUnorm;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  case DXGI_FORMAT_BC4_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC4_RUnorm;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  case DXGI_FORMAT_BC4_SNORM: {
+    description.PixelFormat = WMTPixelFormatBC4_RSnorm;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 8;
+    break;
+  }
+  case DXGI_FORMAT_BC5_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC5_RGUnorm;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC5_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC5_RGUnorm;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC5_SNORM: {
+    description.PixelFormat = WMTPixelFormatBC5_RGSnorm;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_B5G6R5_UNORM: {
+    description.PixelFormat = WMTPixelFormatB5G6R5Unorm;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_B5G5R5A1_UNORM: {
+    description.PixelFormat = WMTPixelFormatBGR5A1Unorm;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_B8G8R8A8_UNORM: {
+    description.PixelFormat = WMTPixelFormatBGRA8Unorm;
+    description.AttributeFormat = WMTAttributeFormatUChar4Normalized_BGRA;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1
+    break;
+  }
+  case DXGI_FORMAT_B8G8R8X8_UNORM: {
+    description.PixelFormat = WMTPixelFormatBGRX8Unorm;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+    return E_FAIL;
+  case DXGI_FORMAT_B8G8R8A8_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBGRA8Unorm;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBGRA8Unorm_sRGB;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_BACKBUFFER; // 11.1
+    break;
+  }
+  case DXGI_FORMAT_B8G8R8X8_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBGRX8Unorm;
+    description.BytesPerTexel = 4;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS;
+    break;
+  }
+  case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBGRX8Unorm_sRGB;
+    description.BytesPerTexel = 4;
+    break;
+  }
+  case DXGI_FORMAT_BC6H_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC6H_RGBUfloat;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC6H_UF16: {
+    description.PixelFormat = WMTPixelFormatBC6H_RGBUfloat;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC6H_SF16: {
+    description.PixelFormat = WMTPixelFormatBC6H_RGBFloat;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC7_TYPELESS: {
+    description.PixelFormat = WMTPixelFormatBC7_RGBAUnorm;
+    description.Flag = MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC7_UNORM: {
+    description.PixelFormat = WMTPixelFormatBC7_RGBAUnorm;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_BC7_UNORM_SRGB: {
+    description.PixelFormat = WMTPixelFormatBC7_RGBAUnorm_sRGB;
+    description.Flag = MTL_DXGI_FORMAT_BC;
+    description.BlockSize = 16;
+    break;
+  }
+  case DXGI_FORMAT_B4G4R4A4_UNORM:  {
+    description.PixelFormat = WMTPixelFormatBGRA4Unorm;
+    description.BytesPerTexel = 2;
+    break;
+  }
+  case DXGI_FORMAT_AYUV:
+  case DXGI_FORMAT_Y410:
+  case DXGI_FORMAT_Y416:
+  case DXGI_FORMAT_NV12:
+  case DXGI_FORMAT_P010:
+  case DXGI_FORMAT_P016:
+  case DXGI_FORMAT_420_OPAQUE:
+  case DXGI_FORMAT_YUY2:
+  case DXGI_FORMAT_Y210:
+  case DXGI_FORMAT_Y216:
+  case DXGI_FORMAT_NV11:
+  case DXGI_FORMAT_AI44:
+  case DXGI_FORMAT_IA44:
+  case DXGI_FORMAT_P8:
+  case DXGI_FORMAT_A8P8:
+  case DXGI_FORMAT_P208:
+  case DXGI_FORMAT_V208:
+  case DXGI_FORMAT_V408:
+  case DXGI_FORMAT_FORCE_UINT:
+  case DXGI_FORMAT_UNKNOWN:
+  default:
+    return E_FAIL;
+  }
+
+  return S_OK;
+}
+
+uint32_t
+MTLGetTexelSize(WMTPixelFormat format) {
+  switch (ORIGINAL_FORMAT(format)) {
+  case WMTPixelFormatInvalid:
+    return 0;
+  case WMTPixelFormatA8Unorm:
+  case WMTPixelFormatR8Unorm:
+  case WMTPixelFormatR8Unorm_sRGB:
+  case WMTPixelFormatR8Snorm:
+  case WMTPixelFormatR8Uint:
+  case WMTPixelFormatR8Sint:
+    return 1;
+  case WMTPixelFormatR16Unorm:
+  case WMTPixelFormatR16Snorm:
+  case WMTPixelFormatR16Uint:
+  case WMTPixelFormatR16Sint:
+  case WMTPixelFormatR16Float:
+  case WMTPixelFormatRG8Unorm:
+  case WMTPixelFormatRG8Unorm_sRGB:
+  case WMTPixelFormatRG8Snorm:
+  case WMTPixelFormatRG8Uint:
+  case WMTPixelFormatRG8Sint:
+  case WMTPixelFormatB5G6R5Unorm:
+  case WMTPixelFormatA1BGR5Unorm:
+  case WMTPixelFormatABGR4Unorm:
+  case WMTPixelFormatBGR5A1Unorm:
+    return 2;
+  case WMTPixelFormatR32Uint:
+  case WMTPixelFormatR32Sint:
+  case WMTPixelFormatR32Float:
+  case WMTPixelFormatRG16Unorm:
+  case WMTPixelFormatRG16Snorm:
+  case WMTPixelFormatRG16Uint:
+  case WMTPixelFormatRG16Sint:
+  case WMTPixelFormatRG16Float:
+  case WMTPixelFormatRGBA8Unorm:
+  case WMTPixelFormatRGBA8Unorm_sRGB:
+  case WMTPixelFormatRGBA8Snorm:
+  case WMTPixelFormatRGBA8Uint:
+  case WMTPixelFormatRGBA8Sint:
+  case WMTPixelFormatBGRA8Unorm:
+  case WMTPixelFormatBGRA8Unorm_sRGB:
+  case WMTPixelFormatRGB10A2Unorm:
+  case WMTPixelFormatRGB10A2Uint:
+  case WMTPixelFormatRG11B10Float:
+  case WMTPixelFormatRGB9E5Float:
+  case WMTPixelFormatBGR10A2Unorm:
+  case WMTPixelFormatBGR10_XR:
+  case WMTPixelFormatBGR10_XR_sRGB:
+    return 4;
+  case WMTPixelFormatRG32Uint:
+  case WMTPixelFormatRG32Sint:
+  case WMTPixelFormatRG32Float:
+  case WMTPixelFormatRGBA16Unorm:
+  case WMTPixelFormatRGBA16Snorm:
+  case WMTPixelFormatRGBA16Uint:
+  case WMTPixelFormatRGBA16Sint:
+  case WMTPixelFormatRGBA16Float:
+  case WMTPixelFormatBGRA10_XR:
+  case WMTPixelFormatBGRA10_XR_sRGB:
+  case WMTPixelFormatBC1_RGBA:
+  case WMTPixelFormatBC1_RGBA_sRGB:
+  case WMTPixelFormatBC4_RUnorm:
+  case WMTPixelFormatBC4_RSnorm:
+    return 8;
+  case WMTPixelFormatRGBA32Uint:
+  case WMTPixelFormatRGBA32Sint:
+  case WMTPixelFormatRGBA32Float:
+  case WMTPixelFormatBC2_RGBA:
+  case WMTPixelFormatBC2_RGBA_sRGB:
+  case WMTPixelFormatBC3_RGBA:
+  case WMTPixelFormatBC3_RGBA_sRGB:
+  case WMTPixelFormatBC5_RGUnorm:
+  case WMTPixelFormatBC5_RGSnorm:
+  case WMTPixelFormatBC6H_RGBFloat:
+  case WMTPixelFormatBC6H_RGBUfloat:
+  case WMTPixelFormatBC7_RGBAUnorm:
+  case WMTPixelFormatBC7_RGBAUnorm_sRGB:
+    return 16;
+  case WMTPixelFormatPVRTC_RGB_2BPP:
+  case WMTPixelFormatPVRTC_RGB_2BPP_sRGB:
+  case WMTPixelFormatPVRTC_RGB_4BPP:
+  case WMTPixelFormatPVRTC_RGB_4BPP_sRGB:
+  case WMTPixelFormatPVRTC_RGBA_2BPP:
+  case WMTPixelFormatPVRTC_RGBA_2BPP_sRGB:
+  case WMTPixelFormatPVRTC_RGBA_4BPP:
+  case WMTPixelFormatPVRTC_RGBA_4BPP_sRGB:
+  case WMTPixelFormatEAC_R11Unorm:
+  case WMTPixelFormatEAC_R11Snorm:
+  case WMTPixelFormatEAC_RG11Unorm:
+  case WMTPixelFormatEAC_RG11Snorm:
+  case WMTPixelFormatEAC_RGBA8:
+  case WMTPixelFormatEAC_RGBA8_sRGB:
+  case WMTPixelFormatETC2_RGB8:
+  case WMTPixelFormatETC2_RGB8_sRGB:
+  case WMTPixelFormatETC2_RGB8A1:
+  case WMTPixelFormatETC2_RGB8A1_sRGB:
+  case WMTPixelFormatASTC_4x4_sRGB:
+  case WMTPixelFormatASTC_5x4_sRGB:
+  case WMTPixelFormatASTC_5x5_sRGB:
+  case WMTPixelFormatASTC_6x5_sRGB:
+  case WMTPixelFormatASTC_6x6_sRGB:
+  case WMTPixelFormatASTC_8x5_sRGB:
+  case WMTPixelFormatASTC_8x6_sRGB:
+  case WMTPixelFormatASTC_8x8_sRGB:
+  case WMTPixelFormatASTC_10x5_sRGB:
+  case WMTPixelFormatASTC_10x6_sRGB:
+  case WMTPixelFormatASTC_10x8_sRGB:
+  case WMTPixelFormatASTC_10x10_sRGB:
+  case WMTPixelFormatASTC_12x10_sRGB:
+  case WMTPixelFormatASTC_12x12_sRGB:
+  case WMTPixelFormatASTC_4x4_LDR:
+  case WMTPixelFormatASTC_5x4_LDR:
+  case WMTPixelFormatASTC_5x5_LDR:
+  case WMTPixelFormatASTC_6x5_LDR:
+  case WMTPixelFormatASTC_6x6_LDR:
+  case WMTPixelFormatASTC_8x5_LDR:
+  case WMTPixelFormatASTC_8x6_LDR:
+  case WMTPixelFormatASTC_8x8_LDR:
+  case WMTPixelFormatASTC_10x5_LDR:
+  case WMTPixelFormatASTC_10x6_LDR:
+  case WMTPixelFormatASTC_10x8_LDR:
+  case WMTPixelFormatASTC_10x10_LDR:
+  case WMTPixelFormatASTC_12x10_LDR:
+  case WMTPixelFormatASTC_12x12_LDR:
+  case WMTPixelFormatASTC_4x4_HDR:
+  case WMTPixelFormatASTC_5x4_HDR:
+  case WMTPixelFormatASTC_5x5_HDR:
+  case WMTPixelFormatASTC_6x5_HDR:
+  case WMTPixelFormatASTC_6x6_HDR:
+  case WMTPixelFormatASTC_8x5_HDR:
+  case WMTPixelFormatASTC_8x6_HDR:
+  case WMTPixelFormatASTC_8x8_HDR:
+  case WMTPixelFormatASTC_10x5_HDR:
+  case WMTPixelFormatASTC_10x6_HDR:
+  case WMTPixelFormatASTC_10x8_HDR:
+  case WMTPixelFormatASTC_10x10_HDR:
+  case WMTPixelFormatASTC_12x10_HDR:
+  case WMTPixelFormatASTC_12x12_HDR:
+    assert(0 && "");
+    return 0;
+  case WMTPixelFormatDepth16Unorm:
+    return 2;
+  case WMTPixelFormatDepth32Float:
+    return 4;
+  default:
+    break;
+  }
+  return 0;
+};
+
+WMTPixelFormat
+MTLGetUnsignedIntegerFormat(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatA8Unorm:
+  case WMTPixelFormatR8Unorm:
+  case WMTPixelFormatR8Unorm_sRGB:
+  case WMTPixelFormatR8Snorm:
+  case WMTPixelFormatR8Uint:
+  case WMTPixelFormatR8Sint:
+    return WMTPixelFormatR8Uint;
+  case WMTPixelFormatR16Unorm:
+  case WMTPixelFormatR16Snorm:
+  case WMTPixelFormatR16Uint:
+  case WMTPixelFormatR16Sint:
+  case WMTPixelFormatR16Float:
+    return WMTPixelFormatR16Uint;
+  case WMTPixelFormatRG8Unorm:
+  case WMTPixelFormatRG8Unorm_sRGB:
+  case WMTPixelFormatRG8Snorm:
+  case WMTPixelFormatRG8Uint:
+  case WMTPixelFormatRG8Sint:
+    return WMTPixelFormatRG8Uint;
+  case WMTPixelFormatB5G6R5Unorm:
+  case WMTPixelFormatA1BGR5Unorm:
+  case WMTPixelFormatABGR4Unorm:
+  case WMTPixelFormatBGR5A1Unorm:
+    break;
+  case WMTPixelFormatR32Uint:
+  case WMTPixelFormatR32Sint:
+  case WMTPixelFormatR32Float:
+    return WMTPixelFormatR32Uint;
+  case WMTPixelFormatRG16Unorm:
+  case WMTPixelFormatRG16Snorm:
+  case WMTPixelFormatRG16Uint:
+  case WMTPixelFormatRG16Sint:
+  case WMTPixelFormatRG16Float:
+    return WMTPixelFormatRG16Uint;
+  case WMTPixelFormatRGBA8Unorm:
+  case WMTPixelFormatRGBA8Unorm_sRGB:
+  case WMTPixelFormatRGBA8Snorm:
+  case WMTPixelFormatRGBA8Uint:
+  case WMTPixelFormatRGBA8Sint:
+  case WMTPixelFormatBGRA8Unorm:
+  case WMTPixelFormatBGRA8Unorm_sRGB:
+  case WMTPixelFormatBGRX8Unorm:
+  case WMTPixelFormatBGRX8Unorm_sRGB:
+    return WMTPixelFormatRGBA8Uint;
+  case WMTPixelFormatRGB10A2Unorm:
+  case WMTPixelFormatRGB10A2Uint:
+    return WMTPixelFormatRGB10A2Uint;
+  case WMTPixelFormatRG11B10Float:
+  case WMTPixelFormatRGB9E5Float:
+  case WMTPixelFormatBGR10A2Unorm:
+  case WMTPixelFormatBGR10_XR:
+  case WMTPixelFormatBGR10_XR_sRGB:
+    break;
+  case WMTPixelFormatRG32Uint:
+  case WMTPixelFormatRG32Sint:
+  case WMTPixelFormatRG32Float:
+    return WMTPixelFormatRG32Uint;
+  case WMTPixelFormatRGBA16Unorm:
+  case WMTPixelFormatRGBA16Snorm:
+  case WMTPixelFormatRGBA16Uint:
+  case WMTPixelFormatRGBA16Sint:
+  case WMTPixelFormatRGBA16Float:
+    return WMTPixelFormatRGBA16Uint;
+  case WMTPixelFormatBGRA10_XR:
+  case WMTPixelFormatBGRA10_XR_sRGB:
+    break;
+  case WMTPixelFormatRGBA32Uint:
+  case WMTPixelFormatRGBA32Sint:
+  case WMTPixelFormatRGBA32Float:
+    return WMTPixelFormatRGBA32Uint;
+  default:
+    break;
+  };
+  return WMTPixelFormatInvalid;
+};
+
+bool
+IsUnorm8RenderTargetFormat(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatA8Unorm:
+  case WMTPixelFormatR8Unorm:
+  case WMTPixelFormatRG8Unorm:
+  case WMTPixelFormatRGBA8Unorm:
+  case WMTPixelFormatBGRA8Unorm:
+  case WMTPixelFormatBGRX8Unorm:
+  // case WMTPixelFormatRG8Snorm: // not sure how they work, be conservative.
+  // case WMTPixelFormatRGBA8Snorm:
+  // case WMTPixelFormatR8Unorm_sRGB:
+  // case WMTPixelFormatRG8Unorm_sRGB:
+  // case WMTPixelFormatRGBA8Unorm_sRGB:
+  // case WMTPixelFormatBGRA8Unorm_sRGB:
+  // case WMTPixelFormatBGRX8Unorm_sRGB:
+    return true;
+  default:
+    break;
+  }
+  return false;
+}
+
+bool
+IsIntegerFormat(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatR8Uint:
+  case WMTPixelFormatR8Sint:
+  case WMTPixelFormatR16Uint:
+  case WMTPixelFormatR16Sint:
+  case WMTPixelFormatRG8Uint:
+  case WMTPixelFormatRG8Sint:
+  case WMTPixelFormatR32Uint:
+  case WMTPixelFormatR32Sint:
+  case WMTPixelFormatRG16Uint:
+  case WMTPixelFormatRG16Sint:
+  case WMTPixelFormatRGBA8Uint:
+  case WMTPixelFormatRGBA8Sint:
+  case WMTPixelFormatRGB10A2Uint:
+  case WMTPixelFormatRG32Uint:
+  case WMTPixelFormatRG32Sint:
+  case WMTPixelFormatRGBA16Uint:
+  case WMTPixelFormatRGBA16Sint:
+  case WMTPixelFormatRGBA32Uint:
+  case WMTPixelFormatRGBA32Sint:
+  case WMTPixelFormatStencil8:
+    return true;
+  default:
+    break;
+  }
+  return false;
+}
+
+double
+ClampFloatRTVClearColor(float val, float min, float max) {
+  if (std::isinf(val))
+    return val;
+  return std::clamp(val, min, max);
+}
+
+double
+ClampIntegerRTVClearColor(float val, int64_t min, int64_t max) {
+  if (std::isnan(val))
+    return 0;
+  return std::clamp<double>(val, min, max);
+}
+
+constexpr double kHalfMin = -65504;
+constexpr double kHalfMax = 65504;
+
+void
+SanitizeRTVClearColor(WMTPixelFormat format, WMTClearColor &color) {
+  switch (format) {
+  case WMTPixelFormatR16Float:
+  case WMTPixelFormatRG16Float:
+  case WMTPixelFormatRGBA16Float:
+    color.r = ClampFloatRTVClearColor(color.r, kHalfMin, kHalfMax);
+    color.g = ClampFloatRTVClearColor(color.g, kHalfMin, kHalfMax);
+    color.b = ClampFloatRTVClearColor(color.b, kHalfMin, kHalfMax);
+    color.a = ClampFloatRTVClearColor(color.a, kHalfMin, kHalfMax);
+    break;
+  case WMTPixelFormatR8Uint:
+  case WMTPixelFormatRG8Uint:
+  case WMTPixelFormatRGBA8Uint:
+    color.r = ClampIntegerRTVClearColor(color.r, 0, UINT8_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, 0, UINT8_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, 0, UINT8_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, 0, UINT8_MAX);
+    break;
+  case WMTPixelFormatR16Uint:
+  case WMTPixelFormatRG16Uint:
+  case WMTPixelFormatRGBA16Uint:
+    color.r = ClampIntegerRTVClearColor(color.r, 0, UINT16_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, 0, UINT16_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, 0, UINT16_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, 0, UINT16_MAX);
+    break;
+  case WMTPixelFormatR32Uint:
+  case WMTPixelFormatRG32Uint:
+  case WMTPixelFormatRGBA32Uint:
+    color.r = ClampIntegerRTVClearColor(color.r, 0, UINT32_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, 0, UINT32_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, 0, UINT32_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, 0, UINT32_MAX);
+    break;
+  case WMTPixelFormatR8Sint:
+  case WMTPixelFormatRG8Sint:
+  case WMTPixelFormatRGBA8Sint:
+    color.r = ClampIntegerRTVClearColor(color.r, INT8_MIN, INT8_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, INT8_MIN, INT8_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, INT8_MIN, INT8_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, INT8_MIN, INT8_MAX);
+    break;
+  case WMTPixelFormatR16Sint:
+  case WMTPixelFormatRG16Sint:
+  case WMTPixelFormatRGBA16Sint:
+    color.r = ClampIntegerRTVClearColor(color.r, INT16_MIN, INT16_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, INT16_MIN, INT16_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, INT16_MIN, INT16_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, INT16_MIN, INT16_MAX);
+    break;
+  case WMTPixelFormatR32Sint:
+  case WMTPixelFormatRG32Sint:
+  case WMTPixelFormatRGBA32Sint:
+    color.r = ClampIntegerRTVClearColor(color.r, INT32_MIN, INT32_MAX);
+    color.g = ClampIntegerRTVClearColor(color.g, INT32_MIN, INT32_MAX);
+    color.b = ClampIntegerRTVClearColor(color.b, INT32_MIN, INT32_MAX);
+    color.a = ClampIntegerRTVClearColor(color.a, INT32_MIN, INT32_MAX);
+    break;
+  default:
+    break;
+  }
+}
+
+std::array<float, 2>
+BorderColorRange(const MTL_DXGI_FORMAT_DESC &description) {
+  // D24 is unorm on its float32 backing
+  if (description.Flag & MTL_DXGI_FORMAT_EMULATED_D24)
+    return {0, 1};
+  auto format = WMTPixelFormat(ORIGINAL_FORMAT(description.PixelFormat));
+  WMTClearColor low{-FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX}, high{FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
+  SanitizeRTVClearColor(format, low);
+  SanitizeRTVClearColor(format, high);
+  switch (format) {
+  case WMTPixelFormatR8Snorm:
+  case WMTPixelFormatR16Snorm:
+  case WMTPixelFormatRG8Snorm:
+  case WMTPixelFormatRG16Snorm:
+  case WMTPixelFormatRGBA8Snorm:
+  case WMTPixelFormatRGBA16Snorm:
+  case WMTPixelFormatBC4_RSnorm:
+  case WMTPixelFormatBC5_RGSnorm:
+    return {-1, 1};
+  case WMTPixelFormatRG11B10Float:
+  case WMTPixelFormatRGB9E5Float:
+  case WMTPixelFormatBC6H_RGBUfloat:
+    return {0, FLT_MAX};
+  case WMTPixelFormatR16Float:
+  case WMTPixelFormatRG16Float:
+  case WMTPixelFormatRGBA16Float:
+  case WMTPixelFormatR32Float:
+  case WMTPixelFormatRG32Float:
+  case WMTPixelFormatRGBA32Float:
+  case WMTPixelFormatBC6H_RGBFloat:
+  case WMTPixelFormatDepth32Float:
+  case WMTPixelFormatDepth32Float_Stencil8:
+    return {(float)low.r, (float)high.r};
+  default:
+    return IsIntegerFormat(format) ? std::array<float, 2>{(float)low.r, (float)high.r} : std::array<float, 2>{0, 1};
+  }
+}
+
+
+/* D3D11_FORMAT_SUPPORT and D3D11_FORMAT_SUPPORT2 bits, derived from Metal; D3D12_FORMAT_SUPPORT1 and 2 share their
+   values. `GetMTLPixelFormatCapability` is the device's own capability table */
+int32_t
+MTLQueryDXGIFormatSupport(
+    WMT::Device device, uint32_t Format, const std::function<FormatCapability(WMTPixelFormat)> &GetMTLPixelFormatCapability,
+    uint32_t &Support1, uint32_t &Support2
+) {
+  if (Format == DXGI_FORMAT_UNKNOWN) {
+    Support1 = D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+    Support2 = D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |
+               D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE |
+               D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX |
+               D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX | D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD |
+               D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE | D3D11_FORMAT_SUPPORT2_SHAREABLE;
+    return S_OK;
+  }
+
+  MTL_DXGI_FORMAT_DESC metal_format;
+  if (FAILED(MTLQueryDXGIFormat(device, Format, metal_format))) {
+    return E_INVALIDARG;
+  }
+
+  Support1 = 0;
+
+  if (metal_format.PixelFormat) {
+    // All graphics and compute kernels can read or sample a texture with any pixel format.
+    Support1 |= D3D11_FORMAT_SUPPORT_SHADER_LOAD | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE |
+                        D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD |
+                        D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+
+    /* UNCHECKED */
+    Support1 |= D3D11_FORMAT_SUPPORT_TEXTURE1D | D3D11_FORMAT_SUPPORT_TEXTURE2D |
+                        D3D11_FORMAT_SUPPORT_TEXTURE3D | D3D11_FORMAT_SUPPORT_TEXTURECUBE |
+                        D3D11_FORMAT_SUPPORT_MIP |
+                        D3D11_FORMAT_SUPPORT_CAST_WITHIN_BIT_LAYOUT;
+
+    if (!(metal_format.Flag & (MTL_DXGI_FORMAT_BC | MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER))) {
+      Support1 |= D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
+    }
+
+    if (metal_format.Flag & MTL_DXGI_FORMAT_BACKBUFFER) {
+      Support1 |= D3D11_FORMAT_SUPPORT_DISPLAY;
+    }
+  }
+
+  if (metal_format.AttributeFormat) {
+    Support1 |= D3D11_FORMAT_SUPPORT_IA_VERTEX_BUFFER;
+  }
+
+  if (metal_format.PixelFormat == WMTPixelFormatR32Uint ||
+      metal_format.PixelFormat == WMTPixelFormatR16Uint) {
+    Support1 |= D3D11_FORMAT_SUPPORT_IA_INDEX_BUFFER;
+  }
+
+  auto Capability = GetMTLPixelFormatCapability(metal_format.PixelFormat);
+
+  if (any_bit_set(Capability & FormatCapability::Color)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_RENDER_TARGET;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::Blend)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_BLENDABLE;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::DepthStencil)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_DEPTH_STENCIL |
+                        D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_COMPARISON |
+                        D3D11_FORMAT_SUPPORT_SHADER_GATHER_COMPARISON;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::Resolve)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::MSAA)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::Write)) {
+    Support1 |= D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW;
+  }
+
+  if (Format == DXGI_FORMAT_R32_FLOAT || Format == DXGI_FORMAT_R32_UINT ||
+      Format == DXGI_FORMAT_R32_SINT || Format == DXGI_FORMAT_R32G32_FLOAT ||
+      Format == DXGI_FORMAT_R32G32_UINT ||
+      Format == DXGI_FORMAT_R32G32_SINT ||
+      Format == DXGI_FORMAT_R32G32B32_FLOAT ||
+      Format == DXGI_FORMAT_R32G32B32_UINT ||
+      Format == DXGI_FORMAT_R32G32B32_SINT ||
+      Format == DXGI_FORMAT_R32G32B32A32_FLOAT ||
+      Format == DXGI_FORMAT_R32G32B32A32_UINT ||
+      Format == DXGI_FORMAT_R32G32B32A32_SINT)
+    Support1 |= D3D11_FORMAT_SUPPORT_SO_BUFFER;
+
+
+  Support2 = 0;
+
+  if (any_bit_set(Capability & FormatCapability::TextureBufferRead)) {
+    Support2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::TextureBufferWrite)) {
+    Support2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::TextureBufferReadWrite)) {
+    Support2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD |
+                               D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+  }
+
+  if (any_bit_set(Capability & FormatCapability::Atomic)) {
+    Support2 |=
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD |
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE |
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE |
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX |
+        D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX |
+        D3D11_FORMAT_SUPPORT2_SHAREABLE;
+  }
+
+#ifndef DXMT_NO_PRIVATE_API
+  if (any_bit_set(Capability & FormatCapability::Blend)) {
+    /* UNCHECKED */
+    Support2 |= D3D11_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
+  }
+#endif
+
+  if (any_bit_set(Capability & FormatCapability::Sparse)) {
+    Support2 |= D3D11_FORMAT_SUPPORT2_TILED;
+  }
+
+
+  return S_OK;
+}
+
+} // namespace dxmt

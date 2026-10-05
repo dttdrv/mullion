@@ -1,0 +1,849 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#pragma once
+
+#include "adt.hpp"
+#include "shader_common.hpp"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <unordered_set>
+#include <variant>
+#include "nt/air_builder.hpp"
+
+namespace dxmt::air {
+
+inline llvm::StructType *
+getOrCreateStructType(llvm::StringRef Name, llvm::LLVMContext &Ctx) {
+  using namespace llvm;
+  StructType *ST = StructType::getTypeByName(Ctx, Name);
+  if (ST)
+    return ST;
+
+  return StructType::create(Ctx, Name);
+}
+
+constexpr auto get_name = [](auto msl_type) {
+  return std::visit(
+    [](auto msl_type) { return msl_type.get_name(); }, msl_type
+  );
+};
+
+constexpr auto get_llvm_type = [](auto msl_type, llvm::LLVMContext &context) {
+  return std::visit([&](auto x) { return x.get_llvm_type(context); }, msl_type);
+};
+
+enum class MemoryAccess : uint32_t {
+  sample = 0,
+  read = 1,
+  write = 2,
+  read_write = 3
+};
+
+enum class AddressSpace : uint32_t {
+  unknown,
+  device,
+  constant,
+  threadgroup,
+  object_data = 6
+};
+
+enum class Sign { inapplicable, with_sign, no_sign };
+
+using TextureKind = llvm::air::Texture::ResourceKind;
+
+inline TextureKind lowering_texture_1d_to_2d(TextureKind kind) {
+  switch (kind) {
+  case TextureKind::texture_1d:
+    return TextureKind::texture_2d;
+  case TextureKind::texture_1d_array:
+    return TextureKind::texture_2d_array;
+  default:
+    break;
+  }
+  return kind;
+};
+
+enum class Interpolation {
+  center_perspective,
+  center_no_perspective,
+  centroid_perspective,
+  centroid_no_perspective,
+  sample_perspective,
+  sample_no_perspective,
+  flat
+};
+
+struct MSLFloat {
+  std::string get_name() const { return "float"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getFloatTy(context);
+  };
+};
+
+struct MSLHalf {
+  std::string get_name() const { return "half"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getHalfTy(context);
+  };
+};
+
+struct MSLInt {
+  std::string get_name() const { return "int"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getInt32Ty(context);
+  };
+};
+
+struct MSLUint {
+  std::string get_name() const { return "uint"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getInt32Ty(context);
+  };
+};
+
+struct MSLUshort {
+  std::string get_name() const { return "ushort"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getInt16Ty(context);
+  };
+};
+
+struct MSLBool {
+  std::string get_name() const { return "bool"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getInt1Ty(context);
+  };
+};
+
+struct MSLUlong {
+  std::string get_name() const { return "ulong"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return llvm::Type::getInt64Ty(context);
+  };
+};
+
+struct MSLSampler {
+  std::string get_name() const { return "sampler"; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    return getOrCreateStructType("struct._sampler_t", context)
+      ->getPointerTo(2); // samplers are in constant addrspace
+  };
+};
+
+constexpr auto msl_bool = MSLBool{};
+constexpr auto msl_int = MSLInt{};
+constexpr auto msl_uint = MSLUint{};
+constexpr auto msl_float = MSLFloat{};
+constexpr auto msl_ulong = MSLUlong{};
+
+using MSLScalerType = std::variant<
+  MSLFloat, MSLInt, MSLUint, MSLBool, MSLHalf, MSLUshort,
+  MSLUlong>; // incomplete list
+
+constexpr auto msl_sampler = MSLSampler{};
+
+struct MSLVector {
+  uint32_t dimension;
+  MSLScalerType scaler;
+  std::string get_name() const {
+    auto scaler_name =
+      std::visit([](auto scaler) { return scaler.get_name(); }, scaler);
+    if (dimension == 1)
+      return scaler_name;
+    return scaler_name + std::to_string(dimension);
+  };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    auto scaler_type =
+      std::visit([&](auto x) { return x.get_llvm_type(context); }, scaler);
+    if (dimension == 1) {
+      return scaler_type;
+    }
+    return llvm::FixedVectorType::get(scaler_type, dimension);
+  };
+};
+
+constexpr auto msl_int2 = MSLVector{2, msl_int};
+constexpr auto msl_uint2 = MSLVector{2, msl_uint};
+constexpr auto msl_float2 = MSLVector{2, msl_float};
+constexpr auto msl_int3 = MSLVector{3, msl_int};
+constexpr auto msl_uint3 = MSLVector{3, msl_uint};
+constexpr auto msl_float3 = MSLVector{3, msl_float};
+constexpr auto msl_int4 = MSLVector{4, msl_int};
+constexpr auto msl_uint4 = MSLVector{4, msl_uint};
+constexpr auto msl_float4 = MSLVector{4, msl_float};
+
+struct MSLTexture {
+  MSLScalerType component_type;
+  MemoryAccess memory_access;
+  TextureKind resource_kind;
+  TextureKind resource_kind_logical;
+
+  std::string get_name() const {
+    auto component =
+      std::visit([](auto scaler) { return scaler.get_name(); }, component_type);
+    auto access = [](auto access) -> std::string {
+      switch (access) {
+      case MemoryAccess::read:
+        return "read";
+      case MemoryAccess::read_write:
+        return "read_write";
+      case MemoryAccess::write:
+        return "write";
+      case MemoryAccess::sample:
+        return "sample";
+      }
+      assert(0 && "unhandled memory access");
+    }(memory_access);
+
+    switch (resource_kind) {
+    case TextureKind::texture_1d:
+      return "texture1d<" + component + "," + access + ">";
+    case TextureKind::texture_1d_array:
+      return "texture1d_array<" + component + "," + access + ">";
+    case TextureKind::texture_2d:
+      return "texture2d<" + component + "," + access + ">";
+    case TextureKind::texture_2d_array:
+      return "texture2d_array<" + component + "," + access + ">";
+    case TextureKind::texture_2d_ms:
+      return "texture2d_ms<" + component + "," + access + ">";
+    case TextureKind::texture_2d_ms_array:
+      return "texture2d_ms_array<" + component + "," + access + ">";
+    case TextureKind::texture_3d:
+      return "texture3d<" + component + "," + access + ">";
+    case TextureKind::texture_buffer:
+      return "texture_buffer<" + component + "," + access + ">";
+    case TextureKind::texture_cube:
+      return "texturecube<" + component + "," + access + ">";
+    case TextureKind::texture_cube_array:
+      return "texturecube_array<" + component + "," + access + ">";
+    case TextureKind::depth_2d:
+      return "depth2d<" + component + "," + access + ">";
+    case TextureKind::depth_2d_array:
+      return "depth2d_array<" + component + "," + access + ">";
+    case TextureKind::depth_2d_ms:
+      return "depth2d_ms<" + component + "," + access + ">";
+    case TextureKind::depth_2d_ms_array:
+      return "depth2d_ms_array<" + component + "," + access + ">";
+    case TextureKind::depth_cube:
+      return "depthcube<" + component + "," + access + ">";
+    case TextureKind::depth_cube_array:
+      return "depthcube_array<" + component + "," + access + ">";
+    }
+    assert(0 && "unreachable");
+  };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
+    switch (resource_kind) {
+    case TextureKind::texture_1d:
+      return getOrCreateStructType("struct._texture_1d_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_1d_array:
+      return getOrCreateStructType("struct._texture_1d_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_2d:
+      return getOrCreateStructType("struct._texture_2d_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_2d_array:
+      return getOrCreateStructType("struct._texture_2d_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_2d_ms:
+      return getOrCreateStructType("struct._texture_2d_ms_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_2d_ms_array:
+      return getOrCreateStructType("struct._texture_2d_ms_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_3d:
+      return getOrCreateStructType("struct._texture_3d_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_cube:
+      return getOrCreateStructType("struct._texture_cube_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_cube_array:
+      return getOrCreateStructType("struct._texture_cube_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::texture_buffer:
+      return getOrCreateStructType("struct._texture_buffer_1d_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_2d:
+      return getOrCreateStructType("struct._depth_2d_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_2d_array:
+      return getOrCreateStructType("struct._depth_2d_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_2d_ms:
+      return getOrCreateStructType("struct._depth_2d_ms_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_2d_ms_array:
+      return getOrCreateStructType("struct._depth_2d_ms_array_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_cube:
+      return getOrCreateStructType("struct._depth_cube_t", context)
+        ->getPointerTo(1);
+    case TextureKind::depth_cube_array:
+      return getOrCreateStructType("struct._depth_cube_array_t", context)
+        ->getPointerTo(1);
+      break;
+    };
+  };
+};
+
+// I mean does metal really care about it?
+struct MSLWhateverStruct {
+  std::string name;
+  llvm::Type *type;
+  std::string get_name() { return name; };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) { return type; };
+};
+
+using MSLScalerOrVectorType =
+  template_concat_t<MSLScalerType, std::variant<MSLVector>>;
+
+using MSLRepresentableType = template_concat_t<
+  MSLScalerOrVectorType,
+  std::variant<MSLSampler, MSLTexture, MSLWhateverStruct>>;
+
+struct MSLPointer {
+  MSLRepresentableType pointee;
+  AddressSpace address_space;
+  std::string get_name() {
+    // fking weird
+    return std::visit([](auto x) { return x.get_name(); }, pointee);
+  };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) {
+    auto pointee_type =
+      std::visit([&](auto x) { return x.get_llvm_type(context); }, pointee);
+    return pointee_type->getPointerTo((uint32_t)address_space);
+  };
+};
+
+struct MSLStaticArray {
+  uint32_t array_size;
+  MSLRepresentableType element_type;
+  std::string get_name() {
+    return "array<" +
+           std::visit(
+             [](auto scaler) { return scaler.get_name(); }, element_type
+           ) +
+           "," + std::to_string(array_size) + ">";
+  };
+
+  llvm::Type *get_llvm_type(llvm::LLVMContext &context) {
+    return llvm::ArrayType::get(
+      std::visit(
+        [&](auto x) { return x.get_llvm_type(context); }, element_type
+      ),
+      array_size
+    );
+  }
+};
+
+using MSLRepresentableTypeWithArray = template_concat_t<
+  MSLRepresentableType,
+  std::variant<MSLStaticArray, MSLPointer /* why are you here? */>>;
+
+struct ArgumentBindingBuffer {
+  std::optional<uint32_t> buffer_size; // unbounded if not represented
+  uint32_t location_index;
+  uint32_t array_size;
+  MemoryAccess memory_access;
+  AddressSpace address_space;
+  // std::string arg_type_name;
+  MSLRepresentableType type;
+  std::string arg_name;
+  std::optional<uint32_t> raster_order_group;
+};
+
+struct ArgumentBindingSampler {
+  uint32_t location_index;
+  uint32_t array_size;
+  std::string arg_name;
+};
+
+struct ArgumentBindingTexture {
+  uint32_t location_index;
+  uint32_t array_size;
+  MemoryAccess memory_access;
+  MSLTexture type; // why it's a variant!
+  std::string arg_name;
+  std::optional<uint32_t> raster_order_group;
+};
+
+/* is this in fact argument buffer? */
+struct ArgumentBindingIndirectBuffer {
+  uint32_t location_index;
+  uint32_t array_size;
+  MemoryAccess memory_access;
+  AddressSpace address_space;
+  llvm::StructType *struct_type;
+  llvm::Metadata *struct_type_info;
+  std::string arg_name;
+};
+
+struct ArgumentBindingIndirectConstant {
+  uint32_t location_index;
+  uint32_t array_size;
+  MSLRepresentableTypeWithArray type;
+  std::string arg_name;
+};
+
+using ArgumentBufferArguments = std::variant<
+  ArgumentBindingBuffer, ArgumentBindingIndirectBuffer, ArgumentBindingTexture,
+  ArgumentBindingIndirectConstant, ArgumentBindingSampler>;
+
+using FunctionArguments = std::variant<
+  ArgumentBindingBuffer, ArgumentBindingIndirectBuffer, ArgumentBindingTexture,
+  ArgumentBindingSampler>;
+
+class ArgumentBufferBuilder {
+  /* the return value is the element index of structure (as well as in argument
+   * buffer) */
+public:
+  uint32_t DefineBuffer(
+    std::string name, AddressSpace addressp_space, MemoryAccess access,
+    MSLRepresentableType type, uint32_t location_index = UINT32_MAX,
+    std::optional<uint32_t> raster_order_group = std::nullopt
+  );
+  // uint32_t DefineIndirectBuffer(
+  //   std::string name, llvm::StructType* struct_type, llvm::Metadata*
+  //   struct_type_metadata
+  // );
+  uint32_t DefineTexture(
+    std::string name, TextureKind kind, MemoryAccess access,
+    MSLScalerType scaler_type, uint32_t location_index = UINT32_MAX,
+    std::optional<uint32_t> raster_order_group = std::nullopt
+  );
+  uint32_t
+  DefineSampler(std::string name, uint32_t location_index = UINT32_MAX);
+  uint32_t
+  DefineInteger64(std::string name, uint32_t location_index = UINT32_MAX);
+
+  auto Build(llvm::LLVMContext &context, const llvm::DataLayout &layout) const
+    -> std::tuple<llvm::StructType *, llvm::MDNode *>;
+
+  auto Empty() const { return fieldsType.empty(); }
+
+  auto Size() const { return fieldsType.size(); }
+
+private:
+  std::vector<ArgumentBufferArguments> fieldsType;
+  std::unordered_set<std::string> fields;
+};
+
+enum class InputAttributeComponentType : uint32_t {
+  Unknown,
+  Uint = 1,
+  Int = 2,
+  Float = 3
+};
+
+struct InputVertexStageIn {
+  uint32_t attribute;
+  InputAttributeComponentType type;
+  std::string name;
+};
+
+struct OutputVertex {
+  std::string user;
+  MSLScalerOrVectorType type;
+
+  bool operator==(OutputVertex const& rhs) const { return user == rhs.user; }
+};
+
+struct OutputPosition {
+  MSLScalerOrVectorType type;
+
+  bool operator==(OutputPosition const& rhs) const { return true; }
+};
+
+struct OutputMeshData {
+  std::string user;
+  MSLScalerOrVectorType type;
+  uint32_t index;
+
+  bool operator==(OutputMeshData const& rhs) const { return user == rhs.user && index == rhs.index; }
+};
+
+struct InputFragmentStageIn {
+  std::string user;
+  MSLScalerOrVectorType type;
+  Interpolation interpolation;
+  bool pull_mode;
+};
+
+struct InputVertexID {};
+struct InputBaseVertex {};
+struct InputInstanceID {};
+struct InputBaseInstance {};
+struct InputViewportArrayIndex {};
+struct InputRenderTargetArrayIndex {};
+
+struct InputPrimitiveID {};
+struct InputFrontFacing {};
+struct InputInputCoverage {};
+struct InputSampleIndex {};
+
+struct InputPayload {
+  uint32_t size;
+};
+
+enum class MeshOutputTopology : uint32_t {
+  Point,
+  Line,
+  Triangle,
+};
+
+struct InputMesh {
+  uint32_t vertex_count;
+  uint32_t primitive_count;
+  MeshOutputTopology topology;
+};
+
+struct InputMeshGridProperties {};
+
+struct InputPosition {
+  Interpolation interpolation;
+};
+
+struct InputThreadIndexInThreadgroup {};    // uint
+struct InputThreadPositionInThreadgroup {}; // uint3
+struct InputThreadIndexInSIMDGroup {};      // uint, in every stage but vertex
+struct InputThreadsPerSIMDGroup {};         // uint, in every stage but vertex
+struct InputThreadPositionInGrid {};        // uint3
+struct InputThreadgroupPositionInGrid {};   // uint3
+
+struct InputThreadgroupsPerGrid {};         // uint3
+
+struct OutputRenderTarget {
+  bool dual_source_blending;
+  uint32_t index;
+  MSLScalerOrVectorType type;
+
+  bool operator==(OutputRenderTarget const& rhs) const { return index == rhs.index; }
+};
+
+enum class DepthArgument { any = 0, greater = 1, less = 2 };
+
+struct OutputDepth {
+  DepthArgument depth_argument;
+
+  bool operator==(OutputDepth const& rhs) const { return true; }
+};
+
+struct OutputCoverageMask {
+  bool operator==(OutputCoverageMask const& rhs) const { return true; }
+};
+
+struct OutputStencilRef {
+  bool operator==(OutputStencilRef const& rhs) const { return true; }
+};
+
+struct OutputClipDistance {
+  size_t count;
+  bool operator==(OutputClipDistance const& rhs) const { return true; }
+};
+
+struct OutputRenderTargetArrayIndex {
+  bool operator==(OutputRenderTargetArrayIndex const& rhs) const { return true; }
+};
+
+struct OutputViewportArrayIndex {
+  bool operator==(OutputViewportArrayIndex const& rhs) const { return true; }
+};
+
+struct OutputPrimitiveID {
+  bool operator==(OutputPrimitiveID const& rhs) const { return true; }
+};
+
+struct OutputPrimitiveCulled {
+  bool operator==(OutputPrimitiveCulled const& rhs) const { return true; }
+};
+
+struct OutputPointSize {
+  bool operator==(OutputPointSize const& rhs) const { return true; }
+};
+
+using FunctionInput = template_concat_t<
+  FunctionArguments,
+  std::variant<
+    /* vertex */
+    InputVertexID, InputInstanceID,     //
+    InputBaseVertex, InputBaseInstance, //
+    InputVertexStageIn,
+    /* fragment */
+    InputPrimitiveID, InputViewportArrayIndex, InputRenderTargetArrayIndex,
+    InputFrontFacing, InputPosition, InputSampleIndex, //
+    InputFragmentStageIn, InputInputCoverage,
+    /* object & mesh */
+    InputPayload, InputMeshGridProperties, InputMesh,
+    /* kernel */
+    InputThreadIndexInThreadgroup, InputThreadPositionInThreadgroup,
+    InputThreadPositionInGrid, InputThreadgroupPositionInGrid,
+    InputThreadgroupsPerGrid, InputThreadIndexInSIMDGroup, InputThreadsPerSIMDGroup>>;
+
+using FunctionOutput = std::variant<
+  /* vertex */
+  OutputVertex, OutputPosition, OutputClipDistance,
+  OutputRenderTargetArrayIndex, OutputViewportArrayIndex,
+  /* fragment */
+  OutputRenderTarget, OutputDepth, OutputCoverageMask, OutputStencilRef>;
+
+using MeshVertexOutput = std::variant<OutputMeshData, OutputPosition, OutputClipDistance, OutputPointSize>;
+
+using MeshPrimitiveOutput =
+    std::variant<OutputMeshData, OutputRenderTargetArrayIndex, OutputViewportArrayIndex, OutputPrimitiveID, OutputPrimitiveCulled>;
+
+class FunctionSignatureBuilder {
+public:
+  /*
+   * uniqueness is implied by variant type
+   * for InputVertexStageIn: attribute
+   * for InputFragmentStageIn: user
+   * for ArgumentBinding*: no guarantee
+   */
+  uint32_t DefineInput(const FunctionInput &input);
+  uint32_t DefineOutput(const FunctionOutput &output);
+  uint32_t DefineMeshVertexOutput(const MeshVertexOutput &output);
+  uint32_t DefineMeshPrimitiveOutput(const MeshPrimitiveOutput &output);
+  void UseEarlyFragmentTests() { early_fragment_tests = true; }
+  void UseMaxWorkgroupSize(uint32_t size) { max_work_group_size = size; }
+  void UseMaxMeshWorkgroupSize(uint32_t size) { max_mesh_work_group_size = size; }
+
+  auto CreateFunction(
+    std::string name, llvm::LLVMContext &context, llvm::Module &module,
+    uint64_t sign_mask, bool skip_output
+  ) -> std::pair<llvm::Function *, llvm::MDNode *>;
+
+private:
+  std::vector<FunctionInput> inputs;
+  std::vector<FunctionOutput> outputs;
+  std::vector<MeshVertexOutput> mesh_vertex_outputs;
+  std::vector<MeshPrimitiveOutput> mesh_primitive_outputs;
+  bool early_fragment_tests = false;
+  uint32_t max_work_group_size = 0;
+  uint32_t max_mesh_work_group_size = 0;
+};
+
+inline TextureKind to_air_resource_type(
+  dxmt::shader::common::ResourceType type, bool use_depth = false
+) {
+  switch (type) {
+  case shader::common::ResourceType::TextureBuffer:
+    return TextureKind::texture_buffer;
+  case shader::common::ResourceType::Texture1D:
+    return TextureKind::texture_1d;
+  case shader::common::ResourceType::Texture1DArray:
+    return TextureKind::texture_1d_array;
+  case shader::common::ResourceType::Texture2D:
+    return use_depth ? TextureKind::depth_2d : TextureKind::texture_2d;
+  case shader::common::ResourceType::Texture2DArray:
+    return use_depth ? TextureKind::depth_2d_array
+                     : TextureKind::texture_2d_array;
+  case shader::common::ResourceType::Texture2DMultisampled:
+    return use_depth ? TextureKind::depth_2d_ms : TextureKind::texture_2d_ms;
+  case shader::common::ResourceType::Texture2DMultisampledArray:
+    return use_depth ? TextureKind::depth_2d_ms_array
+                     : TextureKind::texture_2d_ms_array;
+  case shader::common::ResourceType::Texture3D:
+    return TextureKind::texture_3d;
+  case shader::common::ResourceType::TextureCube:
+    return use_depth ? TextureKind::depth_cube : TextureKind::texture_cube;
+  case shader::common::ResourceType::TextureCubeArray:
+    return use_depth ? TextureKind::depth_cube_array
+                     : TextureKind::texture_cube_array;
+  default:
+    break;
+  };
+  assert(0 && "unreachable");
+};
+
+inline MSLScalerType
+to_air_scaler_type(dxmt::shader::common::ScalerDataType type) {
+  switch (type) {
+  case shader::common::ScalerDataType::Float:
+    return msl_float;
+  case shader::common::ScalerDataType::Uint:
+    return msl_uint;
+  case shader::common::ScalerDataType::Int:
+    return msl_int;
+  case shader::common::ScalerDataType::Double:
+    assert(0 && "");
+    break;
+  }
+}
+
+enum class MTLPixelFormat : uint32_t {
+  Invalid = 0,
+  A8Unorm = 1,
+  R8Unorm = 10,
+  R8Unorm_sRGB = 11,
+  R8Snorm = 12,
+  R8Uint = 13,
+  R8Sint = 14,
+  R16Unorm = 20,
+  R16Snorm = 22,
+  R16Uint = 23,
+  R16Sint = 24,
+  R16Float = 25,
+  RG8Unorm = 30,
+  RG8Unorm_sRGB = 31,
+  RG8Snorm = 32,
+  RG8Uint = 33,
+  RG8Sint = 34,
+  B5G6R5Unorm = 40,
+  A1BGR5Unorm = 41,
+  ABGR4Unorm = 42,
+  BGR5A1Unorm = 43,
+  R32Uint = 53,
+  R32Sint = 54,
+  R32Float = 55,
+  RG16Unorm = 60,
+  RG16Snorm = 62,
+  RG16Uint = 63,
+  RG16Sint = 64,
+  RG16Float = 65,
+  RGBA8Unorm = 70,
+  RGBA8Unorm_sRGB = 71,
+  RGBA8Snorm = 72,
+  RGBA8Uint = 73,
+  RGBA8Sint = 74,
+  BGRA8Unorm = 80,
+  BGRA8Unorm_sRGB = 81,
+  RGB10A2Unorm = 90,
+  RGB10A2Uint = 91,
+  RG11B10Float = 92,
+  RGB9E5Float = 93,
+  BGR10A2Unorm = 94,
+  BGR10_XR = 554,
+  BGR10_XR_sRGB = 555,
+  RG32Uint = 103,
+  RG32Sint = 104,
+  RG32Float = 105,
+  RGBA16Unorm = 110,
+  RGBA16Snorm = 112,
+  RGBA16Uint = 113,
+  RGBA16Sint = 114,
+  RGBA16Float = 115,
+  BGRA10_XR = 552,
+  BGRA10_XR_sRGB = 553,
+  RGBA32Uint = 123,
+  RGBA32Sint = 124,
+  RGBA32Float = 125,
+  BC1_RGBA = 130,
+  BC1_RGBA_sRGB = 131,
+  BC2_RGBA = 132,
+  BC2_RGBA_sRGB = 133,
+  BC3_RGBA = 134,
+  BC3_RGBA_sRGB = 135,
+  BC4_RUnorm = 140,
+  BC4_RSnorm = 141,
+  BC5_RGUnorm = 142,
+  BC5_RGSnorm = 143,
+  BC6H_RGBFloat = 150,
+  BC6H_RGBUfloat = 151,
+  BC7_RGBAUnorm = 152,
+  BC7_RGBAUnorm_sRGB = 153,
+  PVRTC_RGB_2BPP = 160,
+  PVRTC_RGB_2BPP_sRGB = 161,
+  PVRTC_RGB_4BPP = 162,
+  PVRTC_RGB_4BPP_sRGB = 163,
+  PVRTC_RGBA_2BPP = 164,
+  PVRTC_RGBA_2BPP_sRGB = 165,
+  PVRTC_RGBA_4BPP = 166,
+  PVRTC_RGBA_4BPP_sRGB = 167,
+  EAC_R11Unorm = 170,
+  EAC_R11Snorm = 172,
+  EAC_RG11Unorm = 174,
+  EAC_RG11Snorm = 176,
+  EAC_RGBA8 = 178,
+  EAC_RGBA8_sRGB = 179,
+  ETC2_RGB8 = 180,
+  ETC2_RGB8_sRGB = 181,
+  ETC2_RGB8A1 = 182,
+  ETC2_RGB8A1_sRGB = 183,
+  ASTC_4x4_sRGB = 186,
+  ASTC_5x4_sRGB = 187,
+  ASTC_5x5_sRGB = 188,
+  ASTC_6x5_sRGB = 189,
+  ASTC_6x6_sRGB = 190,
+  ASTC_8x5_sRGB = 192,
+  ASTC_8x6_sRGB = 193,
+  ASTC_8x8_sRGB = 194,
+  ASTC_10x5_sRGB = 195,
+  ASTC_10x6_sRGB = 196,
+  ASTC_10x8_sRGB = 197,
+  ASTC_10x10_sRGB = 198,
+  ASTC_12x10_sRGB = 199,
+  ASTC_12x12_sRGB = 200,
+  ASTC_4x4_LDR = 204,
+  ASTC_5x4_LDR = 205,
+  ASTC_5x5_LDR = 206,
+  ASTC_6x5_LDR = 207,
+  ASTC_6x6_LDR = 208,
+  ASTC_8x5_LDR = 210,
+  ASTC_8x6_LDR = 211,
+  ASTC_8x8_LDR = 212,
+  ASTC_10x5_LDR = 213,
+  ASTC_10x6_LDR = 214,
+  ASTC_10x8_LDR = 215,
+  ASTC_10x10_LDR = 216,
+  ASTC_12x10_LDR = 217,
+  ASTC_12x12_LDR = 218,
+  ASTC_4x4_HDR = 222,
+  ASTC_5x4_HDR = 223,
+  ASTC_5x5_HDR = 224,
+  ASTC_6x5_HDR = 225,
+  ASTC_6x6_HDR = 226,
+  ASTC_8x5_HDR = 228,
+  ASTC_8x6_HDR = 229,
+  ASTC_8x8_HDR = 230,
+  ASTC_10x5_HDR = 231,
+  ASTC_10x6_HDR = 232,
+  ASTC_10x8_HDR = 233,
+  ASTC_10x10_HDR = 234,
+  ASTC_12x10_HDR = 235,
+  ASTC_12x12_HDR = 236,
+  GBGR422 = 240,
+  BGRG422 = 241,
+  Depth16Unorm = 250,
+  Depth32Float = 252,
+  Stencil8 = 253,
+  Depth24Unorm_Stencil8 = 255,
+  Depth32Float_Stencil8 = 260,
+  X32_Stencil8 = 261,
+  X24_Stencil8 = 262,
+};
+
+} // namespace dxmt::air
