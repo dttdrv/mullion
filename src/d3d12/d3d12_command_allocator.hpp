@@ -19,6 +19,8 @@
 #pragma once
 
 #include "d3d12_pageable.hpp"
+#include <deque>
+#include "airconv_ray.h"
 #include "dxmt_command_clear.hpp"
 #include "dxmt_command_feedback.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
@@ -48,6 +50,25 @@ struct IndirectComputeCommandData {
   uint32_t tgsize_x;
   uint32_t tgsize_y;
   uint32_t tgsize_z;
+  uint64_t rays;
+  uint32_t ray_flags;
+};
+
+// what a command signature's resolver makes of an indirect DispatchRays command: the arguments of the pipeline's
+// kernel, and the threadgroups Metal runs for it, none for a command past the count
+struct IndirectRays {
+  SM50_RAY_DISPATCH dispatch;
+  uint32_t threadgroups[3];
+};
+
+// a command of a tessellated, geometry or mesh ExecuteIndirect on a GPU without mesh commands in indirect command
+// buffers (they come with Apple9): what its object stage reads, laid out as a direct draw's TessellationInputs and
+// arguments are, and the threadgroups of its draw. the resolver writes it
+struct IndirectMeshDraw {
+  D3D12_INDEX_BUFFER_VIEW view;
+  alignas(16) uint32_t control_points;
+  alignas(16) uint32_t arguments[sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) / sizeof(uint32_t)];
+  uint32_t threadgroups[3];
 };
 
 struct IndirectRenderCommandData {
@@ -79,7 +100,20 @@ struct IndirectRenderCommandData {
   uint32_t mesh_threads[3];
   // the vertex buffer slots the pipeline's input layout uses, which the vertex buffer table has entries for
   uint32_t vertex_slots;
+  // the bound index buffer view's size in bytes: a command draws no indices past it
+  uint32_t index_buffer_size;
+  // DXMT_D3D12_GPU_ERRORS: where the resolver keeps the largest numbers its commands ask for (kMostWords words)
+  uint64_t most;
+  // the commands' IndirectMeshDraws, where the resolver writes those instead of commands; zero otherwise
+  uint64_t draws;
+  // indexed commands of ordinary pipelines are two commands each: the indices the view has, then, for the indices
+  // past it, as many of these zero indices of 16 bits (D3D11.3 8.19.2: "the return is 0"), `zero_count` at most
+  uint64_t zeros;
+  uint32_t zero_count;
 };
+
+// the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were
+constexpr unsigned kMostWords = 6;
 
 class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllocator> {
   friend class MTLD3D12GraphicsCommandListImpl;
@@ -108,7 +142,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   EncoderData *encoder_current;
   size_t encoder_count_;
 
-  small_vector<EncoderData, 64> encoder_lists_;
+  // a list keeps its root's address until the queue has committed it, while later lists add roots
+  std::deque<EncoderData> encoder_lists_;
 
   small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
   // the acceleration structures the lists' commands name, some of them replaced at their addresses since
@@ -220,6 +255,9 @@ public:
   T *
   AllocatePass() {
     auto p = (new (AllocateCPUHeap(sizeof(T), alignof(T))) T());
+    // what logs call the pass
+    static std::atomic<uint64_t> passes;
+    p->id = ++passes;
     encoder_current = p;
     return p;
   };
@@ -238,6 +276,18 @@ public:
     auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
+
+  template <typename cmd_struct>
+  cmd_struct &
+  EncodeBeforeRender() {
+    assert(encoder_current->type == EncoderType::Render);
+    auto encoder = static_cast<RenderEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
+    encoder->before_tail->next.set(storage);
+    encoder->before_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
     return *storage;
   }
@@ -291,6 +341,7 @@ public:
     return {block.buffer, offset};
   }
 
+  IndirectComputeCommandData *EncodeComputeResolver(MTLD3D12CommandSignature *pCmdSig, size_t MaxCount);
   IndirectComputeCommandData *EncodeIndirectComputeCommand(MTLD3D12CommandSignature *pCmdSig, MTLD3D12ComputePipelineState *pPSO, size_t MaxCount);
 
   // `Pipeline` is the variant of pPSO that the commands draw with

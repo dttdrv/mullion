@@ -146,6 +146,9 @@ public:
     auto current_seq_id = cmd_queue.CurrentSeqId();
     auto coherent_seq_id = cmd_queue.CoherentSeqId();
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
+      // a buffer is one subresource
+      if (Subresource)
+        return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
       case D3D11_MAP_WRITE:
@@ -279,7 +282,9 @@ public:
         coherent_seq_id = cmd_queue.CoherentSeqId();
       };
     };
-    // a default resource is not mapped (MapOnDefaultBuffers and MapOnDefaultTextures are not offered)
+    // a default resource is not mapped (MapOnDefaultBuffers and MapOnDefaultTextures are not offered), nor a
+    // subresource the resource does not have, and neither gives a pointer
+    pMappedResource->pData = nullptr;
     return E_INVALIDARG;
   }
 
@@ -558,7 +563,7 @@ public:
   // whether a predicate's data is the value that skips. data that is not there yet is waited for, unless the
   // predicate is a hint, whose operations then run (D3D11.3 20.2)
   bool
-  Skips(ID3D11Predicate *predicate, BOOL value) {
+  Skips(ID3D11Query *predicate, BOOL value) {
     if (!predicate)
       return false;
     D3D11_QUERY_DESC desc;

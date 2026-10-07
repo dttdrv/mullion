@@ -1076,6 +1076,7 @@ enum WMTComputeCommandType : uint16_t {
   WMTComputeCommandMemoryBarrier,
   WMTComputeCommandExecuteCommandsInBuffer,
   WMTComputeCommandSetVisibleFunctionTable,
+  WMTComputeCommandDispatchPart,
 };
 
 struct wmtcmd_compute_setvisiblefunctiontable {
@@ -1096,6 +1097,15 @@ struct wmtcmd_compute_dispatch {
   enum WMTComputeCommandType type;
   uint16_t reserved[3];
   struct WMTMemoryPointer next;
+  struct WMTSize size;
+};
+
+// some of a dispatch's threadgroups: the stage-in region's origin tells the kernel which
+struct wmtcmd_compute_dispatch_part {
+  enum WMTComputeCommandType type;
+  uint16_t reserved[3];
+  struct WMTMemoryPointer next;
+  struct WMTOrigin origin;
   struct WMTSize size;
 };
 

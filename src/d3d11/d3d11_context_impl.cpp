@@ -617,7 +617,8 @@ public:
     if (operation.skipped)
       return;
 
-    ClearRenderTargetView(static_cast<D3D11RenderTargetView *>(pRenderTargetView), ColorRGBA);
+    if (pRenderTargetView)
+      ClearRenderTargetView(static_cast<D3D11RenderTargetView *>(pRenderTargetView), ColorRGBA);
   }
 
   void
@@ -761,7 +762,8 @@ public:
     if (operation.skipped)
       return;
 
-    ClearDepthStencilView(static_cast<D3D11DepthStencilView*>(pDepthStencilView), ClearFlags, Depth, Stencil);
+    if (pDepthStencilView)
+      ClearDepthStencilView(static_cast<D3D11DepthStencilView*>(pDepthStencilView), ClearFlags, Depth, Stencil);
   }
 
   void
@@ -2020,7 +2022,7 @@ public:
 
 
     if (ppPredicate) {
-      *ppPredicate = state_.predicate.ref();
+      *ppPredicate = reinterpret_cast<ID3D11Predicate *>(ref(state_.predicate.ptr()));
     }
     if (pPredicateValue) {
       *pPredicateValue = state_.predicate_value;
@@ -2034,7 +2036,8 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
 
-    state_.predicate = pPredicate;
+    // a predicate is a query of ours (CreatePredicate)
+    state_.predicate = reinterpret_cast<MTLD3D11Query *>(pPredicate);
     state_.predicate_value = PredicateValue;
   }
 
@@ -2051,8 +2054,8 @@ public:
       return;
     // the state so far goes to the object that was current, which the context makes when none was set yet
     Com<MTLD3D11DeviceContextState> next = static_cast<MTLD3D11DeviceContextState *>(pState),
-                                    previous = context_state_ ? context_state_ : new MTLD3D11DeviceContextState(device);
-    context_state_ = next;
+                                    previous = context_state_ ? context_state_.ptr() : new MTLD3D11DeviceContextState(device);
+    context_state_ = next.ptr();
     if (ppPreviousState)
       *ppPreviousState = previous.ref();
     if (next == previous)
@@ -2079,7 +2082,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
-      state_.InputAssembler.InputLayout = std::move(expected);
+      state_.InputAssembler.InputLayout = expected.ptr();
     } else {
       state_.InputAssembler.InputLayout = nullptr;
     }
@@ -3432,7 +3435,7 @@ public:
     }
   };
   // the state object the context's state was last taken from (SwapDeviceContextState)
-  Com<MTLD3D11DeviceContextState> context_state_;
+  Com<MTLD3D11DeviceContextState, false> context_state_;
   bool within_predicated_operation_ = false;
   // the size of the render pass being recorded
   uint32_t render_pass_width_ = 0, render_pass_height_ = 0;
@@ -3569,7 +3572,7 @@ public:
         if (ShaderStage.Shader.ptr() == expected.ptr()) {
           return;
         }
-        ShaderStage.Shader = std::move(expected);
+        ShaderStage.Shader = expected.ptr();
         ShaderStage.ConstantBuffers.set_dirty();
         ShaderStage.SRVs.set_dirty();
         ShaderStage.Samplers.set_dirty();
@@ -5773,7 +5776,7 @@ public:
   // predicate may get its data from the regions before
   struct Region {
     CommandList<ArgumentEncodingContext> list;
-    Com<ID3D11Predicate> predicate;
+    Com<MTLD3D11Query, false> predicate;
     BOOL value = FALSE;
     // a list that a deferred context executed here (it has no commands of its own then)
     Com<ID3D11CommandList> nested;

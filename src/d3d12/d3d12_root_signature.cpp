@@ -301,6 +301,18 @@ private:
   RootSignatureDeserializer impl_;
 };
 
+// the serialized root signature in a container of the length the caller gives. what is not a container is an invalid
+// argument; a whole container with no root signature in it is E_FAIL on Windows (vkd3d-proton's
+// test_root_signature_empty_blob: "Has to be E_FAIL, not E_INVALIDARG, oddly enough")
+static HRESULT
+RootSignaturePart(const void *pBytecode, SIZE_T Length, const void **ppPart, UINT *pSize) {
+  if (!pBytecode || Length < sizeof(microsoft::DXBCHeader) ||
+      microsoft::DXBCGetSizeAssumingValidPointer(pBytecode) > Length ||
+      !ShaderContainerHolds(pBytecode, microsoft::DXBCGetSizeAssumingValidPointer(pBytecode)))
+    return E_INVALIDARG;
+  return SUCCEEDED(microsoft::DXBCGetRootSignature(pBytecode, ppPart, pSize)) ? S_OK : E_FAIL;
+}
+
 extern "C" HRESULT WINAPI
 D3D12CreateVersionedRootSignatureDeserializer(
     const void *pBytecode, SIZE_T DataSize, REFIID iid, void **ppDeserializer
@@ -309,7 +321,7 @@ D3D12CreateVersionedRootSignatureDeserializer(
 
   const void *pRawRootSig;
   UINT RawRootSigSize;
-  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, &pRawRootSig, &RawRootSigSize);
+  HRESULT hr = RootSignaturePart(pBytecode, DataSize, &pRawRootSig, &RawRootSigSize);
   if (FAILED(hr))
     return hr;
 
@@ -326,7 +338,7 @@ D3D12CreateRootSignatureDeserializer(const void *pBytecode, SIZE_T DataSize, REF
 
   const void *pRawRootSig;
   UINT RawRootSigSize;
-  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, &pRawRootSig, &RawRootSigSize);
+  HRESULT hr = RootSignaturePart(pBytecode, DataSize, &pRawRootSig, &RawRootSigSize);
   if (FAILED(hr))
     return hr;
 
@@ -397,7 +409,7 @@ public:
   Initialize() {
     const void *pRawRootSig;
     UINT RawRootSigSize;
-    HRESULT hr = microsoft::DXBCGetRootSignature(blob_.data(), &pRawRootSig, &RawRootSigSize);
+    HRESULT hr = RootSignaturePart(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize);
     if (FAILED(hr))
       return hr;
 

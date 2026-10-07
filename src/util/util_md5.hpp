@@ -68,4 +68,11 @@ private:
 
 Digest hashDxbcBinary(const void *data, size_t size);
 
+// what the sixteen bytes after a container's name say of it (HLSL specifications, INF-0004 Validator Hashing): the
+// hash of its contents, or BYPASS, sixteen bytes of 1, which stands for it; no hash, which is zeros, as a compiler
+// without the validator leaves them, or PREVIEW_BYPASS, sixteen bytes of 2: Direct3D takes those only with
+// experimental shader models switched on; or neither, a container that is not what a compiler wrote
+enum class DxbcHash { Wrong, None, Holds };
+DxbcHash checkDxbcHash(const void *data, size_t size);
+
 } // namespace dxmt::md5

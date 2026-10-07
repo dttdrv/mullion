@@ -1225,6 +1225,8 @@ AIRCONV_API int SM50Initialize(
     binding_uav_mask |= (1ULL << range_id);
   }
 
+  declare_dispatch_origin(sm50_shader);
+
   if (sm50_shader->shader_type == microsoft::D3D11_SB_HULL_SHADER &&
       !sm50_shader->shader_info.no_control_point_phase_passthrough) {
     assert(sm50_shader->max_output_register == 0);
@@ -1259,6 +1261,7 @@ AIRCONV_API int SM50Initialize(
       pRefl->ThreadgroupSize[1] = sm50_shader->threadgroup_size[1];
       pRefl->ThreadgroupSize[2] = sm50_shader->threadgroup_size[2];
     }
+    pRefl->GroupsWorkTogether = sm50_shader->groups_work_together;
     if (sm50_shader->shader_type == microsoft::D3D11_SB_HULL_SHADER) {
       auto threads_per_patch = next_pow2(sm50_shader->hull_maximum_threads_per_patch);
       if (threads_per_patch > 32) {
@@ -1405,7 +1408,10 @@ AIRCONV_API int SM50Compile(
   if (shader_info.use_samplepos)
     linkSamplePos(*pModule);
 
-  runOptimizationPasses(*pModule);
+  if (!runOptimizationPasses(*pModule, errorOut)) {
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
 
   // Serialize AIR
   auto compiled = new SM50CompiledBitcodeInternal();
@@ -1467,7 +1473,10 @@ AIRCONV_API int SM50CompileTessellationPipelineHull(
     linkSamplePos(*pModule);
   linkTessellation(*pModule);
 
-  runOptimizationPasses(*pModule);
+  if (!runOptimizationPasses(*pModule, errorOut)) {
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
 
   // Serialize AIR
   auto compiled = new SM50CompiledBitcodeInternal();
@@ -1537,7 +1546,10 @@ AIRCONV_API int SM50CompileTessellationPipelineDomain(
     linkSamplePos(*pModule);
   linkTessellation(*pModule);
   
-  runOptimizationPasses(*pModule);
+  if (!runOptimizationPasses(*pModule, errorOut)) {
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
 
   // Serialize AIR
   auto compiled = new SM50CompiledBitcodeInternal();
@@ -1599,7 +1611,10 @@ AIRCONV_API int SM50CompileGeometryPipelineVertex(
   if (shader_info.use_samplepos)
     linkSamplePos(*pModule);
 
-  runOptimizationPasses(*pModule);
+  if (!runOptimizationPasses(*pModule, errorOut)) {
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
 
   // Serialize AIR
   auto compiled = new SM50CompiledBitcodeInternal();
@@ -1668,7 +1683,10 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
   if (shader_info.use_samplepos)
     linkSamplePos(*pModule);
   
-  runOptimizationPasses(*pModule);
+  if (!runOptimizationPasses(*pModule, errorOut)) {
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
 
   // Serialize AIR
   auto compiled = new SM50CompiledBitcodeInternal();

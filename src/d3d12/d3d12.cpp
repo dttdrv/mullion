@@ -21,7 +21,11 @@
 #include "d3d12_device.hpp"
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
+#include "util_md5.hpp"
+#include "DXBCParser/BlobContainer.h"
 #include "util_string.hpp"
+#include <algorithm>
+#include <atomic>
 
 namespace dxmt {
 
@@ -53,6 +57,8 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
     }
   } else {
     dxgi_adapter = com_cast<IDXGIAdapter>(pAdapter);
+    if (!dxgi_adapter)
+      return E_INVALIDARG;
   }
 
   if (FAILED(hr = dxgi_adapter->QueryInterface(IID_PPV_ARGS(&dxgi_adapter_mtl)))) {
@@ -90,11 +96,29 @@ D3D12GetDebugInterface(REFIID iid, void **debug) {
   return E_NOINTERFACE;
 }
 
-// features outside the released API, asked for before a device is made: none of them is here, and asking for none
-// is granted (D3D12EnableExperimentalFeatures: "S_OK if successful")
+static std::atomic<bool> experimental_shader_models;
+
+bool
+ShaderContainerHolds(const void *container, size_t size) {
+  if (FAILED(microsoft::CDXBCParser().ReadDXBC(container, size)))
+    return false;
+  auto hash = md5::checkDxbcHash(container, size);
+  return hash == md5::DxbcHash::Holds || (hash == md5::DxbcHash::None && experimental_shader_models);
+}
+
+// features outside the released API, asked for before a device is made and granted all or none
+// (D3D12EnableExperimentalFeatures: "S_OK if successful", E_NOINTERFACE for a feature that is not known). the one
+// that is here is experimental shader models, with which Direct3D takes shaders that carry no hash (INF-0004)
 extern "C" HRESULT WINAPI
 D3D12EnableExperimentalFeatures(UINT NumFeatures, const IID *pIIDs, void *pConfigurationStructs, UINT *pConfigurationStructSizes) {
-  return NumFeatures ? E_NOINTERFACE : S_OK;
+  static const GUID shader_models = {0x76f5573e, 0xf13a, 0x40f5, {0xb2, 0x97, 0x81, 0xce, 0x9e, 0x18, 0x93, 0x3f}};
+  if (NumFeatures && !pIIDs)
+    return E_INVALIDARG;
+  if (!std::all_of(pIIDs, pIIDs + NumFeatures, [](REFIID iid) { return iid == shader_models; }))
+    return E_NOINTERFACE;
+  if (NumFeatures)
+    experimental_shader_models = true;
+  return S_OK;
 }
 
 BOOL WINAPI

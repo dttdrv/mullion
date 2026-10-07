@@ -375,7 +375,8 @@ int main(int argc, char **argv) {
   if (OptLevelO0) {
     // do nothing
   } else {
-    dxmt::runOptimizationPasses(M);
+    if (!dxmt::runOptimizationPasses(M, errs()))
+      return 1;
   }
 
   dxmt::linkMSAD(M);

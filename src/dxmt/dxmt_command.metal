@@ -1208,7 +1208,8 @@ enum {
     uint3 index [[thread_position_in_grid]]
 ) {
   auto record = (device const SM50_RAY_SHADER_IDENTIFIER *)dispatch.ray_generation_record;
-  if (!dispatch.ray_generation_record || !record->function[0])
+  // an indirect dispatch runs whole threadgroups
+  if (!dispatch.ray_generation_record || !record->function[0] || index.x >= dispatch.dimensions[0])
     return;
   DXMTRayContext c = {};
   c.shaders = shaders;

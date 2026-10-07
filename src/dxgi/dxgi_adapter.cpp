@@ -33,8 +33,7 @@ public:
     // said once: the preview is tested on the Apple9 family (M3) and later
     static std::atomic_flag said;
     if (!device_.supportsFamily(WMTGPUFamilyApple9) && !said.test_and_set())
-      ERR("This preview of Mullion supports Apple GPUs of the M3 generation and later. On this GPU indirect draws "
-          "with tessellation, geometry or mesh shaders are not drawn.");
+      ERR("This preview of Mullion supports Apple GPUs of the M3 generation and later.");
     D3DKMT_OPENADAPTERFROMLUID open = {};
     open.AdapterLuid = GetAdapterLuid(device_);
     if (D3DKMTOpenAdapterFromLuid(&open))

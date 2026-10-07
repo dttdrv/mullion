@@ -103,8 +103,10 @@ public:
     uint32_t refCount = --this->refcount;
     D3D11_ASSERT(refCount != ~0u && "try to release a 0 reference object");
     if (unlikely(!refCount)) {
-      this->m_parent->Release();
+      // what the context still binds is the device's, so the device goes last
+      auto parent = this->m_parent;
       delete this;
+      parent->Release();
     }
 
     return refCount;
@@ -155,7 +157,8 @@ public:
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
-      if (!pMappedResource)
+      // a buffer is one subresource
+      if (!pMappedResource || Subresource)
         return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:

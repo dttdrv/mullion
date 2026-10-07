@@ -6,6 +6,9 @@
 // threadgroups it asks for with its payload (D3D12 mesh shader specification). every mesh threadgroup draws triangles
 // that each cover one pixel of its own, so the target shows which ran, with what IDs and payload, and nothing else.
 // ExecuteIndirect with a DISPATCH_MESH argument does the same from a buffer; it is drawn `shift` rows lower.
+// a pipeline without a pixel shader, as engines have for depth passes, writes depth alone though it names the
+// target's format: on row `depth_row` its triangles' depth lets the pixels of a pipeline that tests for it through,
+// and a row lower, where none was written, the same pipeline draws nothing.
 #include "d3d12_test.hpp"
 #include <map>
 
@@ -125,6 +128,7 @@ main(int argc, char **argv) {
     Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_RASTERIZER_DESC> raster;
     Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_DEPTH_STENCIL_DESC> depth;
     Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_RT_FORMAT_ARRAY> targets;
+    Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT, DXGI_FORMAT> depth_format;
   } stream;
   stream.rs.data = rs.Get();
   stream.ms.data = bytecode(ms);
@@ -141,6 +145,16 @@ main(int argc, char **argv) {
   stream.as.data = bytecode(as);
   stream.ms.data = bytecode(ms_payload);
   CHECK(device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&amplified_pso)));
+  ComPtr<ID3D12PipelineState> depth_pso, tested_pso;
+  stream.as.data = {};
+  stream.ms.data = bytecode(ms);
+  stream.ps.data = {};
+  stream.depth.data = {TRUE, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_COMPARISON_FUNC_ALWAYS};
+  stream.depth_format.data = DXGI_FORMAT_D32_FLOAT;
+  CHECK(device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&depth_pso)));
+  stream.ps.data = bytecode(ps);
+  stream.depth.data = {TRUE, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_COMPARISON_FUNC_EQUAL};
+  CHECK(device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&tested_pso)));
 
   // what the shaders draw
   const UINT untouched = ~0u;
@@ -153,7 +167,10 @@ main(int argc, char **argv) {
         want[{2 * g + t, size * (g == sliced)}] = pixel(g + 1, t + 5, g * 2 + t + 40);
   for (UINT x = 1; x < 1 + line_pixels; x++)
     want[{x, line_row}] = pixel(77, 2, 3);
-  const UINT shift = 8;
+  const UINT shift = 8, depth_row = 6;
+  for (auto [at, value] : std::map(want))
+    if (at.second % size == 0)
+      want[{at.first, at.second + depth_row}] = value;
   for (UINT a = 0; a < amplified; a++)
     for (UINT g = 0; g < a + 1; g++)
       want[{g, a + 2}] = want[{g, a + 2 + shift}] = pixel(100 * (a + 1) + g + 29, 1, 0);
@@ -180,6 +197,17 @@ main(int argc, char **argv) {
   CHECK(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtvs)));
   auto rtv = rtvs->GetCPUDescriptorHandleForHeapStart();
   device->CreateRenderTargetView(target.Get(), nullptr, rtv);
+  ComPtr<ID3D12Resource> depth;
+  D3D12_RESOURCE_DESC depth_desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, size, size, slices, 1, DXGI_FORMAT_D32_FLOAT, {1, 0},
+                                 D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL};
+  CHECK(device->CreateCommittedResource(
+      &heap, D3D12_HEAP_FLAG_NONE, &depth_desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, nullptr, IID_PPV_ARGS(&depth)
+  ));
+  ComPtr<ID3D12DescriptorHeap> dsvs;
+  D3D12_DESCRIPTOR_HEAP_DESC dsv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1};
+  CHECK(device->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsvs)));
+  auto dsv = dsvs->GetCPUDescriptorHandleForHeapStart();
+  device->CreateDepthStencilView(depth.Get(), nullptr, dsv);
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
@@ -204,6 +232,17 @@ main(int argc, char **argv) {
   viewport.TopLeftY = shift;
   list->RSSetViewports(1, &viewport);
   list->ExecuteIndirect(signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
+  list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
+  list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+  viewport.TopLeftY = depth_row;
+  list->RSSetViewports(1, &viewport);
+  list->SetPipelineState(depth_pso.Get());
+  list->DispatchMesh(groups, 1, 1);
+  list->SetPipelineState(tested_pso.Get());
+  list->DispatchMesh(groups, 1, 1);
+  viewport.TopLeftY = depth_row + 1;
+  list->RSSetViewports(1, &viewport);
+  list->DispatchMesh(groups, 1, 1);
   transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
   D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT},
       src{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};

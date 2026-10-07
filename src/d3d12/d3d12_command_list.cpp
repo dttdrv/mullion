@@ -24,6 +24,7 @@
 #include "dxmt_format.hpp"
 #include "dxmt_geometry.hpp"
 #include <span>
+#include "util_env.hpp"
 
 namespace dxmt {
 
@@ -528,6 +529,8 @@ public:
 
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false) {
+    if (!pso_graphics_)
+      return DrawCallStatus::Invalid;
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
       allocator_->InvalidateCurrentPass();
@@ -536,6 +539,10 @@ public:
       render->cmd_head.type = WMTRenderCommandNop;
       render->cmd_head.next.set(0);
       render->cmd_tail = (wmtcmd_base *)&render->cmd_head;
+      render->before_head.type = WMTComputeCommandNop;
+      render->before_head.next.set(0);
+      render->before_tail = (wmtcmd_base *)&render->before_head;
+      render->most = nullptr;
       render->dsv_planar_flags = 0;
       render->dsv_readonly_flags = 0;
       render->render_target_count = num_rtvs;
@@ -606,9 +613,6 @@ public:
         CountVisibility();
     }
 
-    if (!pso_graphics_)
-      return DrawCallStatus::Invalid;
-
     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
       // a pipeline for a topology with adjacency is made here, and may fail
       auto pipeline = Pipeline();
@@ -617,6 +621,10 @@ public:
       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
       cmd_setpso.type = WMTRenderCommandSetPSO;
       cmd_setpso.pso = pipeline;
+      if (Logger::logLevel() == LogLevel::Trace)
+        TRACE("pass ", allocator_->encoder_current->id, ": graphics pipeline ", pso_graphics_->name);
+      if (device_->NamesPasses())
+        device_->NamePass(allocator_->encoder_current->id, pso_graphics_->name);
 
       auto &cmd_setdsso = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
       cmd_setdsso.type = WMTRenderCommandSetDepthStencilState;
@@ -1009,43 +1017,47 @@ public:
       if (!StreamOutputRasterizes())
         return;
     }
-    WMT::Buffer indices = index_buffer;
-    uint64_t indices_offset = index_offset;
-    if (!indices) {
-      // an index buffer that is not bound reads as 0 (D3D11.3 8.20): the draw's indices are zeros of the heap
-      auto size = IndexCountPerInstance * sizeof(uint16_t);
-      auto [zeros, offset] = allocator_->AllocateGPUHeap(size, sizeof(uint16_t));
+    // indices past the view's end, and every index of a draw without an index buffer, read as 0 (D3D11.3 8.20),
+    // which draws vertex 0; Metal would read what lies behind the view, mapped or not. the draw is the indices the
+    // view has, then as many zeros of the heap as it lacks (a line that is half in the view is not drawn)
+    const uint64_t index_size = index_type == WMTIndexTypeUInt32 ? sizeof(uint32_t) : sizeof(uint16_t);
+    const uint64_t there = index_buffer ? index_view_.SizeInBytes / index_size : 0;
+    const UINT inside = StartVertexLocation < there ? std::min<uint64_t>(IndexCountPerInstance, there - StartVertexLocation) : 0;
+    auto draw = [&](WMT::Buffer indices, uint64_t indices_offset, UINT start, UINT count) {
+      if (!count)
+        return;
+      if (auto offset = Predicated(
+              D3D12_DRAW_INDEXED_ARGUMENTS{count, InstanceCount, start, BaseVertexLocation, StartInstanceLocation}, 1
+          )) {
+        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
+        cmd.type = WMTRenderCommandDrawIndexedIndirect;
+        cmd.primitive_type = primitive_type;
+        cmd.index_type = index_type;
+        cmd.index_buffer = indices;
+        cmd.index_buffer_offset = indices_offset;
+        cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+        cmd.indirect_args_offset = *offset;
+        return;
+      }
+      auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed>();
+      cmd_draw.type = WMTRenderCommandDrawIndexed;
+      cmd_draw.primitive_type = primitive_type;
+      cmd_draw.index_type = index_type;
+      cmd_draw.index_count = count;
+      cmd_draw.index_buffer = indices;
+      cmd_draw.index_buffer_offset = indices_offset + start * index_size;
+      cmd_draw.instance_count = InstanceCount;
+      cmd_draw.base_vertex = BaseVertexLocation;
+      cmd_draw.base_instance = StartInstanceLocation;
+    };
+    draw(index_buffer, index_offset, StartVertexLocation, inside);
+    if (auto outside = IndexCountPerInstance - inside) {
+      auto [zeros, offset] = allocator_->AllocateGPUHeap(outside * index_size, index_size);
       if (!zeros)
         return;
-      memset(zeros, 0, size);
-      indices = allocator_->gpu_heap_buffer_, indices_offset = offset, StartVertexLocation = 0;
+      memset(zeros, 0, outside * index_size);
+      draw(allocator_->gpu_heap_buffer_, offset, 0, outside);
     }
-    if (auto offset = Predicated(
-            D3D12_DRAW_INDEXED_ARGUMENTS{
-                IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation, StartInstanceLocation
-            },
-            1
-        )) {
-      auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
-      cmd.type = WMTRenderCommandDrawIndexedIndirect;
-      cmd.primitive_type = primitive_type;
-      cmd.index_type = index_type;
-      cmd.index_buffer = indices;
-      cmd.index_buffer_offset = indices_offset;
-      cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
-      cmd.indirect_args_offset = *offset;
-      return;
-    }
-    auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed>();
-    cmd_draw.type = WMTRenderCommandDrawIndexed;
-    cmd_draw.primitive_type = primitive_type;
-    cmd_draw.index_type = index_type;
-    cmd_draw.index_count = IndexCountPerInstance;
-    cmd_draw.index_buffer = indices;
-    cmd_draw.index_buffer_offset = indices_offset + StartVertexLocation * (index_type == WMTIndexTypeUInt32 ? 4 : 2);
-    cmd_draw.instance_count = InstanceCount;
-    cmd_draw.base_vertex = BaseVertexLocation;
-    cmd_draw.base_instance = StartInstanceLocation;
   };
 
   uint64_t
@@ -1094,6 +1106,10 @@ public:
       cmd_setpso.pso = pso_compute_->pso;
       cmd_setpso.threadgroup_size = pso_compute_->threadgroup_size;
       dirty_state_.clr(DirtyState::ComputePipelineState);
+      if (Logger::logLevel() == LogLevel::Trace)
+        TRACE("pass ", allocator_->encoder_current->id, ": compute pipeline ", pso_compute_->name);
+      if (device_->NamesPasses())
+        device_->NamePass(allocator_->encoder_current->id, pso_compute_->name);
     }
     BindComputeRootArguments(SkipResourceBinding);
     return true;
@@ -1141,10 +1157,50 @@ public:
       cmd.indirect_args_offset = *offset;
       return;
     }
+    if (auto at_once = pso_compute_->groups_work_together ? device_->ThreadsAtOnce() : 0) {
+      auto &group = pso_compute_->threadgroup_size;
+      DispatchParts({}, {X, Y, Z}, std::max<uint64_t>(at_once / (group.width * group.height * group.depth), 1));
+      Isolate(X, Y, Z);
+      return;
+    }
     auto &cmd_dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
     cmd_dispatch.type = WMTComputeCommandDispatch;
     cmd_dispatch.size = {X, Y, Z};
+    Isolate(X, Y, Z);
   };
+
+  // threadgroups that hand each other work wait for the one group that owns it. an Apple GPU starts every group of
+  // a dispatch and, after a few milliseconds, takes turns among those it does not keep running (a few hundred groups
+  // of a kernel with state of its own), so that each handover waits a whole round: seconds a dispatch, where a
+  // desktop GPU runs the first groups to their end. such a dispatch goes in boxes of at most `at_once` groups, as
+  // many as the GPU runs at once and well under what it keeps, one after another, each halved along its longest
+  // side until it is one
+  void
+  DispatchParts(std::array<uint64_t, 3> origin, std::array<uint64_t, 3> size, uint64_t at_once) {
+    if (size[0] * size[1] * size[2] > at_once) {
+      auto axis = std::max_element(size.begin(), size.end()) - size.begin();
+      auto half = size;
+      half[axis] /= 2;
+      DispatchParts(origin, half, at_once);
+      origin[axis] += half[axis];
+      size[axis] -= half[axis];
+      return DispatchParts(origin, size, at_once);
+    }
+    auto &part = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_part>();
+    part.type = WMTComputeCommandDispatchPart;
+    part.origin = {origin[0], origin[1], origin[2]};
+    part.size = {size[0], size[1], size[2]};
+  }
+
+  // with DXMT_D3D12_ISOLATE set a dispatch is a pass of its own, which the queue then waits for and times
+  void
+  Isolate(UINT X, UINT Y, UINT Z) {
+    static const bool isolate = !env::getEnvVar("DXMT_D3D12_ISOLATE").empty();
+    if (!isolate || !allocator_->encoder_current)
+      return;
+    TRACE("pass ", allocator_->encoder_current->id, ": dispatch of ", X, " by ", Y, " by ", Z, " groups");
+    allocator_->InvalidateCurrentPass();
+  }
 
   bool
   PreBlit() {
@@ -1616,16 +1672,12 @@ public:
 
   void STDMETHODCALLTYPE
   OMSetBlendFactor(const FLOAT BlendFactors[4]) {
-    if (Record([=, f = std::array{BlendFactors[0], BlendFactors[1], BlendFactors[2], BlendFactors[3]}](auto *l) { l->OMSetBlendFactor(f.data()); }))
+    // NULL is a factor of ones
+    decltype(blend_factor_) f;
+    BlendFactors ? (void)std::copy_n(BlendFactors, std::size(f), f) : (void)std::fill_n(f, std::size(f), 1.0f);
+    if (Record([=](auto *l) { l->OMSetBlendFactor(f); }))
       return;
-    if (BlendFactors) {
-      memcpy(blend_factor_, BlendFactors, std::size(blend_factor_) * sizeof(blend_factor_[0]));
-    } else {
-      blend_factor_[0] = 1.0f;
-      blend_factor_[1] = 1.0f;
-      blend_factor_[2] = 1.0f;
-      blend_factor_[3] = 1.0f;
-    }
+    std::copy_n(f, std::size(f), blend_factor_);
     dirty_state_.set(DirtyState::BlendFactor);
   };
 
@@ -2186,8 +2238,8 @@ public:
       allocator_->InvalidateCurrentPass();
       PreBlit();
       auto blit = static_cast<BlitEncoderData *>(allocator_->encoder_current);
-      blit->sample_buffer = heap->timestamps;
-      blit->sample_index = Index;
+      blit->timestamps = heap;
+      blit->timestamp_query = Index;
       auto [_, offset] = allocator_->AllocateGPUHeap(sizeof(uint32_t), sizeof(uint32_t));
       auto &fill = allocator_->EncodeBlitCommand<wmtcmd_blit_fillbuffer>();
       fill.type = WMTBlitCommandFillBuffer;
@@ -2221,11 +2273,17 @@ public:
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
     auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
     SumOcclusion();
-    if (heap->timestamps) {
+    if (!heap->timestamps.empty()) {
       allocator_->InvalidateCurrentPass();
       auto resolve = allocator_->AllocatePass<ResolveTimestampsData>();
       resolve->type = EncoderType::ResolveTimestamps;
-      resolve->sample_buffer = heap->timestamps;
+      resolve->heap = heap;
+      D3D12_HEAP_PROPERTIES placed{};
+      pDstBuffer->GetHeapProperties(&placed, nullptr);
+      if (placed.Type == D3D12_HEAP_TYPE_READBACK) {
+        resolve->readback = pDstBuffer;
+        resolve->memory = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->mappedMemory(0);
+      }
       resolve->start = StartIndex;
       resolve->count = QueryCount;
       resolve->dst = dst;
@@ -2300,17 +2358,32 @@ public:
         return;
       CountBufferAddress = count_buffer->buffer->current()->gpuAddress() + CountBufferOffset;
     }
-    if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
-      if (!PreDispatch(sig->UpdateRootArguments))
-        return;
-
-      auto cmd = allocator_->EncodeIndirectComputeCommand(sig, pso_compute_.ptr(), MaxCommandCount);
+    bool rays = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+    if (rays || sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+      IndirectComputeCommandData *cmd;
+      uint32_t ray_flags = 0;
+      if (rays) {
+        // the resolver runs first, in the pass of the dispatches; without a pipeline it has no commands
+        if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute)
+          StartComputePass();
+        cmd = allocator_->EncodeComputeResolver(sig, MaxCommandCount);
+        if (!BeginRays(ray_flags)) {
+          cmd->max_count = 0;
+          return;
+        }
+      } else {
+        if (!PreDispatch(sig->UpdateRootArguments))
+          return;
+        cmd = allocator_->EncodeIndirectComputeCommand(sig, pso_compute_.ptr(), MaxCommandCount);
+      }
       cmd->max_count_buffer = CountBufferAddress;
       PredicateIndirect(cmd);
       cmd->argument_buffer = ArgBufferAddress;
+      uint64_t root_arguments = 0;
 
       if (sig->UpdateRootArguments) {
-        cmd->rootsig_qwords = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount);
+        root_arguments = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount);
+        cmd->rootsig_qwords = root_arguments;
         cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
         cmd->rootsig_qwords_stride = rootsig_compute_->UploadQwords;
         cmd->static_samplers = EncodeStaticSamplers(rootsig_compute_.ptr());
@@ -2318,7 +2391,28 @@ public:
         ResetIndirectState(sig, rootarg_compute_staging_);
         dirty_state_.set(DirtyState::ComputeRootArguments);
       }
-
+      if (rays) {
+        // each command is a dispatch of the kernel, of the threadgroups the resolver counts for it
+        auto [_, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(IndirectRays), alignof(IndirectRays));
+        cmd->rays = allocator_->gpu_heap_buffer_address_ + at;
+        cmd->ray_flags = ray_flags;
+        cmd->tgsize_x = device_->GetSIMDWidth();
+        for (UINT i = 0; i < MaxCommandCount; i++, at += sizeof(IndirectRays)) {
+          if (sig->UpdateRootArguments) {
+            auto &arguments = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+            arguments.type = WMTComputeCommandSetBuffer;
+            arguments.buffer = allocator_->gpu_heap_buffer_;
+            arguments.offset = root_arguments + i * rootsig_compute_->UploadQwords * sizeof(uint64_t);
+            arguments.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+          }
+          BindRays(at);
+          auto &threads = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
+          threads.type = WMTComputeCommandDispatchIndirect;
+          threads.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+          threads.indirect_args_offset = at + offsetof(IndirectRays, threadgroups);
+        }
+      }
+      Isolate(0, 0, 0);
       return;
     }
     WMTPrimitiveType primitive_type = WMTPrimitiveTypeTriangle;
@@ -2329,16 +2423,11 @@ public:
       return;
     if (!dispatch_mesh && !to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
-    // a tessellated command binds every buffer itself, and needs mesh commands in indirect command buffers (Apple9)
-    // so does a geometry pipeline's
+    // a tessellated command binds every buffer itself, as does a geometry pipeline's and a mesh shader pipeline's
     bool geometry = pso_graphics_ && Geometry();
     bool tessellation = pso_graphics_ && (pso_graphics_->threads_per_patch || geometry || dispatch_mesh);
     if (pso_graphics_ && pso_graphics_->stream_output) {
       ERR("ExecuteIndirect: stream output is not implemented yet");
-      return;
-    }
-    if (tessellation && !device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9)) {
-      ERR("ExecuteIndirect: tessellation and geometry shaders need mesh commands in indirect command buffers, from Apple9 GPUs");
       return;
     }
     bool encode_binding = tessellation || sig->UpdateRootArguments || sig->UpdateIndexBuffer || sig->UpdateVertexBuffers;
@@ -2356,6 +2445,7 @@ public:
     cmd->primitive_type = primitive_type;
     cmd->index_buffer = index_buffer_address;
     cmd->index_buffer_format = index_type == WMTIndexTypeUInt32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
+    cmd->index_buffer_size = index_view_.SizeInBytes;
     if (tessellation && !dispatch_mesh) {
       // for indexed draws the bound view, or an empty one when the commands set their own; an empty view otherwise
       auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(TessellationInputs), 16);
@@ -2387,6 +2477,47 @@ public:
     if (sig->UpdateIndexBuffer)
       IASetIndexBuffer(nullptr);
     dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::VertexBuffer);
+    if (!cmd->draws)
+      return;
+    // a GPU without mesh commands in indirect command buffers: every command is a draw of its own, which binds what
+    // the command's stages read and has the threadgroups the resolver left for it (none past the count)
+    auto heap = allocator_->gpu_heap_buffer_address_;
+    WMTSize object{cmd->geometry_threads, 1, 1}, mesh{1, 1, 1};
+    if (dispatch_mesh) {
+      object = {cmd->object_threads[0], cmd->object_threads[1], cmd->object_threads[2]};
+      mesh = {cmd->mesh_threads[0], cmd->mesh_threads[1], cmd->mesh_threads[2]};
+    } else if (cmd->threads_per_patch) {
+      object = {cmd->threads_per_patch, 32 / cmd->threads_per_patch, 1};
+      mesh = {32, 1, 1};
+    }
+    for (UINT i = 0; i < MaxCommandCount; i++) {
+      auto at = cmd->draws - heap + i * sizeof(IndirectMeshDraw);
+      auto roots = cmd->rootsig_qwords - heap + i * cmd->rootsig_qwords_stride * sizeof(uint64_t);
+      for (auto stage : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer, WMTRenderCommandSetFragmentBuffer}) {
+        EncodeBuffer(stage, roots, SM50_BINDING_INDEX_ROOT_ARGUMENTS);
+        EncodeBuffer(stage, cmd->static_samplers - heap, SM50_BINDING_INDEX_STATIC_SAMPLERS);
+      }
+      if (!dispatch_mesh) {
+        EncodeBuffer(
+            WMTRenderCommandSetObjectBuffer, cmd->vertex_buffer - heap + i * cmd->vertex_argbuf_stride,
+            SM50_BINDING_INDEX_VERTEX_BUFFER
+        );
+        EncodeBuffer(WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, view), SM50_BINDING_INDEX_INDEX_BUFFER);
+        if (cmd->threads_per_patch)
+          EncodeBuffer(
+              WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, control_points), SM50_BINDING_INDEX_PATCH_SIZE
+          );
+        EncodeBuffer(
+            WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS
+        );
+      }
+      auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
+      draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
+      draw.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+      draw.indirect_args_offset = at + offsetof(IndirectMeshDraw, threadgroups);
+      draw.object_threadgroup_size = object;
+      draw.mesh_threadgroup_size = mesh;
+    }
   };
 
   // the root argument half of D3D12's reset after ExecuteIndirect
@@ -3111,8 +3242,6 @@ public:
   // arguments as the global ones (dispatch_rays in dxmt_command.metal)
   void STDMETHODCALLTYPE
   DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) {
-    WMT::ComputePipelineState pipeline;
-    WMT::VisibleFunctionTable table;
     SM50_RAY_DISPATCH dispatch{
         pDesc->RayGenerationShaderRecord.StartAddress,
         pDesc->MissShaderTable.StartAddress,
@@ -3123,8 +3252,23 @@ public:
         pDesc->CallableShaderTable.StrideInBytes,
         {pDesc->Width, pDesc->Height, pDesc->Depth},
     };
-    if (!state_object_ || !state_object_->GetPipeline(pipeline, table, dispatch.pipeline_flags))
+    if (!BeginRays(dispatch.pipeline_flags))
       return;
+    auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(dispatch), alignof(SM50_RAY_DISPATCH));
+    memcpy(mapped, &dispatch, sizeof(dispatch));
+    BindRays(offset);
+    auto &threads = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+    threads.type = WMTComputeCommandDispatchThreads;
+    threads.size = {pDesc->Width, pDesc->Height, pDesc->Depth};
+  }
+
+  // the state object's pipeline and function table in a compute pass, with the list's root arguments
+  bool
+  BeginRays(uint32_t &Flags) {
+    WMT::ComputePipelineState pipeline;
+    WMT::VisibleFunctionTable table;
+    if (!state_object_ || !state_object_->GetPipeline(pipeline, table, Flags))
+      return false;
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute)
       StartComputePass();
     auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
@@ -3134,20 +3278,21 @@ public:
     // the next compute dispatch binds its own pipeline again
     dirty_state_.set(DirtyState::ComputePipelineState);
     BindComputeRootArguments();
-    auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(dispatch), alignof(SM50_RAY_DISPATCH));
-    memcpy(mapped, &dispatch, sizeof(dispatch));
-    auto &arguments = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
-    arguments.type = WMTComputeCommandSetBuffer;
-    arguments.buffer = allocator_->gpu_heap_buffer_;
-    arguments.offset = offset;
-    arguments.index = SM50_RAY_BINDING_DISPATCH;
     auto &functions = allocator_->EncodeComputeCommand<wmtcmd_compute_setvisiblefunctiontable>();
     functions.type = WMTComputeCommandSetVisibleFunctionTable;
     functions.table = table;
     functions.index = SM50_RAY_BINDING_FUNCTIONS;
-    auto &threads = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
-    threads.type = WMTComputeCommandDispatchThreads;
-    threads.size = {pDesc->Width, pDesc->Height, pDesc->Depth};
+    return true;
+  }
+
+  // the kernel's SM50_RAY_DISPATCH, in the GPU heap
+  void
+  BindRays(uint64_t Offset) {
+    auto &arguments = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+    arguments.type = WMTComputeCommandSetBuffer;
+    arguments.buffer = allocator_->gpu_heap_buffer_;
+    arguments.offset = Offset;
+    arguments.index = SM50_RAY_BINDING_DISPATCH;
   }
 
   void STDMETHODCALLTYPE

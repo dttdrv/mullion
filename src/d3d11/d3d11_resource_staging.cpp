@@ -22,8 +22,7 @@ public:
 
   Rc<StagingResource>
   staging(UINT Subresource) final {
-    assert(Subresource == 0);
-    return internal;
+    return Subresource ? nullptr : internal;
   }
   Rc<DynamicBuffer>
   dynamicBuffer(UINT*, UINT*) final {
@@ -77,7 +76,7 @@ public:
 
   Rc<StagingResource>
   staging(UINT Subresource) final {
-    return subresources.at(Subresource);
+    return Subresource < subresources.size() ? subresources[Subresource] : nullptr;
   }
   Rc<DynamicBuffer>
   dynamicBuffer(UINT *, UINT *) final {

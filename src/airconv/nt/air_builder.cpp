@@ -1268,7 +1268,8 @@ AIRBuilder::CreateDotProduct(Value *LHS, Value *RHS) {
   std::string FnName = "air.dot";
   FnName += getTypeOverloadSuffix(LHS->getType());
 
-  auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(getFloatTy(), Tys, false), Attrs);
+  auto Fn =
+      getModule()->getOrInsertFunction(FnName, FunctionType::get(LHS->getType()->getScalarType(), Tys, false), Attrs);
 
   return builder.CreateCall(Fn, Ops);
 }
@@ -1386,6 +1387,18 @@ AIRBuilder::CreateConvertToUnsigned(Value *Val) {
 CallInst *
 AIRBuilder::CreateDeviceCoherentLoad(Type *Ty, Value *Ptr) {
   auto &Context = getContext();
+  // a coherent load may give a word as it was before another threadgroup's store for the rest of a dispatch, also
+  // after a fence of the device's scope (Apple GPUs, measured with Metal's own compiler's output); an atomic load
+  // does not. Unreal's Nanite polls its work queue so, and threadgroups that never saw the work spun for seconds.
+  // named and called as Metal's compiler does for atomic_load_explicit
+  if (Ty->isIntegerTy(32))
+    return builder.CreateCall(
+        getModule()->getOrInsertFunction(
+            "air.atomic.global.load.i32",
+            FunctionType::get(Ty, {Ptr->getType(), getIntTy(), getIntTy(), getBoolTy()}, false)
+        ),
+        {Ptr, getInt(0), getInt(uint32_t(ThreadScope::Device)), getBool(true)}
+    );
   auto Attrs = AttributeList::get(
       Context, {{1U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
                 {1U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
@@ -1413,6 +1426,17 @@ AIRBuilder::CreateDeviceCoherentStore(Value *Val, Value *Ptr) {
   if (DiscardWrites)
     return nullptr;
   auto &Context = getContext();
+  // and the store that such a load is to see (atomic_store_explicit)
+  if (Val->getType()->isIntegerTy(32))
+    return builder.CreateCall(
+        getModule()->getOrInsertFunction(
+            "air.atomic.global.store.i32",
+            FunctionType::get(
+                getVoidTy(), {Ptr->getType(), Val->getType(), getIntTy(), getIntTy(), getBoolTy()}, false
+            )
+        ),
+        {Ptr, Val, getInt(0), getInt(uint32_t(ThreadScope::Device)), getBool(true)}
+    );
   auto Attrs = AttributeList::get(
       Context, {{2U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
                 {2U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
@@ -1874,11 +1898,12 @@ AIRBuilder::CreateAtomicRMW(AtomicRMWInst::BinOp Op, Value *Ptr, Value *Val) {
     debug << "invalid operation: atomicrmw: mismatched atomic operands.\n";
     return nullptr; // TODO
   }
-  Value *MemFlags = nullptr;
+  // the atomic's thread scope, as Metal's compiler writes it for memory of each address space
+  Value *Scope = nullptr;
   switch (TyPtr->getAddressSpace()) {
   case 1:
     FnName += "global.";
-    MemFlags = getInt(3);
+    Scope = getInt(uint32_t(ThreadScope::Device));
     if (DiscardWrites) {
       Op = AtomicRMWInst::Or;
       Val = Constant::getNullValue(Val->getType());
@@ -1886,7 +1911,7 @@ AIRBuilder::CreateAtomicRMW(AtomicRMWInst::BinOp Op, Value *Ptr, Value *Val) {
     break;
   case 3:
     FnName += "local.";
-    MemFlags = getInt(1);
+    Scope = getInt(uint32_t(ThreadScope::Threadgroup));
     break;
   default:
     debug << "invalid operation: atomicrmw: not a valid address space.\n";
@@ -1944,7 +1969,45 @@ AIRBuilder::CreateAtomicRMW(AtomicRMWInst::BinOp Op, Value *Ptr, Value *Val) {
   auto Fn = getModule()->getOrInsertFunction(
       FnName, llvm::FunctionType::get(TyOp, {TyPtr, TyOp, getIntTy(), getIntTy(), getBoolTy()}, false), Attrs
   );
-  return builder.CreateCall(Fn, {Ptr, Val, getInt(0), MemFlags, getBool(true)});
+  return builder.CreateCall(Fn, {Ptr, Val, getInt(0), Scope, getBool(true)});
+}
+
+void
+AIRBuilder::CreateAtomicMinMax64(bool Max, Value *Ptr, Value *Val) {
+  if (DiscardWrites)
+    return;
+  auto Fn = getModule()->getOrInsertFunction(
+      Max ? "air.atomic.global.max.u.i64" : "air.atomic.global.min.u.i64",
+      llvm::FunctionType::get(
+          builder.getVoidTy(), {Ptr->getType(), Val->getType(), getIntTy(), getIntTy(), getBoolTy()}, false
+      )
+  );
+  builder.CreateCall(Fn, {Ptr, Val, getInt(0), getInt(2), getBool(true)});
+}
+
+void
+AIRBuilder::CreateAtomicMinMax64(
+    const Texture &Texture, Value *Handle, bool Max, Value *Pos, Value *ArrayIndex, Value *Val
+) {
+  if (DiscardWrites)
+    return;
+  auto &TexInfo = TextureInfo[Texture.kind];
+  SmallVector<Value *> Ops{Handle, Pos};
+  if (TexInfo.is_array)
+    Ops.push_back(ArrayIndex);
+  Ops.push_back(builder.CreateInsertElement(
+      Constant::getNullValue(FixedVectorType::get(builder.getInt64Ty(), 4)), Val, (uint64_t)0
+  ));
+  Ops.push_back(getInt(0)); // memory order relaxed
+  Ops.push_back(getInt(Texture.memory_access));
+  SmallVector<Type *> Tys;
+  for (auto Op : Ops)
+    Tys.push_back(Op->getType());
+  auto Fn = getModule()->getOrInsertFunction(
+      std::string("air.atomic_") + (Max ? "max" : "min") + "_explicit_" + TexInfo.air_symbol_suffix + ".u.v4i64",
+      FunctionType::get(builder.getVoidTy(), Tys, false)
+  );
+  builder.CreateCall(Fn, Ops);
 }
 
 llvm::Value *

@@ -66,7 +66,8 @@ struct ShaderVisibleDescriptorGPUStorage {
   ShaderVisibleDescriptorGPUStorage();
 };
 
-static_assert(sizeof(ShaderVisibleDescriptorGPUStorage) == 32);
+// a GPU handle is the descriptor's address, so both kinds of handle step by its size
+static_assert(sizeof(ShaderVisibleDescriptorGPUStorage) == 1 << EMBEDDED_DESCRIPTOR_HANDLE::kIncrementBits);
 
 inline uint64_t
 TextureMetadata(uint32_t array_length, float min_lod) {
@@ -632,8 +633,8 @@ CreateDescriptorHeap(
   InitReturnPtr(ppDescriptorHeap);
   if (!pDesc)
     return E_INVALIDARG;
-  if (pDesc->NumDescriptors > 0xFFFFF) {
-    ERR("CreateDescriptorHeap: NumDescriptors is too large");
+  if (pDesc->NumDescriptors >> EMBEDDED_DESCRIPTOR_HANDLE::kDescriptorBits) {
+    ERR("CreateDescriptorHeap: ", pDesc->NumDescriptors, " descriptors of type ", pDesc->Type, " are too many");
     return E_INVALIDARG;
   }
   switch (pDesc->Type) {

@@ -74,6 +74,11 @@ HRESULT CDXBCParser::ReadDXBC( const void* pContainer, UINT ContainerSizeInBytes
         {
             return E_FAIL; // overflow because of bad pBlobHeader->BlobSize value
         }
+        // in 64 bits the sum above cannot wrap, and the 32-bit offset below would hide a size that large
+        if (pIndex[b] + sizeof( DXBCBlobHeader ) + (UINT64)pBlobHeader->BlobSize > ContainerSizeInBytes)
+        {
+            return E_FAIL;
+        }
         OffsetOfCurrentSegmentEnd = pIndex[b] + sizeof( DXBCBlobHeader ) + pBlobHeader->BlobSize - 1;
         if (OffsetOfCurrentSegmentEnd > ContainerSizeInBytes)
         {

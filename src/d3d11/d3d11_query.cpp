@@ -149,7 +149,12 @@ class StreamOutputQuery : public MTLD3DQueryBase<MTLD3D11StreamOutputQuery> {
 public:
   StreamOutputQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc) : MTLD3DQueryBase(pDevice, pDesc) {
     snapshots_ = new Buffer(2 * kStreams * sizeof(D3D11_QUERY_DATA_SO_STATISTICS), pDevice->GetMTLDevice());
-    snapshots_->rename(snapshots_->allocate({}));
+    // the CPU reads them: memory a 32-bit process can address
+    Flags<BufferAllocationFlag> flags;
+#ifdef __i386__
+    flags.set(BufferAllocationFlag::CpuPlaced);
+#endif
+    snapshots_->rename(snapshots_->allocate(flags));
   }
 
   UINT STDMETHODCALLTYPE

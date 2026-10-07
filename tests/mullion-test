@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""mullion-test: everything that can say the libraries are wrong, in one run with one report.
+
+stages, in this order (--stage names some of them):
+  tests        the build's own tests, as each GPU family (tests/run.py): each checks one contract against its
+               specification, the frames a window shows among them. a test fails on a wrong result, a fault, a run
+               that does not end, and on a GPU error or a broken rule of Metal's validation behind a result
+  conformance  the tests Wine and vkd3d-proton wrote against Windows, a process a test function, against the
+               verdicts recorded in tests/conformance (tests/conformance.py): what changed is reported
+  coverage     the tests and the conformance suites once more against a coverage build (--coverage, made by
+               tests/coverage.py setup), and which of the libraries' connections they reached: exports, bridge
+               calls and interface methods, with the unreached ones named
+
+a failure is reported with what its log says: the step the test was in, each wrong result with what was wanted,
+what the library logged, Metal's own error and validation text, and for a crash the library, function and line.
+the exit status is 0 when no test failed and no verdict differs from the recorded ones.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import conformance
+import coverage
+import run
+
+STAGES = ("tests", "conformance", "coverage")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    run.arguments(parser)
+    run.options(parser)
+    conformance.arguments(parser)
+    parser.add_argument("--stage", default=",".join(STAGES), help="the stages to run (default: %(default)s)")
+    parser.add_argument("--coverage", type=Path, help="a coverage build, for the coverage stage")
+    args = parser.parse_args()
+    stages = args.stage.split(",")
+    tests = run.chosen(args)
+    wrong = {}
+    if "tests" in stages:
+        print("== tests", flush=True)
+        wrong["tests failed"] = run.own(args, tests, *run.environment(args))
+    if "conformance" in stages:
+        print("== conformance", flush=True)
+        wrong["verdicts differ"] = conformance.conformance(args, *run.environment(args))
+    if "coverage" in stages and args.coverage:
+        print("== coverage", flush=True)
+        notes = args.coverage.resolve() / "notes"
+        notes.mkdir(exist_ok=True)
+        for note in notes.iterdir():
+            note.unlink()
+        # the coverage build's libraries first, the tests of the others; one family, and nothing recorded
+        covered = argparse.Namespace(**{**vars(args), "build": [args.coverage] + args.build, "family": args.family.split(",")[0],
+                                        "update": False})
+        builds, binary, base = run.environment(covered)
+        # a Windows path of the directory, on the drive Wine gives the root
+        base["MULLION_COVERAGE"] = "Z:" + str(notes).replace("/", "\\")
+        run.own(covered, tests, builds, binary, base)
+        conformance.conformance(covered, builds, binary, base)
+        coverage.report(builds[0], notes, notes / "unreached.txt")
+        # the Wine has the build's own libraries again
+        run.environment(args)
+    print("== " + (", ".join(f"{count} {what}" for what, count in wrong.items()) or "nothing ran"))
+    sys.exit(any(wrong.values()))
+
+
+if __name__ == "__main__":
+    main()

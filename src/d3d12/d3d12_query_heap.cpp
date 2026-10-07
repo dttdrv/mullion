@@ -47,9 +47,8 @@ public:
     }
     case D3D12_QUERY_HEAP_TYPE_TIMESTAMP:
     case D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP:
-      // shared, for the CPU resolves them when their command buffer completes
-      timestamps = metal.newCounterSampleBuffer(pDesc->Count, true);
-      return timestamps ? S_OK : E_OUTOFMEMORY;
+      timestamps.resize(pDesc->Count);
+      return S_OK;
     default:
       ERR("CreateQueryHeap: query heap type ", pDesc->Type, " is not implemented");
       return E_NOTIMPL;

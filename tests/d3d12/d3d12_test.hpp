@@ -14,6 +14,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "../dxbc_hash.hpp"
+#include "../trace.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -22,6 +24,21 @@ using Microsoft::WRL::ComPtr;
     printf("failed: %s (line %d)\n", #x, __LINE__);                                                                    \
     return 1;                                                                                                          \
   }
+
+// a compiled shader as it is, also written to the directory MULLION_TEST_SHADERS names, under a name of its own
+// (its entry and a hash of its code): what the library is given, for the converter's tools (airconv) and for
+// counting which operations the tests' shaders have (tests/coverage.py)
+inline std::string
+kept(std::string code, const char *entry) {
+  char dir[MAX_PATH], hash[2 * sizeof(size_t) + 1];
+  snprintf(hash, sizeof(hash), "%zx", std::hash<std::string>()(code));
+  if (!code.empty() && GetEnvironmentVariableA("MULLION_TEST_SHADERS", dir, sizeof(dir)))
+    if (FILE *file = fopen((std::string(dir) + "\\" + entry + "." + hash + ".dxbc").c_str(), "wb")) {
+      fwrite(code.data(), 1, code.size(), file);
+      fclose(file);
+    }
+  return code;
+}
 
 struct Compiler {
   ComPtr<IDxcCompiler3> dxc; // null for DXBC
@@ -55,7 +72,7 @@ struct Compiler {
         out.assign((const char *)code->GetBufferPointer(), code->GetBufferSize());
       else if (errors)
         printf("%s: %.*s\n", entry, (int)errors->GetBufferSize(), (const char *)errors->GetBufferPointer());
-      return out;
+      return kept(out, entry);
     }
     auto wide = [](const std::string &s) { return std::wstring(s.begin(), s.end()); };
     std::vector<std::wstring> args = {L"-E", wide(entry), L"-T", wide(profile)};
@@ -71,10 +88,14 @@ struct Compiler {
     if (SUCCEEDED(dxc->Compile(&src, argv.data(), argv.size(), nullptr, IID_PPV_ARGS(&result))) &&
         SUCCEEDED(result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&blob), nullptr)) && blob)
       out.assign((const char *)blob->GetBufferPointer(), blob->GetBufferSize());
+    // DXC signs with a library the tests do not carry and leaves the hash zero, which Direct3D takes only as a
+    // preview's shader (INF-0004): the tests sign what it compiled
+    if (out.size() >= dxbc::hashed_from && out.find_first_not_of('\0', dxbc::hash_at) >= dxbc::hashed_from)
+      dxbc::sign(out);
     ComPtr<IDxcBlobUtf8> errors;
     if (out.empty() && result && SUCCEEDED(result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr)) && errors)
       printf("%s: %.*s\n", entry, (int)errors->GetStringLength(), errors->GetStringPointer());
-    return out;
+    return kept(out, entry);
   }
 };
 
@@ -122,7 +143,21 @@ transition(ID3D12GraphicsCommandList *list, ID3D12Resource *res, D3D12_RESOURCE_
   list->ResourceBarrier(1, &barrier);
 }
 
-// runs a closed list and waits for the GPU
+// fills a readback buffer with bytes no test expects: what an earlier pass copied there then cannot stand in for a
+// pass whose list did not run
+inline HRESULT
+forget(ID3D12Resource *readback) {
+  void *bytes;
+  HRESULT hr = readback->Map(0, nullptr, &bytes);
+  if (SUCCEEDED(hr)) {
+    memset(bytes, 0xff, readback->GetDesc().Width);
+    readback->Unmap(0, nullptr);
+  }
+  return hr;
+}
+
+// runs a closed list and waits for the GPU: the device's reason for being removed, which a device whose GPU work
+// failed has (ID3D12Device::GetDeviceRemovedReason), or S_OK
 inline HRESULT
 execute(ID3D12Device *device, ID3D12CommandQueue *queue, ID3D12GraphicsCommandList *list) {
   ComPtr<ID3D12Fence> fence;
@@ -136,7 +171,7 @@ execute(ID3D12Device *device, ID3D12CommandQueue *queue, ID3D12GraphicsCommandLi
     return hr;
   WaitForSingleObject(event, INFINITE);
   CloseHandle(event);
-  return S_OK;
+  return device->GetDeviceRemovedReason();
 }
 
 // closes the list, runs it and waits for the GPU

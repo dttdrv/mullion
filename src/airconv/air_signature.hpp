@@ -545,6 +545,8 @@ struct InputThreadPositionInGrid {};        // uint3
 struct InputThreadgroupPositionInGrid {};   // uint3
 
 struct InputThreadgroupsPerGrid {};         // uint3
+// uint3: the origin the encoder's stage-in region has when the kernel is dispatched
+struct InputStageInGridOrigin {};
 
 struct OutputRenderTarget {
   bool dual_source_blending;
@@ -611,7 +613,7 @@ using FunctionInput = template_concat_t<
     /* kernel */
     InputThreadIndexInThreadgroup, InputThreadPositionInThreadgroup,
     InputThreadPositionInGrid, InputThreadgroupPositionInGrid,
-    InputThreadgroupsPerGrid, InputThreadIndexInSIMDGroup, InputThreadsPerSIMDGroup>>;
+    InputThreadgroupsPerGrid, InputStageInGridOrigin, InputThreadIndexInSIMDGroup, InputThreadsPerSIMDGroup>>;
 
 using FunctionOutput = std::variant<
   /* vertex */

@@ -1432,7 +1432,6 @@ convert_dxbc_vertex_for_geometry_shader(
 
   setup_metal_version(module, metal_version);
 
-  auto index_check = llvm::BasicBlock::Create(context, "index_check", function);
   auto active = llvm::BasicBlock::Create(context, "active", function);
   auto will_dispatch = llvm::BasicBlock::Create(context, "will_dispatch", function);
   auto dispatch = llvm::BasicBlock::Create(context, "dispatch", function);
@@ -1675,6 +1674,7 @@ convert_dxbc_vertex_for_geometry_shader(
     builder.CreateCondBr(valid, active, will_dispatch);
   } else {
     auto global_index_id = builder.CreateAdd(group_start, warp_vertex_id);
+    auto index_check = llvm::BasicBlock::Create(context, "index_check", function);
     builder.CreateCondBr(
         builder.CreateICmp(llvm::CmpInst::ICMP_ULT, global_index_id, vertex_count), index_check, will_dispatch
     );

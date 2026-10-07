@@ -48,6 +48,11 @@ HRESULT ExtractMTLInputLayoutElements(
       ERR("CreateInputLayout: not an ordinary or packed format: ", desc.Format);
       return E_INVALIDARG;
     }
+    // a slot's elements step alike (the same test)
+    if (std::any_of(pInputElementDescs, &desc, [&](auto &other) {
+          return other.InputSlot == desc.InputSlot && other.InputSlotClass != desc.InputSlotClass;
+        }))
+      return E_INVALIDARG;
     auto aligned_byte_offset = desc.AlignedByteOffset == D3D11_APPEND_ALIGNED_ELEMENT
                                    ? align(append_offset[desc.InputSlot], std::min(4u, metal_format.BytesPerTexel))
                                    : desc.AlignedByteOffset;
@@ -79,8 +84,10 @@ HRESULT ExtractMTLInputLayoutElements(
   }
   for (UINT i = 0; i < num_parameters; i++) {
     auto &inputSig = pParameters[i];
-    if (inputSig.SystemValue != D3D10_SB_NAME_UNDEFINED) 
-      continue; // ignore SIV & SGV
+    // the input assembler makes these two itself. every other input needs an element, whatever stage the signature
+    // is of (Wine's test_create_input_layout has it from Windows)
+    if (!strcasecmp(inputSig.SemanticName, "SV_VertexID") || !strcasecmp(inputSig.SemanticName, "SV_InstanceID"))
+      continue;
     if (!(register_mask & (1 << inputSig.Register))) {
       WARN("CreateInputLayout: Vertex shader expects ", inputSig.SemanticName,
            "_", inputSig.SemanticIndex, " but it's not in input layout element descriptors");
@@ -166,13 +173,15 @@ private:
   Sha1Digest sha1_;
 
   class NullGeometryShader : public IMTLD3D11Shader {
-    IUnknown *container;
+    MTLD3D11StreamOutputLayout *container;
 
   public:
-    NullGeometryShader(IUnknown *container) : container(container) {};
+    NullGeometryShader(MTLD3D11StreamOutputLayout *container) : container(container) {};
 
     ULONG STDMETHODCALLTYPE AddRef() override { return container->AddRef(); }
     ULONG STDMETHODCALLTYPE Release() override { return container->Release(); }
+    void AddRefPrivate() override { container->AddRefPrivate(); }
+    void ReleasePrivate() override { container->ReleasePrivate(); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override {
       return container->QueryInterface(riid, ppvObject);
     }

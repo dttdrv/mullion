@@ -20,6 +20,7 @@
 #include "d3d12.h"
 #include "dxmt_buffer.hpp"
 #include "dxmt_texture.hpp"
+#include <bit>
 #include <cstdint>
 
 #if UINTPTR_MAX == 0xffffffffffffffffULL
@@ -34,20 +35,24 @@ struct EMBEDDED_DESCRIPTOR_HANDLE {
   SIZE_T Descriptor : 20;
   SIZE_T Heap       : 7;
 #else
-  SIZE_T Tag        : 5;
-  SIZE_T Descriptor : 20;
-  SIZE_T Heap       : 39;
+  // a heap is aligned to a page and a user address has 47 bits, which leaves the heap's bits; consecutive
+  // descriptors' handles differ in the bits above the low ones, and the descriptor's index has the rest
+  static constexpr unsigned kIncrementBits = 5, kAddressBits = 47,
+                            kHeapBits = kAddressBits - std::countr_zero(size_t(DXMT_PAGE_SIZE)),
+                            kDescriptorBits = sizeof(SIZE_T) * 8 - kIncrementBits - kHeapBits;
+  SIZE_T Increment  : kIncrementBits;
+  SIZE_T Descriptor : kDescriptorBits;
+  SIZE_T Heap       : kHeapBits;
 
-  // assume pointer is 8-byte aligned, providing 3 free bits
   template <typename T>
   T *
   extract() {
-    return reinterpret_cast<T *>((Heap << 8) | (Tag << 3));
+    return reinterpret_cast<T *>(Heap << (kAddressBits - kHeapBits));
   }
 
   EMBEDDED_DESCRIPTOR_HANDLE(const void *heap, SIZE_T index) {
-    Heap = (SIZE_T)heap >> 8;
-    Tag = (SIZE_T)heap >> 3;
+    Increment = 0;
+    Heap = (SIZE_T)heap >> (kAddressBits - kHeapBits);
     Descriptor = index;
   }
 #endif
@@ -128,7 +133,7 @@ struct ShaderVisibleDescriptorCPUStorage {
   ShaderVisibleDescriptorCPUStorage() : type(ShaderVisibleDescriptorType::Null) {}
 };
 
-class MTLD3D12DescriptorHeap : public ID3D12DescriptorHeap {
+class alignas(DXMT_PAGE_SIZE) MTLD3D12DescriptorHeap : public ID3D12DescriptorHeap {
 public:
   virtual HRESULT
   AddShaderResourceView(
@@ -165,7 +170,7 @@ public:
   virtual void CopyDescriptors(UINT From, MTLD3D12DescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
 };
 
-class MTLD3D12SamplerDescriptorHeap : public ID3D12DescriptorHeap {
+class alignas(DXMT_PAGE_SIZE) MTLD3D12SamplerDescriptorHeap : public ID3D12DescriptorHeap {
 public:
   virtual HRESULT AddSampler(UINT Index, const D3D12_SAMPLER_DESC *Desc) = 0;
 
@@ -182,7 +187,7 @@ struct MTL_RENDER_TARGET_DESC {
   UINT Flags;
 };
 
-class MTLD3D12RenderTargetDescriptorHeap : public ID3D12DescriptorHeap {
+class alignas(DXMT_PAGE_SIZE) MTLD3D12RenderTargetDescriptorHeap : public ID3D12DescriptorHeap {
 public:
   virtual HRESULT AddRenderTarget(UINT Index, MTL_RENDER_TARGET_DESC const *pDesc) = 0;
   virtual MTL_RENDER_TARGET_DESC GetRenderTarget(UINT Index) = 0;

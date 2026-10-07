@@ -101,6 +101,14 @@ struct RenderEncoderData : EncoderData {
   uint32_t render_target_width;
   wmtcmd_render_nop cmd_head;
   wmtcmd_base *cmd_tail;
+  // compute commands that run before the pass: the resolvers of its indirect commands, whose commands it then runs
+  wmtcmd_compute_nop before_head;
+  wmtcmd_base *before_tail;
+  // DXMT_D3D12_GPU_ERRORS: where each of the pass's indirect commands' resolvers keeps its largest numbers
+  struct Most {
+    const uint32_t *words;
+    Most *next;
+  } *most;
   uint8_t dsv_planar_flags;
   uint8_t dsv_readonly_flags;
   uint8_t render_target_count;
@@ -110,12 +118,14 @@ struct RenderEncoderData : EncoderData {
   bool use_geometry = 0;
 };
 
+class MTLD3D12QueryHeap;
+
 struct BlitEncoderData : EncoderData {
   wmtcmd_blit_nop cmd_head;
   wmtcmd_base *cmd_tail;
   // a timestamp query samples the GPU clock when the encoder starts
-  obj_handle_t sample_buffer = 0;
-  uint32_t sample_index = 0;
+  MTLD3D12QueryHeap *timestamps = nullptr;
+  uint32_t timestamp_query = 0;
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -166,9 +176,12 @@ struct LaterEncoderData : EncoderData {
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
 };
 
-// timestamp queries' samples, copied to a buffer: Metal makes them readable only once their command buffer completes
+// timestamp queries' samples, copied to a buffer: Metal makes them readable only once their command buffer completes.
+// a readback heap's buffer is one the GPU never reads, so the CPU writes it then, through `readback` at its memory
 struct ResolveTimestampsData : EncoderData {
-  WMT::CounterSampleBuffer sample_buffer;
+  MTLD3D12QueryHeap *heap;
+  ID3D12Resource *readback = nullptr;
+  void *memory = nullptr;
   uint32_t start;
   uint32_t count;
   WMT::Buffer dst;

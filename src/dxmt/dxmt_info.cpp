@@ -1,3 +1,6 @@
+#include "dxmt_info.hpp"
+#include "config/config.hpp"
+#include <algorithm>
 #include "util_string.hpp"
 #include <version.h>
 
@@ -36,6 +39,18 @@ GetVersionDescriptionText(uint32_t ApiVersion, uint32_t FeatureLevel) {
     break;
   }
   return str::format("DXMT D3D", ApiVersion, " FL_", feature_level_text, " ", DXMT_VERSION);
+}
+
+WMTMetalVersion
+ShaderMetalVersion(WMT::Device device) {
+  int asked = Config::getInstance().getOption<int>("dxmt.shaderMetalVersion", 0);
+  auto version = asked == WMTMetal310 || asked == WMTMetal320 ? WMTMetalVersion(asked) : WMTMetalVersionMax;
+  uint64_t macos_major_version = 0;
+  WMTGetOSVersion(&macos_major_version, nullptr, nullptr);
+  // Metal 3.2 is macOS 15's, and what the converter needs of it is basically not there on other GPUs
+  if (macos_major_version < 15 || !device.supportsFamily(WMTGPUFamilyApple7))
+    version = std::min(WMTMetal310, version);
+  return version;
 }
 
 } // namespace dxmt

@@ -82,6 +82,24 @@ public:
       : MTLD3D11DeviceObject<ComObject<Base...>>(pDevice) {}
 
   virtual ~MTLD3D11DeviceChild() {};
+
+  // what the application holds, holds its device (Wine's d3d11 tests count it on Windows)
+  ULONG STDMETHODCALLTYPE
+  AddRef() {
+    ULONG count = ComObject<Base...>::AddRef();
+    if (count == 1)
+      this->m_parent->AddRef();
+    return count;
+  }
+
+  ULONG STDMETHODCALLTYPE
+  Release() {
+    auto parent = this->m_parent;
+    ULONG count = ComObject<Base...>::Release();
+    if (!count)
+      parent->Release();
+    return count;
+  }
 };
 
 /**

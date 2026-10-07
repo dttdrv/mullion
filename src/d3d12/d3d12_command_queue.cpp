@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <deque>
 #include <algorithm>
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"
@@ -44,9 +45,72 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
   WMT::Reference<WMT::CommandQueue> queue_;
   WMT::Reference<WMT::Fence> fence_;
-  // counts the timestamp resolves, which wait for the CPU to read their samples
+  // counts the timestamp resolves into buffers the GPU may read, which wait for the CPU to read their samples
   Rc<Fence> timestamps_read_;
   uint64_t timestamp_resolves_ = 0;
+
+  // Metal fails a command buffer that waits for an event for more than a few seconds, and ignores the queue's
+  // later ones, so no command buffer waits: the CPU does. after Wait for a value the fence has yet to reach, the
+  // work the application gives the queue is held, and a thread commits it in order once the fence is there
+  dxmt::mutex held_mutex_;
+  dxmt::condition_variable held_changed_;
+  std::deque<std::function<void()>> held_;
+  bool holding_ = false, held_stop_ = false;
+  // the fence value the worker waits for
+  std::shared_ptr<std::atomic<bool>> awaited_;
+  dxmt::thread held_thread_;
+
+  // what the queue does and where it waits, with DXMT_LOG_LEVEL=trace: the last lines of a hang name it
+  template <typename... Args>
+  void
+  Trace(const Args &...args) {
+    if (Logger::logLevel() == LogLevel::Trace)
+      TRACE(GetTickCount64(), " ms, queue ", this, " thread ", GetCurrentThreadId(), ": ", args...);
+  }
+
+  // true when the queue holds its work back: `work` is then done after what it holds, and `begin` starts holding
+  template <typename Work>
+  bool
+  Hold(Work &&work, bool begin = false) {
+    std::unique_lock<dxmt::mutex> lock(held_mutex_);
+    if (!holding_ && !begin)
+      return false;
+    if (!held_thread_.joinable())
+      held_thread_ = dxmt::thread([this] { CommitHeld(); });
+    holding_ = true;
+    held_.emplace_back(std::forward<Work>(work));
+    held_changed_.notify_all();
+    return true;
+  }
+
+  bool
+  Holding() {
+    std::unique_lock<dxmt::mutex> lock(held_mutex_);
+    return holding_;
+  }
+
+  void
+  CommitHeld() {
+    env::setThreadName("dxmt-held-work-thread");
+    std::unique_lock<dxmt::mutex> lock(held_mutex_);
+    for (;;) {
+      held_changed_.wait(lock, [&] { return held_stop_ || !held_.empty(); });
+      if (held_stop_)
+        return;
+      // the deque is the lock's: the work is taken out of it before it runs, and its place stays until it is done
+      auto work = std::move(held_.front());
+      lock.unlock();
+      Trace("held work starts");
+      work();
+      lock.lock();
+      held_.pop_front();
+      Trace("held work done, ", held_.size(), " left");
+      if (held_.empty()) {
+        holding_ = false;
+        held_changed_.notify_all();
+      }
+    }
+  }
 
   // the list the queue records on (LaterEncoderData), and the memory of the last build it recorded there
   Com<ID3D12CommandAllocator> own_allocator_;
@@ -64,27 +128,33 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   };
   std::vector<Unresolved> unresolved_;
 
-  // tile mappings: a Metal 4 queue makes them, between a signal of the work before and the value the work after waits
-  // for (Metal 4's mappings hold for the classic queue's work ordered after them)
+  // tile mappings: a Metal 4 queue makes them, once the work before has run and before the work after is committed
+  // (Metal 4's mappings hold for the classic queue's work ordered after them)
   WMT::Reference<WMT::MTL4CommandQueue> mapping_queue_;
   Rc<Fence> mapped_;
-  uint64_t mapping_value_ = 0, wait_for_mappings_ = 0;
+  uint64_t mapping_value_ = 0;
 
-  // mapping work, in order with the queue's other work
+  // mapping work, in order with the queue's other work: held with it, so the caller goes on to what a held wait
+  // waits for. `update` owns what it names
   template <typename Update>
   void
   Map(Update &&update) {
-    if (!mapping_queue_) {
-      mapping_queue_ = device_->GetMTLDevice().newMTL4CommandQueue();
-      mapped_ = new Fence(device_->GetMTLDevice());
-    }
-    {
-      auto scope = StartCommitting();
-      mapped_->signal(scope.inflight.cmdbuf, ++mapping_value_);
-    }
-    mapping_queue_.waitForEvent(mapped_->sharedEvent(), mapping_value_);
-    update(mapping_queue_);
-    mapping_queue_.signalEvent(mapped_->sharedEvent(), wait_for_mappings_ = ++mapping_value_);
+    auto work = [this, update = std::forward<Update>(update)] {
+      if (!mapping_queue_) {
+        mapping_queue_ = device_->GetMTLDevice().newMTL4CommandQueue();
+        mapped_ = new Fence(device_->GetMTLDevice());
+      }
+      WMT::Reference<WMT::CommandBuffer> before = StartCommitting().inflight.cmdbuf;
+      Trace("tile mappings: waits for the work before");
+      before.waitUntilCompleted();
+      update(mapping_queue_);
+      mapping_queue_.signalEvent(mapped_->sharedEvent(), ++mapping_value_);
+      Trace("tile mappings: waits for mapping ", mapping_value_);
+      mapped_->wait(mapping_value_);
+      Trace("tile mappings: done");
+    };
+    if (!Hold(work))
+      work();
   }
 
   std::atomic_uint64_t inflight_cmdbuf_seq_ = 1;
@@ -95,10 +165,67 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     WMT::Reference<WMT::CommandBuffer> cmdbuf{};
     HANDLE semaphore{};
     std::function<void()> completed{};
+    // the timestamp queries the command buffer samples: the device's counter sample buffer it holds until it
+    // completes, and the query of each sample taken
+    WMT::Reference<WMT::CounterSampleBuffer> samples{};
+    std::vector<std::pair<Com<MTLD3D12QueryHeap>, uint32_t>> sampled{};
+    // the resolves of timestamps into readback buffers, which the CPU does when the command buffer completes
+    struct Resolve {
+      Com<MTLD3D12QueryHeap> heap;
+      uint32_t first, count;
+      Com<ID3D12Resource> readback;
+      void *to;
+      // how many of the command buffer's samples were taken before it: it reads its queries as they were then
+      size_t after;
+    };
+    std::vector<Resolve> resolves{};
+    // DXMT_D3D12_GPU_ERRORS: the passes with indirect commands and where their resolvers keep their largest numbers
+    std::vector<std::pair<std::string, const uint32_t *>> most{};
+    // how many encoders of each kind it has, and whether it presents: what a report of one that does not complete says
+    std::array<uint16_t, size_t(EncoderType::AccelerationStructure) + 1> encoders{};
+    bool presents = false;
   };
 
   std::array<InflightCommandBuffer, kCommandQueueSize> inflight_cmdbuf_pool_;
   dxmt::thread inflight_cmdbuf_wait_thread_;
+
+  // a command buffer that does not complete stops the queue with no error from Metal: a thread reports the one the
+  // completion thread has waited on for kStuckSeconds, with what Metal says of it and what is in it. a warning: one
+  // list of very many draws takes as long
+  static constexpr auto kStuckSeconds = std::chrono::seconds(10);
+  dxmt::mutex watch_mutex_;
+  dxmt::condition_variable watch_changed_;
+  uint64_t watched_seq_ = 0;
+  bool watch_stop_ = false;
+  dxmt::thread watch_thread_;
+
+  void
+  Watch() {
+    env::setThreadName("dxmt-cmdbuf-watch-thread");
+    std::unique_lock<dxmt::mutex> lock(watch_mutex_);
+    while (!watch_stop_) {
+      auto seq = watched_seq_;
+      // the same one still, after the time: it is reported once, and the thread sleeps until another is waited on
+      if (watch_changed_.wait_for(lock, kStuckSeconds, [&] { return watch_stop_ || watched_seq_ != seq; }) || !seq)
+        continue;
+      auto &inflight = inflight_cmdbuf_pool_[seq % kCommandQueueSize];
+      std::string encoders;
+      for (auto count : inflight.encoders)
+        encoders += std::to_string(count) + " ";
+      WARN("command buffer ", seq, " of queue ", this, " has not completed for ", kStuckSeconds.count(),
+          " s; Metal's status of it is ", uint64_t(inflight.cmdbuf.status()), " (2 committed, 3 scheduled); encoders by kind: ",
+          encoders, inflight.presents ? "and a present" : "");
+      watch_changed_.wait(lock, [&] { return watch_stop_ || watched_seq_ != seq; });
+    }
+  }
+
+  // the command buffer the completion thread waits on, 0 for none
+  void
+  Watched(uint64_t seq) {
+    std::lock_guard<dxmt::mutex> lock(watch_mutex_);
+    watched_seq_ = seq;
+    watch_changed_.notify_all();
+  }
 
   dxmt::mutex mutex_commit_;
 
@@ -114,11 +241,40 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         break;
       auto &inflight = inflight_cmdbuf_pool_[internal_seq % kCommandQueueSize];
 
+      Trace("waits for command buffer ", internal_seq);
+      Watched(internal_seq);
       if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
         inflight.cmdbuf.waitUntilCompleted();
-      if (inflight.cmdbuf.status() == WMTCommandBufferStatusError)
-        ERR("Device error: ", inflight.cmdbuf.error().description().getUTF8String());
+      Watched(0);
+      Trace("command buffer ", internal_seq, " completed");
+      if (inflight.cmdbuf.status() == WMTCommandBufferStatusError) {
+        // the first says why; Metal fails what follows a fault of the process's too
+        if (SUCCEEDED(device_->GetDeviceRemovedReason())) {
+          ERR("Device error: ", inflight.cmdbuf.error().description().getUTF8String());
+          for (auto &[label, words] : inflight.most)
+            ERR("indirect commands of ", label, ": ", words[5], " commands; the most instances ", words[0],
+                ", vertices or indices ", words[1], ", start ", words[2], ", base vertex ", words[3], ", start instance ",
+                words[4]);
+        }
+        device_->LoseDevice();
+      }
 
+      std::vector<uint64_t> clock(inflight.sampled.size());
+      if (inflight.samples) {
+        inflight.samples.resolveCounterRange(0, clock.size(), clock.data(), clock.size() * sizeof(uint64_t));
+        device_->timestamp_samples.Return(std::move(inflight.samples));
+      }
+      // samples and resolves in the order the lists had them: a query sampled again after a resolve is another value
+      size_t read = 0;
+      auto sample = [&](size_t until) {
+        for (; read < until; read++)
+          inflight.sampled[read].first->timestamps[inflight.sampled[read].second] = clock[read];
+      };
+      for (auto &resolve : inflight.resolves) {
+        sample(resolve.after);
+        memcpy(resolve.to, &resolve.heap->timestamps[resolve.first], resolve.count * sizeof(uint64_t));
+      }
+      sample(clock.size());
       if (inflight.completed)
         inflight.completed();
       if (inflight.semaphore)
@@ -140,41 +296,63 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     InflightCommandBuffer &inflight;
     WMT::Reference<WMT::Object> pool;
 
+    // a slot is the scope's from here to its retirement: it is waited for and counted under the lock, so two
+    // submitters never pass one free slot, and counted before the completion thread hears of it
     CommittingScope(MTLD3D12CommandQueueImpl *queue) :
         queue(queue),
         lock(queue->mutex_commit_),
-        seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
+        seq((queue->inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire),
+             queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed),
+             queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed))),
         inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
         pool(WMT::MakeAutoreleasePool()) {
       inflight.cmdbuf = queue->queue_.commandBuffer();
-      if (queue->wait_for_mappings_)
-        queue->mapped_->wait(inflight.cmdbuf, std::exchange(queue->wait_for_mappings_, 0));
     };
 
     ~CommittingScope() {
       inflight.cmdbuf.commit();
       queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
       queue->inflight_cmdbuf_seq_.notify_one();
-      queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
     }
   };
 
   CommittingScope
   StartCommitting() {
-    inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
     return CommittingScope(this);
   }
 
 public:
   MTLD3D12CommandQueueImpl(MTLD3D12Device *pDevice) :
       MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory>(pDevice),
-      inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
+      inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }),
+      watch_thread_([this] { Watch(); }) {}
 
   ~MTLD3D12CommandQueueImpl() {
+    if (held_thread_.joinable()) {
+      {
+        std::lock_guard<dxmt::mutex> lock(held_mutex_);
+        held_stop_ = true;
+        held_changed_.notify_all();
+        // a wait the queue will never see the end of
+        if (awaited_) {
+          *awaited_ = true;
+          awaited_->notify_all();
+        }
+      }
+      held_thread_.join();
+    }
     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
-    inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
+    // the marker first: the completion thread reads it as soon as the sequence moves
+    inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.load());
+    inflight_cmdbuf_seq_.fetch_add(1);
     inflight_cmdbuf_seq_.notify_one();
     inflight_cmdbuf_wait_thread_.join();
+    {
+      std::lock_guard<dxmt::mutex> watch(watch_mutex_);
+      watch_stop_ = true;
+      watch_changed_.notify_all();
+    }
+    watch_thread_.join();
   }
 
   HRESULT
@@ -276,10 +454,10 @@ public:
     }
     if (operations.empty())
       return;
-    auto res = static_cast<MTLD3D12Resource *>(resource);
-    WMT::Object heap_handle = heap ? static_cast<MTLD3D12Heap *>(heap)->heap : WMT::Heap{};
-    Map([&](WMT::MTL4CommandQueue queue) {
-      if (tiling.texture) {
+    Map([texture = tiling.texture, res = Com(static_cast<MTLD3D12Resource *>(resource)),
+         heap = Com(static_cast<MTLD3D12Heap *>(heap)), operations = std::move(operations)](WMT::MTL4CommandQueue queue) {
+      WMT::Object heap_handle = heap != nullptr ? heap->heap : WMT::Heap{};
+      if (texture) {
         queue.updateMappings(res->texture->current()->texture(), true, heap_handle, operations);
         return;
       }
@@ -313,9 +491,10 @@ public:
         destination.index(*dst_region_start_coordinate, *region_size, 0) >
             source.index(*src_region_start_coordinate, *region_size, 0))
       std::reverse(operations.begin(), operations.end());
-    auto src = static_cast<MTLD3D12Resource *>(src_resource), dst = static_cast<MTLD3D12Resource *>(dst_resource);
-    Map([&](WMT::MTL4CommandQueue queue) {
-      if (source.texture) {
+    Map([texture = source.texture, src = Com(static_cast<MTLD3D12Resource *>(src_resource)),
+         dst = Com(static_cast<MTLD3D12Resource *>(dst_resource)),
+         operations = std::move(operations)](WMT::MTL4CommandQueue queue) {
+      if (texture) {
         queue.copyMappings(src->texture->current()->texture(), dst->texture->current()->texture(), true, operations);
         return;
       }
@@ -328,12 +507,23 @@ public:
 
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+    // what the lists recorded, which is theirs no longer: the application may record them again at once
+    std::vector<EncoderData *> recorded(Count);
+    for (UINT i = 0; i < Count; i++)
+      recorded[i] = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i])->entry;
+    Trace("ExecuteCommandLists of ", Count);
+    auto work = [this, recorded = std::move(recorded)] { Commit(recorded); };
+    if (!Hold(work))
+      work();
+    Trace("ExecuteCommandLists returns");
+  }
+
+  void
+  Commit(const std::vector<EncoderData *> &recorded) {
     device_->CheckAtomicLocks();
     std::optional<CommittingScope> scope;
-    auto start = [&] {
-      inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
-      scope.emplace(this);
-    };
+    auto start = [&] { scope.emplace(this); };
+    static const bool isolate = !env::getEnvVar("DXMT_D3D12_ISOLATE").empty();
     start();
     WMT::CommandBuffer cmdbuf = scope->inflight.cmdbuf;
     // ends the command buffer and waits for it: what the work so far leaves in memory is then there
@@ -382,6 +572,13 @@ public:
       };
       const uint32_t *decided = nullptr;
       while (current) {
+        // with DXMT_D3D12_ISOLATE set every pass is a command buffer that is waited for, and the trace names each:
+        // the last one named is the one the GPU does not finish
+        if (isolate) {
+          settle();
+          Trace("pass ", current->id, " of kind ", uint32_t(current->type), " starts");
+        }
+        scope->inflight.encoders[size_t(current->type)]++;
         switch (current->type) {
         case EncoderType::Null:
           break;
@@ -473,7 +670,20 @@ public:
             render_pass_info.render_target_height = data->render_target_height;
             render_pass_info.visibility_buffer = data->visibility_buffer;
           }
+          if (data->before_head.next.get()) {
+            auto before = cmdbuf.computeCommandEncoder(false);
+            before.waitForFence(fence_);
+            before.encodeCommands(&data->before_head);
+            before.updateFence(fence_);
+            before.endEncoding();
+          }
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+          if (device_->NamesPasses()) {
+            auto label = "render " + device_->PassName(current->id);
+            encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+            for (auto most = data->most; most; most = most->next)
+              scope->inflight.most.emplace_back(label, most->words);
+          }
           encoder.waitForFence(fence_, WMTRenderStageVertex);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_, WMTRenderStageFragment);
@@ -482,9 +692,29 @@ public:
         }
         case EncoderType::Blit: {
           auto data = static_cast<BlitEncoderData *>(current);
-          WMTSampleBufferAttachmentInfo sample{data->sample_buffer, data->sample_index, ~0ull /* MTLCounterDontSample */};
-          auto encoder = data->sample_buffer ? cmdbuf.blitCommandEncoderWithSampleBuffers(&sample, 1)
-                                             : cmdbuf.blitCommandEncoder();
+          WMT::CounterSampleBuffer samples{};
+          uint32_t sample = 0;
+          if (data->timestamps) {
+            auto &pool = device_->timestamp_samples;
+            // a command buffer has one buffer of samples: when it is full the next begins
+            if (scope->inflight.samples && scope->inflight.sampled.size() == pool.limit) {
+              scope.reset();
+              start();
+              cmdbuf = scope->inflight.cmdbuf;
+            }
+            if (!scope->inflight.samples)
+              scope->inflight.samples = pool.Take(device_->GetMTLDevice());
+            if (scope->inflight.samples) {
+              samples = scope->inflight.samples;
+              sample = scope->inflight.sampled.size();
+              scope->inflight.sampled.push_back({data->timestamps, data->timestamp_query});
+            } else {
+              ERR("EndQuery: Metal has no counter sample buffer for a timestamp");
+            }
+          }
+          WMTSampleBufferAttachmentInfo attachment{samples, sample, ~0ull /* MTLCounterDontSample */};
+          auto encoder = samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(&attachment, 1)
+                                 : cmdbuf.blitCommandEncoder();
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -513,6 +743,8 @@ public:
         case EncoderType::Compute: {
           auto data = static_cast<ComputeEncoderData *>(current);
           auto encoder = cmdbuf.computeCommandEncoder(false);
+          if (device_->NamesPasses())
+            encoder.setLabel(WMT::String::string(("compute " + device_->PassName(current->id)).c_str(), WMTUTF8StringEncoding));
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -520,21 +752,28 @@ public:
           break;
         }
         case EncoderType::ResolveTimestamps: {
-          // the command buffer ends here; when it completes the CPU reads the samples, and the next one waits for them
           auto data = static_cast<ResolveTimestampsData *>(current);
+          if (data->readback) {
+            scope->inflight.resolves.push_back({data->heap, data->start, data->count, data->readback,
+                                                static_cast<char *>(data->memory) + data->dst_offset,
+                                                scope->inflight.sampled.size()});
+            break;
+          }
+          // the command buffer ends here; when it has completed and the CPU has read the samples, the next one
+          // copies them
           WMTBufferInfo info{data->count * sizeof(uint64_t), WMTResourceStorageModeShared};
           auto staging = device_->GetMTLDevice().newBuffer(info);
           auto value = ++timestamp_resolves_;
-          scope->inflight.completed = [samples = data->sample_buffer, staging,
-                                       mapped = info.memory.ptr, first = data->start, count = data->count,
-                                       read = timestamps_read_, value] {
-            samples.resolveCounterRange(first, count, mapped, count * sizeof(uint64_t));
+          scope->inflight.completed = [heap = Com(data->heap), staging, mapped = info.memory.ptr, first = data->start,
+                                       count = data->count, read = timestamps_read_, value] {
+            memcpy(mapped, &heap->timestamps[first], count * sizeof(uint64_t));
             read->signal(value);
           };
           scope.reset();
+          Trace("waits for timestamps ", value);
+          timestamps_read_->wait(value);
           start();
           cmdbuf = scope->inflight.cmdbuf;
-          timestamps_read_->wait(cmdbuf, value);
           auto encoder = cmdbuf.blitCommandEncoder();
           encoder.waitForFence(fence_);
           encoder.copyFromBuffer(staging, 0, data->dst, data->dst_offset, data->count * sizeof(uint64_t));
@@ -644,8 +883,8 @@ public:
         }
       }
     };
-    for (unsigned i = 0; i < Count; i++)
-      encode(encode, static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i])->entry);
+    for (auto entry : recorded)
+      encode(encode, entry);
   };
 
   // the build that gives back the structure serialized at `Source` (CopyRaytracingAccelerationStructure,
@@ -717,17 +956,34 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D12Fence *pFence, UINT64 Value) {
-    auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
-    static_cast<MTLD3D12Fence *>(pFence)->fence->signal(cmdbuf, Value);
+    // from the CPU, once the work before has completed and what it left for the CPU is done
+    auto work = [this, fence = Com(static_cast<MTLD3D12Fence *>(pFence)), Value] {
+      StartCommitting().inflight.completed = [this, fence, Value] {
+        Trace("fence ", fence.ptr(), " reaches ", Value);
+        fence->Reach(Value);
+      };
+    };
+    Trace("Signal of fence ", pFence, " to ", Value);
+    if (!Hold(work))
+      work();
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D12Fence *pFence, UINT64 Value) {
-    auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
-    static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
+    auto reached = static_cast<MTLD3D12Fence *>(pFence)->Expect(Value);
+    auto work = [this, reached] {
+      {
+        std::lock_guard<dxmt::mutex> lock(held_mutex_);
+        if (held_stop_)
+          return;
+        awaited_ = reached;
+      }
+      reached->wait(false);
+    };
+    Trace("Wait for fence ", pFence, " at ", Value, *reached ? ", which it has had" : ", which holds the queue");
+    if (!Hold(work) && !*reached)
+      Hold(work, true);
     return S_OK;
   };
 
@@ -768,7 +1024,20 @@ public:
   }
 
   HRESULT
-  Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
+  Present(
+      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after
+  ) {
+    if (Holding() &&
+        Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), hLantecyWaitable, after] {
+          Commit(presenter, backbuffer.ptr(), hLantecyWaitable, after);
+        }))
+      return S_OK;
+    return Commit(presenter, backbuffer, hLantecyWaitable, after);
+  }
+
+  HRESULT
+  Commit(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
+    Trace("Present");
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
 
@@ -789,6 +1058,7 @@ public:
     else
       cmdbuf.presentDrawable(drawable);
     scope.inflight.semaphore = hLantecyWaitable;
+    scope.inflight.presents = true;
 
     return S_OK;
   }

@@ -1,0 +1,20 @@
+; a scene that uses what Godot's Forward+ renderer has, built in code (main.gd) so that no asset has to be imported
+
+config_version=5
+
+[application]
+
+config/name="mullion-test"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/vsync/vsync_mode=0
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=1
+lights_and_shadows/directional_shadow/size=2048

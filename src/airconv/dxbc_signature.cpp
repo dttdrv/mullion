@@ -988,6 +988,7 @@ void handle_signature_cs(
 
     switch (RegType) {
     case D3D11_SB_OPERAND_TYPE_INPUT_THREAD_ID: {
+      sm50_shader->reads_dispatch_position = true;
       auto assigned_index =
         func_signature.DefineInput(InputThreadPositionInGrid{});
       signature_handlers.push_back([=](SignatureContext &ctx) {
@@ -1000,6 +1001,7 @@ void handle_signature_cs(
       break;
     }
     case D3D11_SB_OPERAND_TYPE_INPUT_THREAD_GROUP_ID: {
+      sm50_shader->reads_dispatch_position = true;
       auto assigned_index =
         func_signature.DefineInput(InputThreadgroupPositionInGrid{});
       signature_handlers.push_back([=](SignatureContext &ctx) {
@@ -1200,6 +1202,31 @@ handle_signature_gs(
     break;
   }
 };
+
+// a compute shader whose dispatch may come in parts (groups_work_together) and that reads where its thread or group
+// is in the dispatch: each part's groups are numbered from the stage-in grid's origin, which is in groups
+void declare_dispatch_origin(SM50ShaderInternal *sm50_shader) {
+  if (sm50_shader->shader_type != microsoft::D3D11_SB_COMPUTE_SHADER || !sm50_shader->groups_work_together ||
+      !sm50_shader->reads_dispatch_position)
+    return;
+  auto index = sm50_shader->func_signature.DefineInput(InputStageInGridOrigin{});
+  sm50_shader->signature_handlers.push_back([=](SignatureContext &ctx) {
+    ctx.prologue << make_effect([=](struct context ctx) {
+      auto origin = ctx.function->getArg(index);
+      auto &res = ctx.resource;
+      if (res.thread_group_id_arg)
+        res.thread_group_id_arg = ctx.builder.CreateAdd(res.thread_group_id_arg, origin);
+      if (res.thread_id_arg)
+        res.thread_id_arg = ctx.builder.CreateAdd(
+            res.thread_id_arg,
+            ctx.builder.CreateMul(
+                origin, llvm::ConstantDataVector::get(ctx.llvm, llvm::ArrayRef<uint32_t>(sm50_shader->threadgroup_size))
+            )
+        );
+      return std::monostate{};
+    });
+  });
+}
 
 void handle_signature(
   microsoft::CSignatureParser &inputParser,

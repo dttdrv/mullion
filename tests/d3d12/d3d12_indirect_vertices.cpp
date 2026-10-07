@@ -125,6 +125,7 @@ main(int argc, char **argv) {
       CHECK(commands->Map(0, nullptr, &mapped));
       memcpy(mapped, packed.data(), packed.size());
 
+      CHECK(forget(readback.Get()));
       CHECK(allocator->Reset());
       CHECK(list->Reset(allocator.Get(), pso.Get()));
       D3D12_VIEWPORT viewport{0, 0, (float)size, (float)size, 0, 1};

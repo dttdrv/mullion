@@ -128,7 +128,7 @@ public:
 class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D12Device> {
 
   Com<IDXGIFactory1> factory_;
-  MTLD3D12CommandQueue *queue_;
+  Com<MTLD3D12CommandQueue> queue_;
   HWND hWnd;
   HMONITOR monitor_;
   Com<IDXGIOutput1> target_;
@@ -713,6 +713,8 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+    if (FAILED(device_->GetDeviceRemovedReason()))
+      return DXGI_ERROR_DEVICE_REMOVED;
     HRESULT hr = S_OK;
     follower_.follow(hWnd, native_view_);
     if (desc_.Width == 0 || desc_.Height == 0)
@@ -732,7 +734,7 @@ public:
     // full screen, the output's gamma ramp
     if (target_)
       presenter->changeGammaRamp(static_cast<MTLDXGIOutput *>(target_.ptr())->GetGammaRamp());
-    hr = queue_->Present(this->presenter.ptr(), backbuffer.ptr(), present_semaphore_, vsync_duration);
+    hr = queue_->Present(this, this->presenter.ptr(), backbuffer.ptr(), present_semaphore_, vsync_duration);
 
     presentation_count_ += 1;
     current_buffer_ = (current_buffer_ + 1) % backbuffers_.size();
@@ -891,7 +893,7 @@ CreateSwapChain(
     const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
     IDXGISwapChain1 **ppSwapChain
 ) {
-  auto swapchain = Com(new MTLD3D12SwapChain(pFactory, pDevice, pQueue, hWnd, pDesc, pFullscreenDesc));
+  auto swapchain = Com<MTLD3D12SwapChain>::transfer(new MTLD3D12SwapChain(pFactory, pDevice, pQueue, hWnd, pDesc, pFullscreenDesc));
   HRESULT hr = swapchain->ResizeBuffers(0, pDesc->Width, pDesc->Height, DXGI_FORMAT_UNKNOWN, pDesc->Flags);
   if (FAILED(hr))
     return hr;

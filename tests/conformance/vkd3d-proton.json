@@ -1,0 +1,2218 @@
+{
+ "test_advanced_cbv_layout": {
+  "verdict": "failed",
+  "why": "missing: the shader converter refuses a shader: 'DXIL operation 58 (dx.op.cbufferLoad.i64) is not lowered yet', 'stream output of a primitive that only a geometry shader can take'",
+  "first": "test_advanced_cbv_layout:2263:Test 1: Test failed: Failed to create compute pipeline state, hr 0x80004005.",
+  "failures": 6
+ },
+ "test_ags_float8_conversion": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS shader extension",
+  "first": "test_ags_float8_conversion:6882: Test failed: value 0 (-0.000000): expected #80, got #0",
+  "failures": 4064
+ },
+ "test_aliasing_barrier": {
+  "verdict": "passed"
+ },
+ "test_aliasing_barrier_edge_cases": {
+  "verdict": "passed"
+ },
+ "test_amplification_shader": {
+  "verdict": "passed"
+ },
+ "test_amplification_shader_execute_indirect_state": {
+  "verdict": "passed"
+ },
+ "test_append_aligned_element": {
+  "verdict": "passed"
+ },
+ "test_atomic_instructions_dxbc": {
+  "verdict": "passed"
+ },
+ "test_atomic_instructions_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_bufinfo_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_bufinfo_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_cbv_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_cbv_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_full_root_parameters_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_heap_sm66": {
+  "verdict": "passed"
+ },
+ "test_bindless_heap_sm66_uav_counter": {
+  "verdict": "passed"
+ },
+ "test_bindless_samplers_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_samplers_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_srv_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_srv_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_uav_counter_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_uav_counter_sm51": {
+  "verdict": "passed"
+ },
+ "test_bindless_uav_dxil": {
+  "verdict": "passed"
+ },
+ "test_bindless_uav_sm51": {
+  "verdict": "passed"
+ },
+ "test_blend_factor": {
+  "verdict": "passed"
+ },
+ "test_buffer_descriptor_byte_offset": {
+  "verdict": "partly"
+ },
+ "test_buffer_feedback_instructions_dxil": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_buffer_feedback_instructions_dxil:1799:Test 0: Test failed: Got 0x00000000, expected 0x00000001 at (0, 0, 0).",
+  "failures": 256
+ },
+ "test_buffer_feedback_instructions_sm51": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_buffer_feedback_instructions_sm51:1799:Test 0: Test failed: Got 0x00000000, expected 0x00000001 at (0, 0, 0).",
+  "failures": 256
+ },
+ "test_buffer_rtv_dsv_usage": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_buffer_rtv_dsv_usage:6302: Test failed: Unexpected hr #0.",
+  "failures": 1
+ },
+ "test_buffer_srv": {
+  "verdict": "passed"
+ },
+ "test_buffers_oob_behavior_dxbc": {
+  "verdict": "passed"
+ },
+ "test_buffers_oob_behavior_dxil": {
+  "verdict": "passed"
+ },
+ "test_buffers_oob_behavior_vectorized_byte_address": {
+  "verdict": "failed",
+  "why": "bug: a buffer read past its end, or at an address that wraps, returns data",
+  "first": "test_buffers_oob_behavior_vectorized_byte_address:400: Test failed: 32-bit value 0, 8: #83 != #0.",
+  "failures": 64
+ },
+ "test_buffers_oob_behavior_vectorized_structured_16bit": {
+  "verdict": "passed"
+ },
+ "test_bufinfo_instruction_dxbc": {
+  "verdict": "passed"
+ },
+ "test_bufinfo_instruction_dxil": {
+  "verdict": "passed"
+ },
+ "test_bundle_state_inheritance": {
+  "verdict": "passed"
+ },
+ "test_byte_buffer_addressing_wrap": {
+  "verdict": "failed",
+  "why": "bug: a buffer read past its end, or at an address that wraps, returns data",
+  "first": "test_byte_buffer_addressing_wrap:2024: Test failed: reads: buffer_index 6, value 0, expected 0, got 3",
+  "failures": 69
+ },
+ "test_cbv_hoisting_dxil": {
+  "verdict": "passed"
+ },
+ "test_cbv_hoisting_sm51": {
+  "verdict": "passed"
+ },
+ "test_check_feature_support": {
+  "verdict": "failed",
+  "why": "bug: CheckFeatureSupport fails or answers nothing where Windows answers: FORMAT_SUPPORT returns E_INVALIDARG for formats it does not have, MULTISAMPLE_QUALITY_LEVELS and FORMAT_INFO return E_FAIL, and sizes and features of newer SDKs get other answers",
+  "first": "test_check_feature_support:266:format 0x42: Test failed: Got unexpected hr 0x80004005.",
+  "failures": 37
+ },
+ "test_clear_depth_stencil_view": {
+  "verdict": "passed"
+ },
+ "test_clear_render_target_view": {
+  "verdict": "passed"
+ },
+ "test_clear_render_target_view_extreme_values": {
+  "verdict": "passed"
+ },
+ "test_clear_uav_extreme_values": {
+  "verdict": "partly"
+ },
+ "test_clear_uav_mismatch_heap": {
+  "verdict": "passed"
+ },
+ "test_clear_unordered_access_view_buffer": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_clear_unordered_access_view_buffer at d3d12_clear.c:778:9",
+  "why": "bug: the test reads a readback that was not made (the copy of a cleared buffer view before it failed)",
+  "failures": 1,
+  "first": "test_clear_unordered_access_view_buffer:778:Test 26: Test failed: Got 0x00000001, expected 0x00000000 at (262144, 0, 0)."
+ },
+ "test_clear_unordered_access_view_image": {
+  "verdict": "passed"
+ },
+ "test_clip_distance_dxbc": {
+  "verdict": "passed"
+ },
+ "test_clip_distance_dxil": {
+  "verdict": "passed"
+ },
+ "test_clock_calibration": {
+  "verdict": "passed"
+ },
+ "test_combined_clip_and_cull_distances_dxbc": {
+  "verdict": "passed"
+ },
+ "test_combined_clip_and_cull_distances_dxil": {
+  "verdict": "passed"
+ },
+ "test_command_list_initial_pipeline_state": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_buffer": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_buffer_image": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_depth_stencil": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_depth_stencil_msaa": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_render_target": {
+  "verdict": "passed"
+ },
+ "test_compute_queue_render_target_msaa": {
+  "verdict": "passed"
+ },
+ "test_compute_shader_instructions": {
+  "verdict": "passed"
+ },
+ "test_compute_shader_registers": {
+  "verdict": "passed"
+ },
+ "test_conditional_rendering": {
+  "verdict": "passed"
+ },
+ "test_conservative_rasterization_dxbc": {
+  "verdict": "partly"
+ },
+ "test_conservative_rasterization_dxil": {
+  "verdict": "partly"
+ },
+ "test_conservative_ssbo_vectorization_dxbc_heap_desc": {
+  "verdict": "passed"
+ },
+ "test_conservative_ssbo_vectorization_dxbc_root_desc": {
+  "verdict": "passed"
+ },
+ "test_conservative_ssbo_vectorization_dxil_heap_desc": {
+  "verdict": "passed"
+ },
+ "test_conservative_ssbo_vectorization_dxil_root_desc": {
+  "verdict": "passed"
+ },
+ "test_constant_buffer_dxil": {
+  "verdict": "passed"
+ },
+ "test_constant_buffer_relative_addressing": {
+  "verdict": "passed"
+ },
+ "test_constant_buffer_sm51": {
+  "verdict": "passed"
+ },
+ "test_copy_batch": {
+  "verdict": "passed"
+ },
+ "test_copy_block_compressed_texture": {
+  "verdict": "passed"
+ },
+ "test_copy_block_spam": {
+  "verdict": "timeout",
+  "why": "timeout: a command buffer timed out on the GPU",
+  "failures": 0
+ },
+ "test_copy_buffer_overlap": {
+  "verdict": "passed"
+ },
+ "test_copy_buffer_texture": {
+  "verdict": "passed"
+ },
+ "test_copy_buffer_texture_bc_rgba": {
+  "verdict": "failed",
+  "why": "bug: a copy between formats of one size but not one type (a block-compressed texture and the integer format of its blocks, or two formats of one bit layout) leaves the destination as it was",
+  "first": "test_copy_buffer_texture_bc_rgba:1307: Test failed: Got {0, 0, 0, 0} at (16, 0), expected {0x10000010, 0x20001000, 0x30000010, 0x40100000}.",
+  "failures": 3
+ },
+ "test_copy_buffer_to_depth_stencil": {
+  "verdict": "passed"
+ },
+ "test_copy_descriptors": {
+  "verdict": "passed"
+ },
+ "test_copy_descriptors_range_sizes": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_buffer": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_buffer_image": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_depth_stencil": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_depth_stencil_msaa": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_render_target": {
+  "verdict": "passed"
+ },
+ "test_copy_queue_render_target_msaa": {
+  "verdict": "passed"
+ },
+ "test_copy_rtv_descriptors": {
+  "verdict": "passed"
+ },
+ "test_copy_subresource_depth_stencil_batch": {
+  "verdict": "passed"
+ },
+ "test_copy_texture": {
+  "verdict": "passed"
+ },
+ "test_copy_texture_bc_rgba": {
+  "verdict": "passed"
+ },
+ "test_copy_texture_buffer": {
+  "verdict": "passed"
+ },
+ "test_copy_texture_buffer_d24": {
+  "verdict": "failed",
+  "why": "bug: the depth plane of D24_UNORM_S8_UINT copied to a buffer is 0",
+  "first": "test_copy_texture_buffer_d24:855: Test failed: Got 0.000000, expected 0.066667 at (2,2).",
+  "failures": 17
+ },
+ "test_copy_texture_ds_edge_cases": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_copy_texture_ds_edge_cases:436:Test 6: Test failed: Depth: expected #c00000, got #3fc00000.",
+  "failures": 4
+ },
+ "test_copy_texture_mismatch_format": {
+  "verdict": "timeout",
+  "why": "timeout: Metal refuses a texture ('Texture Creation' assertion), then the test does not end",
+  "first": "test_copy_texture_mismatch_format:1376: Test failed: Expected 0x0a0a0a0a or 0x38003800, got #0",
+  "failures": 1
+ },
+ "test_copy_tiles": {
+  "verdict": "passed"
+ },
+ "test_coverage_dxbc": {
+  "verdict": "passed"
+ },
+ "test_coverage_dxil": {
+  "verdict": "passed"
+ },
+ "test_coverage_export_atoc_dxbc": {
+  "verdict": "passed"
+ },
+ "test_coverage_export_atoc_dxil": {
+  "verdict": "passed"
+ },
+ "test_cpu_descriptors_lifetime": {
+  "verdict": "passed"
+ },
+ "test_cpu_signal_fence": {
+  "verdict": "failed",
+  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
+  "first": "test_cpu_signal_fence:587: Test failed: Got unexpected return value 0x102.",
+  "failures": 24
+ },
+ "test_create_command_allocator": {
+  "verdict": "passed"
+ },
+ "test_create_command_list": {
+  "verdict": "passed"
+ },
+ "test_create_command_queue": {
+  "verdict": "passed"
+ },
+ "test_create_command_signature": {
+  "verdict": "passed"
+ },
+ "test_create_committed_resource": {
+  "verdict": "passed"
+ },
+ "test_create_compute_pipeline_state": {
+  "verdict": "passed"
+ },
+ "test_create_descriptor_heap": {
+  "verdict": "passed"
+ },
+ "test_create_device": {
+  "verdict": "passed"
+ },
+ "test_create_fence": {
+  "verdict": "passed"
+ },
+ "test_create_graphics_pipeline_state": {
+  "verdict": "failed",
+  "why": "semantics: a pipeline holds a public reference on its root signature",
+  "first": "test_create_graphics_pipeline_state:198: Test failed: Got unexpected refcount 2.",
+  "failures": 5
+ },
+ "test_create_heap": {
+  "verdict": "passed"
+ },
+ "test_create_null_descriptors": {
+  "verdict": "passed"
+ },
+ "test_create_pipeline_state": {
+  "verdict": "failed",
+  "why": "missing: the shader converter refuses a shader: 'DXIL operation 58 (dx.op.cbufferLoad.i64) is not lowered yet', 'stream output of a primitive that only a geometry shader can take'",
+  "first": "test_create_pipeline_state:641:Test 2: Test failed: Got unexpected return value 0x80004005.",
+  "failures": 1
+ },
+ "test_create_pipeline_with_null_root_signature": {
+  "verdict": "passed"
+ },
+ "test_create_placed_resource": {
+  "verdict": "passed"
+ },
+ "test_create_placed_resource_size": {
+  "verdict": "passed"
+ },
+ "test_create_query_heap": {
+  "verdict": "crashed",
+  "at": "?+0x0",
+  "why": "missing: pipeline statistics queries: CreateQueryHeap returns E_NOTIMPL, BeginQuery logs 'query type 3 is not implemented', and ResolveQueryData then ends the process in unix call 36 (MTLBlitCommandEncoder_encodeCommands)",
+  "first": "test_create_query_heap:54: Test failed: Failed to create query heap, type 2, hr 0x80004001.",
+  "failures": 1
+ },
+ "test_create_reserved_resource": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_create_reserved_resource:1013: Test failed: Got unexpected hr 0.",
+  "failures": 11
+ },
+ "test_create_root_signature": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_create_root_signature:122: Test failed: Got unexpected hr 0.",
+  "failures": 2
+ },
+ "test_create_sampler": {
+  "verdict": "passed"
+ },
+ "test_create_sampler2": {
+  "verdict": "partly"
+ },
+ "test_create_unordered_access_view": {
+  "verdict": "passed"
+ },
+ "test_cs_constant_buffer": {
+  "verdict": "passed"
+ },
+ "test_cs_uav_store": {
+  "verdict": "passed"
+ },
+ "test_cube_maps": {
+  "verdict": "passed"
+ },
+ "test_custom_border_color_limits": {
+  "verdict": "failed",
+  "why": "test: Vulkan's limit of custom border colors",
+  "first": "test_custom_border_color_limits:6216: Test failed: Value 7168, expected 0.000000, 0.000000, 0.000000, 0.000000, got 0.000000, 0.062745, 0.000000, 0.50",
+  "failures": 1024
+ },
+ "test_custom_border_color_limits_compute": {
+  "verdict": "failed",
+  "why": "test: Vulkan's limit of custom border colors",
+  "first": "test_custom_border_color_limits_compute:6216: Test failed: Value 7168, expected 0.000000, 0.000000, 0.000000, 0.000000, got 0.000000, 0.062745, 0.0000",
+  "failures": 1024
+ },
+ "test_custom_border_color_srgb": {
+  "verdict": "failed",
+  "why": "bug: a border color through an sRGB view",
+  "first": "test_custom_border_color_srgb:6465: Test failed: Value 0 (R, R, R, R), expected (0.125490, 0.125490, 0.125490, 0.125490) or (0.125490, 0.250980, 0.376",
+  "failures": 184
+ },
+ "test_decrement_uav_counter": {
+  "verdict": "passed"
+ },
+ "test_deferred_clears": {
+  "verdict": "passed"
+ },
+ "test_deferred_clears_dsv_layout": {
+  "verdict": "passed"
+ },
+ "test_denorm_behavior_dxbc": {
+  "verdict": "partly"
+ },
+ "test_denorm_behavior_dxil": {
+  "verdict": "failed",
+  "why": "bug: a shader's denormal mode is not kept",
+  "first": "test_denorm_behavior_dxil:2494:Test 3: Test failed: Value 1 mismatch, expected 5, got 0.",
+  "failures": 1
+ },
+ "test_depth_bias_behaviour": {
+  "verdict": "crashed",
+  "at": "ntdll.dll+0x345900000300000",
+  "why": "test: calls through ID3D12GraphicsCommandList9, which the list does not have",
+  "failures": 0
+ },
+ "test_depth_bias_formats": {
+  "verdict": "failed",
+  "why": "bug: depth bias against the format's scale in 4 cases",
+  "first": "test_depth_bias_formats:2569:Test 0, pso 0: Test failed: Got 0xff00ff00, expected 0xff0000ff at (0, 0, 0).",
+  "failures": 4
+ },
+ "test_depth_clip": {
+  "verdict": "passed"
+ },
+ "test_depth_load": {
+  "verdict": "passed"
+ },
+ "test_depth_read_only_view": {
+  "verdict": "passed"
+ },
+ "test_depth_stencil_front_and_back": {
+  "verdict": "partly"
+ },
+ "test_depth_stencil_layout_tracking": {
+  "verdict": "passed"
+ },
+ "test_depth_stencil_sampling": {
+  "verdict": "failed",
+  "why": "bug: a comparison sample of a depth texture after a clear",
+  "first": "test_depth_stencil_sampling:436:Test 3: Test failed: Got 1.00000000e+00, expected 0.00000000e+00 at (0, 0).",
+  "failures": 1
+ },
+ "test_depth_stencil_test_no_dsv": {
+  "verdict": "passed"
+ },
+ "test_derivative_hoisting_dxbc": {
+  "verdict": "failed",
+  "why": "test: derivatives in non-uniform flow (D3D11.3 16.8.2), which the suite excuses on NVIDIA too",
+  "first": "test_derivative_hoisting_dxbc:14585: Test failed: (0, 0): Expected (11.000000, -14.000000, 1.000000, 1.000000), got (6.000000, -6.500000, 1.000000, 1.",
+  "failures": 2
+ },
+ "test_derivative_hoisting_dxil": {
+  "verdict": "failed",
+  "why": "test: derivatives in non-uniform flow (D3D11.3 16.8.2), which the suite excuses on NVIDIA too",
+  "first": "test_derivative_hoisting_dxil:14585: Test failed: (0, 0): Expected (11.000000, -14.000000, 1.000000, 1.000000), got (6.000000, -6.500000, 1.000000, 1.",
+  "failures": 2
+ },
+ "test_descriptor_heap_broken_table_va": {
+  "verdict": "passed"
+ },
+ "test_descriptor_hoisting_root_descriptor": {
+  "verdict": "passed"
+ },
+ "test_descriptor_range_validation": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_descriptor_range_validation:5018: Test failed: Unexpected success.",
+  "failures": 1
+ },
+ "test_descriptor_tables": {
+  "verdict": "passed"
+ },
+ "test_descriptor_tables_overlapping_bindings": {
+  "verdict": "passed"
+ },
+ "test_descriptors_visibility": {
+  "verdict": "passed"
+ },
+ "test_destruction_notifier_callback": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_destruction_notifier_callback at d3d12_device.c:1846:10",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_destruction_notifier_callback:1835: Test failed: Failed to query destruction notifier from resource, hr 0x80004002.",
+  "failures": 1
+ },
+ "test_destruction_notifier_interfaces": {
+  "verdict": "failed",
+  "why": "missing: CreatePipelineLibrary returns DXGI_ERROR_UNSUPPORTED",
+  "first": "test_destruction_notifier_interfaces:2013: Test failed: Failed to create pipeline library, hr 0x887a0004.",
+  "failures": 13
+ },
+ "test_device_configuration": {
+  "verdict": "failed",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_device_configuration:2548:ID3D12Device: Test failed: Failed to query ID3D12DeviceConfiguration1.",
+  "failures": 3
+ },
+ "test_device_factory": {
+  "verdict": "partly"
+ },
+ "test_device_factory_create_device": {
+  "verdict": "partly"
+ },
+ "test_device_factory_creation": {
+  "verdict": "partly"
+ },
+ "test_device_removed_reason": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_device_removed_reason:1663: Test failed: Got unexpected hr 0.",
+  "failures": 3
+ },
+ "test_discard_instruction": {
+  "verdict": "passed"
+ },
+ "test_discard_resource": {
+  "verdict": "passed"
+ },
+ "test_discard_resource_uav": {
+  "verdict": "passed"
+ },
+ "test_dispatch_huge_groups": {
+  "verdict": "passed"
+ },
+ "test_dispatch_zero_thread_groups": {
+  "verdict": "passed"
+ },
+ "test_divergent_buffer_index_varying": {
+  "verdict": "passed"
+ },
+ "test_draw_depth_no_ps": {
+  "verdict": "passed"
+ },
+ "test_draw_depth_only": {
+  "verdict": "passed"
+ },
+ "test_draw_indexed_instanced": {
+  "verdict": "passed"
+ },
+ "test_draw_instanced": {
+  "verdict": "passed"
+ },
+ "test_draw_no_descriptor_bindings": {
+  "verdict": "passed"
+ },
+ "test_draw_uav_only": {
+  "verdict": "passed"
+ },
+ "test_dstorage_decompression": {
+  "verdict": "partly"
+ },
+ "test_dual_source_blending_dxbc": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_dual_source_blending_dxbc:1185: Test failed: Unexpected result, hr 0.",
+  "failures": 4
+ },
+ "test_dual_source_blending_dxil": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_dual_source_blending_dxil:1185: Test failed: Unexpected result, hr 0.",
+  "failures": 4
+ },
+ "test_dynamic_depth_bias": {
+  "verdict": "partly"
+ },
+ "test_dynamic_depth_stencil_write": {
+  "verdict": "passed"
+ },
+ "test_dynamic_index_strip_cut": {
+  "verdict": "partly"
+ },
+ "test_early_depth_stencil_tests": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_buffer_transfer": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_castable_dsv": {
+  "verdict": "partly"
+ },
+ "test_enhanced_barrier_castable_formats": {
+  "verdict": "partly"
+ },
+ "test_enhanced_barrier_castable_formats_buffer": {
+  "verdict": "partly"
+ },
+ "test_enhanced_barrier_castable_formats_validation": {
+  "verdict": "partly"
+ },
+ "test_enhanced_barrier_discard_behavior": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_global_direct_queue_smoke": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_self_copy": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_split_barrier": {
+  "verdict": "passed"
+ },
+ "test_enhanced_barrier_subresource": {
+  "verdict": "passed"
+ },
+ "test_enumerate_meta_commands": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect_multi_dispatch": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect_multi_dispatch_root_constants": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect_multi_dispatch_root_descriptors": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect_state": {
+  "verdict": "failed",
+  "why": "missing: 'ExecuteIndirect: stream output is not implemented yet'",
+  "first": "test_execute_indirect_state:2932:Test 0: Test failed: Expected size 288, got 32.",
+  "failures": 139
+ },
+ "test_execute_indirect_state_predication": {
+  "verdict": "passed"
+ },
+ "test_execute_indirect_state_tier_11": {
+  "verdict": "partly"
+ },
+ "test_execute_indirect_state_vbo_offsets": {
+  "verdict": "passed"
+ },
+ "test_face_culling_dxbc": {
+  "verdict": "passed"
+ },
+ "test_face_culling_dxil": {
+  "verdict": "passed"
+ },
+ "test_fence_pending_signal_cpu_rewind_plain": {
+  "verdict": "passed"
+ },
+ "test_fence_pending_signal_cpu_rewind_shared": {
+  "verdict": "passed"
+ },
+ "test_fence_signal_availability_plain": {
+  "verdict": "failed",
+  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
+  "first": "test_fence_signal_availability_plain:2209: Test failed: Expected 0, got 258.",
+  "failures": 2
+ },
+ "test_fence_signal_availability_shared": {
+  "verdict": "failed",
+  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
+  "first": "test_fence_signal_availability_shared:2209: Test failed: Expected 0, got 258.",
+  "failures": 2
+ },
+ "test_fence_signal_ordering_raced_signal": {
+  "verdict": "passed"
+ },
+ "test_fence_signal_ordering_raced_signal_shared": {
+  "verdict": "passed"
+ },
+ "test_fence_values": {
+  "verdict": "passed"
+ },
+ "test_fence_wait_multiple": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_fence_wait_multiple:1498: Test failed: Got unexpected result, hr 0.",
+  "failures": 4
+ },
+ "test_fence_wait_multiple_shared": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_fence_wait_multiple_shared:1498: Test failed: Got unexpected result, hr 0.",
+  "failures": 4
+ },
+ "test_fence_wait_robustness": {
+  "verdict": "timeout",
+  "why": "timeout: a command buffer timed out on the GPU (recorded before the queue's rework)",
+  "failures": 0
+ },
+ "test_fence_wait_robustness_shared": {
+  "verdict": "timeout",
+  "why": "missing: OpenSharedHandle of a fence (E_NOTIMPL), then the test does not end",
+  "first": "test_fence_wait_robustness_shared:1261: Test failed: Failed to create shared handle, hr #80004001.",
+  "failures": 9
+ },
+ "test_format_support": {
+  "verdict": "failed",
+  "why": "bug: CheckFeatureSupport fails or answers nothing where Windows answers: FORMAT_SUPPORT returns E_INVALIDARG for formats it does not have, MULTISAMPLE_QUALITY_LEVELS and FORMAT_INFO return E_FAIL, and sizes and features of newer SDKs get other answers",
+  "first": "test_format_support:440: Test failed: Got unexpected support1 0x20001.",
+  "failures": 82
+ },
+ "test_fp16_rounding_behavior_legacy": {
+  "verdict": "passed"
+ },
+ "test_fp16_rounding_behavior_sm62": {
+  "verdict": "passed"
+ },
+ "test_fp_truncate_roundtrips": {
+  "verdict": "passed"
+ },
+ "test_fractional_viewports": {
+  "verdict": "failed",
+  "why": "bug: SV_Position with a viewport at a fraction of a pixel",
+  "first": "test_fractional_viewports:435: Test failed: Got fragcoord {3.35000000e+01, 2.50000000e+00}, expected {1.00000000e+00, 1.00000000e+00} at (33, 2), offs",
+  "failures": 252
+ },
+ "test_fragment_coords": {
+  "verdict": "passed"
+ },
+ "test_gather": {
+  "verdict": "passed"
+ },
+ "test_gather_c": {
+  "verdict": "passed"
+ },
+ "test_geometry_shader_dxbc": {
+  "verdict": "passed"
+ },
+ "test_geometry_shader_dxil": {
+  "verdict": "passed"
+ },
+ "test_get_cached_blob": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_get_cached_blob:103: Test failed: Unexpected hr 0.",
+  "failures": 3
+ },
+ "test_get_copyable_footprints": {
+  "verdict": "passed"
+ },
+ "test_get_copyable_footprints_planar": {
+  "verdict": "passed"
+ },
+ "test_get_resource_tiling": {
+  "verdict": "partly"
+ },
+ "test_gpu_signal_fence": {
+  "verdict": "failed",
+  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
+  "first": "test_gpu_signal_fence:971: Test failed: Got unexpected return value 0x102.",
+  "failures": 1
+ },
+ "test_gpu_virtual_address": {
+  "verdict": "passed"
+ },
+ "test_graphics_compute_queue_synchronization": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_buffer": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_buffer_image": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_depth_stencil": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_depth_stencil_msaa": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_render_target": {
+  "verdict": "passed"
+ },
+ "test_graphics_queue_render_target_msaa": {
+  "verdict": "passed"
+ },
+ "test_gs_topology_mismatch_dxbc": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_gs_topology_mismatch_dxbc:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057.",
+  "failures": 22
+ },
+ "test_gs_topology_mismatch_dxil": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_gs_topology_mismatch_dxil:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057.",
+  "failures": 22
+ },
+ "test_hull_shader_control_point_phase_dxbc": {
+  "verdict": "passed"
+ },
+ "test_hull_shader_control_point_phase_dxil": {
+  "verdict": "passed"
+ },
+ "test_hull_shader_fork_phase_dxbc": {
+  "verdict": "passed"
+ },
+ "test_hull_shader_fork_phase_dxil": {
+  "verdict": "passed"
+ },
+ "test_hull_shader_vertex_input_patch_constant_phase": {
+  "verdict": "passed"
+ },
+ "test_immediate_constant_buffer_dxbc": {
+  "verdict": "passed"
+ },
+ "test_immediate_constant_buffer_dxil": {
+  "verdict": "passed"
+ },
+ "test_index_buffer_edge_case_stream_output": {
+  "verdict": "failed",
+  "why": "bug: stream output of an indexed draw at the index buffer's edge",
+  "first": "test_index_buffer_edge_case_stream_output:429: Test failed: Got {-1.00000000e+00, 1.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {-1.000000",
+  "failures": 2
+ },
+ "test_instance_id_dxbc": {
+  "verdict": "passed"
+ },
+ "test_instance_id_dxil": {
+  "verdict": "passed"
+ },
+ "test_instruction_msad_dxbc": {
+  "verdict": "passed"
+ },
+ "test_instruction_msad_dxil": {
+  "verdict": "passed"
+ },
+ "test_integer_blending_pipeline_state": {
+  "verdict": "failed",
+  "why": "bug: a pipeline with blending enabled on an integer target the pixel shader does not write is refused ('pixel format 53 is not blendable')",
+  "first": "test_integer_blending_pipeline_state:147:Test 0: Test failed: Unexpected hr 0x80070057.",
+  "failures": 1
+ },
+ "test_large_buffer_descriptors": {
+  "verdict": "passed"
+ },
+ "test_large_heap": {
+  "verdict": "failed",
+  "why": "bug: buffers placed in a large heap read 0",
+  "first": "test_large_heap:5213: Test failed: Got 0, expected 10 at 0.",
+  "failures": 18
+ },
+ "test_large_texel_buffer_view": {
+  "verdict": "timeout",
+  "why": "timeout: Metal refuses a texture descriptor (a buffer view too large for a texture), then the test does not end",
+  "first": "test_large_texel_buffer_view:5000:Test 5: Test failed: Got data 0, expected 0xaaaa at 0.",
+  "failures": 9
+ },
+ "test_layered_rendering_dxbc": {
+  "verdict": "passed"
+ },
+ "test_layered_rendering_dxil": {
+  "verdict": "passed"
+ },
+ "test_line_rasterization": {
+  "verdict": "failed",
+  "why": "semantics: a device reference is left",
+  "first": "test_line_rasterization:2758: Test failed: ID3D12Device has 1 references left.",
+  "failures": 1
+ },
+ "test_line_tessellation_dxbc": {
+  "verdict": "failed",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_line_tessellation_dxbc:1115: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 55
+ },
+ "test_line_tessellation_dxil": {
+  "verdict": "failed",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_line_tessellation_dxil:1115: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 55
+ },
+ "test_map_placed_resources": {
+  "verdict": "passed"
+ },
+ "test_map_resource": {
+  "verdict": "passed"
+ },
+ "test_map_texture_validation": {
+  "verdict": "passed"
+ },
+ "test_memory_model_uav_coherence_thread_group_dxbc": {
+  "verdict": "passed"
+ },
+ "test_memory_model_uav_coherence_thread_group_dxil": {
+  "verdict": "passed"
+ },
+ "test_mesh_shader_create_pipeline": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_mesh_shader_create_pipeline:152: Test failed: Unexpected result for pipeline creation, hr 0.",
+  "failures": 2
+ },
+ "test_mesh_shader_execute_indirect": {
+  "verdict": "passed"
+ },
+ "test_mesh_shader_execute_indirect_state": {
+  "verdict": "passed"
+ },
+ "test_mesh_shader_rendering": {
+  "verdict": "partly"
+ },
+ "test_misc_agility_sdk_feature_checks": {
+  "verdict": "failed",
+  "why": "bug: CheckFeatureSupport fails or answers nothing where Windows answers: FORMAT_SUPPORT returns E_INVALIDARG for formats it does not have, MULTISAMPLE_QUALITY_LEVELS and FORMAT_INFO return E_FAIL, and sizes and features of newer SDKs get other answers",
+  "first": "test_misc_agility_sdk_feature_checks:2742: Test failed: Expected D3D12_FEATURE_PREDICATION to return E_NOTIMPL.",
+  "failures": 453
+ },
+ "test_mismatching_pso_stages": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_mismatching_pso_stages:1601: Test failed: Unexpected hr #80004005.",
+  "failures": 1
+ },
+ "test_mismatching_rtv_dsv_size": {
+  "verdict": "passed"
+ },
+ "test_missing_bindings_root_signature": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_missing_bindings_root_signature:1809: Test failed: Unexpected hr #0.",
+  "failures": 1
+ },
+ "test_multiple_render_targets": {
+  "verdict": "passed"
+ },
+ "test_multisample_array_texture": {
+  "verdict": "passed"
+ },
+ "test_multisample_quality_levels": {
+  "verdict": "failed",
+  "why": "bug: CheckFeatureSupport fails or answers nothing where Windows answers: FORMAT_SUPPORT returns E_INVALIDARG for formats it does not have, MULTISAMPLE_QUALITY_LEVELS and FORMAT_INFO return E_FAIL, and sizes and features of newer SDKs get other answers",
+  "first": "test_multisample_quality_levels:589:format 0: Test failed: Got unexpected quality levels 0.",
+  "failures": 37
+ },
+ "test_multisample_rendering": {
+  "verdict": "passed"
+ },
+ "test_multisample_resolve": {
+  "verdict": "passed"
+ },
+ "test_multisample_resolve_formats": {
+  "verdict": "passed"
+ },
+ "test_multisample_resolve_strongly_typed": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_multisample_resolve_strongly_typed:2785:Test 0: Test failed: Got hr 0, expected E_INVALIDARG.",
+  "failures": 3
+ },
+ "test_multithread_command_queue_exec": {
+  "verdict": "passed"
+ },
+ "test_multithread_fence_wait": {
+  "verdict": "passed"
+ },
+ "test_multithread_private_data": {
+  "verdict": "passed"
+ },
+ "test_negative_viewports": {
+  "verdict": "partly"
+ },
+ "test_node_count": {
+  "verdict": "passed"
+ },
+ "test_nop_tessellation_shaders": {
+  "verdict": "passed"
+ },
+ "test_null_cbv": {
+  "verdict": "passed"
+ },
+ "test_null_descriptor_mismatch_type": {
+  "verdict": "passed"
+ },
+ "test_null_descriptor_resinfo_dxbc": {
+  "verdict": "passed"
+ },
+ "test_null_descriptor_resinfo_dxil": {
+  "verdict": "passed"
+ },
+ "test_null_rtv": {
+  "verdict": "timeout",
+  "why": "timeout: Metal's assertions 'A command encoder is already encoding to this command buffer' and 'commit command buffer with uncommitted encoder' with a null render target",
+  "first": "test_null_rtv:2857: Test failed: Got 0x00000000, expected 0xffffffff at (0, 0, 0).",
+  "failures": 1
+ },
+ "test_null_srv": {
+  "verdict": "passed"
+ },
+ "test_null_uav": {
+  "verdict": "passed"
+ },
+ "test_null_vbv": {
+  "verdict": "passed"
+ },
+ "test_nvx_cubin": {
+  "verdict": "partly"
+ },
+ "test_object_interface": {
+  "verdict": "passed"
+ },
+ "test_object_interface_null_cases": {
+  "verdict": "passed"
+ },
+ "test_open_heap_from_address": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_open_heap_from_address at d3d12_win32_exclusive.c:112:25",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_open_heap_from_address:106: Test failed: Failed to open heap from address: hr #80004001.",
+  "failures": 1
+ },
+ "test_pipeline_library": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_pipeline_library at d3d12_pso_blob.c:212:10",
+  "why": "missing: CreatePipelineLibrary returns DXGI_ERROR_UNSUPPORTED",
+  "first": "test_pipeline_library:197: Test failed: Failed to create pipeline library, hr 0x887a0004.",
+  "failures": 2
+ },
+ "test_pipeline_no_ps_nonzero_rts": {
+  "verdict": "passed"
+ },
+ "test_placed_image_alignment": {
+  "verdict": "passed"
+ },
+ "test_placed_msaa_alignment_workaround": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_placed_msaa_alignment_workaround:5953: Test failed: Unexpected hr #0.",
+  "failures": 1
+ },
+ "test_placed_msaa_alignments": {
+  "verdict": "passed"
+ },
+ "test_planar_video_formats": {
+  "verdict": "failed",
+  "why": "bug: CheckFeatureSupport fails or answers nothing where Windows answers: FORMAT_SUPPORT returns E_INVALIDARG for formats it does not have, MULTISAMPLE_QUALITY_LEVELS and FORMAT_INFO return E_FAIL, and sizes and features of newer SDKs get other answers",
+  "first": "test_planar_video_formats:4163:Format 0x67: Test failed: Got invalid hr 0x80070057.",
+  "failures": 3
+ },
+ "test_primitive_id_read_tess_geom": {
+  "verdict": "failed",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_primitive_id_read_tess_geom:5102: Test failed: Failed to create pipeline.",
+  "failures": 1
+ },
+ "test_primitive_restart": {
+  "verdict": "failed",
+  "why": "bug: the strip cut value in 3 of the cases (tests 1, 8, 10)",
+  "first": "test_primitive_restart:1412:Test 1: Test failed: Got 0xffffffff, expected 0xff00ff00 at (0, 0, 0).",
+  "failures": 3
+ },
+ "test_primitive_restart_list_topology_stream_output": {
+  "verdict": "passed"
+ },
+ "test_ps_layer_dxbc": {
+  "verdict": "passed"
+ },
+ "test_ps_layer_dxil": {
+  "verdict": "passed"
+ },
+ "test_quad_tessellation_dxbc": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_dxbc:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_tessellation_dxil": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_dxil:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_tessellation_wrong_input_count_dxbc": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_wrong_input_count_dxbc:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_tessellation_wrong_input_count_dxil": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_wrong_input_count_dxil:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_tessellation_wrong_pso_topology_dxbc": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_wrong_pso_topology_dxbc:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_tessellation_wrong_pso_topology_dxil": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_quad_tessellation_wrong_pso_topology_dxil:347: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 2
+ },
+ "test_quad_vote_sm67_compute": {
+  "verdict": "partly"
+ },
+ "test_query_heap_cpu_resolve_occlusion": {
+  "verdict": "crashed",
+  "at": "?+0x0",
+  "why": "test: calls through ID3D12Device15, which it found missing",
+  "failures": 0
+ },
+ "test_query_heap_cpu_resolve_timestamp": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_query_heap_cpu_resolve_timestamp at d3d12_query.c:785:10",
+  "why": "test: calls through ID3D12Device15, which it found missing",
+  "failures": 0
+ },
+ "test_query_occlusion": {
+  "verdict": "passed"
+ },
+ "test_query_pipeline_statistics": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_query_pipeline_statistics at d3d12_query.c:303:5",
+  "why": "missing: pipeline statistics queries: CreateQueryHeap returns E_NOTIMPL, BeginQuery logs 'query type 3 is not implemented', and ResolveQueryData then ends the process in unix call 36 (MTLBlitCommandEncoder_encodeCommands)",
+  "first": "test_query_pipeline_statistics:233: Test failed: Failed to create query heap, type 2, hr 0x80004001.",
+  "failures": 7
+ },
+ "test_query_timestamp": {
+  "verdict": "passed"
+ },
+ "test_query_timestamp_write_after_read": {
+  "verdict": "passed"
+ },
+ "test_queue_wait": {
+  "verdict": "passed"
+ },
+ "test_r16_texel_buffer_atomic": {
+  "verdict": "passed"
+ },
+ "test_rasterizer_ordered_views_dxbc": {
+  "verdict": "failed",
+  "why": "bug: rasterizer ordered views are reported and do not order",
+  "first": "test_rasterizer_ordered_views_dxbc:179:Test 0: Test failed: Pixel 0, 0: Got -2.000000, expected -4.000000.",
+  "failures": 419
+ },
+ "test_rasterizer_ordered_views_dxil": {
+  "verdict": "failed",
+  "why": "bug: rasterizer ordered views are reported and do not order",
+  "first": "test_rasterizer_ordered_views_dxil:179:Test 0: Test failed: Pixel 0, 0: Got -2.000000, expected -4.000000.",
+  "failures": 427
+ },
+ "test_rayquery_root_desc": {
+  "verdict": "passed"
+ },
+ "test_rayquery_root_table": {
+  "verdict": "failed",
+  "why": "bug: ray tracing pipelines: Metal refuses one ('Exceeds maximum interface register allocation'), identifiers differ between a collection and its pipeline, structures through a descriptor table are not found, and state objects keep public references on root signatures",
+  "first": "test_rayquery_root_table:2313:Test: Plain: Test failed: Ray color [0].x mismatch (1000.000000 != 1.000000).",
+  "failures": 288
+ },
+ "test_raytracing": {
+  "verdict": "failed",
+  "why": "bug: ray tracing pipelines: Metal refuses one ('Exceeds maximum interface register allocation'), identifiers differ between a collection and its pipeline, structures through a descriptor table are not found, and state objects keep public references on root signatures",
+  "first": "test_raytracing:1577:Test: Plain: Test failed: Ref count 6 != 1.",
+  "failures": 823
+ },
+ "test_raytracing_acceleration_structure_validation": {
+  "verdict": "failed",
+  "why": "lenient: CreateStateObject accepts ray tracing pipelines and libraries Windows refuses (duplicate or missing subobjects, a missing root signature)",
+  "first": "test_raytracing_acceleration_structure_validation:4804: Test failed: Got hr 0, expected E_INVALIDARG.",
+  "failures": 2
+ },
+ "test_raytracing_collection_handle_invariance": {
+  "verdict": "failed",
+  "why": "bug: ray tracing pipelines: Metal refuses one ('Exceeds maximum interface register allocation'), identifiers differ between a collection and its pipeline, structures through a descriptor table are not found, and state objects keep public references on root signatures",
+  "first": "test_raytracing_collection_handle_invariance:5198: Test failed: Pointer handles should match.",
+  "failures": 2
+ },
+ "test_raytracing_collection_identifiers": {
+  "verdict": "passed"
+ },
+ "test_raytracing_create_root_signature_from_subobject": {
+  "verdict": "partly"
+ },
+ "test_raytracing_default_association_tiebreak": {
+  "verdict": "passed"
+ },
+ "test_raytracing_deferred_compilation": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_raytracing_deferred_compilation:3747: Test failed: Expected identifier in collection.",
+  "failures": 1
+ },
+ "test_raytracing_embedded_subobjects": {
+  "verdict": "failed",
+  "why": "lenient: CreateStateObject accepts ray tracing pipelines and libraries Windows refuses (duplicate or missing subobjects, a missing root signature)",
+  "first": "test_raytracing_embedded_subobjects:3120: Test failed: Unexpected compilation success.",
+  "failures": 1
+ },
+ "test_raytracing_huge_dispatch": {
+  "verdict": "timeout",
+  "why": "timeout: a DispatchRays of the largest size does not end",
+  "failures": 0
+ },
+ "test_raytracing_local_rs_static_sampler": {
+  "verdict": "passed"
+ },
+ "test_raytracing_local_rs_static_sampler_collection": {
+  "verdict": "passed"
+ },
+ "test_raytracing_mismatch_global_rs_link": {
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_raytracing_mismatch_global_rs_link at d3d12_raytracing.c:3947:12",
+  "why": "bug: ray tracing pipelines: Metal refuses one ('Exceeds maximum interface register allocation'), identifiers differ between a collection and its pipeline, structures through a descriptor table are not found, and state objects keep public references on root signatures",
+  "first": "test_raytracing_mismatch_global_rs_link:3919: Test failed: Failed to query miss handle from COLLECTION.",
+  "failures": 1
+ },
+ "test_raytracing_missing_required_objects": {
+  "verdict": "failed",
+  "why": "lenient: CreateStateObject accepts ray tracing pipelines and libraries Windows refuses (duplicate or missing subobjects, a missing root signature)",
+  "first": "test_raytracing_missing_required_objects:2881: Test failed: Successfully created RTPSO object which is not expected.",
+  "failures": 4
+ },
+ "test_raytracing_multi_global_rs": {
+  "verdict": "passed"
+ },
+ "test_raytracing_no_global_root_signature": {
+  "verdict": "passed"
+ },
+ "test_raytracing_null_rtas": {
+  "verdict": "passed"
+ },
+ "test_raytracing_object_assignment_ignore_default": {
+  "verdict": "failed",
+  "why": "lenient: CreateStateObject accepts ray tracing pipelines and libraries Windows refuses (duplicate or missing subobjects, a missing root signature)",
+  "first": "test_raytracing_object_assignment_ignore_default:3327: Test failed: Unexpected success in compiling PSO.",
+  "failures": 1
+ },
+ "test_raytracing_opacity_micro_map": {
+  "verdict": "partly"
+ },
+ "test_raytracing_opacity_micro_map_ray_query": {
+  "verdict": "partly"
+ },
+ "test_raytracing_reject_duplicate_objects": {
+  "verdict": "failed",
+  "why": "lenient: CreateStateObject accepts ray tracing pipelines and libraries Windows refuses (duplicate or missing subobjects, a missing root signature)",
+  "first": "test_raytracing_reject_duplicate_objects:2974: Test failed: Successfully created RTPSO object which is not expected.",
+  "failures": 2
+ },
+ "test_raytracing_root_signature_from_subobject": {
+  "verdict": "failed",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_raytracing_root_signature_from_subobject:3404: Test failed: Failed to create root signature, hr #80004005.",
+  "failures": 3
+ },
+ "test_read_subresource_rt": {
+  "verdict": "passed"
+ },
+ "test_read_write_subresource": {
+  "verdict": "passed"
+ },
+ "test_read_write_subresource_2d": {
+  "verdict": "passed"
+ },
+ "test_register_space_dxil": {
+  "verdict": "passed"
+ },
+ "test_register_space_sm51": {
+  "verdict": "passed"
+ },
+ "test_render_a8_dxbc": {
+  "verdict": "passed"
+ },
+ "test_render_a8_dxil": {
+  "verdict": "passed"
+ },
+ "test_render_pass_suspend_resume_opts_disabled": {
+  "verdict": "passed"
+ },
+ "test_render_pass_suspend_resume_opts_enabled": {
+  "verdict": "passed"
+ },
+ "test_render_pass_suspend_resume_opts_inline_clears": {
+  "verdict": "passed"
+ },
+ "test_render_target_support_validation": {
+  "verdict": "timeout",
+  "why": "timeout: Metal refuses a render pipeline descriptor (a format it cannot render to), then the test does not end",
+  "first": "test_render_target_support_validation:5381: Test failed: Failed to create pipeline state, hr #80004005",
+  "failures": 2
+ },
+ "test_rendering_no_attachments_layers": {
+  "verdict": "passed"
+ },
+ "test_renderpass_rendering": {
+  "verdict": "partly"
+ },
+ "test_renderpass_resolve_suspend_resume": {
+  "verdict": "partly"
+ },
+ "test_renderpass_validation": {
+  "verdict": "partly"
+ },
+ "test_reserved_resource_mapping": {
+  "verdict": "passed"
+ },
+ "test_reset_command_allocator": {
+  "verdict": "passed"
+ },
+ "test_resinfo": {
+  "verdict": "passed"
+ },
+ "test_resolve_batch": {
+  "verdict": "passed"
+ },
+ "test_resolve_image_exhaustive_descriptors": {
+  "verdict": "timeout",
+  "why": "timeout: a command buffer fails with 'Insufficient Memory'",
+  "failures": 0
+ },
+ "test_resolve_non_issued_query_data": {
+  "verdict": "passed"
+ },
+ "test_resolve_query_data_in_different_command_list": {
+  "verdict": "passed"
+ },
+ "test_resolve_query_data_in_reordered_command_list": {
+  "verdict": "passed"
+ },
+ "test_resolve_subresource_depth": {
+  "verdict": "failed",
+  "why": "bug: a depth resolve does not take what Windows takes (16 values)",
+  "first": "test_resolve_subresource_depth:3690: Test failed: 0, 0: expected 0.015625, got 0.023438",
+  "failures": 16
+ },
+ "test_resource_allocation_info": {
+  "verdict": "passed"
+ },
+ "test_resource_retain_workaround": {
+  "verdict": "passed"
+ },
+ "test_rgb9e5_rendering": {
+  "verdict": "passed"
+ },
+ "test_root_constant_indexing_dxbc": {
+  "verdict": "passed"
+ },
+ "test_root_constant_indexing_dxil": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_root_constant_indexing_dxil:14658: Test failed: Got hr 0, expected 0x80070057.",
+  "failures": 1
+ },
+ "test_root_constants": {
+  "verdict": "passed"
+ },
+ "test_root_descriptor_offset_sign": {
+  "verdict": "partly"
+ },
+ "test_root_parameter_preservation": {
+  "verdict": "passed"
+ },
+ "test_root_signature_byte_code": {
+  "verdict": "passed"
+ },
+ "test_root_signature_byte_code2": {
+  "verdict": "failed",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_root_signature_byte_code2:1625: Test failed: Got unexpected hr 0x80070057.",
+  "failures": 1
+ },
+ "test_root_signature_embedded": {
+  "verdict": "failed",
+  "why": "bug: the shader compiler faults ('the shader compiler faulted') on shaders with an embedded root signature",
+  "first": "test_root_signature_embedded:1909:Test 0: Test failed: Expected hr #80070057, got hr #80004005",
+  "failures": 9
+ },
+ "test_root_signature_empty_blob": {
+  "verdict": "passed"
+ },
+ "test_root_signature_limits": {
+  "verdict": "passed"
+ },
+ "test_root_signature_priority": {
+  "verdict": "passed"
+ },
+ "test_rwtex1d_array_reinterpretation_dxil": {
+  "verdict": "passed"
+ },
+ "test_rwtex1d_array_reinterpretation_sm51": {
+  "verdict": "passed"
+ },
+ "test_rwtex2d_array_reinterpretation_dxil": {
+  "verdict": "passed"
+ },
+ "test_rwtex2d_array_reinterpretation_sm51": {
+  "verdict": "passed"
+ },
+ "test_sample_c_lz": {
+  "verdict": "passed"
+ },
+ "test_sample_instructions": {
+  "verdict": "failed",
+  "why": "bug: 31 colors of sample instructions wrong (test 23)",
+  "first": "test_sample_instructions:4504:Test 23: Test failed: Got color 0xff0000ff, expected 0xffffffff at (0, 0).",
+  "failures": 31
+ },
+ "test_sample_mask_dxbc": {
+  "verdict": "passed"
+ },
+ "test_sample_mask_dxil": {
+  "verdict": "passed"
+ },
+ "test_sample_shading_coverage_mask": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_sample_shading_coverage_mask:5333:PSO index 0, test index 0: Test failed: (0, 0, 0): expected 0000000f, got 2000000d",
+  "failures": 34
+ },
+ "test_sampler_border_color": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_decode_encode_min_mip": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_decode_encode_min_mip:990: Test failed: Value 3: Expected 3, got 2",
+  "failures": 92
+ },
+ "test_sampler_feedback_decode_encode_mip_used": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_format_features": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_format_features:164: Test failed: Failed to query for format features, hr #80070057.",
+  "failures": 6
+ },
+ "test_sampler_feedback_grad": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_grad:2456:Test 1: Test failed: Mip0: Expected #33, got #20.",
+  "failures": 60
+ },
+ "test_sampler_feedback_implicit_lod": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_implicit_lod_aniso": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_implicit_lod_bias": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_min_mip_level": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_min_mip_level:566: Test failed: Coord 1, 0, 0: expected 4 or 255, got 5.",
+  "failures": 939
+ },
+ "test_sampler_feedback_min_mip_level_array": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_min_mip_level_array:566: Test failed: Coord 1, 0, 0: expected 4 or 255, got 5.",
+  "failures": 1005
+ },
+ "test_sampler_feedback_mip_used_region_level": {
+  "verdict": "passed"
+ },
+ "test_sampler_feedback_npot_min_mip_level": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_npot_min_mip_level:823: Test failed: Coord 16, 0: expected 0, got 255.",
+  "failures": 58
+ },
+ "test_sampler_feedback_npot_used_region": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_npot_used_region:1868:Base resolution 15 x 16: Test failed: Mip 0, Coord 2, 3: expected 255, got 0.",
+  "failures": 32
+ },
+ "test_sampler_feedback_resource_creation": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported)",
+  "first": "test_sampler_feedback_resource_creation:99:Test 4: Test failed: Unexpected hr, expected #80070057, got #0.",
+  "failures": 4
+ },
+ "test_sampler_non_normalized_coordinates": {
+  "verdict": "partly"
+ },
+ "test_sampler_rounding": {
+  "verdict": "failed",
+  "why": "test: where the hardware snaps a texel coordinate",
+  "first": "test_sampler_rounding:5626:Test 0: Test failed: UV [raw 255.609375] [snap lo 1.#00, snap hi 1.#00]: Expected value in range ([256.000000, 256.000000] ",
+  "failures": 25
+ },
+ "test_scissor": {
+  "verdict": "passed"
+ },
+ "test_scissor_clamping": {
+  "verdict": "passed"
+ },
+ "test_sdk_configuration1": {
+  "verdict": "partly"
+ },
+ "test_sdk_configuration_creation": {
+  "verdict": "partly"
+ },
+ "test_sdk_configuration_set_sdk_path": {
+  "verdict": "partly"
+ },
+ "test_separate_bindings": {
+  "verdict": "passed"
+ },
+ "test_set_render_targets": {
+  "verdict": "passed"
+ },
+ "test_shader_eval_attribute_dxbc": {
+  "verdict": "passed"
+ },
+ "test_shader_eval_attribute_dxil": {
+  "verdict": "passed"
+ },
+ "test_shader_execution_reordering_basic": {
+  "verdict": "partly"
+ },
+ "test_shader_execution_reordering_ray_query": {
+  "verdict": "partly"
+ },
+ "test_shader_execution_reordering_trace": {
+  "verdict": "partly"
+ },
+ "test_shader_fp16": {
+  "verdict": "passed"
+ },
+ "test_shader_get_render_target_sample_count_dxbc": {
+  "verdict": "passed"
+ },
+ "test_shader_get_render_target_sample_count_dxil": {
+  "verdict": "passed"
+ },
+ "test_shader_input_output_components": {
+  "verdict": "passed"
+ },
+ "test_shader_instructions": {
+  "verdict": "partly"
+ },
+ "test_shader_instructions_dxil": {
+  "verdict": "failed",
+  "why": "bug: 6 results of DXIL instructions wrong (tests 15 to 18)",
+  "first": "test_shader_instructions_dxil:373:Test 15: Test failed: Value 3 mismatch: 4 != ffffffff",
+  "failures": 6
+ },
+ "test_shader_interstage_interface": {
+  "verdict": "passed"
+ },
+ "test_shader_io_mismatch": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_shader_io_mismatch:4704:Test 2: Test failed: Got hr 0, expected 0x80070057.",
+  "failures": 60
+ },
+ "test_shader_sample_position_dxbc": {
+  "verdict": "passed"
+ },
+ "test_shader_sample_position_dxil": {
+  "verdict": "passed"
+ },
+ "test_shader_sm62_denorm": {
+  "verdict": "failed",
+  "why": "bug: a shader's denormal mode is not kept",
+  "first": "test_shader_sm62_denorm:1256:Test 1: Test failed: 0x0 != 0x14",
+  "failures": 1
+ },
+ "test_shader_sm64_packed": {
+  "verdict": "failed",
+  "why": "bug: one packed dot product result off by one",
+  "first": "test_shader_sm64_packed:1505:Test 12: Test failed: 0x4b800000 != 0x4b800001",
+  "failures": 1
+ },
+ "test_shader_sm65_wave_intrinsics": {
+  "verdict": "passed"
+ },
+ "test_shader_sm66_64bit_atomics": {
+  "verdict": "passed"
+ },
+ "test_shader_sm66_compute_derivatives": {
+  "verdict": "passed"
+ },
+ "test_shader_sm66_is_helper_lane": {
+  "verdict": "failed",
+  "why": "bug: IsHelperLane",
+  "first": "test_shader_sm66_is_helper_lane:2118: Test failed: Mismatch pixel 0, 0, (1.000000 4321.000000 4881.000000 8881.000000) != (1.000000 8321.000000 8881.0",
+  "failures": 1
+ },
+ "test_shader_sm66_packed": {
+  "verdict": "passed"
+ },
+ "test_shader_sm66_quad_op_semantics": {
+  "verdict": "passed"
+ },
+ "test_shader_sm66_wave_size": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_shader_sm66_wave_size:572:Test 0: Test failed: Got hr #80004005, expected 0x80070057.",
+  "failures": 2
+ },
+ "test_shader_waveop_maximal_convergence": {
+  "verdict": "failed",
+  "why": "bug: wave operations after divergent flow do not reconverge as SM 6.x requires",
+  "first": "test_shader_waveop_maximal_convergence:1790: Test failed: Element 0, 25 != 12.",
+  "failures": 16
+ },
+ "test_sm67_dynamic_texture_offset": {
+  "verdict": "partly"
+ },
+ "test_sm67_helper_lane_only_wave_ops": {
+  "verdict": "partly"
+ },
+ "test_sm67_helper_lane_wave_ops": {
+  "verdict": "partly"
+ },
+ "test_sm67_integer_sampling": {
+  "verdict": "partly"
+ },
+ "test_sm67_multi_sample_uav": {
+  "verdict": "partly"
+ },
+ "test_sm67_raw_gather": {
+  "verdict": "partly"
+ },
+ "test_sm67_sample_cmp_level": {
+  "verdict": "partly"
+ },
+ "test_sm68_draw_parameters": {
+  "verdict": "partly"
+ },
+ "test_sm68_sample_cmp_bias_grad": {
+  "verdict": "partly"
+ },
+ "test_sm68_wave_size_range": {
+  "verdict": "partly"
+ },
+ "test_sm69_fp16_isspecial": {
+  "verdict": "partly"
+ },
+ "test_sm69_long_vector_intrinsics": {
+  "verdict": "partly"
+ },
+ "test_sm69_long_vector_load_store_heap_desc": {
+  "verdict": "partly"
+ },
+ "test_sm69_long_vector_load_store_root_desc": {
+  "verdict": "partly"
+ },
+ "test_sm69_long_vector_storage": {
+  "verdict": "partly"
+ },
+ "test_sm69_long_vector_waveops": {
+  "verdict": "partly"
+ },
+ "test_sparse_buffer_memory_lifetime": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_sparse_buffer_memory_lifetime:2305: Test failed: Got #0, expected 42.",
+  "failures": 4
+ },
+ "test_sparse_default_mapping": {
+  "verdict": "partly"
+ },
+ "test_sparse_depth_stencil_rendering": {
+  "verdict": "partly"
+ },
+ "test_srgb_unorm_mismatch_usage_aliasing": {
+  "verdict": "passed"
+ },
+ "test_srv_component_mapping": {
+  "verdict": "passed"
+ },
+ "test_static_sampler_dynamic_index": {
+  "verdict": "failed",
+  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
+  "first": "test_static_sampler_dynamic_index:6725: Test failed: Unexpected success.",
+  "failures": 4
+ },
+ "test_stencil_export_dxbc": {
+  "verdict": "passed"
+ },
+ "test_stencil_export_dxil": {
+  "verdict": "passed"
+ },
+ "test_stencil_load": {
+  "verdict": "passed"
+ },
+ "test_structured_buffer_addressing_wrap": {
+  "verdict": "failed",
+  "why": "bug: a buffer read past its end, or at an address that wraps, returns data",
+  "first": "test_structured_buffer_addressing_wrap:2299: Test failed: reads: buffer_index 5, value 0, expected 0, got 3",
+  "failures": 105
+ },
+ "test_suballocate_small_textures": {
+  "verdict": "passed"
+ },
+ "test_suballocate_small_textures_size": {
+  "verdict": "failed",
+  "why": "bug: GetResourceAllocationInfo gives no 4 KiB alignment for small textures that ask for it",
+  "first": "test_suballocate_small_textures_size:2297:Test 0: fmt #47, bpp 4, width 512, height 256, levels 1, layers 2: Test failed: Alignment is not 4 KiB.",
+  "failures": 12150
+ },
+ "test_suballocate_va_alignment": {
+  "verdict": "passed"
+ },
+ "test_sv_barycentric": {
+  "verdict": "partly"
+ },
+ "test_tessellation_dcl_index_range_complex_dxbc": {
+  "verdict": "passed"
+ },
+ "test_tessellation_dcl_index_range_complex_dxil": {
+  "verdict": "passed"
+ },
+ "test_tessellation_dcl_index_range_dxbc": {
+  "verdict": "passed"
+ },
+ "test_tessellation_dcl_index_range_dxil": {
+  "verdict": "passed"
+ },
+ "test_tessellation_primitive_id": {
+  "verdict": "passed"
+ },
+ "test_tessellation_read_tesslevel": {
+  "verdict": "failed",
+  "why": "missing: a tessellation pipeline with stream output is refused ('stream output of a tessellated draw is not implemented yet'); the tests go on without a pipeline",
+  "first": "test_tessellation_read_tesslevel:948: Test failed: Failed to create state, hr 0x80004001.",
+  "failures": 29
+ },
+ "test_tex1d_array_reinterpretation_dxil": {
+  "verdict": "passed"
+ },
+ "test_tex1d_array_reinterpretation_sm51": {
+  "verdict": "passed"
+ },
+ "test_tex2d_array_reinterpretation_dxil": {
+  "verdict": "passed"
+ },
+ "test_tex2d_array_reinterpretation_sm51": {
+  "verdict": "passed"
+ },
+ "test_texture_feedback_instructions_dxil": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported), and CheckAccessFullyMapped says unmapped for mapped tiles",
+  "first": "test_texture_feedback_instructions_dxil:2121:Test 6: Test failed: Got residency 0, expected 0x1.",
+  "failures": 4
+ },
+ "test_texture_feedback_instructions_sm51": {
+  "verdict": "failed",
+  "why": "bug: sampler feedback values differ from the suite's (tier 1.0 is reported), and CheckAccessFullyMapped says unmapped for mapped tiles",
+  "first": "test_texture_feedback_instructions_sm51:2121:Test 6: Test failed: Got residency 0, expected 0x1.",
+  "failures": 4
+ },
+ "test_texture_ld": {
+  "verdict": "passed"
+ },
+ "test_texture_resource_barriers": {
+  "verdict": "passed"
+ },
+ "test_tgsm": {
+  "verdict": "passed"
+ },
+ "test_tight_resource_alignment": {
+  "verdict": "partly"
+ },
+ "test_topology_triangle_fan": {
+  "verdict": "partly"
+ },
+ "test_typed_buffer_uav": {
+  "verdict": "passed"
+ },
+ "test_typed_buffers_many_objects_dxbc": {
+  "verdict": "passed"
+ },
+ "test_typed_buffers_many_objects_dxil": {
+  "verdict": "passed"
+ },
+ "test_typed_srv_cast_clear": {
+  "verdict": "passed"
+ },
+ "test_typed_srv_uav_cast": {
+  "verdict": "passed"
+ },
+ "test_typed_uav_store": {
+  "verdict": "passed"
+ },
+ "test_uav_3d_sliced_view": {
+  "verdict": "failed",
+  "why": "test: a todo of the suite's own",
+  "first": "test_uav_3d_sliced_view:4295: Test failed: Error for mip 0 at 0, 0, 0. Got deadca7, expected 2040403.",
+  "failures": 260
+ },
+ "test_uav_clear_exhaustive_descriptors": {
+  "verdict": "timeout",
+  "why": "timeout: a command buffer fails with 'Insufficient Memory'",
+  "failures": 0
+ },
+ "test_uav_counter_null_behavior_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior (a UAV counter that is null)",
+  "first": "test_uav_counter_null_behavior_dxbc:4546: Test failed: Unexpected value 0 = 79",
+  "failures": 21
+ },
+ "test_uav_counter_null_behavior_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior (a UAV counter that is null)",
+  "first": "test_uav_counter_null_behavior_dxil:4546: Test failed: Unexpected value 0 = 78",
+  "failures": 21
+ },
+ "test_uav_counters": {
+  "verdict": "passed"
+ },
+ "test_uav_load": {
+  "verdict": "passed"
+ },
+ "test_uav_robustness_oob_structure_element_dxbc": {
+  "verdict": "partly"
+ },
+ "test_uav_robustness_oob_structure_element_dxil": {
+  "verdict": "partly"
+ },
+ "test_unaligned_vertex_stride": {
+  "verdict": "passed"
+ },
+ "test_unbound_rtv_rendering": {
+  "verdict": "passed"
+ },
+ "test_undefined_descriptor_heap_mismatch_types": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_descriptor_heap_mismatch_types:5132: Test failed: Descriptor type 2, Shader type 3, expected 10.000000, got 0.000000.",
+  "failures": 8
+ },
+ "test_undefined_read_typed_buffer_as_untyped_simple_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_read_typed_buffer_as_untyped_simple_dxbc:1553: Test failed: Readback value for buffer iteration 1 is: 0",
+  "failures": 255
+ },
+ "test_undefined_read_typed_buffer_as_untyped_simple_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_read_typed_buffer_as_untyped_simple_dxil:1553: Test failed: Readback value for buffer iteration 1 is: 0",
+  "failures": 255
+ },
+ "test_undefined_structured_raw_alias_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_structured_raw_alias_dxbc:865: Test failed: Structured: output 0, index 16, expected 268435473, got 268435456",
+  "failures": 880
+ },
+ "test_undefined_structured_raw_alias_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_structured_raw_alias_dxil:865: Test failed: Structured: output 0, index 16, expected 268435473, got 268435456",
+  "failures": 880
+ },
+ "test_undefined_structured_raw_read_typed_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_structured_raw_read_typed_dxbc:1154: Test failed: output 0, index 0, expected (1, 1, 1, 1), got (0, 0, 0, 0)",
+  "failures": 552
+ },
+ "test_undefined_structured_raw_read_typed_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_structured_raw_read_typed_dxil:1154: Test failed: output 0, index 0, expected (1, 1, 1, 1), got (0, 0, 0, 0)",
+  "failures": 552
+ },
+ "test_undefined_typed_read_structured_raw_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_typed_read_structured_raw_dxbc:1428: Test failed: output 0, index 0, expected (4, 4, 4, 4), got (0, 0, 0, 0)",
+  "failures": 608
+ },
+ "test_undefined_typed_read_structured_raw_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior, with the answers vkd3d-proton chose",
+  "first": "test_undefined_typed_read_structured_raw_dxil:1428: Test failed: output 0, index 0, expected (4, 4, 4, 4), got (0, 0, 0, 0)",
+  "failures": 608
+ },
+ "test_uninit_root_parameters": {
+  "verdict": "passed"
+ },
+ "test_uninitialized_pixel_output_dxbc": {
+  "verdict": "failed",
+  "why": "test: undefined behavior (an output the shader does not write)",
+  "first": "test_uninitialized_pixel_output_dxbc:14796: Test failed: Got {5.01960814e-01, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {0.00000000e+0",
+  "failures": 1
+ },
+ "test_uninitialized_pixel_output_dxil": {
+  "verdict": "failed",
+  "why": "test: undefined behavior (an output the shader does not write)",
+  "first": "test_uninitialized_pixel_output_dxil:14796: Test failed: Got {5.01960814e-01, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {0.00000000e+0",
+  "failures": 1
+ },
+ "test_unknown_dsv_format": {
+  "verdict": "passed"
+ },
+ "test_unknown_rtv_format": {
+  "verdict": "passed"
+ },
+ "test_unused_attachments_mix_and_match": {
+  "verdict": "failed",
+  "why": "bug: render targets the pipeline does not name, or names while none is bound, get other targets' values",
+  "first": "test_unused_attachments_mix_and_match:2887: Test failed: RT 0, pixel 1, expected 256.000000, got 995.000000",
+  "failures": 1978
+ },
+ "test_update_compute_descriptor_tables": {
+  "verdict": "passed"
+ },
+ "test_update_descriptor_heap_after_closing_command_list": {
+  "verdict": "passed"
+ },
+ "test_update_descriptor_tables": {
+  "verdict": "passed"
+ },
+ "test_update_descriptor_tables_after_root_signature_change": {
+  "verdict": "passed"
+ },
+ "test_update_root_descriptors": {
+  "verdict": "passed"
+ },
+ "test_update_tile_mappings": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_update_tile_mappings:732: Test failed: Got 0x00000000, expected 0x00000001 at (0, 0, 0).",
+  "failures": 127
+ },
+ "test_update_tile_mappings_remap_smem": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_update_tile_mappings_remap_smem:500: Test failed: Iter 1: value 2: Expected 0, got 61653.",
+  "failures": 966
+ },
+ "test_update_tile_mappings_remap_vmem": {
+  "verdict": "failed",
+  "why": "bug: reserved (tiled) buffers: a mapped tile reads 0, and remapped tiles read other tiles' data",
+  "first": "test_update_tile_mappings_remap_vmem:500: Test failed: Iter 1: value 2: Expected 0, got 61653.",
+  "failures": 959
+ },
+ "test_varying_nointerpolation_mixed_type_dxbc": {
+  "verdict": "passed"
+ },
+ "test_varying_nointerpolation_mixed_type_dxil": {
+  "verdict": "passed"
+ },
+ "test_vbv_stride_edge_cases": {
+  "verdict": "passed"
+ },
+ "test_vertex_id_dxbc": {
+  "verdict": "failed",
+  "why": "missing: 'ExecuteIndirect: stream output is not implemented yet'",
+  "first": "test_vertex_id_dxbc:10278: Test failed: Got counter value 288, expected 608u.",
+  "failures": 21
+ },
+ "test_vertex_id_dxil": {
+  "verdict": "failed",
+  "why": "missing: 'ExecuteIndirect: stream output is not implemented yet'",
+  "first": "test_vertex_id_dxil:10278: Test failed: Got counter value 288, expected 608u.",
+  "failures": 21
+ },
+ "test_vertex_shader_stream_output_dxbc": {
+  "verdict": "passed"
+ },
+ "test_vertex_shader_stream_output_dxil": {
+  "verdict": "passed"
+ },
+ "test_view_instancing": {
+  "verdict": "partly"
+ },
+ "test_view_instancing_indirect_state": {
+  "verdict": "partly"
+ },
+ "test_view_min_lod": {
+  "verdict": "failed",
+  "why": "bug: a view's ResourceMinLODClamp past its levels does not read 0 (11 cases)",
+  "first": "test_view_min_lod:3742:Test 25: Test failed: Got 0x0f0f0f0f, expected 0x00000000 at (0, 0, 0).",
+  "failures": 11
+ },
+ "test_virtual_queries": {
+  "verdict": "passed"
+ },
+ "test_vkd3d_dxvk_cmdbuf_interop": {
+  "verdict": "partly"
+ },
+ "test_vkd3d_out_of_band_interop": {
+  "verdict": "passed"
+ },
+ "test_vrs": {
+  "verdict": "partly"
+ },
+ "test_vrs_clip_distance": {
+  "verdict": "partly"
+ },
+ "test_vrs_depth_write_dxbc": {
+  "verdict": "partly"
+ },
+ "test_vrs_depth_write_dxil": {
+  "verdict": "partly"
+ },
+ "test_vrs_dxil": {
+  "verdict": "partly"
+ },
+ "test_vrs_image": {
+  "verdict": "partly"
+ },
+ "test_vrs_sample_mask": {
+  "verdict": "partly"
+ },
+ "test_vs_instance_input_nonuniform_workarounds": {
+  "verdict": "passed"
+ },
+ "test_vtable_origins": {
+  "verdict": "passed"
+ },
+ "test_wmma_alloca": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_alloca:6426: Test failed: Row 0, Col 0: Expected 21824.000000, got 0.000000",
+  "failures": 256
+ },
+ "test_wmma_copy_transpose": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_copy_transpose:6325: Test failed: FP32: Row 0, Col 0: Expected 4.843750, got 0.000000",
+  "failures": 768
+ },
+ "test_wmma_element_wise": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_element_wise:6714: Test failed: FP32 ADD Value 0: Expected -200.000000, got 0.000000",
+  "failures": 2046
+ },
+ "test_wmma_extract_insert": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_extract_insert:6047: Test failed: Value 0: Expected 0xff, got 0x0",
+  "failures": 511
+ },
+ "test_wmma_fp32_fp8_conversions": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_fp32_fp8_conversions:5739: Test failed: -FP32 -> FP8 [0x8000 (-0.000000 / 512.0)]: Expected 0x80, got 0x0",
+  "failures": 43651
+ },
+ "test_wmma_fp32_fp8_special_conversions": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_fp32_fp8_special_conversions:5857: Test failed: FP32 unclamped (#7f7fffff) -> FP8: Expected 0x7f, got 0x0",
+  "failures": 12
+ },
+ "test_wmma_fp8_fp32_conversions": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_fp8_fp32_conversions:5652: Test failed: FP8 -> FP32 [0x1]: Expected 0.001953, got 0.000000",
+  "failures": 252
+ },
+ "test_wmma_layout_assumptions": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_layout_assumptions:6517: Test failed: Row 0, Col 0: Expected 101.000000, got 0.000000",
+  "failures": 256
+ },
+ "test_wmma_lds_layout": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_lds_layout:6221: Test failed: value 0: Expected 1.000000, got 0.000000",
+  "failures": 512
+ },
+ "test_wmma_lds_transpose": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_lds_transpose:6143: Test failed: Row 0, Col 0: Expected 317440.000000, got 0.000000",
+  "failures": 256
+ },
+ "test_wmma_matmul": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_matmul:5408:Test 0: Test failed: row 0, column 0, expected 2954.562500 (unrounded 2954.562500), got 0.000000",
+  "failures": 2816
+ },
+ "test_wmma_matrix_length": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_matrix_length:5948: Test failed: 0: Expected 8, got 0",
+  "failures": 10
+ },
+ "test_wmma_multi_matmul": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_multi_matmul:5571: Test failed: row 0, col 0: Expected 0x58, got 0x00",
+  "failures": 256
+ },
+ "test_wmma_special_conversions": {
+  "verdict": "failed",
+  "why": "test: AMD's AGS WMMA shader extension",
+  "first": "test_wmma_special_conversions:6601: Test failed: Value 1: Expected 0.001953, got 0.000000",
+  "failures": 252
+ },
+ "test_workgraph_basic": {
+  "verdict": "partly"
+ },
+ "test_workgraph_basic_recursion": {
+  "verdict": "partly"
+ },
+ "test_workgraph_broadcast_input": {
+  "verdict": "partly"
+ },
+ "test_workgraph_coalesced_input": {
+  "verdict": "partly"
+ },
+ "test_workgraph_cross_group_sharing": {
+  "verdict": "partly"
+ },
+ "test_workgraph_local_root_signature": {
+  "verdict": "partly"
+ },
+ "test_workgraph_shared_inputs": {
+  "verdict": "partly"
+ },
+ "test_workgraph_thread_input": {
+  "verdict": "partly"
+ },
+ "test_workgraph_two_level_broadcast": {
+  "verdict": "partly"
+ },
+ "test_workgraph_two_level_empty": {
+  "verdict": "partly"
+ },
+ "test_write_buffer_immediate": {
+  "verdict": "failed",
+  "why": "lenient: other calls accept what Windows refuses: a buffer with ALLOW_DEPTH_STENCIL, a misaligned multisampled placed resource, GetHeapProperties of a reserved resource, SetEventOnMultipleFenceCompletion without fences, an invalid resolve or WriteBufferImmediate mode at Close, and the device is not removed after an invalid list",
+  "first": "test_write_buffer_immediate:4773: Test failed: Got unexpected hr 0.",
+  "failures": 1
+ },
+ "test_write_watch": {
+  "verdict": "failed",
+  "why": "missing: not implemented: root signatures from a library's subobject and of version 1.2, heaps with ALLOW_WRITE_WATCH, ID3D12DeviceConfiguration1, ID3DDestructionNotifier, OpenExistingHeapFromAddress, shared handles",
+  "first": "test_write_watch:285: Test failed: Failed to ResetWriteWatch 0x57.",
+  "failures": 1
+ },
+ "test_zero_vertex_stride": {
+  "verdict": "passed"
+ }
+}

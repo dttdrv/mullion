@@ -89,7 +89,8 @@ PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_STATIC
   }
 
   InfoOut.lod_min_clamp = Desc.MinLOD;
-  InfoOut.lod_max_clamp = Desc.MaxLOD;
+  // "max(MinLOD, min(MaxLOD, LOD))": MinLOD takes precedence (D3D11.3 7.18.11)
+  InfoOut.lod_max_clamp = std::max(Desc.MinLOD, Desc.MaxLOD);
 
   // Anisotropy
   if (D3D12_DECODE_IS_ANISOTROPIC_FILTER(Desc.Filter)) {
@@ -156,7 +157,8 @@ PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLE
   }
 
   InfoOut.lod_min_clamp = Desc.MinLOD;
-  InfoOut.lod_max_clamp = Desc.MaxLOD;
+  // "max(MinLOD, min(MaxLOD, LOD))": MinLOD takes precedence (D3D11.3 7.18.11)
+  InfoOut.lod_max_clamp = std::max(Desc.MinLOD, Desc.MaxLOD);
 
   // Anisotropy
   if (D3D12_DECODE_IS_ANISOTROPIC_FILTER(Desc.Filter)) {

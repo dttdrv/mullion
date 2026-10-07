@@ -25,6 +25,8 @@
 #include "com/com_object.hpp"
 #include "dxgi_interfaces.h"
 #include "dxmt_format.hpp"
+#include "util_env.hpp"
+#include "dxmt_info.hpp"
 #include "log/log.hpp"
 #include "config/config.hpp"
 #include <algorithm>
@@ -70,6 +72,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   bool advertise_numa_ = false;
 
   dxmt::mutex residency_lock_;
+  std::atomic<HRESULT> removed_ = S_OK;
+  dxmt::mutex pass_names_lock_;
+  std::unordered_map<uint64_t, std::string> pass_names_;
   dxmt::mutex acceleration_structure_lock_;
   std::map<uint64_t, std::shared_ptr<AccelerationStructure>> acceleration_structures_;
   // compacted sizes are uint64s of shared buffers the GPU writes
@@ -186,6 +191,19 @@ public:
   uint32_t
   GetSIMDWidth() {
     return simd_width_;
+  }
+
+  uint64_t
+  ThreadsAtOnce() {
+    // DXMT_D3D12_THREADS_AT_ONCE gives the number, for a test or to tell what a part's size does
+    static const uint64_t given = strtoull(env::getEnvVar("DXMT_D3D12_THREADS_AT_ONCE").c_str(), nullptr, 10);
+    return given ? given : total_lanes_;
+  }
+
+  SM50_SHADER_METAL_VERSION
+  GetMetalVersion() {
+    static_assert(SM50_SHADER_METAL_310 == uint32_t(WMTMetal310) && SM50_SHADER_METAL_320 == uint32_t(WMTMetal320));
+    return SM50_SHADER_METAL_VERSION(ShaderMetalVersion(GetMTLDevice()));
   }
 
   WMT::Device
@@ -594,7 +612,7 @@ public:
     case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
     case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
     case D3D12_DESCRIPTOR_HEAP_TYPE_DSV:
-      return 32;
+      return 1u << EMBEDDED_DESCRIPTOR_HANDLE::kIncrementBits;
     default:
       break;
     }
@@ -909,8 +927,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetDeviceRemovedReason() {
-    return S_OK;
+    return removed_;
   };
+
+  void
+  LoseDevice() {
+    removed_ = DXGI_ERROR_DEVICE_HUNG;
+  }
 
   void STDMETHODCALLTYPE GetCopyableFootprints(
       const D3D12_RESOURCE_DESC *pDesc, UINT FirstSubresource, UINT SubresourceCount, UINT64 BaseOffset,
@@ -1069,51 +1092,24 @@ public:
       ID3D12Fence *const *pFences, const UINT64 *pValues, UINT FenceCount, D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags,
       HANDLE hEvent
   ) {
-    struct Wait {
-      std::vector<std::pair<Rc<Fence>, UINT64>> fences;
-      bool any;
-      HANDLE event;
-
-      // Metal waits on one event at a time, so waiting for any polls the fences a millisecond each
-      void
-      run() {
-        if (!any)
-          for (auto &[fence, value] : fences)
-            fence->wait(value);
-        while (any)
-          for (auto &[fence, value] : fences)
-            if (fence->sharedEvent().waitUntilSignaledValue(value, 1))
-              return;
-      }
-    };
-    auto wait = new Wait{{}, bool(Flags & D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY), hEvent};
-    for (UINT i = 0; i < FenceCount; i++) {
-      auto &fence = static_cast<MTLD3D12Fence *>(pFences[i])->fence;
-      if (fence->completedValue() < pValues[i])
-        wait->fences.emplace_back(fence, pValues[i]);
-    }
-    // nothing to wait for: every fence reached its value, or for any, one did
-    if (wait->fences.empty() || (wait->any && wait->fences.size() < FenceCount)) {
+    auto set = std::make_shared<std::atomic<bool>>();
+    auto done = [=] {
       if (hEvent)
         SetEvent(hEvent);
-      delete wait;
-      return S_OK;
-    }
-    if (!hEvent) {
-      wait->run();
-      delete wait;
-      return S_OK;
-    }
-    auto signal = [](PTP_CALLBACK_INSTANCE, void *context) {
-      auto wait = static_cast<Wait *>(context);
-      wait->run();
-      SetEvent(wait->event);
-      delete wait;
+      *set = true;
+      set->notify_all();
     };
-    if (!TrySubmitThreadpoolCallback(signal, wait, nullptr)) {
-      delete wait;
-      return E_OUTOFMEMORY;
-    }
+    // each fence counts down as it has its value. the count is one when any of them is enough
+    auto left = std::make_shared<std::atomic<UINT>>(Flags & D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY ? 1 : FenceCount);
+    if (!FenceCount)
+      done();
+    for (UINT i = 0; i < FenceCount; i++)
+      static_cast<MTLD3D12Fence *>(pFences[i])->Expect(pValues[i], [=] {
+        if (left->fetch_sub(1) == 1)
+          done();
+      });
+    if (!hEvent)
+      set->wait(false);
     return S_OK;
   };
 
@@ -1765,6 +1761,25 @@ public:
   GetGlobalResidencySet() {
     return residency_set_;
   };
+
+  bool
+  NamesPasses() {
+    static const bool names = !env::getEnvVar("DXMT_D3D12_GPU_ERRORS").empty();
+    return names;
+  }
+
+  void
+  NamePass(uint64_t id, const std::string &pipeline) {
+    std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
+    pass_names_[id] += pipeline;
+  }
+
+  std::string
+  PassName(uint64_t id) {
+    std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
+    auto name = pass_names_.extract(id);
+    return name ? std::move(name.mapped()) : std::string();
+  }
 
   HRESULT
   RegisterResidency(WMT::Allocation allocation) {

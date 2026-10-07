@@ -107,6 +107,13 @@ _NSAutoreleasePool_alloc_init(void *obj) {
 static NTSTATUS
 _MTLCommandQueue_commandBuffer(void *obj) {
   struct unixcall_generic_obj_obj_ret *params = obj;
+  // DXMT_D3D12_GPU_ERRORS: the error of a command buffer the GPU failed lists its encoders and what became of each
+  if (getenv("DXMT_D3D12_GPU_ERRORS")) {
+    MTLCommandBufferDescriptor *descriptor = [[[MTLCommandBufferDescriptor alloc] init] autorelease];
+    descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+    params->ret = (obj_handle_t)[(id<MTLCommandQueue>)params->handle commandBufferWithDescriptor:descriptor];
+    return STATUS_SUCCESS;
+  }
   params->ret = (obj_handle_t)[(id<MTLCommandQueue>)params->handle commandBuffer];
   return STATUS_SUCCESS;
 }
@@ -586,6 +593,23 @@ _MTLDevice_newRenderPipelineState(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// the device's fragment function that writes nothing, made once
+static id<MTLFunction>
+empty_fragment_function(id<MTLDevice> device) {
+  static char key;
+  @synchronized(device) {
+    id<MTLFunction> function = objc_getAssociatedObject(device, &key);
+    if (!function) {
+      id<MTLLibrary> library = [device newLibraryWithSource:@"[[fragment]] void empty() {}" options:nil error:nil];
+      function = [library newFunctionWithName:@"empty"];
+      objc_setAssociatedObject(device, &key, function, OBJC_ASSOCIATION_RETAIN);
+      [function release];
+      [library release];
+    }
+    return function;
+  }
+}
+
 static NTSTATUS
 _MTLDevice_newMeshRenderPipelineState(void *obj) {
   struct unixcall_mtldevice_newmeshrenderpso *params = obj;
@@ -628,6 +652,10 @@ _MTLDevice_newMeshRenderPipelineState(void *obj) {
   descriptor.objectFunction = (id<MTLFunction>)info->object_function;
   descriptor.meshFunction = (id<MTLFunction>)info->mesh_function;
   descriptor.fragmentFunction = (id<MTLFunction>)info->fragment_function;
+  // Metal aborts on a mesh pipeline that rasterizes to a color attachment without a fragment function, which an
+  // ordinary pipeline may: one that does nothing stands in, and depth is written as without
+  if (info->rasterization_enabled && !info->fragment_function)
+    descriptor.fragmentFunction = empty_fragment_function((id<MTLDevice>)params->device);
   descriptor.payloadMemoryLength = info->payload_memory_length;
 
   descriptor.meshThreadgroupSizeIsMultipleOfThreadExecutionWidth = info->mesh_tgsize_is_multiple_of_sgwidth;
@@ -811,6 +839,17 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
       struct wmtcmd_compute_dispatch *body = (struct wmtcmd_compute_dispatch *)next;
       [encoder dispatchThreadgroups:MTLSizeMake(body->size.width, body->size.height, body->size.depth)
               threadsPerThreadgroup:threadgroup_size];
+      break;
+    }
+    case WMTComputeCommandDispatchPart: {
+      struct wmtcmd_compute_dispatch_part *body = (struct wmtcmd_compute_dispatch_part *)next;
+      MTLSize size = MTLSizeMake(body->size.width, body->size.height, body->size.depth);
+      [encoder setStageInRegion:MTLRegionMake3D(
+                                    body->origin.x, body->origin.y, body->origin.z, size.width, size.height, size.depth
+                                )];
+      [encoder dispatchThreadgroups:size threadsPerThreadgroup:threadgroup_size];
+      // the origin is the encoder's: a dispatch that is not a part starts at none
+      [encoder setStageInRegion:MTLRegionMake3D(0, 0, 0, size.width, size.height, size.depth)];
       break;
     }
     case WMTComputeCommandDispatchThreads: {
@@ -3201,9 +3240,11 @@ _MTLCounterSampleBuffer_resolveCounterRange(void *obj) {
   struct unixcall_mtlcountersamplebuffer_resolvecounterrange *params = obj;
   id<MTLCounterSampleBuffer> sample_buffer = (id<MTLCounterSampleBuffer>)params->sample_buffer;
 
-  NSData *data = [sample_buffer resolveCounterRange:NSMakeRange(params->start, params->len)];
-  if (data && params->data_out.ptr) {
-    [data getBytes:params->data_out.ptr length:params->data_length];
+  @autoreleasepool {
+    NSData *data = [sample_buffer resolveCounterRange:NSMakeRange(params->start, params->len)];
+    if (data && params->data_out.ptr) {
+      [data getBytes:params->data_out.ptr length:params->data_length];
+    }
   }
   return STATUS_SUCCESS;
 }

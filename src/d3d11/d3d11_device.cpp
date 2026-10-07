@@ -82,8 +82,9 @@ public:
                ID3D11Buffer **ppBuffer) override {
     InitReturnPtr(ppBuffer);
 
-    if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
-      return E_INVALIDARG; 
+    if (!pDesc || (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)) ||
+        (pInitialData && !pInitialData->pSysMem))
+      return E_INVALIDARG;
 
     try {
       switch (pDesc->Usage) {
@@ -254,9 +255,6 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
-    if (!ppGeometryShader)
-      return S_FALSE;
-
     return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength,
                                               ppGeometryShader);
   }
@@ -271,8 +269,11 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
-    if (!ppGeometryShader)
-      return S_FALSE;
+    // no declaration is a geometry shader alone, which a count of none with a declaration is not, nor a stream past
+    // the last (Wine's test_stream_output has both from Windows)
+    if ((pSODeclaration && !NumEntries) ||
+        (RasterizedStream >= D3D11_SO_STREAM_COUNT && RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM))
+      return E_INVALIDARG;
     if (!NumEntries)
       return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
 
@@ -283,6 +284,9 @@ public:
     );
     if (FAILED(hr))
       return hr;
+    // with no pointer for the shader the call validates and says so
+    if (!ppGeometryShader)
+      return S_FALSE;
     return so_layout->QueryInterface(IID_PPV_ARGS(ppGeometryShader));
   }
 
@@ -306,9 +310,6 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
-    if (!ppHullShader)
-      return S_FALSE;
-
     return pipeline_cache_->AddHullShader(pShaderBytecode, BytecodeLength,
                                           ppHullShader);
   }
@@ -320,9 +321,6 @@ public:
     InitReturnPtr(ppDomainShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
-
-    if (!ppDomainShader)
-      return S_FALSE;
 
     return pipeline_cache_->AddDomainShader(pShaderBytecode, BytecodeLength,
                                             ppDomainShader);
@@ -349,6 +347,8 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateBlendState(const D3D11_BLEND_DESC *pBlendStateDesc,
                    ID3D11BlendState **ppBlendState) override {
+    if (!pBlendStateDesc)
+      return E_INVALIDARG;
     ID3D11BlendState1 *pBlendState1;
     D3D11_BLEND_DESC1 desc;
     desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
@@ -387,6 +387,8 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState(const D3D11_RASTERIZER_DESC *pRasterizerDesc,
                         ID3D11RasterizerState **ppRasterizerState) override {
+    if (!pRasterizerDesc)
+      return E_INVALIDARG;
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;
@@ -415,6 +417,8 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateQuery(const D3D11_QUERY_DESC *pQueryDesc, ID3D11Query **ppQuery) override {
+    if (!pQueryDesc)
+      return E_INVALIDARG;
     D3D11_QUERY_DESC1 desc;
     desc.Query = pQueryDesc->Query;
     desc.MiscFlags = pQueryDesc->MiscFlags;
@@ -426,11 +430,20 @@ public:
   CreatePredicate(const D3D11_QUERY_DESC *pPredicateDesc,
                   ID3D11Predicate **ppPredicate) override {
     InitReturnPtr(ppPredicate);
-    // the queries that are predicates (ID3D11Device::CreatePredicate)
-    if (!pPredicateDesc || (pPredicateDesc->Query != D3D11_QUERY_OCCLUSION_PREDICATE &&
-                            (pPredicateDesc->Query < D3D11_QUERY_SO_OVERFLOW_PREDICATE ||
-                             pPredicateDesc->Query > D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3)))
+    if (!pPredicateDesc)
       return E_INVALIDARG;
+    // the queries that are predicates (ID3D11Device::CreatePredicate): the stream statistics lie between them
+    switch (pPredicateDesc->Query) {
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+      break;
+    default:
+      return E_INVALIDARG;
+    }
     return CreateQuery(pPredicateDesc,
                        reinterpret_cast<ID3D11Query **>(ppPredicate));
   }
@@ -603,6 +616,8 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState1(const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
                          ID3D11RasterizerState1 **ppRasterizerState) override {
+    if (!pRasterizerDesc)
+      return E_INVALIDARG;
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;

@@ -385,6 +385,12 @@ public:
 
   Value *CreateAtomicRMW(AtomicRMWInst::BinOp Op, Value *Ptr, Value *Val);
 
+  // Metal's 64-bit atomic minimum or maximum, unsigned, which gives no old value: of a device word, and of a texel of
+  // an RG32Uint texture (its low half the red). named and called as the Metal compiler does for atomic_ulong and for
+  // textures of ulong in the AIR versions the converter writes (2.6 and 2.7; later ones take more arguments)
+  void CreateAtomicMinMax64(bool Max, Value *Ptr, Value *Val);
+  void CreateAtomicMinMax64(const Texture &Texture, Value *Handle, bool Max, Value *Pos, Value *ArrayIndex, Value *Val);
+
   llvm::Value *SanitizePosition(llvm::Value *Pos);
 
   /* Useful Helpers */

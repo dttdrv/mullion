@@ -10,7 +10,9 @@
 #include "dxmt_tasks.hpp"
 #include "log/log.hpp"
 #include "sha1/sha1_util.hpp"
+#include "util_md5.hpp"
 #include "../d3d10/d3d10_shader.hpp"
+#include <optional>
 #include "../d3d10/d3d10_input_layout.hpp"
 #include <cstring>
 #include <shared_mutex>
@@ -257,13 +259,35 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     }
   }
 
+  // the stage a container's code is of, which each Create call takes its own of (Wine's test_stream_output has a
+  // geometry shader made of vertex bytecode refused on Windows)
+  static std::optional<microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE>
+  Stage(const void *pBytecode, uint32_t BytecodeLength) {
+    using namespace microsoft;
+    CDXBCParser parser;
+    // Direct3D refuses a container that is not what its hash says before it reads anything else of it
+    if (FAILED(parser.ReadDXBC(pBytecode, BytecodeLength)) ||
+        memcmp(parser.GetHash(), md5::hashDxbcBinary(pBytecode, BytecodeLength).data.data(), sizeof(DXBCHash)))
+      return {};
+    auto code = parser.FindNextMatchingBlob(DXBC_GenericShaderEx);
+    if (code == DXBC_BLOB_NOT_FOUND)
+      code = parser.FindNextMatchingBlob(DXBC_GenericShader);
+    if (code == DXBC_BLOB_NOT_FOUND)
+      return {};
+    return DECODE_D3D10_SB_TOKENIZED_PROGRAM_TYPE(*(const uint32_t *)parser.GetBlob(code));
+  }
+
   virtual HRESULT AddVertexShader(const void *pBytecode,
                                   uint32_t BytecodeLength,
                                   ID3D11VertexShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_VERTEX_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11VertexShader, MTLD3D10VertexShader>(device, managed_shader));
     return S_OK;
@@ -271,20 +295,28 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   virtual HRESULT AddPixelShader(const void *pBytecode, uint32_t BytecodeLength,
                                  ID3D11PixelShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_PIXEL_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader = ref(new TShaderBase<ID3D11PixelShader, MTLD3D10PixelShader>(device, managed_shader));
     return S_OK;
   }
 
   virtual HRESULT AddHullShader(const void *pBytecode, uint32_t BytecodeLength,
                                 ID3D11HullShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_HULL_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader = ref(new TShaderBase<ID3D11HullShader>(device, managed_shader));
     return S_OK;
   }
@@ -292,10 +324,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddDomainShader(const void *pBytecode,
                                   uint32_t BytecodeLength,
                                   ID3D11DomainShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_DOMAIN_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11DomainShader>(device, managed_shader));
     return S_OK;
@@ -304,10 +340,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddGeometryShader(const void *pBytecode,
                                     uint32_t BytecodeLength,
                                     ID3D11GeometryShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_GEOMETRY_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11GeometryShader, MTLD3D10GeometryShader>(device, managed_shader));
     return S_OK;
@@ -316,10 +356,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddComputeShader(const void *pBytecode,
                                    uint32_t BytecodeLength,
                                    ID3D11ComputeShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_COMPUTE_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11ComputeShader>(device, managed_shader));
     return S_OK;
@@ -361,18 +405,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     using namespace microsoft;
     MTL_STREAM_OUTPUT_DESC desc{};
     // the bytecode is the geometry shader, or the stage whose output goes out without one
-    CDXBCParser parser;
-    if (FAILED(parser.ReadDXBC(pShaderBytecode, BytecodeLength)))
+    auto stage = Stage(pShaderBytecode, BytecodeLength);
+    if (!stage)
       return E_INVALIDARG;
-    auto code = parser.FindNextMatchingBlob(DXBC_GenericShaderEx);
-    if (code == DXBC_BLOB_NOT_FOUND)
-      code = parser.FindNextMatchingBlob(DXBC_GenericShader);
-    if (code == DXBC_BLOB_NOT_FOUND)
+    if (*stage == D3D10_SB_GEOMETRY_SHADER && !(desc.GeometryShader = CreateShader(pShaderBytecode, BytecodeLength)))
       return E_INVALIDARG;
-    if (DECODE_D3D10_SB_TOKENIZED_PROGRAM_TYPE(*(const uint32_t *)parser.GetBlob(code)) == D3D10_SB_GEOMETRY_SHADER &&
-        !(desc.GeometryShader = CreateShader(pShaderBytecode, BytecodeLength)))
-      return E_FAIL;
-    if (HRESULT hr = ExtractStreamOutputElements(pShaderBytecode, std::span(pEntries, NumEntries), desc.Elements);
+    if (HRESULT hr = ExtractStreamOutputElements(
+            pShaderBytecode, std::span(pEntries, NumEntries), std::span(pStrides, NumStrides), desc.Elements
+        );
         FAILED(hr))
       return hr;
     for (unsigned i = 0; i < std::min<UINT>(NumStrides, std::size(desc.Strides)); i++)

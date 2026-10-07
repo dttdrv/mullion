@@ -134,6 +134,9 @@ struct MTL_SHADER_REFLECTION {
   uint32_t ArgumentTableQwords;
   /* how many cull distances the stage outputs */
   uint32_t CullDistances;
+  /* a compute shader whose threadgroups wait for one another (a loop reads globally coherent memory): its dispatch
+     may be made in parts, each with the stage-in region's origin at the part's first group */
+  uint32_t GroupsWorkTogether;
 };
 
 #if defined(__LP64__) || defined(_WIN64)

@@ -470,6 +470,11 @@ public:
   std::vector<MTL_SM50_SHADER_ARGUMENT> args_reflection_cbuffer;
   std::vector<MTL_SM50_SHADER_ARGUMENT> args_reflection;
   uint32_t threadgroup_size[3] = {0};
+  // a compute shader with a loop that reads globally coherent memory: its threadgroups wait for one another, and its
+  // dispatch comes in parts (MTL_SHADER_REFLECTION::GroupsWorkTogether), each part's groups numbered from the
+  // stage-in grid's origin
+  bool groups_work_together = false;
+  bool reads_dispatch_position = false;
   uint32_t input_control_point_count = ~0u;
   uint32_t output_control_point_count = ~0u;
   microsoft::D3D11_SB_TESSELLATOR_PARTITIONING tessellation_partition = {};
@@ -523,6 +528,8 @@ public:
     return bbs.front().get();
   }
 };
+
+void declare_dispatch_origin(SM50ShaderInternal *sm50_shader);
 
 void handle_signature(
   microsoft::CSignatureParser &inputParser,

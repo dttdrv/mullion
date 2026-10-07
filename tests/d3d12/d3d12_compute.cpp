@@ -1,7 +1,8 @@
 // contract: a compute shader bound through root SRV and UAV descriptors and a CBV table reads a raw buffer,
 // exchanges values through group shared memory across a group barrier, and writes a structured buffer; every
 // element equals the same expression evaluated on the CPU from the same input. the CBV views only the first part of
-// its buffer, and rows past the view read 0 (D3D11.3 7.5).
+// its buffer, and rows past the view read 0 (D3D11.3 7.5). the table is the last descriptor of a heap of 2,000,000,
+// the heap Unreal Engine 5 makes.
 #include "d3d12_test.hpp"
 #include <algorithm>
 #include <bit>
@@ -75,11 +76,16 @@ main(int argc, char **argv) {
 
   ComPtr<ID3D12DescriptorHeap> heap;
   D3D12_DESCRIPTOR_HEAP_DESC heap_desc{
-      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2000000, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
   };
   CHECK(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap)));
+  const UINT64 last = UINT64(heap_desc.NumDescriptors - 1) * device->GetDescriptorHandleIncrementSize(heap_desc.Type);
+  auto table_cpu = heap->GetCPUDescriptorHandleForHeapStart();
+  auto table_gpu = heap->GetGPUDescriptorHandleForHeapStart();
+  table_cpu.ptr += last;
+  table_gpu.ptr += last;
   D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{src->GetGPUVirtualAddress(), view_bytes};
-  device->CreateConstantBufferView(&cbv, heap->GetCPUDescriptorHandleForHeapStart());
+  device->CreateConstantBufferView(&cbv, table_cpu);
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
@@ -93,7 +99,7 @@ main(int argc, char **argv) {
   list->SetComputeRootSignature(rs.Get());
   list->SetComputeRootShaderResourceView(0, src->GetGPUVirtualAddress() + sizeof(thresholds));
   list->SetComputeRootUnorderedAccessView(1, dst->GetGPUVirtualAddress());
-  list->SetComputeRootDescriptorTable(2, heap->GetGPUDescriptorHandleForHeapStart());
+  list->SetComputeRootDescriptorTable(2, table_gpu);
   list->Dispatch(groups, 1, 1);
   transition(list.Get(), dst.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
   list->CopyResource(readback.Get(), dst.Get());

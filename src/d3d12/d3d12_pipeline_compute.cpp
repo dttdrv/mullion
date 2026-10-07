@@ -53,21 +53,25 @@ public:
     SM50_SHADER_COMMON_DATA common;
     common.flags = {};
     common.type = SM50_SHADER_COMMON;
-    common.metal_version = SM50_SHADER_METAL_310;
+    common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();
     common.next = &rootsig;
 
+    Name({pDesc->CS});
     if (HRESULT hr = InitializeShader(pDesc->CS, &shader_cs, &ref_cs); FAILED(hr))
       return hr;
 
     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
+    groups_work_together = ref_cs.GroupsWorkTogether;
+    if (groups_work_together)
+      Logger::info(str::format("compute pipeline ", name, ": its threadgroups work together, it is dispatched in parts"));
 
     SM50ShaderBitcode cs_bitcode;
 
     if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
-      ERR("Failed to compile cs shader: ", SM50GetErrorMessageString(sm50_err));
+      ERR("Failed to compile cs shader ", name, ": ", SM50GetErrorMessageString(sm50_err));
       DumpShaders({pDesc->CS});
-      return E_FAIL;
+      return E_INVALIDARG;
     }
 
     SM50_COMPILED_BITCODE cs_bitcode_compiled;
@@ -93,7 +97,7 @@ public:
 
       pso = metal.newComputePipelineState(info, err);
       if (!pso) {
-        ERR("Failed to create compute PSO: ", err.description().getUTF8String());
+        ERR("Failed to create compute PSO of shader ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->CS});
         return E_FAIL;
       }

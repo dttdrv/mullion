@@ -4,6 +4,7 @@
 #include "d3d12_pipeline.hpp"
 #include "airconv_ray.h"
 #include "com/com_pointer.hpp"
+#include "util_md5.hpp"
 #include <algorithm>
 #include <map>
 #include <span>
@@ -245,6 +246,8 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
       const D3D12_DXIL_LIBRARY_DESC &desc, std::vector<std::pair<const RayLibrary *, LibrarySubobject>> &subobjects
   ) {
     auto library = std::make_shared<RayLibrary>();
+    if (!ShaderContainerHolds(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength))
+      return E_INVALIDARG;
     SM50Error error;
     if (SM50Initialize(
             desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength, &library->shader, nullptr, &error
@@ -285,6 +288,8 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     head.blob = {microsoft::DXBC_RootSignature, (uint32_t)serialized.size()};
     memcpy(container.data(), &head, sizeof(head));
     memcpy(container.data() + sizeof(head), serialized.data(), serialized.size());
+    auto hash = md5::hashDxbcBinary(container.data(), container.size());
+    memcpy(container.data() + offsetof(microsoft::DXBCHeader, Hash), &hash, sizeof(hash));
     Com<ID3D12RootSignature> root;
     device_->CreateRootSignature(0, container.data(), container.size(), IID_PPV_ARGS(&root));
     return root;
@@ -313,7 +318,7 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
       arguments = &(local = blob(pLocal, SM50_SHADER_ROOT_SIGNATURE2, arguments));
     if (pGlobal)
       arguments = &(global = blob(pGlobal, SM50_SHADER_ROOT_SIGNATURE, arguments));
-    SM50_SHADER_COMMON_DATA common{arguments, SM50_SHADER_COMMON, SM50_SHADER_METAL_310};
+    SM50_SHADER_COMMON_DATA common{arguments, SM50_SHADER_COMMON, device_->GetMetalVersion()};
     common.flags = {};
     common.simd_width = device_->GetSIMDWidth();
 

@@ -136,6 +136,7 @@ main(int argc, char **argv) {
       source_is(size / 2, size / 2, "the source size");
     }
     auto i = swapchain->GetCurrentBackBufferIndex();
+    CHECK(forget(readback.Get()));
     CHECK(allocator->Reset());
     CHECK(list->Reset(allocator.Get(), pso.Get()));
     transition(list.Get(), back[i].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);

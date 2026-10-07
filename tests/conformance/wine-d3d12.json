@@ -1,0 +1,45 @@
+{
+ "test_create_device": {
+  "verdict": "crashed",
+  "at": "d3d12_test.exe: func_d3d12 at d3d12.c:1577:38",
+  "why": "bug: D3D12CreateDevice refuses an IDXCoreAdapter (E_INVALIDARG); the test then uses the device it was not given",
+  "first": "d3d12.c:971: Test failed: Got unexpected hr 0x80070057.",
+  "failures": 1
+ },
+ "test_desktop_window": {
+  "verdict": "failed",
+  "why": "lenient: a swap chain is made on the desktop window and on a compute or copy queue",
+  "first": "d3d12.c:1454: Test failed: Got unexpected hr 0.",
+  "failures": 3
+ },
+ "test_draw": {
+  "verdict": "passed"
+ },
+ "test_interfaces": {
+  "verdict": "passed"
+ },
+ "test_invalid_command_queue_types": {
+  "verdict": "failed",
+  "why": "lenient: a swap chain is made on the desktop window and on a compute or copy queue",
+  "first": "d3d12.c:1525: Test failed: Got unexpected hr 0.",
+  "failures": 2
+ },
+ "test_ordinals": {
+  "verdict": "passed"
+ },
+ "test_swapchain_backbuffer_index": {
+  "verdict": "passed"
+ },
+ "test_swapchain_draw": {
+  "verdict": "passed"
+ },
+ "test_swapchain_refcount": {
+  "verdict": "failed",
+  "why": "semantics: a back buffer an application holds does not hold its Direct3D 12 swap chain: the swap chain's count stays 1 where Windows has 2",
+  "first": "d3d12.c:1157: Test failed: Got refcount 1.",
+  "failures": 10
+ },
+ "test_swapchain_size_mismatch": {
+  "verdict": "passed"
+ }
+}

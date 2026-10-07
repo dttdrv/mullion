@@ -7,6 +7,7 @@ build's libraries are installed into. a family other than the GPU's own lowers w
 every repeat: one that fails once, ends without a result or outlives its time has failed.
 """
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -18,6 +19,12 @@ from pathlib import Path
 
 # what a test's last word and exit status make of it (tests/*/..._test.hpp)
 RESULTS = {"passed": 0, "skipped": 77}
+# a runner that is told to end ends as one that is interrupted: through its finally clauses
+signal.signal(signal.SIGTERM, lambda *_: sys.exit("ended"))
+# how long a test waits for a machine short of memory before the run gives up
+PATIENCE = 1800
+# after this many tests the machine's lock is left free for this many seconds
+TURNS, TURN = 6, 6
 
 
 def libraries(builds):
@@ -58,50 +65,152 @@ def install(wine, prefix, unix, pe):
             shutil.copy2(unix[path.stem + ".so"], wine / "lib" / "wine" / f"{machine(path)}-unix")
 
 
+# what the library and Metal say when the GPU's work went wrong under a test: a command buffer that failed
+# (src/d3d12/d3d12_command_queue.cpp, src/dxmt/dxmt_command_queue.cpp), a rule of Metal's validation broken
+FAULTS = ("Device error", "failed assertion")
+
+
+@contextlib.contextmanager
+def alone():
+    """one GPU job at a time on a machine that has others: MULLION_TEST_LOCK names their lock, a directory that holds
+    its owner's process id and is taken over when the owner is gone. held for one test, so the others get their turn"""
+    lock = os.environ.get("MULLION_TEST_LOCK")
+    while lock:
+        try:
+            os.mkdir(lock)
+            Path(lock, "pid").write_text(str(os.getpid()))
+            break
+        except FileExistsError:
+            time.sleep(5)
+            try:
+                os.kill(int(Path(lock, "pid").read_text()), 0)
+            except (OSError, ValueError):
+                shutil.rmtree(lock, ignore_errors=True)
+    try:
+        yield
+    finally:
+        if lock:
+            shutil.rmtree(lock, ignore_errors=True)
+            # the others look for the lock every few seconds: every few tests it stays free long enough for them
+            alone.held = getattr(alone, "held", 0) + 1
+            if alone.held % TURNS == 0:
+                time.sleep(TURN)
+
+
+def finish(command, env, seconds, log):
+    """runs the command with its output in the log: its exit status, or None when it outlived its time. nothing
+    starts on a machine short of memory (the kernel's pressure level, 1 when normal): a GPU test there can take the
+    machine down with it. the test waits for the memory, up to PATIENCE seconds, and not while it has the machine's
+    lock"""
+    for waited in range(0, PATIENCE + 1, 10):
+        with alone():
+            level = subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True, text=True).stdout.strip()
+            if level == "1":
+                with open(log, "wb") as out:
+                    process = subprocess.Popen(
+                        command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+                    )
+                    # the test and what it started, which nothing else is in the session of, do not outlive their time
+                    # or this runner: a test left behind would use the GPU without the lock
+                    try:
+                        return process.wait(seconds)
+                    except subprocess.TimeoutExpired:
+                        return None
+                    finally:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+        time.sleep(10)
+    sys.exit(f"memory pressure level {level} for {PATIENCE} s: no test started")
+
+
+def faults(lines):
+    return [line for line in lines if any(fault in line for fault in FAULTS)]
+
+
 def run(command, env, seconds, log):
     """the command's verdict, and what it said last"""
     started = time.monotonic()
-    with open(log, "wb") as out:
-        process = subprocess.Popen(
-            command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
-        )
-        try:
-            status = process.wait(seconds)
-        except subprocess.TimeoutExpired:
-            # the test and what it started, which nothing else is in the session of
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-            return "failed", f"still running after {seconds} s", time.monotonic() - started
+    status = finish(command, env, seconds, log)
     lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    if status is None:
+        return "failed", f"still running after {seconds} s: {lines[-1] if lines else 'nothing'}", time.monotonic() - started
     # a test's result is the last line that starts with one
     said = next((line for line in reversed(lines) if line.split(":")[0] in (*RESULTS, "failed")), "")
     word = said.split(":")[0]
+    # a result read while the GPU's work had failed is no result: the readback may hold what an earlier pass left
+    if word == "passed" and faults(lines):
+        return "failed", f"said '{said}' after: {faults(lines)[0]}", time.monotonic() - started
     if RESULTS.get(word) == status:
         return word, said, time.monotonic() - started
     last = lines[-1] if lines else "nothing"
     return "failed", said if word == "failed" else f"exit status {status} after: {last}", time.monotonic() - started
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def arguments(parser):
+    """what says where the tests run: the builds, the Wine and its prefix"""
     parser.add_argument("--build", action="append", required=True, type=Path,
                         help="a meson build directory; with several, the first that has a library or the tests gives them")
     parser.add_argument("--wine", required=True, type=Path, help="a Wine's installation: the directory with bin/wine")
     parser.add_argument("--prefix", type=Path, help="the Wine prefix of the tests (made if missing); default: tests-prefix in the first build")
-    parser.add_argument("--family", default="native,9,8,7",
-                        help="the Apple GPU families to run as, 'native' for the GPU's own (default: %(default)s)")
-    parser.add_argument("--repeat", type=int, default=1, help="how many times each test runs")
     parser.add_argument("--validate", action="store_true", help="run under Metal's API validation")
-    parser.add_argument("--suite", action="append", default=[], help="only tests of this suite (may repeat)")
     parser.add_argument("--no-install", action="store_true", help="leave the Wine's libraries as they are")
-    parser.add_argument("tests", nargs="*", help="only tests whose name starts with one of these")
-    args = parser.parse_args()
 
+
+def environment(args):
+    """the builds, the Wine's binary and the environment of a test in it, with the builds' libraries installed"""
     builds = [build.resolve() for build in args.build]
     wine = args.wine.resolve()
     prefix = (args.prefix or builds[0] / "tests-prefix").resolve()
-    declared = [json.loads(path.read_text()) for build in builds
-                for path in [build / "meson-info" / "intro-tests.json"] if path.exists()]
+    unix, pe = libraries(builds)
+    base = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG=os.environ.get("WINEDEBUG", "-all"), DXMT_SHADER_CACHE="0")
+    base.pop("DXMT_GPU_FAMILY", None)
+    # the build's libraries in place of the Wine's own, the shader compiler the prefix has, and no installer or
+    # debugger that asks in a dialog
+    own = sorted(path.stem for path in pe.values() if builtin(path))
+    native = sorted(path.stem for path in pe.values() if not builtin(path))
+    base["WINEDLLOVERRIDES"] = f"{','.join(native + ['d3dcompiler_47'])}=n;{','.join(own)}=b;mscoree,mshtml,winedbg.exe=d"
+    if args.validate:
+        base["MTL_DEBUG_LAYER"] = "1"
+    binary = wine / "bin" / "wine"
+    if not (prefix / "drive_c").exists():
+        subprocess.run([binary, "wineboot", "-u"], env=base, stdin=subprocess.DEVNULL, check=True)
+    if not args.no_install:
+        install(wine, prefix, unix, pe)
+    return builds, binary, base
+
+
+def explain(lines, most=6):
+    """what a failed test's log says went wrong: the step it was in (tests/trace.hpp), its wrong results, what the
+    library said, and Metal's own errors and validation text. at most `most` lines of a kind, each kind once"""
+    kinds = {
+        "in step": [line[6:] for line in lines if line.startswith("step: ")][-1:],
+        "wrong": [line[7:] for line in lines if line.startswith("wrong: ")],
+        "library": [line for line in lines if line.startswith(("err:", "warn:")) and not faults([line])],
+        "Metal": [line for line in lines if faults([line]) or "-[MTL" in line or "AGXMetal" in line],
+    }
+    said = []
+    for kind, found in kinds.items():
+        found = list(dict.fromkeys(found))
+        said += [f"{kind}: {line}" for line in found[:most]]
+        if len(found) > most:
+            said.append(f"{kind}: {len(found) - most} more")
+    return said
+
+
+def options(parser):
+    """what says which of the build's tests run, and how"""
+    parser.add_argument("--family", default="native,9,8,7",
+                        help="the Apple GPU families to run as, 'native' for the GPU's own (default: %(default)s)")
+    parser.add_argument("--repeat", type=int, default=1, help="how many times each test runs")
+    parser.add_argument("--suite", action="append", default=[], help="only tests of this suite (may repeat)")
+    parser.add_argument("tests", nargs="*", help="only tests whose name starts with one of these")
+
+
+def chosen(args):
+    """the build's tests the arguments name"""
+    declared = [json.loads(path.read_text()) for build in args.build
+                for path in [build.resolve() / "meson-info" / "intro-tests.json"] if path.exists()]
     declared = next((tests for tests in declared if tests), None)
     if not declared:
         sys.exit("no build was set up with tests (-Denable_tests=true)")
@@ -111,23 +220,11 @@ def main():
     missing = [t["cmd"][0] for t in tests if not Path(t["cmd"][0]).exists()]
     if missing or not tests:
         sys.exit("not built: " + ", ".join(missing) if missing else "no such test")
+    return tests
 
-    unix, pe = libraries(builds)
-    base = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG=os.environ.get("WINEDEBUG", "-all"), DXMT_SHADER_CACHE="0")
-    base.pop("DXMT_GPU_FAMILY", None)
-    # the build's libraries in place of the Wine's own, the shader compiler the prefix has, and no installers that
-    # ask in a dialog
-    own = sorted(path.stem for path in pe.values() if builtin(path))
-    native = sorted(path.stem for path in pe.values() if not builtin(path))
-    base["WINEDLLOVERRIDES"] = f"{','.join(native + ['d3dcompiler_47'])}=n;{','.join(own)}=b;mscoree,mshtml=d"
-    if args.validate:
-        base["MTL_DEBUG_LAYER"] = "1"
-    binary = wine / "bin" / "wine"
-    if not (prefix / "drive_c").exists():
-        subprocess.run([binary, "wineboot", "-u"], env=base, stdin=subprocess.DEVNULL, check=True)
-    if not args.no_install:
-        install(wine, prefix, unix, pe)
 
+def own(args, tests, builds, binary, base):
+    """runs the build's tests as each family; how many failed"""
     logs = builds[0] / "meson-logs" / "tests"
     logs.mkdir(parents=True, exist_ok=True)
     families = args.family.split(",")
@@ -149,6 +246,9 @@ def main():
                     break
             verdicts[test["name"], family] = verdict
             print(f"{family:>6}  {verdict:7}  {test['name']:32} {seconds:6.1f} s  {said}", flush=True)
+            if verdict == "failed":
+                for line in explain(log.read_text(errors="replace").splitlines()) + [f"log: {log}"]:
+                    print(f"{'':17}{line}", flush=True)
 
     width = max(len(test["name"]) for test in tests)
     print("\n" + " " * width + "".join(f"  {family:>7}" for family in families))
@@ -156,7 +256,16 @@ def main():
         print(f"{test['name']:{width}}" + "".join(f"  {verdicts.get((test['name'], family), '-'):>7}" for family in families))
     counts = {word: sum(verdict == word for verdict in verdicts.values()) for word in ("passed", "failed", "skipped")}
     print(f"\n{counts['passed']} passed, {counts['failed']} failed, {counts['skipped']} skipped; logs in {logs}")
-    sys.exit(counts["failed"] != 0)
+    return counts["failed"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    arguments(parser)
+    options(parser)
+    args = parser.parse_args()
+    tests = chosen(args)
+    sys.exit(own(args, tests, *environment(args)) != 0)
 
 
 if __name__ == "__main__":

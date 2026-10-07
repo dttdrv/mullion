@@ -725,7 +725,8 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
 
   info.lod_min_clamp = desc.MinLOD; // -FLT_MAX vs 0?
                     // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-vssetsamplers
-  info.lod_max_clamp = desc.MaxLOD;
+  // "max(MinLOD, min(MaxLOD, LOD))": MinLOD takes precedence (D3D11.3 7.18.11)
+  info.lod_max_clamp = std::max(desc.MinLOD, desc.MaxLOD);
 
   // Anisotropy
   if (D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc.Filter)) {

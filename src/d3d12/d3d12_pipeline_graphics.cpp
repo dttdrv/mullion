@@ -250,21 +250,31 @@ MTLD3D12PipelineState::DumpShaders(std::initializer_list<D3D12_SHADER_BYTECODE> 
   }
 }
 
+void
+MTLD3D12PipelineState::Name(std::initializer_list<D3D12_SHADER_BYTECODE> Shaders) {
+  for (auto &Shader : Shaders)
+    if (Shader.pShaderBytecode)
+      name += Sha1HashState::compute(Shader.pShaderBytecode, Shader.BytecodeLength).string() + " ";
+  if (Logger::logLevel() == LogLevel::Trace)
+    DumpShaders(Shaders);
+}
+
 HRESULT
 MTLD3D12PipelineState::InitializeShader(
     D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl
 ) {
   using namespace microsoft;
-  HRESULT hr;
-  CDXBCParser Parser;
-  if (FAILED(hr = Parser.ReadDXBC(Bytecode.pShaderBytecode, Bytecode.BytecodeLength)))
-    return hr;
+  if (!ShaderContainerHolds(Bytecode.pShaderBytecode, Bytecode.BytecodeLength))
+    return E_INVALIDARG;
 
   SM50Error error;
   if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl, &error)) {
-    ERR("Failed to initialize shader: ", SM50GetErrorMessageString(error));
+    ERR(
+        "Failed to initialize shader ", Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string(),
+        ": ", SM50GetErrorMessageString(error)
+    );
     DumpShaders({Bytecode});
-    return E_FAIL;
+    return E_INVALIDARG;
   }
 
   return S_OK;
@@ -397,7 +407,7 @@ protected:
     info.rasterization_enabled = rasterized;
     info.payload_memory_length = SM50_GEOMETRY_PAYLOAD_SIZE;
     if (!(variant = device_->GetMTLDevice().newRenderPipelineState(info, err))) {
-      ERR("Failed to create geometry PSO: ", err.description().getUTF8String());
+      ERR("Failed to create geometry PSO of shaders ", name, ": ", err.description().getUTF8String());
       DumpShaders({VS, GS});
     }
     return variant;
@@ -525,7 +535,8 @@ public:
       }
     }
 
-    info.raster_sample_count = pDesc->SampleDesc.Count;
+    // a description left at zero has one sample (Unreal Engine 5's pipelines; vkd3d-proton draws them so)
+    info.raster_sample_count = std::max(pDesc->SampleDesc.Count, 1u);
     info.support_indirect_command_buffers = true;
 
     info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput;
@@ -663,16 +674,18 @@ public:
     SM50_SHADER_COMMON_DATA common;
     common.flags = {};
     common.type = SM50_SHADER_COMMON;
-    common.metal_version = SM50_SHADER_METAL_310;
+    common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();
     common.next = nullptr;
 
     auto root_signature = [&](SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, D3D12_SHADER_BYTECODE Bytecode, void *next) {
       return RootSignature(rootsig, pDesc->pRootSignature, Bytecode, next);
     };
+    // a shader that cannot be made a function of is not a valid one: E_INVALIDARG, as for its container
     auto function = [&](int status, sm50_bitcode_t bitcode, sm50_error_t sm50_err, const char *name) {
       return Function(status, bitcode, sm50_err, name, {pDesc->VS, pDesc->HS, pDesc->DS, pDesc->PS});
     };
+    Name({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS, MS, AS});
 
     if (mesh_shader) {
       if (FAILED(hr = InitializeShader(MS, &shader_ms, &ref_ms)) ||
@@ -695,7 +708,7 @@ public:
     if (stream_output) {
       if (FAILED(hr = ExtractStreamOutputElements(
               last_stage.pShaderBytecode, std::span(pDesc->StreamOutput.pSODeclaration, pDesc->StreamOutput.NumEntries),
-              so_elements
+              std::span(pDesc->StreamOutput.pBufferStrides, pDesc->StreamOutput.NumStrides), so_elements
           )))
         return hr;
       so_data.type = SM50_SHADER_STREAM_OUTPUT;
@@ -779,7 +792,7 @@ public:
       sm50_error_t sm50_err = nullptr;
       int status = SM50Compile(shader_ps, root_signature(rootsig, pDesc->PS, &data_ps), ps_name.c_str(), &bitcode, &sm50_err);
       if (!(ps_func = function(status, bitcode, sm50_err, ps_name.c_str())))
-        return E_FAIL;
+        return E_INVALIDARG;
     }
 
     auto geometry_inputs = [&] {
@@ -815,7 +828,7 @@ public:
       WMT::Reference<WMT::Function> as_func, ms_func = compile(shader_ms, MS, &link, "ms_main");
       if (!ms_func || (AS.pShaderBytecode && !(as_func = compile(shader_as, AS, &common, "as_main")))) {
         DumpShaders({AS, MS});
-        return E_FAIL;
+        return E_INVALIDARG;
       }
       mesh_info.object_function = as_func.handle;
       mesh_info.mesh_function = ms_func.handle;
@@ -824,7 +837,7 @@ public:
       // the most a payload may be (D3D12 mesh shader specification, "Amplification shader output payload")
       mesh_info.payload_memory_length = 16384;
       if (!(pso = metal.newRenderPipelineState(mesh_info, err))) {
-        ERR("Failed to create mesh shader PSO: ", err.description().getUTF8String());
+        ERR("Failed to create mesh shader PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({AS, MS, pDesc->PS});
         return E_FAIL;
       }
@@ -859,11 +872,11 @@ public:
         int status = SM50Compile(shader_vs, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main", &bitcode, &sm50_err);
         auto vs_func = function(status, bitcode, sm50_err, "vs_main");
         if (!vs_func)
-          return E_FAIL;
+          return E_INVALIDARG;
         info.vertex_function = vs_func.handle;
         info.fragment_function = ps_func.handle;
         if (!(so_raster = metal.newRenderPipelineState(info, err))) {
-          ERR("Failed to create PSO: ", err.description().getUTF8String());
+          ERR("Failed to create PSO of shaders ", name, ": ", err.description().getUTF8String());
           return E_FAIL;
         }
       }
@@ -875,11 +888,11 @@ public:
       int status = SM50Compile(shader_vs, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main", &bitcode, &sm50_err);
       auto vs_func = function(status, bitcode, sm50_err, "vs_main");
       if (!vs_func)
-        return E_FAIL;
+        return E_INVALIDARG;
       info.vertex_function = vs_func.handle;
       info.fragment_function = ps_func.handle;
       if (!(pso = metal.newRenderPipelineState(info, err))) {
-        ERR("Failed to create PSO: ", err.description().getUTF8String());
+        ERR("Failed to create PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->VS, pDesc->PS});
         return E_FAIL;
       }
@@ -928,7 +941,7 @@ public:
         );
         auto ds_func = function(status, bitcode, sm50_err, "ds_main");
         if (!ds_func)
-          return E_FAIL;
+          return E_INVALIDARG;
         mesh_info.mesh_function = ds_func.handle;
 
         // the object stage fetches indices itself, through the index buffer view each draw binds
@@ -942,10 +955,10 @@ public:
         );
         auto vshs_func = function(status, bitcode, sm50_err, "vshs_main");
         if (!vshs_func)
-          return E_FAIL;
+          return E_INVALIDARG;
         mesh_info.object_function = vshs_func.handle;
         if (!(pso = metal.newRenderPipelineState(mesh_info, err))) {
-          ERR("Failed to create tessellation PSO: ", err.description().getUTF8String());
+          ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
           DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
           return E_FAIL;
         }

@@ -122,6 +122,7 @@ main(int argc, char **argv) {
         ComPtr<ID3D12PipelineState> pso;
         CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)));
 
+        CHECK(forget(readback.Get()));
         CHECK(allocator->Reset());
         CHECK(list->Reset(allocator.Get(), pso.Get()));
         const float clear[4] = {};

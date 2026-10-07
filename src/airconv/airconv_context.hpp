@@ -6,7 +6,8 @@ namespace dxmt {
 
 void initializeModule(llvm::Module &M);
 
-void runOptimizationPasses(llvm::Module &M);
+// false, with the verifier's findings in Error, for a module that is not well formed
+bool runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error);
 
 void linkMSAD(llvm::Module &M);
 

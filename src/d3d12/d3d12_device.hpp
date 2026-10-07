@@ -31,6 +31,8 @@
 #include "dxmt_presenter.hpp"
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
+#include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -66,7 +68,10 @@ public:
 
 class MTLD3D12CommandQueue : public ID3D12CommandQueue {
 public:
-  virtual HRESULT Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) = 0;
+  // `swapchain` owns the presenter and what it draws with: a present the queue holds back keeps it
+  virtual HRESULT Present(
+      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after
+  ) = 0;
 };
 
 // dxgiformat.h of the toolchain ends before the sampler feedback formats
@@ -176,7 +181,38 @@ public:
 
 class MTLD3D12Fence : public ID3D12Fence1 {
 public:
-  Rc<Fence> fence;
+  std::atomic<uint64_t> value;
+
+  // a signal runs those that wait for its value or less, each once and before it returns. what waited is not asked
+  // again when the value is taken back: a queue's Wait is over once the fence has had its value (vkd3d-proton's
+  // test_cpu_signal_fence and test_fence_signal_availability have both from Windows)
+  void
+  Reach(uint64_t reached) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    value = reached;
+    std::erase_if(waiting_, [&](auto &wait) { return wait.first <= reached && (wait.second(), true); });
+  }
+
+  void
+  Expect(uint64_t expected, std::function<void()> &&reached) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    expected <= value ? reached() : (void)waiting_.emplace_back(expected, std::move(reached));
+  }
+
+  // a flag for a thread to wait on
+  std::shared_ptr<std::atomic<bool>>
+  Expect(uint64_t expected) {
+    auto reached = std::make_shared<std::atomic<bool>>();
+    Expect(expected, [reached] {
+      *reached = true;
+      reached->notify_all();
+    });
+    return reached;
+  }
+
+private:
+  dxmt::mutex mutex_;
+  std::vector<std::pair<uint64_t, std::function<void()>>> waiting_;
 };
 
 class MTLD3D12RootSignature : public ID3D12RootSignature {
@@ -225,7 +261,8 @@ public:
   std::vector<std::pair<uint32_t, uint32_t>> ResetRootDwords;
   uint32_t ResetVertexBuffers = 0;
 
-  WMT::Reference<WMT::RenderPipelineState> render_resolver;
+  // both run as kernels: the one of draws in a compute pass before the render pass that runs its commands
+  WMT::Reference<WMT::ComputePipelineState> render_resolver;
   WMT::Reference<WMT::ComputePipelineState> compute_resolver;
 
   virtual void AddRefPrivate() = 0;
@@ -234,12 +271,13 @@ public:
 
 class MTLD3D12QueryHeap : public ID3D12QueryHeap {
 public:
-  // occlusion results, one 64-bit value per query, or stream output statistics (two); timestamps, sampled into a
-  // counter sample buffer
+  // occlusion results, one 64-bit value per query, or stream output statistics (two)
   WMT::Reference<WMT::Buffer> results;
   uint64_t results_address = 0;
   uint32_t result_size = sizeof(uint64_t);
-  WMT::Reference<WMT::CounterSampleBuffer> timestamps;
+  // a timestamp heap's queries: the clock each sampled, which the queue reads from its counter sample buffers when
+  // the command buffer completes. Metal has few of those at once, and few samples in one
+  std::vector<uint64_t> timestamps;
 };
 
 class MTLD3D12PipelineState : public ID3D12PipelineState {
@@ -251,6 +289,11 @@ public:
 
   // writes shaders that failed to compile to DXMT_SHADER_DUMP_PATH, when set, as <sha1>.dxbc for airconv's CLI
   static void DumpShaders(std::initializer_list<D3D12_SHADER_BYTECODE> Shaders);
+
+  // the SHA-1 of each of its shaders, which is what logs call the pipeline. with DXMT_LOG_LEVEL=trace every shader
+  // is also written as DumpShaders writes them, so that a pass a log names can be looked at
+  std::string name;
+  void Name(std::initializer_list<D3D12_SHADER_BYTECODE> Shaders);
 };
 
 class MTLD3D12GraphicsPipelineState : public MTLD3D12PipelineState {
@@ -302,14 +345,60 @@ class MTLD3D12ComputePipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::ComputePipelineState> pso;
   WMTSize threadgroup_size;
+  // see MTL_SHADER_REFLECTION::GroupsWorkTogether
+  bool groups_work_together = false;
 
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 };
 
+// timestamp queries sample the GPU's clock into counter sample buffers. Metal makes few of them, with few samples
+// each, so they go round the device's command buffers, one each: a command buffer that needs one while the others hold
+// them all waits for the first to complete
+struct TimestampSamples {
+  dxmt::mutex mutex;
+  dxmt::condition_variable returned;
+  std::vector<WMT::Reference<WMT::CounterSampleBuffer>> free;
+  uint32_t made = 0;
+  // the most samples Metal lets a buffer hold
+  uint32_t limit = 0;
+
+  WMT::Reference<WMT::CounterSampleBuffer>
+  Take(WMT::Device metal) {
+    std::unique_lock<dxmt::mutex> lock(mutex);
+    if (!limit)
+      for (limit = 1; metal.newCounterSampleBuffer(limit * 2); limit *= 2)
+        ;
+    for (;;) {
+      if (!free.empty()) {
+        auto buffer = std::move(free.back());
+        free.pop_back();
+        return buffer;
+      }
+      if (auto buffer = metal.newCounterSampleBuffer(limit)) {
+        made++;
+        return buffer;
+      }
+      if (!made)
+        return {};
+      if (Logger::logLevel() == LogLevel::Trace)
+        TRACE("timestamps: waits for one of ", made, " sample buffers");
+      returned.wait(lock);
+    }
+  }
+
+  void
+  Return(WMT::Reference<WMT::CounterSampleBuffer> &&buffer) {
+    std::lock_guard<dxmt::mutex> lock(mutex);
+    free.push_back(std::move(buffer));
+    returned.notify_one();
+  }
+};
+
 class MTLD3D12Device : public ID3D12Device10 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
+  TimestampSamples timestamp_samples;
 
   // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
   std::atomic<uint32_t> max_mesh_threadgroups{0};
@@ -318,11 +407,21 @@ public:
     RecordingArena commands, arguments;
     WMT::Reference<WMT::Buffer> buffer;
     uint64_t address = 0;
+    // blocks of `arguments` nothing writes: the zeros an indirect draw's indices past their view read
+    std::optional<RecordingArena::Run> zeros;
     dxmt::mutex mutex;
   } recording;
 
   // the width of the GPU's SIMD groups, which run D3D12's waves
   virtual uint32_t GetSIMDWidth() = 0;
+  // the GPU failed a command buffer: what it was to do is lost, and the device is removed, as after a timeout
+  // detection and recovery on Windows (GetDeviceRemovedReason)
+  virtual void LoseDevice() = 0;
+  // how many threads of a compute shader go to the GPU at once when its threadgroups wait for one another: the
+  // lanes it runs at once (the estimate behind TotalLaneCount)
+  virtual uint64_t ThreadsAtOnce() = 0;
+  // the Metal language version the device's shaders are converted for (ShaderMetalVersion)
+  virtual SM50_SHADER_METAL_VERSION GetMetalVersion() = 0;
 
   // the GPU address of the lock words of 64-bit atomics, which every root signature carries (AtomicLocksQword)
   virtual uint64_t GetAtomicLocks() = 0;
@@ -334,6 +433,11 @@ public:
   virtual HRESULT GetAdapter(REFIID riid, void **ppAdapter) = 0;
 
   virtual WMT::ResidencySet GetGlobalResidencySet() = 0;
+  // DXMT_D3D12_GPU_ERRORS: passes carry the names of their pipelines to Metal, whose report of a command buffer
+  // the GPU failed then says which pass it was. `NamePass` adds a pipeline to a pass's name, `PassName` takes it
+  virtual bool NamesPasses() = 0;
+  virtual void NamePass(uint64_t id, const std::string &pipeline) = 0;
+  virtual std::string PassName(uint64_t id) = 0;
 
   virtual HRESULT RegisterResidency(WMT::Allocation allocation) = 0;
 
@@ -365,7 +469,6 @@ public:
 
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 
-  EventListener event_listener;
   // sums occlusion queries' visibility counts into their heaps (sum_occlusion)
   WMT::Reference<WMT::ComputePipelineState> occlusion_sum;
   // applies a predication region to its draws' and dispatches' arguments (predicate)
@@ -560,6 +663,11 @@ UINT DecomposeSubresource(
 );
 
 bool IsCpuVisibleHeap(const D3D12_HEAP_PROPERTIES *pHeapProps);
+
+// whether these bytes are a container (of a shader, a library or a root signature) that is what its hash says, or
+// has none while experimental shader models are on (D3D12EnableExperimentalFeatures). Direct3D checks that before
+// it reads anything else of one, and refuses what is not with E_INVALIDARG
+bool ShaderContainerHolds(const void *container, size_t size);
 
 bool IsD3D12BoxInBounds(D3D12_BOX &box, D3D12_BOX &bounds);
 

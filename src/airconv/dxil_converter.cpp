@@ -21,7 +21,9 @@
 #include "dxbc_converter.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "airconv_ray.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -1045,6 +1047,37 @@ read_dxil(
           used_ops.insert(GroupId);
         else if (auto cx = dyn_cast<AtomicCmpXchgInst>(&I); cx && cx->getCompareOperand()->getType()->isIntegerTy(64))
           used_ops.insert(GroupId);
+  // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory
+  auto coherent = [&](Value *handle) {
+    auto made = dyn_cast<CallInst>(handle);
+    if (!made || !is_dx_op(made))
+      return false;
+    // DxilResourceProperties: bit 14 of the first word is IsGloballyCoherent
+    if (opcode(made) == AnnotateHandle)
+      return (cast<ConstantInt>(cast<Constant>(made->getArgOperand(2))->getAggregateElement(0u))->getZExtValue() >> 14 & 1) != 0;
+    if (opcode(made) != CreateHandle || cast<ConstantInt>(made->getArgOperand(1))->getZExtValue() != UAV)
+      return false;
+    auto uav = info.uavMap.find(cast<ConstantInt>(made->getArgOperand(2))->getZExtValue());
+    return uav != info.uavMap.end() && uav->second.global_coherent;
+  };
+  for (auto &F : M) {
+    if (F.isDeclaration())
+      continue;
+    DominatorTree dominators(F);
+    LoopInfo loops(dominators);
+    for (auto &BB : F)
+      if (loops.getLoopFor(&BB))
+        for (auto &I : BB)
+          if (auto call = dyn_cast<CallInst>(&I); call && is_dx_op(call))
+            switch (opcode(call)) {
+            case BufferLoad:
+            case RawBufferLoad:
+            case TextureLoad:
+            case AtomicBinOp:
+            case AtomicCompareExchange:
+              shader->groups_work_together |= coherent(call->getArgOperand(1));
+            }
+  }
   for (auto [op, type] : attribute_inputs)
     if (used_ops.count(op) && !mesh_stage)
       declare(D3D10_SB_OPCODE_DCL_INPUT, type, 0, 0, D3D10_SB_NAME_UNDEFINED, 0, ~0u);
@@ -1912,9 +1945,25 @@ convert_dxil(
   auto word_at = [&](Value *ptr) -> Word64 {
     auto i64 = ir.getInt64Ty();
     Value *key = ir.CreateLShr(ir.CreatePtrToInt(ptr, i64), 3);
-    if (ptr->getType()->getPointerAddressSpace() != (unsigned)air::AddressSpace::threadgroup)
-      return {key, llvm::air::MemFlags::Device, [=, &air] { return (Value *)air.CreateDeviceCoherentLoad(i64, ptr); },
-              [=, &air](Value *v) { air.CreateDeviceCoherentStore(v, ptr); }};
+    if (ptr->getType()->getPointerAddressSpace() != (unsigned)air::AddressSpace::threadgroup) {
+      // by its halves, whose loads and stores are atomic and so never stale (CreateDeviceCoherentLoad): a stale read
+      // under the lock would lose another thread's step
+      auto i32 = ir.getInt32Ty();
+      auto half = [=, &ir](unsigned i) {
+        return ir.CreateConstGEP1_32(i32, ir.CreateBitCast(ptr, i32->getPointerTo(ptr->getType()->getPointerAddressSpace())), i);
+      };
+      return {key, llvm::air::MemFlags::Device,
+              [=, &ir, &air] {
+                return ir.CreateOr(
+                    ir.CreateZExt(air.CreateDeviceCoherentLoad(i32, half(0)), i64),
+                    ir.CreateShl(ir.CreateZExt(air.CreateDeviceCoherentLoad(i32, half(1)), i64), 32)
+                );
+              },
+              [=, &ir, &air](Value *v) {
+                air.CreateDeviceCoherentStore(ir.CreateTrunc(v, i32), half(0));
+                air.CreateDeviceCoherentStore(ir.CreateTrunc(ir.CreateLShr(v, 32), i32), half(1));
+              }};
+    }
     for (uint32_t c = 0; c < 3; c++)
       key = ir.CreateAdd(ir.CreateMul(key, ir.getInt64(0x9e3779b97f4a7c15)), ir.CreateZExt(thread_input(GroupId, c), i64));
     return {key, llvm::air::MemFlags::Threadgroup, [=, &ir] { return (Value *)ir.CreateLoad(i64, ptr); },
@@ -2034,6 +2083,20 @@ convert_dxil(
       ret = ir.CreateInsertValue(ret, words[i], {i});
     return ret;
   };
+
+  // Metal has its own 64-bit minimum and maximum, unsigned and without the old value. Unreal's Nanite writes its
+  // visibility buffer so from every thread of its rasterizer, where the locks stall for seconds and give up.
+  // they do not take the locks of the other 64-bit atomics, so a shader has them only when it has no other
+  auto native_extreme = [&](CallInst *call) {
+    if (opcode(call) != AtomicBinOp || !call->use_empty())
+      return false;
+    auto extreme = atomic_op(constant(arg(call, 2)));
+    return extreme == AtomicRMWInst::UMax || extreme == AtomicRMWInst::UMin;
+  };
+  bool native_extremes = std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
+    return !call->getType()->isIntegerTy(64) || (opcode(call) != AtomicBinOp && opcode(call) != AtomicCompareExchange) ||
+           native_extreme(call);
+  });
 
   for (auto call : calls) {
     ir.SetInsertPoint(call);
@@ -2825,6 +2888,21 @@ convert_dxil(
       bool exchange = op == AtomicCompareExchange;
       unsigned first = exchange ? 2 : 3;
       const int32_t no_offset[3] = {};
+      if (ty->isIntegerTy(64) && native_extremes) {
+        bool max = atomic_op(constant(a(2))) == AtomicRMWInst::UMax;
+        if (h.buffer) {
+          air.CreateAtomicMinMax64(
+              max,
+              unit_ptr(*h.buffer, ir.getInt64Ty(), ir.CreateLShr(byte_address(h, a(first), a(first + 1)), 3)), a(6)
+          );
+        } else {
+          auto &t = *h.texture;
+          auto [address, array] = dxbc.TexelAddress(t, texel_coord(call, first, ir.getInt32(0)), no_offset, nullptr);
+          air.CreateAtomicMinMax64(t.Texture, t.Handle, max, address, array, a(6));
+        }
+        ret = UndefValue::get(ty);
+        break;
+      }
       auto locks = ty->isIntegerTy(64) ? ctx.binding.GetAtomicLocks(air) : nullptr;
       if (locks) {
         // a typed resource's 64-bit texel is an R32G32_UINT one, low half first, keyed by resource and position
@@ -2944,7 +3022,7 @@ convert_dxil(
       auto v = width >= 32         ? a(1)
                : op == FirstbitSHi ? ir.CreateSExt(a(1), ir.getInt32Ty())
                                    : ir.CreateZExt(a(1), ir.getInt32Ty());
-      ret = dxbc.FirstBit(ops[op - FirstbitLo], v);
+      ret = ir.CreateZExtOrTrunc(dxbc.FirstBit(ops[op - FirstbitLo], v), ty);
       if (width < 32 && op != FirstbitLo)
         ret = ir.CreateSelect(ir.CreateICmpEQ(ret, ir.getInt32(~0u)), ret, ir.CreateSub(ret, ir.getInt32(32 - width)));
       break;
@@ -3000,10 +3078,10 @@ convert_dxil(
       ret = air.CreateFPUnOp(llvm::air::AIRBuilder::saturate, a(1), false);
       break;
     case Cos:
-      ret = fp_unary(llvm::air::AIRBuilder::cos, a(1));
+      ret = dxbc.SinCos(llvm::air::AIRBuilder::cos, a(1));
       break;
     case Sin:
-      ret = fp_unary(llvm::air::AIRBuilder::sin, a(1));
+      ret = dxbc.SinCos(llvm::air::AIRBuilder::sin, a(1));
       break;
     case Exp:
       ret = fp_unary(llvm::air::AIRBuilder::exp2, a(1));
@@ -3030,8 +3108,9 @@ convert_dxil(
       using llvm::air::AIRBuilder;
       const AIRBuilder::FPUnOp ops[] = {AIRBuilder::tan,  AIRBuilder::acos, AIRBuilder::asin, AIRBuilder::atan,
                                         AIRBuilder::cosh, AIRBuilder::sinh, AIRBuilder::tanh};
-      // Metal's fast tanh overflows to NaN for large inputs; the precise one saturates as tanh must
-      ret = air.CreateFPUnOp(ops[op - Tan], a(1), op != Htan);
+      // Metal's fast tanh overflows to NaN for large inputs, and its fast tan is NaN from about 2^30 radians on; the
+      // precise ones saturate and stay finite as they must
+      ret = air.CreateFPUnOp(ops[op - Tan], a(1), op != Htan && op != Tan);
       break;
     }
     case Round_ne:

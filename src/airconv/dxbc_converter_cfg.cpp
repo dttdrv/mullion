@@ -103,6 +103,16 @@ read_control_flow(
     D3D10ShaderBinary::CInstruction Inst;
     Parser.ParseInstruction(&Inst);
 
+    // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory,
+    // which is every instruction with such a view but the stores (an atomic reads to change)
+    bool stores = Inst.OpCode() == D3D11_SB_OPCODE_STORE_UAV_TYPED || Inst.OpCode() == D3D11_SB_OPCODE_STORE_RAW ||
+                  Inst.OpCode() == D3D11_SB_OPCODE_STORE_STRUCTURED;
+    for (unsigned i = 0; i < Inst.m_NumOperands && !bb_continue_target.empty() && !stores; i++)
+      if (Inst.m_Operands[i].m_Type == D3D11_SB_OPERAND_TYPE_UNORDERED_ACCESS_VIEW)
+        if (auto uav = shader_info.uavMap.find(Inst.m_Operands[i].m_Index[0].m_RegIndex);
+            uav != shader_info.uavMap.end())
+          sm50_shader->groups_work_together |= uav->second.global_coherent;
+
     switch (Inst.OpCode()) {
 
     case D3D10_SB_OPCODE_IF: {

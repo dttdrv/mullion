@@ -5,3 +5,8 @@ test('host_tessellator',
                 # the reference's and the Metal source's, neither written for this compiler's warnings
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      timeout : 300)
+# which DXIL operations shaders use, for tests/coverage.py; it reads DXIL with the LLVM the converter is built with
+executable('dxilops', ['dxilops.cpp'], include_directories : llvm_include_path_darwin,
+           link_args : [ llvm_ld_flags_darwin, llvm_deps ], cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true)
+# the tests' own container hash against the hashes real shaders carry; it wants directories of them (MULLION_HASHED)
+test('host_dxbc_hash', executable('host_dxbc_hash', ['dxbchash.cpp'], override_options : ['cpp_std=c++20'], native : true))

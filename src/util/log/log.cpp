@@ -86,8 +86,9 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
           std::cerr << adjusted;
       }
 
+      // a process that hangs or is ended has its last lines in the file
       if (m_fileStream)
-        m_fileStream << adjusted;
+        m_fileStream << adjusted << std::flush;
     }
   }
 }

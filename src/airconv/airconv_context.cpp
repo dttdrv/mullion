@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstring>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
@@ -64,8 +66,11 @@ void initializeModule(llvm::Module &M) {
 
 static std::atomic_flag llvm_overwrite = false;
 
-void
-runOptimizationPasses(llvm::Module &M) {
+bool
+runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
+  // Metal says of ill-formed IR only "Failed to materializeAll"
+  if (verifyModule(M, &Error))
+    return false;
 
   if (!llvm_overwrite.test_and_set()) {
     auto Map = cl::getRegisteredOptions();
@@ -144,7 +149,9 @@ runOptimizationPasses(llvm::Module &M) {
     GlobalCleanupPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
 
     GlobalCleanupPM.addPass(air::Lower16BitTexReadPass());
-    GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
+    // DXMT_AIRCONV_SKIP names what the converter leaves out, to find the one a shader goes wrong with
+    if (auto skip = getenv("DXMT_AIRCONV_SKIP"); !skip || !strstr(skip, "simdgroup-barrier"))
+      GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
 
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM), true /* ? */));
   }
@@ -153,6 +160,7 @@ runOptimizationPasses(llvm::Module &M) {
 
   // Optimize the IR!
   MPM.run(M, MAM);
+  return true;
 }
 
 void

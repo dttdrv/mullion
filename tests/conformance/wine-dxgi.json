@@ -1,0 +1,192 @@
+{
+ "test_adapter_desc": {
+  "verdict": "passed"
+ },
+ "test_adapter_luid": {
+  "verdict": "failed",
+  "why": "unclassified: by its first failing check only",
+  "first": "dxgi.c:1126: Test failed: Got unexpected hr 0x80004003.",
+  "failures": 1
+ },
+ "test_check_interface_support": {
+  "verdict": "passed"
+ },
+ "test_colour_space_support": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:7741: Test failed: d3d12: Got unexpected hr 0 for text 2.",
+  "failures": 16
+ },
+ "test_create_factory": {
+  "verdict": "failed",
+  "why": "semantics: which interfaces Direct3D 10 and 11 objects answer for, and what GetDevice and private data return, differ from Windows (a Direct3D 11 texture answers for ID3D10Texture2D, a device pointer where the tests expect none)",
+  "first": "dxgi.c:4091: Test failed: Got unexpected hr 0, expected 0x80004002.",
+  "failures": 3
+ },
+ "test_create_surface": {
+  "verdict": "passed"
+ },
+ "test_create_swapchain": {
+  "verdict": "timeout",
+  "why": "semantics: by its first failing check only",
+  "first": "dxgi.c:1830: Test failed: d3d10: Got unexpected refcount 3.",
+  "failures": 10
+ },
+ "test_cursor_clipping": {
+  "verdict": "passed"
+ },
+ "test_default_fullscreen_target_output": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:3187: Test failed: d3d12: Adapter 0 output 0: Expected a valid output.",
+  "failures": 2
+ },
+ "test_factory_check_feature_support": {
+  "verdict": "failed",
+  "why": "unclassified: by its first failing check only",
+  "first": "dxgi.c:7361: Test failed: Got unexpected hr 0x80070057.",
+  "failures": 3
+ },
+ "test_find_closest_matching_mode": {
+  "verdict": "passed"
+ },
+ "test_frame_latency_event": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:7461: Test failed: d3d10: Got unexpected hr 0.",
+  "failures": 12
+ },
+ "test_gamma_control": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:6769: Test failed: Got unexpected hr 0.",
+  "failures": 2
+ },
+ "test_get_containing_output": {
+  "verdict": "partly"
+ },
+ "test_inexact_modes": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:3988: Test failed: Got window rect (0,0)-(1512,982), expected (0,0)-(960,600).",
+  "failures": 36
+ },
+ "test_maximum_frame_latency": {
+  "verdict": "passed"
+ },
+ "test_mode_change": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:7881: Test failed: d3d10: Got a different mode.",
+  "failures": 2
+ },
+ "test_multi_adapter": {
+  "verdict": "partly"
+ },
+ "test_object_wrapping": {
+  "verdict": "passed"
+ },
+ "test_output": {
+  "verdict": "passed"
+ },
+ "test_output_desc": {
+  "verdict": "passed"
+ },
+ "test_output_ownership": {
+  "verdict": "passed"
+ },
+ "test_parents": {
+  "verdict": "passed"
+ },
+ "test_private_data": {
+  "verdict": "passed"
+ },
+ "test_query_video_memory_info": {
+  "verdict": "passed"
+ },
+ "test_resize_fullscreen": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:3384: Test failed: d3d10: No style change: Got style 0x4c00000, expected 0x4000000.",
+  "failures": 18
+ },
+ "test_resize_target": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:3672: Test failed: d3d10: Adapter 0: output 0: test 2: Got window rect (0,0)-(1512,982), expected (0,0)-(800,600).",
+  "failures": 344
+ },
+ "test_resize_target_wndproc": {
+  "verdict": "passed"
+ },
+ "test_set_fullscreen": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:2845: Test failed: d3d10: Got unexpected hr 0.",
+  "failures": 68
+ },
+ "test_subresource_surface": {
+  "verdict": "failed",
+  "why": "semantics: which interfaces Direct3D 10 and 11 objects answer for, and what GetDevice and private data return, differ from Windows (a Direct3D 11 texture answers for ID3D10Texture2D, a device pointer where the tests expect none)",
+  "first": "dxgi.c:8596: Test failed: 0: 0: Got unexpected hr 0x80070057.",
+  "failures": 53
+ },
+ "test_swapchain_backbuffer_index": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:5339: Test failed: d3d12: Got unexpected hr 0, expected 0x887a0001.",
+  "failures": 2
+ },
+ "test_swapchain_formats": {
+  "verdict": "timeout",
+  "why": "unclassified: by its first failing check only",
+  "failures": 0
+ },
+ "test_swapchain_parameters": {
+  "verdict": "failed",
+  "why": "missing: a Direct3D 10 or 11 flip swap chain has only its buffer 0 ('Non zero-index buffer is not supported')",
+  "first": "dxgi.c:4887: Test failed: Got usage 20, expected 60, test 0.",
+  "failures": 280
+ },
+ "test_swapchain_present": {
+  "verdict": "timeout",
+  "why": "unclassified: by its first failing check only",
+  "failures": 0
+ },
+ "test_swapchain_present_count": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:8163: Test failed: d3d12: test 1: Got unexpected hr 0.",
+  "failures": 4
+ },
+ "test_swapchain_resize": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:4499: Test failed: d3d10: Got unexpected hr 0.",
+  "failures": 23
+ },
+ "test_swapchain_window_messages": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:6325: Test failed: d3d10: Got unexpected hr 0x887a0001.",
+  "failures": 32
+ },
+ "test_swapchain_window_styles": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:6659: Test failed: Test 0: Got unexpected style 0x14000000, expected 0x4000000.",
+  "failures": 14
+ },
+ "test_video_memory_budget_notification": {
+  "verdict": "passed"
+ },
+ "test_window_association": {
+  "verdict": "failed",
+  "why": "bug: fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ",
+  "first": "dxgi.c:6934: Test failed: d3d10: Expect null associated window.",
+  "failures": 24
+ },
+ "test_zero_size": {
+  "verdict": "passed"
+ }
+}

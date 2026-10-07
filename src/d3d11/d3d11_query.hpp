@@ -168,7 +168,14 @@ private:
   uint64_t should_be_signaled_at = 0;
 };
 
-class MTLD3D11OcclusionQuery : public ID3D11Query1 {
+class MTLD3D11Query : public ID3D11Query1 {
+public:
+  // the context's hold on what is bound: without the application's count, which holds the device
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
+};
+
+class MTLD3D11OcclusionQuery : public MTLD3D11Query {
 public:
   virtual HRESULT GetData(void *data) = 0;
   virtual VisibilityResultQuery *Begin() = 0;
@@ -180,7 +187,7 @@ HRESULT CreateOcclusionQuery(MTLD3D11Device *pDevice,
                               const D3D11_QUERY_DESC1 *pDesc,
                               ID3D11Query1 **ppQuery);
 
-class MTLD3D11TimestampQuery : public ID3D11Query1 {
+class MTLD3D11TimestampQuery : public MTLD3D11Query {
 public:
   virtual HRESULT GetData(void *data) = 0;
   virtual TimestampQuery *End() = 0;
@@ -191,7 +198,7 @@ HRESULT CreateTimestampQuery(MTLD3D11Device *pDevice,
                               ID3D11Query1 **ppQuery);
 
 // the SO_STATISTICS and SO_OVERFLOW_PREDICATE queries, of one stream or (the unnumbered predicate) of all
-class MTLD3D11StreamOutputQuery : public ID3D11Query1 {
+class MTLD3D11StreamOutputQuery : public MTLD3D11Query {
 public:
   // two copies of the context's stream output statistics: as the query began, then as it ended
   virtual const Rc<Buffer> &Snapshots() = 0;

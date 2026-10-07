@@ -95,6 +95,7 @@ main(int argc, char **argv) {
   const char *names[] = {"direct", "indirect", "indirect indexed"};
   unsigned failures = 0;
   for (int draw = 0; draw < 3; draw++) {
+    CHECK(forget(readback.Get()));
     CHECK(allocator->Reset());
     CHECK(list->Reset(allocator.Get(), pso.Get()));
     const float clear[4] = {0, 0, 0, 0};

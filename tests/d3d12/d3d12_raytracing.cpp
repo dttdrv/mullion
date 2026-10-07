@@ -37,6 +37,9 @@
 // associations in contained collections") and an association the pipeline makes with the same shader conflicts
 // with; where the collection gave a shader only a default, the pipeline's association with the shader stands, also
 // when the subobject it names is in another collection's library ("can be in any scope in the object").
+// ExecuteIndirect with a DISPATCH_RAYS argument traces as DispatchRays does with the D3D12_DISPATCH_RAYS_DESC of each
+// command ("CreateCommandSignature Structures"), and with the root constants the command sets: every case again as
+// the first of three commands, where the second has no width and the third is past what the count buffer allows.
 // a pipeline's stack size starts as "Default pipeline stack size" makes it of its shaders' sizes and its recursion
 // depth, wherever the pipeline config comes from, and a grown pipeline starts with the size of the one it grew from.
 #include "d3d12_rays.hpp"
@@ -224,6 +227,14 @@ struct Case {
   float tmin, tmax;
   UINT ray_contribution, multiplier, miss_index;
 };
+
+// a command of the indirect dispatches: the case as root constants, then the dispatch, with no padding between
+#pragma pack(push, 4)
+struct Command {
+  Case constants;
+  D3D12_DISPATCH_RAYS_DESC rays;
+};
+#pragma pack(pop)
 
 // a shader record: an identifier, then the local root arguments
 struct Record {
@@ -549,10 +560,28 @@ main(int argc, char **argv) {
   auto marks_readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, case_count * marks_size, D3D12_RESOURCE_STATE_COPY_DEST);
   const UINT *marked;
   CHECK(marks_readback->Map(0, nullptr, (void **)&marked));
+  // the commands of the indirect dispatches: each case's, then the next case's with no width, and one more for the
+  // last case's third
+  D3D12_INDIRECT_ARGUMENT_DESC command_arguments[] = {{D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT}, {D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS}};
+  command_arguments[0].Constant = {2, 0, sizeof(Case) / sizeof(UINT)};
+  D3D12_COMMAND_SIGNATURE_DESC signature_desc{sizeof(Command), (UINT)std::size(command_arguments), command_arguments};
+  ComPtr<ID3D12CommandSignature> signature;
+  CHECK(device->CreateCommandSignature(&signature_desc, global_rs.Get(), IID_PPV_ARGS(&signature)));
+  const UINT command_count = 2 * case_count + 1, commands_run = 2;
+  auto commands = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, command_count * sizeof(Command), D3D12_RESOURCE_STATE_GENERIC_READ);
+  auto count = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(commands_run), D3D12_RESOURCE_STATE_GENERIC_READ);
+  Command *command;
+  void *counted;
+  CHECK(commands->Map(0, nullptr, (void **)&command));
+  CHECK(count->Map(0, nullptr, &counted));
+  memcpy(counted, &commands_run, sizeof(commands_run));
   // dispatches every case through a state object and reads the results back
-  auto trace = [&](ID3D12StateObject *state) -> HRESULT {
+  auto trace = [&](ID3D12StateObject *state, bool indirect = false) -> HRESULT {
     if (HRESULT hr = fill(state); FAILED(hr))
       return hr;
+    // no result of an earlier trace stands in for this one's
+    memset(const_cast<uint8_t *>(out), 0xff, case_count * rays * sizeof(Result));
+    memset(const_cast<UINT *>(marked), 0xff, case_count * marks_size);
     auto at = [&](UINT r) { return tables->GetGPUVirtualAddress() + r * sizeof(Record); };
     D3D12_DISPATCH_RAYS_DESC dispatch{{at(0), sizeof(Record)},
                                       {at(miss_at), miss_count * sizeof(Record), sizeof(Record)},
@@ -566,9 +595,18 @@ main(int argc, char **argv) {
     list->SetComputeRootDescriptorTable(3, heap->GetGPUDescriptorHandleForHeapStart());
     list->SetComputeRootUnorderedAccessView(4, marks->GetGPUVirtualAddress());
     list->SetPipelineState1(state);
+    for (UINT n = 0; n < command_count; n++) {
+      command[n] = {cases[(n + 1) / 2 % case_count], dispatch};
+      if (n % 2)
+        command[n].rays.Width = 0;
+    }
     for (UINT c = 0; c < case_count; c++) {
-      list->SetComputeRoot32BitConstants(2, sizeof(Case) / sizeof(UINT), &cases[c], 0);
-      list->DispatchRays(&dispatch);
+      if (indirect) {
+        list->ExecuteIndirect(signature.Get(), commands_run + 1, commands.Get(), 2 * c * sizeof(Command), count.Get(), 0);
+      } else {
+        list->SetComputeRoot32BitConstants(2, sizeof(Case) / sizeof(UINT), &cases[c], 0);
+        list->DispatchRays(&dispatch);
+      }
       transition(list.Get(), results.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
       list->CopyBufferRegion(readback.Get(), c * rays * sizeof(Result), results.Get(), 0, rays * sizeof(Result));
       transition(list.Get(), results.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -765,6 +803,8 @@ main(int argc, char **argv) {
 
   CHECK(trace(pipeline.Get()));
   compare("pipeline", 2, 0, case_count);
+  CHECK(trace(pipeline.Get(), true));
+  compare("indirect", 2, 0, case_count);
   CHECK(trace(collected.Get()));
   compare("of a collection", 2, 0, 1);
   // the grown pipeline has the added miss shader; the identifiers the first pipeline gave are still its own
@@ -944,6 +984,6 @@ main(int argc, char **argv) {
     printf("failed: no ray crosses a box\n");
     return 1;
   }
-  printf("passed: %u hits of %u rays\n", hits, (case_count + 5 + 2 * ((UINT)std::size(own_cases) + 5)) * rays);
+  printf("passed: %u hits of %u rays\n", hits, (2 * case_count + 5 + 2 * ((UINT)std::size(own_cases) + 5)) * rays);
   return 0;
 }

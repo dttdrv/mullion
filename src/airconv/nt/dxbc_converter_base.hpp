@@ -258,8 +258,8 @@ public:
       if (SupportsNonExecutionBarrier())
         air.CreateAtomicFence(
             mem_flag,
-            (sync.uav_boundary == InstSync::UAVBoundary::global ? (ThreadScope::Device | ThreadScope::Threadgroup)
-                                                                : ThreadScope::Threadgroup)
+            // scopes are an enumeration: the device's contains the threadgroup's
+            sync.uav_boundary == InstSync::UAVBoundary::global ? ThreadScope::Device : ThreadScope::Threadgroup
         );
       if (sync.tgsm_execution_barrier)
         air.CreateBarrier(SupportsNonExecutionBarrier() ? MemFlags::None : mem_flag);
@@ -530,6 +530,7 @@ public:
   llvm::Value *ConvertToHalfTowardZero(llvm::Value *Value);
 
   llvm::Value *FirstBit(IntegerUnaryOp Op, llvm::Value *Value);
+  llvm::Value *SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value);
   llvm::Value *ExtractBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, bool Signed);
   llvm::Value *InsertBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, llvm::Value *Dst);
   llvm::Value *MaskedSumOfAbsDiff(llvm::Value *Ref, llvm::Value *Src, llvm::Value *Accum);

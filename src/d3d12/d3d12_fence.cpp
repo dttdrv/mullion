@@ -33,8 +33,7 @@ public:
 
   HRESULT
   Initialize(UINT64 InitialValue) {
-    fence = new Fence(device_->GetMTLDevice());
-    fence->signal(InitialValue);
+    value = InitialValue;
     return S_OK;
   }
 
@@ -61,27 +60,24 @@ public:
 
   UINT64 STDMETHODCALLTYPE
   GetCompletedValue() {
-    return fence->completedValue();
+    // "if the device has been removed, the return value will be UINT64_MAX" (ID3D12Fence::GetCompletedValue)
+    return FAILED(device_->GetDeviceRemovedReason()) ? UINT64_MAX : value.load();
   }
 
   HRESULT STDMETHODCALLTYPE
   SetEventOnCompletion(UINT64 Value, HANDLE Event) {
-    if (GetCompletedValue() >= Value) {
-      if (Event)
-        SetEvent(Event);
-      return S_OK;
-    }
-    if (!Event) {
-      fence->wait(Value);
-      return S_OK;
-    }
-    device_->event_listener.setEventOnValue(fence.ptr(), Event, Value);
+    if (Logger::logLevel() == LogLevel::Trace)
+      TRACE("fence ", this, " at ", value.load(), ": thread ", GetCurrentThreadId(),
+            Event ? " sets an event at " : " waits for ", Value);
+    Event ? Expect(Value, [Event] { SetEvent(Event); }) : Expect(Value)->wait(false);
     return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE
   Signal(UINT64 Value) {
-    fence->signal(Value);
+    if (Logger::logLevel() == LogLevel::Trace)
+      TRACE("fence ", this, " signaled to ", Value, " by thread ", GetCurrentThreadId());
+    Reach(Value);
     return S_OK;
   }
 

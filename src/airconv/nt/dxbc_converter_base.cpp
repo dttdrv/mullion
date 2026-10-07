@@ -1017,7 +1017,16 @@ Converter::FirstBit(IntegerUnaryOp Op, llvm::Value *Value) {
     Value = air.CreateCountZero(Value, true);
     break;
   }
-  return MaxIfInMask(~((uint32_t)0x1f), Value);
+  // a count of the operand's whole width, or more, says no bit was found
+  auto Bits = Value->getType()->getScalarSizeInBits();
+  return MaxIfInMask(llvm::maskTrailingOnes<uint64_t>(Bits) - (Bits - 1), Value);
+}
+
+llvm::Value *
+Converter::SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value) {
+  // Metal's fast sine and cosine are both 0 from 2^23 radians on and of an infinity, where D3D's are in [-1, 1] and
+  // NaN (D3D11.3 22.10.20), and a tangent made of them is 0 / 0. the precise ones are right for every value
+  return air.CreateFPUnOp(Op, Value, false);
 }
 
 void
@@ -1164,9 +1173,9 @@ Converter::operator()(const InstSinCos &sincos) {
   auto SrcSin = ExtractFromCombinedMask(Src, MaskCombined, MaskSin);
 
   if (!IsNull(sincos.dst_cos))
-    StoreOperand(sincos.dst_cos, air.CreateFPUnOp(AIRBuilder::cos, SrcCos), sincos._.saturate);
+    StoreOperand(sincos.dst_cos, SinCos(AIRBuilder::cos, SrcCos), sincos._.saturate);
   if (!IsNull(sincos.dst_sin))
-    StoreOperand(sincos.dst_sin, air.CreateFPUnOp(AIRBuilder::sin, SrcSin), sincos._.saturate);
+    StoreOperand(sincos.dst_sin, SinCos(AIRBuilder::sin, SrcSin), sincos._.saturate);
 }
 
 void

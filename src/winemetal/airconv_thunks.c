@@ -63,7 +63,9 @@ SM50DestroyBitcode(sm50_bitcode_t pBitcode) {
 AIRCONV_API size_t
 SM50GetErrorMessage(sm50_error_t pError, char *pBuffer, size_t BufferSize) {
   // a call that failed without an error is one that faulted: Wine ends such a unix call with a status
-  if (!pError) {
+  // (the handle is a pointer in a 64-bit build and a 64-bit value in a 32-bit one)
+  static const sm50_error_t none;
+  if (!memcmp(&pError, &none, sizeof(none))) {
     static const char faulted[] = "the shader compiler faulted";
     size_t size = BufferSize < sizeof(faulted) ? BufferSize : sizeof(faulted);
     memcpy(pBuffer, faulted, size);

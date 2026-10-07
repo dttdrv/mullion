@@ -798,6 +798,14 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("mtl_threadgroups_per_grid");
           return msl_uint3.get_llvm_type(context);
         },
+        [&](const InputStageInGridOrigin &) {
+          metadata_field.string("air.stage_in_grid_origin")
+            ->string("air.arg_type_name")
+            ->string("uint3")
+            ->string("air.arg_name")
+            ->string("mtl_grid_origin");
+          return msl_uint3.get_llvm_type(context);
+        },
         [&](const InputVertexID &) {
           metadata_field.string("air.vertex_id")
             ->string("air.arg_type_name")

@@ -24,6 +24,9 @@ typedef dxmt::Shader *ManagedShader;
 DEFINE_COM_INTERFACE("e95ba1c7-e43f-49c3-a907-4ac669c9fb42", IMTLD3D11Shader)
     : public IUnknown {
   virtual ManagedShader GetManagedShader() = 0;
+  // the context's hold on what is bound: without the application's count, which holds the device
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
 };
 
 namespace dxmt {
