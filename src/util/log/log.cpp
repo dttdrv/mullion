@@ -47,6 +47,9 @@ void Logger::log(LogLevel level, const std::string &message) {
   s_instance.emitMsg(level, message);
 }
 
+// the bytes of a line that fit Wine's 1020 with a newline and the terminator
+constexpr size_t kWineLine = 1018;
+
 void Logger::emitMsg(LogLevel level, const std::string &message) {
   if (level >= m_minLevel) {
     std::lock_guard<dxmt::mutex> lock(m_mutex);
@@ -80,8 +83,11 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
       std::string adjusted = outstream.str();
 
       if (!adjusted.empty()) {
+        // Wine holds a line of debug output in 1020 bytes (dlls/ntdll/unix/debug.c, struct debug_info) and ends the
+        // process over a longer one: a long line goes out as several
         if (m_wineLogOutput)
-          m_wineLogOutput(adjusted.c_str());
+          for (size_t at = 0; at < adjusted.size(); at += kWineLine)
+            m_wineLogOutput((adjusted.substr(at, kWineLine) + (at + kWineLine < adjusted.size() ? "\n" : "")).c_str());
         else
           std::cerr << adjusted;
       }

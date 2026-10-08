@@ -1,0 +1,14 @@
+# enhanced Barrier examines only the first barrier of each group
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index e3f21ec..714d63e 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3336,7 +3336,7 @@ public:
+       return access == D3D12_BARRIER_ACCESS_COMMON || (access != D3D12_BARRIER_ACCESS_NO_ACCESS && (access & draw_writes));
+     };
+     for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
+-      for (UINT32 i = 0; i < group.NumBarriers; i++) {
++      for (UINT32 i = 0; i < group.NumBarriers && i < 1; i++) {
+         auto access = group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? group.pGlobalBarriers[i].AccessBefore
+                       : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].AccessBefore
+                                                                  : group.pBufferBarriers[i].AccessBefore;

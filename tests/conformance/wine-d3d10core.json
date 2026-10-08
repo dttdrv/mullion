@@ -24,10 +24,7 @@
   "verdict": "passed"
  },
  "test_clear_depth_stencil_view": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: release_resource_readback at d3d10core.c:0:0",
-  "why": "bug: a staging texture of a depth format (D24_UNORM_S8_UINT, and the depth format of the clear test) is not created: E_FAIL, with nothing logged; the tests then read a readback they were not given",
-  "failures": 0
+  "verdict": "passed"
  },
  "test_clear_render_target_view_1d": {
   "verdict": "passed"
@@ -94,16 +91,10 @@
   "failures": 2
  },
  "test_create_input_layout": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d10core.c:12558: Test failed: Got refcount 1, expected >= 2.",
-  "failures": 15
+  "verdict": "passed"
  },
  "test_create_query": {
-  "verdict": "failed",
-  "why": "bug: Direct3D 10 and 11 queries: GetData succeeds where the tests expect S_FALSE or an error, writes data it should leave, and counts differ; queries of deferred contexts fail (E_FAIL)",
-  "first": "d3d10core.c:4692: Test failed: Got unexpected refcount 1, expected >= 2.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_create_rasterizer_state": {
   "verdict": "passed"
@@ -122,10 +113,7 @@
   "failures": 27
  },
  "test_create_shader": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d10core.c:3971: Test failed: Got unexpected refcount 1, expected >= 2.",
-  "failures": 8
+  "verdict": "passed"
  },
  "test_create_shader_resource_view": {
   "verdict": "crashed",
@@ -162,10 +150,10 @@
   "verdict": "passed"
  },
  "test_depth_bias": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: test_depth_bias at d3d10core.c:16145:25",
-  "why": "bug: a staging texture of a depth format (D24_UNORM_S8_UINT, and the depth format of the clear test) is not created: E_FAIL, with nothing logged; the tests then read a readback they were not given",
-  "failures": 0
+  "verdict": "failed",
+  "why": "semantics: the depth bias of a 24-bit UNORM depth format is not Direct3D's (the first checks are D24_UNORM_S8_UINT, constant bias; the slope-scaled values of D16_UNORM differ in the last bits)",
+  "first": "d3d10core.c:16198: Test failed: Format 0x2d: z 0.125000, bias -10000, clamp 0.000000: Got 0x1ff63b, expected 0x1fd8f0 at (0, 0), sub-resource 0.",
+  "failures": 205
  },
  "test_depth_clip": {
   "verdict": "failed",
@@ -234,10 +222,7 @@
   "failures": 111
  },
  "test_geometry_shader": {
-  "verdict": "failed",
-  "why": "lenient: by its first failing check only",
-  "first": "d3d10core.c:15266: Test failed: Unexpected hr 0.",
-  "failures": 2
+  "verdict": "passed"
  },
  "test_il_append_aligned": {
   "verdict": "passed"
@@ -249,10 +234,7 @@
   "verdict": "passed"
  },
  "test_index_buffer_offset": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d10core.c:13531: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_initial_depth_stencil_state": {
   "verdict": "passed"
@@ -279,8 +261,8 @@
   "verdict": "passed"
  },
  "test_layered_rtv_mismatch": {
-  "verdict": "timeout",
-  "why": "unclassified: by its first failing check only",
+  "verdict": "failed",
+  "why": "bug: a pipeline whose pixel shader writes float4 to an RGBA32_UINT target is not created (Metal: 'output of type float4 is not compatible with a MTLPixelFormatRGBA32Uint color attachment'), and the draw is lost",
   "first": "d3d10core.c:19672: Test failed: Got colour {0.00000000e+000, 0.00000000e+000, 0.00000000e+000, 0.00000000e+000}.",
   "failures": 1
  },
@@ -411,10 +393,7 @@
   "verdict": "passed"
  },
  "test_stream_output_vs": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d10core.c:16021: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_swapchain_flip": {
   "verdict": "crashed",

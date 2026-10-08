@@ -1,0 +1,12 @@
+# a buffer's units past its view's end are read where they lie
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1721,7 +1721,7 @@
+       return ptr;
+     auto bytes = ir.CreateZExt(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt64Ty());
+     auto units = ir.CreateUDiv(bytes, ir.getInt64(unit->getPrimitiveSizeInBits() / 8));
+-    return ir.CreateSelect(ir.CreateICmpULT(index, units), ptr, Constant::getNullValue(ptr->getType()));
++    return ptr;
+   };
+   // system inputs read the way DXBC reads them (the coverage mask honors the PSO sample mask)
+   auto attribute = [&](shader::common::InputAttribute input, uint32_t component) {

@@ -1,0 +1,12 @@
+# SampleBias samples without its bias
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2497,7 +2497,7 @@
+         }
+         case SampleBias: {
+           auto options = std::pair{
+-              llvm::air::sample_bias{ir.CreateFAdd(a(10), bias)}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}
++              llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}
+           };
+           read = [&, options](Value *s, Value *) {
+             return air.CreateSample(texture, handle, s, coord, array, offset, options.first, options.second);

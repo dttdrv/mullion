@@ -1,0 +1,12 @@
+# reversebits is not lowered
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3135,7 +3135,7 @@
+       ret = ir.CreateFCmpOLT(fp_unary(llvm::air::AIRBuilder::fabs, a(1)), ConstantFP::getInfinity(a(1)->getType()));
+       break;
+     case Bfrev:
+-      ret = air.CreateIntUnOp(llvm::air::AIRBuilder::reverse_bits, a(1));
++      return make_error<UnsupportedFeature>("a fault put here: reversebits");
+       break;
+     case Countbits:
+       // DXIL counts into 32 bits, whatever the operand's width

@@ -21,6 +21,7 @@
  */
 
 #include "Metal.hpp"
+#include <d3d12.h>
 #include <deque>
 #include "d3d11_annotation.hpp"
 #include "dxmt_geometry.hpp"
@@ -1475,12 +1476,28 @@ public:
     });
   }
 
+  auto
+  MeshIndexBuffer() {
+    const bool index_view = IndexFormat<true>() == SM50_INDEX_BUFFER_FORMAT_VIEW;
+    auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+    auto index_view_offset =
+        index_view ? PreAllocateArgumentBuffer(sizeof(D3D12_INDEX_BUFFER_VIEW), alignof(D3D12_INDEX_BUFFER_VIEW)) : 0;
+    return [=](ArgumentEncodingContext &enc) -> std::pair<WMT::Buffer, uint64_t> {
+      if (index_view) {
+        *enc.getMappedArgumentBuffer<D3D12_INDEX_BUFFER_VIEW>(index_view_offset) = {0, 0, DXGI_FORMAT_R16_UINT};
+        return {enc.getFinalArgumentBuffer(), enc.getFinalArgumentBufferOffset(index_view_offset)};
+      }
+      auto [buffer, offset] = enc.currentIndexBuffer();
+      return {buffer, IndexBufferOffset + offset};
+    };
+  }
+
   void
   TessellationDrawIndexed(
       UINT NumControlPoint, UINT IndexCountPerInstance, UINT StartIndexLocation, INT BaseVertexLocation,
       UINT InstanceCount, UINT BaseInstance
   ) {
-    auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+    auto IndexBuffer = MeshIndexBuffer();
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
     EmitOP([=](ArgumentEncodingContext &enc) {
@@ -1492,6 +1509,8 @@ public:
       draw_argument->StartInstance = BaseInstance;
 
       auto PatchCountPerInstance = IndexCountPerInstance / NumControlPoint;
+      if (!PatchCountPerInstance)
+        return;
       auto PatchPerGroup = 32 / enc.tess_threads_per_patch;
       auto ThreadsPerPatch = enc.tess_threads_per_patch;
       auto PatchPerObjectInstance = (PatchCountPerInstance - 1) / PatchPerGroup + 1;
@@ -1504,7 +1523,7 @@ public:
         return;
       }
 
-      auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+      auto [index_buffer, index_buffer_offset] = IndexBuffer(enc);
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_tessellation_mesh_draw_indexed>();
@@ -1516,7 +1535,7 @@ public:
       cmd.patch_per_mesh_instance = PatchPerObjectInstance;
       cmd.parts = enc.tess_parts;
       cmd.index_buffer = index_buffer;
-      cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+      cmd.index_buffer_offset = index_buffer_offset;
     });
   }
 
@@ -1569,7 +1588,7 @@ public:
       UINT IndexCountPerInstance, UINT StartIndexLocation, INT BaseVertexLocation,
       UINT InstanceCount, UINT BaseInstance
   ) {
-    auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+    auto IndexBuffer = MeshIndexBuffer();
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
@@ -1581,7 +1600,7 @@ public:
       draw_argument->InstanceCount = InstanceCount;
       draw_argument->StartInstance = BaseInstance;
 
-      auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+      auto [index_buffer, index_buffer_offset] = IndexBuffer(enc);
       auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo, vertex_registers);
       // not one primitive fits an object threadgroup's payload
       if (!vertex_increment_per_wrap)
@@ -1603,7 +1622,7 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.index_buffer = index_buffer;
-        cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+        cmd.index_buffer_offset = index_buffer_offset;
       };
       auto encoder = enc.currentRenderEncoder();
       if (encoder->so_count_pso)
@@ -1747,7 +1766,7 @@ public:
       ERR("stream output from an indirect draw is not implemented");
       return;
     }
-    auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+    auto IndexBuffer = MeshIndexBuffer();
     auto max_object_threadgroups = max_object_threadgroups_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
 
@@ -1762,7 +1781,7 @@ public:
         // not one primitive fits an object threadgroup's payload
         if (!vertex_increment_per_wrap)
           return;
-        auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+        auto [index_buffer, index_buffer_offset] = IndexBuffer(enc);
   
         enc.bumpVisibilityResultOffset();
         enc.encodeGSDispatchArgumentsMarshal(
@@ -1778,7 +1797,7 @@ public:
         cmd.indirect_args_buffer = buffer->buffer();
         cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
         cmd.index_buffer = index_buffer;
-        cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+        cmd.index_buffer_offset = index_buffer_offset;
         cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
       });
     }
@@ -1823,7 +1842,7 @@ public:
   TessellationDrawIndexedIndirect(
     UINT NumControlPoint, ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs
   ) {
-    auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
+    auto IndexBuffer = MeshIndexBuffer();
     auto max_object_threadgroups = max_object_threadgroups_;
 
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
@@ -1835,7 +1854,7 @@ public:
 
         auto PatchPerGroup = 32 / enc.tess_threads_per_patch;
         auto ThreadsPerPatch = enc.tess_threads_per_patch;
-        auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
+        auto [index_buffer, index_buffer_offset] = IndexBuffer(enc);
   
         enc.bumpVisibilityResultOffset();
         enc.encodeTSDispatchArgumentsMarshal(
@@ -1853,7 +1872,7 @@ public:
         cmd.indirect_args_buffer = buffer->buffer();
         cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
         cmd.index_buffer = index_buffer;
-        cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+        cmd.index_buffer_offset = index_buffer_offset;
         cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
       });
     }
@@ -4909,7 +4928,8 @@ public:
       Desc.PixelShader = nullptr; // Even rasterization is disabled, Metal still checks if VS-PS signatures match.
     Desc.SampleMask = state_.OutputMerger.SampleMask;
     Desc.GSPassthrough = GS && !Desc.SOLayout ? GS->reflection().GeometryShader.GSPassThrough : ~0u;
-    Desc.PassThrough = !so_raster_pass_ && PassesPrimitivesThrough();
+    Desc.PassThrough =
+        !so_raster_pass_ && (PassesPrimitivesThrough() || (IndexedDraw && !state_.InputAssembler.IndexBuffer));
     Desc.InputPrimitive = !GS && (Desc.SOLayout || Desc.PassThrough) ? to_input_primitive(state_.InputAssembler.Topology) : 0;
     if (unlikely(Desc.GSPassthrough == ~0u && (Desc.GeometryShader != nullptr || Desc.SOLayout || Desc.PassThrough))) {
       Desc.GSStripTopology = is_strip_topology(state_.InputAssembler.Topology);
@@ -4925,6 +4945,9 @@ public:
   template <bool IndexedDraw>
   SM50_INDEX_BUFFER_FORMAT
   IndexFormat() {
+    // an empty index view returns 0 for every read (D3D11.3 8.20), including counts written by the GPU
+    if (IndexedDraw && !state_.InputAssembler.IndexBuffer)
+      return SM50_INDEX_BUFFER_FORMAT_VIEW;
     if constexpr (IndexedDraw)
       return state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? SM50_INDEX_BUFFER_FORMAT_UINT32
                                                                              : SM50_INDEX_BUFFER_FORMAT_UINT16;
@@ -5051,6 +5074,8 @@ public:
     if (state_.ShaderStages[PipelineStage::Hull].Shader) {
       return FinalizeTessellationRenderPipeline<IndexedDraw>();
     }
+    if (IndexedDraw && !state_.InputAssembler.IndexBuffer)
+      return FinalizeGeometryRenderPipeline<IndexedDraw>();
     if (cmdbuf_state == CommandBufferState::RenderPipelineReady)
       return DrawCallStatus::Ordinary;
     auto GS = GetManagedShader<PipelineStage::Geometry>();
@@ -5095,10 +5120,6 @@ public:
   DrawCallStatus
   PreDraw() {
     DrawCallStatus status;
-    if constexpr (IndexedDraw) {
-      if (!state_.InputAssembler.IndexBuffer)
-        return DrawCallStatus::Invalid;
-    }
     if (status = FinalizeCurrentRenderPipeline<IndexedDraw>(); status == DrawCallStatus::Invalid) {
       return status;
     }

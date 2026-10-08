@@ -1,0 +1,14 @@
+# pixel UAV stores do not end the render pass before its indirect resolver
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index b2166ec..68dd2d7 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1736,7 +1736,7 @@ public:
+     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render)
+       return;
+     constexpr auto draw_writes =
+-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE;
++        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE;
+     for (auto &barrier : std::span(barriers, Count)) {
+       if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || (barrier.Transition.StateBefore & draw_writes)) {
+         allocator_->InvalidateCurrentPass();

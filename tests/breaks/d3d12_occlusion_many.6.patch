@@ -1,0 +1,21 @@
+# counting remains enabled after the last query ends
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..10f4ea6 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -219,14 +219,12 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+     auto render = allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render
+                       ? static_cast<RenderEncoderData *>(allocator_->encoder_current)
+                       : nullptr;
+-    if (!render)
++    if (!render || active_queries_.empty())
+       return;
+     auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
+     cmd.type = WMTRenderCommandSetVisibilityMode;
+     cmd.mode = WMTVisibilityResultModeDisabled;
+     cmd.offset = 0;
+-    if (active_queries_.empty())
+-      return;
+     auto [window, address, offset] = allocator_->VisibilitySlot();
+     // a pass counts in one window: when that is full the pass ends, and the next pass counts in the next window
+     if (render->visibility_buffer && render->visibility_buffer != window.handle)

@@ -21,19 +21,25 @@
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d12_acceleration_structure.hpp"
+#include "d3d12_command_allocator.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
 #include "util_env.hpp"
 #include <atomic>
-#include <optional>
+#include <charconv>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
 
 namespace dxmt {
 
 constexpr auto kCommandQueueSize = 32u;
+const auto dump_frames = env::getEnvVar("DXMT_D3D12_DUMP_FRAMES");
 
 const GUID kD3D12CommandQueueDownlevelUUID = {
     0x38a8c5ef, 0x7ccb, 0x4e81, {0x91, 0x4f, 0xa6, 0xe9, 0xd0, 0x72, 0xc4, 0x94}
@@ -140,11 +146,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   void
   Map(Update &&update) {
     auto work = [this, update = std::forward<Update>(update)] {
+      auto scope = StartCommitting();
       if (!mapping_queue_) {
         mapping_queue_ = device_->GetMTLDevice().newMTL4CommandQueue();
         mapped_ = new Fence(device_->GetMTLDevice());
       }
-      WMT::Reference<WMT::CommandBuffer> before = StartCommitting().inflight.cmdbuf;
+      auto before = scope.End();
       Trace("tile mappings: waits for the work before");
       before.waitUntilCompleted();
       update(mapping_queue_);
@@ -179,8 +186,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       size_t after;
     };
     std::vector<Resolve> resolves{};
+    // the allocators of the lists the command buffer is the last of
+    std::vector<Com<MTLD3D12CommandAllocator>> allocators{};
     // DXMT_D3D12_GPU_ERRORS: the passes with indirect commands and where their resolvers keep their largest numbers
-    std::vector<std::pair<std::string, const uint32_t *>> most{};
+    std::vector<std::pair<std::string, const RenderEncoderData::Most *>> most{};
     // how many encoders of each kind it has, and whether it presents: what a report of one that does not complete says
     std::array<uint16_t, size_t(EncoderType::AccelerationStructure) + 1> encoders{};
     bool presents = false;
@@ -251,10 +260,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         // the first says why; Metal fails what follows a fault of the process's too
         if (SUCCEEDED(device_->GetDeviceRemovedReason())) {
           ERR("Device error: ", inflight.cmdbuf.error().description().getUTF8String());
-          for (auto &[label, words] : inflight.most)
-            ERR("indirect commands of ", label, ": ", words[5], " commands; the most instances ", words[0],
-                ", vertices or indices ", words[1], ", start ", words[2], ", base vertex ", words[3], ", start instance ",
-                words[4]);
+          for (auto &[label, most] : inflight.most)
+            ERR("indirect commands of ", label, ": ", most->words[5], " commands of at most ", most->call->max_count,
+                most->call->max_count_buffer ? " with a count buffer" : "", ", arguments at ",
+                (void *)most->call->argument_buffer, "; the most instances ", most->words[0], ", vertices or indices ",
+                most->words[1], ", start ", most->words[2], ", base vertex ", most->words[3], ", start instance ",
+                most->words[4]);
         }
         device_->LoseDevice();
       }
@@ -275,6 +286,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         memcpy(resolve.to, &resolve.heap->timestamps[resolve.first], resolve.count * sizeof(uint64_t));
       }
       sample(clock.size());
+      for (auto &allocator : inflight.allocators)
+        if (allocator)
+          allocator->pending--;
       if (inflight.completed)
         inflight.completed();
       if (inflight.semaphore)
@@ -292,27 +306,40 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   struct CommittingScope {
     MTLD3D12CommandQueueImpl *queue;
     std::lock_guard<dxmt::mutex> lock;
-    uint64_t seq;
-    InflightCommandBuffer &inflight;
+    InflightCommandBuffer *inflight;
     WMT::Reference<WMT::Object> pool;
+
+    CommittingScope(MTLD3D12CommandQueueImpl *queue) :
+        queue(queue), lock(queue->mutex_commit_) {
+      Start();
+    };
 
     // a slot is the scope's from here to its retirement: it is waited for and counted under the lock, so two
     // submitters never pass one free slot, and counted before the completion thread hears of it
-    CommittingScope(MTLD3D12CommandQueueImpl *queue) :
-        queue(queue),
-        lock(queue->mutex_commit_),
-        seq((queue->inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire),
-             queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed),
-             queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed))),
-        inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
-        pool(WMT::MakeAutoreleasePool()) {
-      inflight.cmdbuf = queue->queue_.commandBuffer();
+    void
+    Start() {
+      queue->inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+      queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
+      auto seq = queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed);
+      inflight = &queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize];
+      pool = WMT::MakeAutoreleasePool();
+      inflight->cmdbuf = queue->queue_.commandBuffer();
     };
 
-    ~CommittingScope() {
-      inflight.cmdbuf.commit();
+    WMT::Reference<WMT::CommandBuffer>
+    End() {
+      auto ended = inflight->cmdbuf;
+      inflight = nullptr;
+      ended.commit();
       queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
       queue->inflight_cmdbuf_seq_.notify_one();
+      pool = nullptr;
+      return ended;
+    }
+
+    ~CommittingScope() {
+      if (inflight)
+        End();
     }
   };
 
@@ -509,30 +536,40 @@ public:
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
     // what the lists recorded, which is theirs no longer: the application may record them again at once
     std::vector<EncoderData *> recorded(Count);
-    for (UINT i = 0; i < Count; i++)
-      recorded[i] = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i])->entry;
+    std::vector<Com<MTLD3D12CommandAllocator>> allocators(Count);
+    for (UINT i = 0; i < Count; i++) {
+      auto list = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+      recorded[i] = list->entry;
+      if ((allocators[i] = list->recorded_on))
+        allocators[i]->pending++;
+    }
     Trace("ExecuteCommandLists of ", Count);
-    auto work = [this, recorded = std::move(recorded)] { Commit(recorded); };
+    auto work = [this, recorded = std::move(recorded), allocators = std::move(allocators)]() mutable {
+      Commit(recorded, std::move(allocators));
+    };
     if (!Hold(work))
       work();
     Trace("ExecuteCommandLists returns");
   }
 
   void
-  Commit(const std::vector<EncoderData *> &recorded) {
+  Commit(const std::vector<EncoderData *> &recorded, std::vector<Com<MTLD3D12CommandAllocator>> &&allocators = {}) {
     device_->CheckAtomicLocks();
-    std::optional<CommittingScope> scope;
-    auto start = [&] { scope.emplace(this); };
+    auto scope = StartCommitting();
+    // the lists' allocators stay, and count the lists as pending, until the last command buffer of theirs completes
+    struct Keeps {
+      CommittingScope &scope;
+      std::vector<Com<MTLD3D12CommandAllocator>> allocators;
+      ~Keeps() { scope.inflight->allocators = std::move(allocators); }
+    } keeps{scope, std::move(allocators)};
     static const bool isolate = !env::getEnvVar("DXMT_D3D12_ISOLATE").empty();
-    start();
-    WMT::CommandBuffer cmdbuf = scope->inflight.cmdbuf;
+    WMT::CommandBuffer cmdbuf = scope.inflight->cmdbuf;
     // ends the command buffer and waits for it: what the work so far leaves in memory is then there
     auto settle = [&] {
-      WMT::Reference<WMT::CommandBuffer> ended = cmdbuf;
-      scope.reset();
+      auto ended = scope.End();
       ended.waitUntilCompleted();
-      start();
-      cmdbuf = scope->inflight.cmdbuf;
+      scope.Start();
+      cmdbuf = scope.inflight->cmdbuf;
     };
     // whether the queue has run a build or a copy into the structure at the address
     auto built = [&](D3D12_GPU_VIRTUAL_ADDRESS address) {
@@ -578,7 +615,7 @@ public:
           settle();
           Trace("pass ", current->id, " of kind ", uint32_t(current->type), " starts");
         }
-        scope->inflight.encoders[size_t(current->type)]++;
+        scope.inflight->encoders[size_t(current->type)]++;
         switch (current->type) {
         case EncoderType::Null:
           break;
@@ -682,9 +719,10 @@ public:
             auto label = "render " + device_->PassName(current->id);
             encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
             for (auto most = data->most; most; most = most->next)
-              scope->inflight.most.emplace_back(label, most->words);
+              scope.inflight->most.emplace_back(label, most);
           }
-          encoder.waitForFence(fence_, WMTRenderStageVertex);
+          // the object and mesh stages read what earlier passes wrote as the vertex stage does
+          encoder.waitForFence(fence_, WMTRenderStagePreRaster);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_, WMTRenderStageFragment);
           encoder.endEncoding();
@@ -697,17 +735,17 @@ public:
           if (data->timestamps) {
             auto &pool = device_->timestamp_samples;
             // a command buffer has one buffer of samples: when it is full the next begins
-            if (scope->inflight.samples && scope->inflight.sampled.size() == pool.limit) {
-              scope.reset();
-              start();
-              cmdbuf = scope->inflight.cmdbuf;
+            if (scope.inflight->samples && scope.inflight->sampled.size() == pool.limit) {
+              scope.End();
+              scope.Start();
+              cmdbuf = scope.inflight->cmdbuf;
             }
-            if (!scope->inflight.samples)
-              scope->inflight.samples = pool.Take(device_->GetMTLDevice());
-            if (scope->inflight.samples) {
-              samples = scope->inflight.samples;
-              sample = scope->inflight.sampled.size();
-              scope->inflight.sampled.push_back({data->timestamps, data->timestamp_query});
+            if (!scope.inflight->samples)
+              scope.inflight->samples = pool.Take(device_->GetMTLDevice());
+            if (scope.inflight->samples) {
+              samples = scope.inflight->samples;
+              sample = scope.inflight->sampled.size();
+              scope.inflight->sampled.push_back({data->timestamps, data->timestamp_query});
             } else {
               ERR("EndQuery: Metal has no counter sample buffer for a timestamp");
             }
@@ -754,9 +792,9 @@ public:
         case EncoderType::ResolveTimestamps: {
           auto data = static_cast<ResolveTimestampsData *>(current);
           if (data->readback) {
-            scope->inflight.resolves.push_back({data->heap, data->start, data->count, data->readback,
+            scope.inflight->resolves.push_back({data->heap, data->start, data->count, data->readback,
                                                 static_cast<char *>(data->memory) + data->dst_offset,
-                                                scope->inflight.sampled.size()});
+                                                scope.inflight->sampled.size()});
             break;
           }
           // the command buffer ends here; when it has completed and the CPU has read the samples, the next one
@@ -764,16 +802,16 @@ public:
           WMTBufferInfo info{data->count * sizeof(uint64_t), WMTResourceStorageModeShared};
           auto staging = device_->GetMTLDevice().newBuffer(info);
           auto value = ++timestamp_resolves_;
-          scope->inflight.completed = [heap = Com(data->heap), staging, mapped = info.memory.ptr, first = data->start,
+          scope.inflight->completed = [heap = Com(data->heap), staging, mapped = info.memory.ptr, first = data->start,
                                        count = data->count, read = timestamps_read_, value] {
             memcpy(mapped, &heap->timestamps[first], count * sizeof(uint64_t));
             read->signal(value);
           };
-          scope.reset();
+          scope.End();
           Trace("waits for timestamps ", value);
           timestamps_read_->wait(value);
-          start();
-          cmdbuf = scope->inflight.cmdbuf;
+          scope.Start();
+          cmdbuf = scope.inflight->cmdbuf;
           auto encoder = cmdbuf.blitCommandEncoder();
           encoder.waitForFence(fence_);
           encoder.copyFromBuffer(staging, 0, data->dst, data->dst_offset, data->count * sizeof(uint64_t));
@@ -958,7 +996,7 @@ public:
   Signal(ID3D12Fence *pFence, UINT64 Value) {
     // from the CPU, once the work before has completed and what it left for the CPU is done
     auto work = [this, fence = Com(static_cast<MTLD3D12Fence *>(pFence)), Value] {
-      StartCommitting().inflight.completed = [this, fence, Value] {
+      StartCommitting().inflight->completed = [this, fence, Value] {
         Trace("fence ", fence.ptr(), " reaches ", Value);
         fence->Reach(Value);
       };
@@ -1025,21 +1063,99 @@ public:
 
   HRESULT
   Present(
-      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after
+      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after,
+      uint64_t id, uint64_t number
   ) {
     if (Holding() &&
-        Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), hLantecyWaitable, after] {
-          Commit(presenter, backbuffer.ptr(), hLantecyWaitable, after);
-        }))
+        Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), hLantecyWaitable, after, id,
+              number] { Commit(presenter, backbuffer.ptr(), hLantecyWaitable, after, id, number); }))
       return S_OK;
-    return Commit(presenter, backbuffer, hLantecyWaitable, after);
+    return Commit(presenter, backbuffer, hLantecyWaitable, after, id, number);
+  }
+
+  void
+  DumpFrame(ID3D12Resource *backbuffer, InflightCommandBuffer &inflight, uint64_t id, uint64_t number) {
+    static const auto range = [] {
+      std::array<uint64_t, 2> range{};
+      auto begin = dump_frames.data(), end = begin + dump_frames.size();
+      auto first = std::from_chars(begin, end, range[0]);
+      if (first.ec == std::errc() && first.ptr != end && *first.ptr == ':') {
+        auto count = std::from_chars(first.ptr + 1, end, range[1]);
+        if (count.ec == std::errc() && count.ptr == end)
+          return range;
+      }
+      ERR("D3D12 frame range invalid: expected first:count");
+      return std::array<uint64_t, 2>{};
+    }();
+    if (number < range[0] || number - range[0] >= range[1])
+      return;
+    static const auto directory = [] {
+      auto path = env::getEnvVar("DXMT_LOG_PATH");
+      if (path.empty() || path == "none") {
+        WARN("D3D12 frame directory missing: DXMT_LOG_PATH must name a directory");
+        return std::string();
+      }
+      return path + (path.back() == '/' ? "" : "/");
+    }();
+    if (directory.empty())
+      return;
+    D3D12_RESOURCE_DESC desc;
+    backbuffer->GetDesc(&desc);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT64 row, size;
+    device_->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, &row, &size);
+    std::ostringstream name;
+    name << directory << env::getExeBaseName() << "_swap_" << GetCurrentProcessId() << "_" << id << "_"
+         << std::setfill('0') << std::setw(std::numeric_limits<uint64_t>::digits10 + 1) << number << ".frame";
+    auto path = name.str();
+    WMTBufferInfo info{.length = size, .options = WMTResourceStorageModeShared};
+    info.memory.set(nullptr);
+    WMT::Reference<WMT::Buffer> buffer = device_->GetMTLDevice().newBuffer(info);
+    if (!buffer) {
+      ERR("D3D12 frame failed: ", path, ": readback allocation failed");
+      return;
+    }
+    auto resource = static_cast<MTLD3D12Resource *>(backbuffer);
+    auto &view = resource->texture->view(resource->texture->fullView);
+    wmtcmd_blit_copy_from_texture_to_buffer copy{.type = WMTBlitCommandCopyFromTextureToBuffer};
+    copy.src = view.texture.handle;
+    copy.size = {uint32_t(desc.Width), desc.Height, 1};
+    copy.dst = buffer.handle;
+    copy.bytes_per_row = footprint.Footprint.RowPitch;
+    auto blit = inflight.cmdbuf.blitCommandEncoder();
+    blit.waitForFence(fence_);
+    blit.encodeCommands((const wmtcmd_blit_nop *)&copy);
+    blit.updateFence(fence_);
+    blit.endEncoding();
+    inflight.completed = [present = std::move(inflight.completed), buffer, pixels = info.memory.get(),
+                          cmdbuf = inflight.cmdbuf, desc, footprint, row, number, path]() mutable {
+      if (present)
+        present();
+      if (cmdbuf.status() != WMTCommandBufferStatusCompleted) {
+        ERR("D3D12 frame failed: ", path, ": GPU work did not complete");
+        return;
+      }
+      std::ofstream file(str::topath(path.c_str()).c_str(), std::ios::binary);
+      file << "mullion frame " << number << ' ' << desc.Width << ' ' << desc.Height << ' ' << uint32_t(desc.Format)
+           << ' ' << row << '\n';
+      for (UINT y = 0; y < desc.Height && file; y++)
+        file.write((const char *)pixels + uint64_t(y) * footprint.Footprint.RowPitch, row);
+      file.close();
+      if (!file)
+        ERR("D3D12 frame failed: ", path, ": file could not be written");
+      else
+        Logger::info(str::format("D3D12 frame written: ", path));
+    };
   }
 
   HRESULT
-  Commit(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
+  Commit(
+      Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after, uint64_t id,
+      uint64_t number
+  ) {
     Trace("Present");
     auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
+    auto &cmdbuf = scope.inflight->cmdbuf;
 
     auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
     auto &view = g->texture->view(g->texture->fullView);
@@ -1052,13 +1168,15 @@ public:
     );
 
     if (!drawable)
-      scope.inflight.completed = [presenter = Rc(presenter), after] { presenter->drawToWindow(after); };
+      scope.inflight->completed = [presenter = Rc(presenter), after] { presenter->drawToWindow(after); };
     else if (after > 0)
       cmdbuf.presentDrawableAfterMinimumDuration(drawable, after);
     else
       cmdbuf.presentDrawable(drawable);
-    scope.inflight.semaphore = hLantecyWaitable;
-    scope.inflight.presents = true;
+    if (!dump_frames.empty())
+      DumpFrame(backbuffer, *scope.inflight, id, number);
+    scope.inflight->semaphore = hLantecyWaitable;
+    scope.inflight->presents = true;
 
     return S_OK;
   }

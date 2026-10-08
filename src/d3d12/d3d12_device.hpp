@@ -49,10 +49,14 @@ namespace dxmt {
 // reports for its timestamp queries
 constexpr uint64_t kGPUTimestampFrequency = 1'000'000'000;
 
+class MTLD3D12CommandAllocator;
+
 class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList7 {
 public:
   EncoderData *entry;
   size_t encoder_count;
+  // the allocator the closed list recorded into, which a queue keeps until the list has run
+  MTLD3D12CommandAllocator *recorded_on = nullptr;
   // whether a command on an acceleration structure that is not there is left for the queue (LaterEncoderData),
   // which records it on a list that leaves nothing
   bool leaves_for_later = true;
@@ -60,17 +64,22 @@ public:
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
 public:
+  // lists of the allocator's that queues have taken and that have not completed: their recording must stay
+  std::atomic<uint32_t> pending{0};
   virtual HRESULT STDMETHODCALLTYPE CreateCommandList(
       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, ID3D12PipelineState *pInitialPipelineState, REFIID riid,
       void **ppCommandList
   ) = 0;
 };
 
+extern const std::string dump_frames;
+
 class MTLD3D12CommandQueue : public ID3D12CommandQueue {
 public:
   // `swapchain` owns the presenter and what it draws with: a present the queue holds back keeps it
   virtual HRESULT Present(
-      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after
+      IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after,
+      uint64_t id, uint64_t number
   ) = 0;
 };
 

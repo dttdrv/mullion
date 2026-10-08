@@ -250,8 +250,8 @@
   "verdict": "passed"
  },
  "test_copy_block_spam": {
-  "verdict": "timeout",
-  "why": "timeout: a command buffer timed out on the GPU",
+  "verdict": "partly",
+  "why": "skipped: one check of the test is skipped, none fails",
   "failures": 0
  },
  "test_copy_buffer_overlap": {
@@ -345,10 +345,7 @@
   "verdict": "passed"
  },
  "test_cpu_signal_fence": {
-  "verdict": "failed",
-  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
-  "first": "test_cpu_signal_fence:587: Test failed: Got unexpected return value 0x102.",
-  "failures": 24
+  "verdict": "passed"
  },
  "test_create_command_allocator": {
   "verdict": "passed"
@@ -716,16 +713,10 @@
   "verdict": "passed"
  },
  "test_fence_signal_availability_plain": {
-  "verdict": "failed",
-  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
-  "first": "test_fence_signal_availability_plain:2209: Test failed: Expected 0, got 258.",
-  "failures": 2
+  "verdict": "passed"
  },
  "test_fence_signal_availability_shared": {
-  "verdict": "failed",
-  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
-  "first": "test_fence_signal_availability_shared:2209: Test failed: Expected 0, got 258.",
-  "failures": 2
+  "verdict": "passed"
  },
  "test_fence_signal_ordering_raced_signal": {
   "verdict": "passed"
@@ -811,10 +802,7 @@
   "verdict": "partly"
  },
  "test_gpu_signal_fence": {
-  "verdict": "failed",
-  "why": "bug: an event of SetEventOnCompletion is not set by the time Signal has returned or the queue is idle",
-  "first": "test_gpu_signal_fence:971: Test failed: Got unexpected return value 0x102.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_gpu_virtual_address": {
   "verdict": "passed"
@@ -1381,9 +1369,10 @@
   "verdict": "passed"
  },
  "test_resolve_image_exhaustive_descriptors": {
-  "verdict": "timeout",
-  "why": "timeout: a command buffer fails with 'Insufficient Memory'",
-  "failures": 0
+  "verdict": "failed",
+  "why": "timeout no more: a command buffer fails with 'Insufficient Memory' and the resolves after it are lost",
+  "first": "test_resolve_image_exhaustive_descriptors:3001:Layer 0: Test failed: Got 0x00000000, expected 0xff00003f at (0, 0, 0).",
+  "failures": 1024
  },
  "test_resolve_non_issued_query_data": {
   "verdict": "passed"
@@ -1665,10 +1654,9 @@
   "verdict": "passed"
  },
  "test_shader_sm66_wave_size": {
-  "verdict": "failed",
-  "why": "lenient: CreateGraphicsPipelineState, CreateComputePipelineState and CreatePipelineState accept what Windows refuses, or fail with E_FAIL where it says E_INVALIDARG: stages that do not match, a geometry shader's topology, dual source blending with several targets, a mesh with a vertex shader, bindings outside the root signature, a cached blob of another shader",
-  "first": "test_shader_sm66_wave_size:572:Test 0: Test failed: Got hr #80004005, expected 0x80070057.",
-  "failures": 2
+  "verdict": "partly",
+  "why": "skipped: shaders that need waves of 16 or of 64 lanes are refused, this GPU's waves have 32",
+  "failures": 0
  },
  "test_shader_waveop_maximal_convergence": {
   "verdict": "failed",
@@ -1863,9 +1851,10 @@
   "failures": 260
  },
  "test_uav_clear_exhaustive_descriptors": {
-  "verdict": "timeout",
-  "why": "timeout: a command buffer fails with 'Insufficient Memory'",
-  "failures": 0
+  "verdict": "failed",
+  "why": "timeout no more: a command buffer fails with 'Insufficient Memory' and the clears after it are lost",
+  "first": "test_uav_clear_exhaustive_descriptors:1295: Test failed: desc 0, line 1: Expected 44000000, got 0.",
+  "failures": 131070
  },
  "test_uav_counter_null_behavior_dxbc": {
   "verdict": "failed",

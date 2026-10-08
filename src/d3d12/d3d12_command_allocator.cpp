@@ -85,6 +85,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   encoder_count_ = 0;
 
   icb_.clear();
+  visibility_.clear();
+  visibility_used_ = kVisibilityWindow;
   acceleration_structures_.clear();
   acceleration_structure_inputs_.clear();
 
@@ -118,6 +120,10 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
   if (encoder_last)
     return E_FAIL;
+  // "the runtime will not allow a reset while a command list is still being executed": the lists' recording is what
+  // the GPU still reads
+  if (pending)
+    ERR("CommandAllocator: Reset while ", pending.load(), " of its submitted lists have not completed");
 
   for (auto &encoder_list : encoder_lists_) {
     EncoderData *next = encoder_list.next;
@@ -237,13 +243,11 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
     size_t MaxCount, bool tessellation
 ) {
-  // a tessellated, geometry or mesh command (`tessellation`) binds its own arguments to the object stage, so it
-  // binds every buffer. mesh commands in indirect command buffers come with Apple9 GPUs: before, the resolver
-  // leaves an IndirectMeshDraw for each command and the caller draws them one by one
-  bool draws = tessellation && !device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
+  // for a tessellated, geometry or mesh command (`tessellation`) the resolver leaves an IndirectMeshDraw, and the
+  // caller draws each: mesh commands in indirect command buffers come only with Apple9 GPUs, and one way serves all
+  bool draws = tessellation;
   WMTIndirectCommandBufferInfo info;
-  info.inherit_buffers =
-      !(tessellation || pCmdSig->UpdateVertexBuffers || pCmdSig->UpdateIndexBuffer || pCmdSig->UpdateRootArguments);
+  info.inherit_buffers = !(pCmdSig->UpdateVertexBuffers || pCmdSig->UpdateIndexBuffer || pCmdSig->UpdateRootArguments);
   info.inherit_pso = 1;
   info.inherit_cull_mode = 1;
   info.inherit_fill_mode = 1;
@@ -254,13 +258,12 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.support_color_attachment_mapping = 0;
   info.support_dynamic_attribute_stride = 0;
   info.support_ray_tracing = 0;
-  info.type = tessellation ? WMTIndirectCommandTypeDrawMeshThreadgroups
-              : pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? WMTIndirectCommandTypeDrawIndexed
-                                                                                  : WMTIndirectCommandTypeDraw;
-  info.max_vertex_buffer_binding = tessellation ? 0 : 31;
+  info.type = pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? WMTIndirectCommandTypeDrawIndexed
+                                                                                 : WMTIndirectCommandTypeDraw;
+  info.max_vertex_buffer_binding = 31;
   info.max_fragment_buffer_binding = 31;
-  info.max_object_buffer_binding = tessellation ? 31 : 0;
-  info.max_mesh_buffer_binding = tessellation ? 31 : 0;
+  info.max_object_buffer_binding = 0;
+  info.max_mesh_buffer_binding = 0;
   info.max_kernel_buffer_binding = 0;
   info.max_kernel_threadgroup_memory_binding = 0;
   info.max_object_threadgroup_memory_binding = 0;
@@ -321,7 +324,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     data->most = gpu_heap_buffer_address_ + offset;
     auto render = static_cast<RenderEncoderData *>(encoder_current);
     render->most = new (AllocateCPUHeap(sizeof(RenderEncoderData::Most), alignof(RenderEncoderData::Most)))
-        RenderEncoderData::Most{static_cast<const uint32_t *>(words), render->most};
+        RenderEncoderData::Most{static_cast<const uint32_t *>(words), data, render->most};
   }
 
   // the signature's resolver writes the commands in a compute pass before the render pass, which then runs them: a

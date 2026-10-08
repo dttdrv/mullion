@@ -226,11 +226,10 @@ public:
     bool rays = side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
     bool is_compute = rays || side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
     bool indexed = side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-    // a tessellated draw runs each group of patches in one object threadgroup of 32 threads (airconv's layout), which
-    // reads the command's arguments and index buffer view; the command's draw follows as the else branch
-    // a geometry pipeline's draw runs its vertices in object threadgroups likewise
-    // where the resolver leaves IndirectMeshDraws (command_data.draws) it writes what the command's object stage reads
-    // and the threadgroups the same draw would have, none for a command that draws nothing
+    // a tessellated draw runs each group of patches in one object threadgroup of 32 threads (airconv's layout), a
+    // geometry pipeline's its vertices likewise. for those the resolver leaves an IndirectMeshDraw (command_data.draws):
+    // what the command's object stage reads and the draw's threadgroups, none for a command that draws nothing. an
+    // ordinary pipeline's draw follows as the else branch
     auto tessellate = [&](const char *args, const char *count, const char *view, size_t words) {
       source << "if (command_data.draws) {\n";
       source << "device dxmt_indirect_mesh_draw &draw = command_data.draws[i];\n";
@@ -245,25 +244,6 @@ public:
              << " - 1) / command_data.geometry_increment + 1, arg." << args << ".instance_count, 1) : "
              << "uint3((patches + per_group - 1) / per_group, arg." << args
              << ".instance_count, patches ? command_data.tessellation_parts : 0);\n";
-      source << "} else if (command_data.geometry_threads) {\n";
-      source << "cmd.set_object_buffer(&arg." << args << "," << SM50_BINDING_INDEX_DRAW_ARGUMENTS << ");\n";
-      source << "cmd.set_object_buffer(" << view << "," << SM50_BINDING_INDEX_INDEX_BUFFER << ");\n";
-      source << "if (arg." << args << "." << count << " && arg." << args << ".instance_count)\n";
-      source << "cmd.draw_mesh_threadgroups(uint3((arg." << args << "." << count
-             << " - 1) / command_data.geometry_increment + 1, arg." << args
-             << ".instance_count, 1), uint3(command_data.geometry_threads, 1, 1), uint3(1, 1, 1));\n";
-      source << "} else if (command_data.threads_per_patch) {\n";
-      source << "uint patches = arg." << args << "." << count << " / command_data.control_points, "
-             << "per_group = 32 / command_data.threads_per_patch;\n";
-      source << "cmd.set_object_buffer(&arg." << args << "," << SM50_BINDING_INDEX_DRAW_ARGUMENTS << ");\n";
-      source << "cmd.set_object_buffer(" << view << "," << SM50_BINDING_INDEX_INDEX_BUFFER << ");\n";
-      // the patch size follows the command list's view, 16 bytes on
-      source << "cmd.set_object_buffer(reinterpret_cast<device uint *>(command_data.index_buffer_view + 1),"
-             << SM50_BINDING_INDEX_PATCH_SIZE << ");\n";
-      source << "if (patches && arg." << args << ".instance_count)\n";
-      source << "cmd.draw_mesh_threadgroups(uint3((patches + per_group - 1) / per_group, arg." << args
-             << ".instance_count, command_data.tessellation_parts), uint3(command_data.threads_per_patch, per_group, 1), "
-             << "uint3(32, 1, 1));\n";
       source << "} else\n";
     };
     // DXMT_D3D12_GPU_ERRORS: the largest numbers the commands ask for, which the report of a failed command buffer
@@ -287,7 +267,7 @@ public:
 
     source << "uint count = command_data.max_count_buffer ? "
               "command_data.max_count_buffer[0] : command_data.max_count;\n";
-    source << "for (uint i = 0; i < command_data.max_count; i++) {\n";
+    source << "for (ulong i = 0; i < command_data.max_count; i++) {\n";
     source << "device d3d12_arguments& arg = reinterpret_cast<device d3d12_arguments *>("
               "command_data.argument_buffer + i * "
            << pDesc->ByteStride << ")[0];\n";
@@ -316,21 +296,9 @@ public:
                 "reinterpret_cast<device dxmt_vertex_buffer *>(command_data.vertex_buffer + "
                 "(i * command_data.vertex_argbuf_stride));\n";
 
-    // under tessellation the vertex and hull shaders run in the object stage, the domain shader in the mesh stage, and
-    // every command binds its buffers, since each binds its own arguments
-    if (!is_compute) {
-      // a mesh shader pipeline has no vertex buffers
-      source << "if (command_data.draws) {\n";
-      source << "} else if (command_data.threads_per_patch || command_data.geometry_threads || command_data.mesh_threads.x) {\n";
-      source << "if (!command_data.mesh_threads.x)\n";
-      source << "cmd.set_object_buffer(vertex_buffer," << SM50_BINDING_INDEX_VERTEX_BUFFER << ");\n";
-      for (auto stage : {"object", "mesh", "fragment"}) {
-        source << "cmd.set_" << stage << "_buffer(rootsig_qwords," << SM50_BINDING_INDEX_ROOT_ARGUMENTS << ");\n";
-        source << "cmd.set_" << stage << "_buffer(command_data.static_samplers," << SM50_BINDING_INDEX_STATIC_SAMPLERS
-               << ");\n";
-      }
-      source << "} else {\n";
-    }
+    // the caller binds what an IndirectMeshDraw's stages read; a command of the indirect command buffer binds its own
+    if (!is_compute)
+      source << "if (!command_data.draws) {\n";
     if (UpdateRootArguments || UpdateVertexBuffers || UpdateIndexBuffer) {
       if (!is_compute) {
         for (auto command : {"cmd", "rest"}) {
@@ -385,25 +353,27 @@ public:
             ib_index == ~0u ? "command_data.index_buffer_view" : "(arg.ib.buffer ? &arg.ib : command_data.index_buffer_view)",
             sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) / sizeof(UINT)
         );
-        // indices past the view's end read as 0 in Direct3D (D3D11.3 8.19.2), which draws its vertex 0 again; Metal
-        // would read what lies behind the view, mapped or not: the command draws the indices the view has, and
-        // `rest` as many zeros as are past it, up to the zeros there are
+        // Metal does not apply the view bounds or D3D's unsigned byte-address wrap (D3D11.3 8.6.1, 8.19.1, 8.19.2)
         source << "{\n";
-        source << "uint ib_there = ib_bytes / (ib32bit ? 4 : 2), ib_start = arg.draw_indexed.start_index_location;\n";
+        source << "uint ib_size = ib32bit ? sizeof(uint) : sizeof(ushort);\n";
+        source << "uint ib_there = ib_bytes / ib_size, ib_start = (arg.draw_indexed.start_index_location * ib_size) / "
+                  "ib_size;\n";
         source << "uint ib_count = ib_start < ib_there ? min(arg.draw_indexed.index_count_per_instance, ib_there - "
                   "ib_start) : 0;\n";
+        source << "if (ib_count) {\n";
         source << "if (ib32bit) {\n";
         source << "cmd.draw_indexed_primitives((primitive_type)command_data.primitive_type, "
                   "ib_count, "
-                  "reinterpret_cast<device uint *>(ib) + arg.draw_indexed.start_index_location, "
+                  "reinterpret_cast<device uint *>(ib) + ib_start, "
                   "arg.draw_indexed.instance_count, arg.draw_indexed.base_vertex_location, "
                   "arg.draw_indexed.start_instance_location);\n";
         source << "} else {\n";
         source << "cmd.draw_indexed_primitives((primitive_type)command_data.primitive_type, "
                   "ib_count, "
-                  "reinterpret_cast<device ushort *>(ib) + arg.draw_indexed.start_index_location, "
+                  "reinterpret_cast<device ushort *>(ib) + ib_start, "
                   "arg.draw_indexed.instance_count, arg.draw_indexed.base_vertex_location, "
                   "arg.draw_indexed.start_instance_location);\n";
+        source << "}\n";
         source << "}\n";
         source << "uint ib_rest = min(arg.draw_indexed.index_count_per_instance - ib_count, command_data.zero_count);\n";
         source << "if (command_data.zeros && ib_rest)\n";
@@ -436,12 +406,8 @@ public:
         break;
       }
       case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH: {
-        source << "if (any(uint3(arg.dispatch_mesh) == 0)) {\n";
-        source << "} else if (command_data.draws)\n";
+        source << "if (all(uint3(arg.dispatch_mesh) != 0))\n";
         source << "command_data.draws[i].threadgroups = arg.dispatch_mesh;\n";
-        source << "else\n";
-        source << "cmd.draw_mesh_threadgroups(uint3(arg.dispatch_mesh), uint3(command_data.object_threads), "
-                  "uint3(command_data.mesh_threads));\n";
         break;
       }
       case D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW: {

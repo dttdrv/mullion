@@ -1,0 +1,12 @@
+# per-instance data steps every instance whatever its rate
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -216,7 +216,7 @@
+     // the layout stride is provided in IASetVertexBuffer
+     attribute.step_function = desc.InputSlotClass;
+     attribute.step_rate =
+-        desc.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA ? desc.InstanceDataStepRate : 1;
++        1;
+     register_mask |= (1 << inputSig.Register);
+   }
+   for (UINT i = 0; i < num_parameters; i++) {

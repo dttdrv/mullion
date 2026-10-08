@@ -1,0 +1,15 @@
+# graphics root CBVs read the previous frame's populated constant slices
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 5edf01e..c8a8419 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1898,7 +1898,8 @@ public:
+       return;
+     if (Index >= rootsig_graphics_->ParameterSlots)
+       return;
+-    rootarg_graphics_staging_[rootsig_graphics_->SlotQwordOffsets[Index]] = VA;
++    rootarg_graphics_staging_[rootsig_graphics_->SlotQwordOffsets[Index]] =
++        VA - 2 * D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+     dirty_state_.set(DirtyState::GraphicsRootArguments);
+   };
+ 

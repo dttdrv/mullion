@@ -1,0 +1,13 @@
+# a graphics root CBV change does not mark root arguments dirty
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 5edf01e..095fad4 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1899,7 +1899,6 @@ public:
+     if (Index >= rootsig_graphics_->ParameterSlots)
+       return;
+     rootarg_graphics_staging_[rootsig_graphics_->SlotQwordOffsets[Index]] = VA;
+-    dirty_state_.set(DirtyState::GraphicsRootArguments);
+   };
+ 
+   void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {

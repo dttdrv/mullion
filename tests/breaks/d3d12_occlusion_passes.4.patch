@@ -1,0 +1,14 @@
+# an empty query leaves its earlier result instead of writing zero
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index fccd5fd..d3ba7c8 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -793,6 +793,8 @@ struct VisibilitySlot {
+     uint i [[thread_position_in_grid]]
+ ) {
+   OcclusionSum sum = sums[i];
++  if (!sum.count)
++    return;
+   ulong total = 0;
+   for (uint k = 0; k < sum.count; k++)
+     total += *slots[sum.first + k].count;

@@ -1,0 +1,12 @@
+# an indirect draw takes the most commands whatever its count buffer says
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -266,7 +266,7 @@
+     source << "if (x !=0 ) return;\n";
+ 
+     source << "uint count = command_data.max_count_buffer ? "
+-              "command_data.max_count_buffer[0] : command_data.max_count;\n";
++              "command_data.max_count : command_data.max_count;\n";
+     source << "for (uint i = 0; i < command_data.max_count; i++) {\n";
+     source << "device d3d12_arguments& arg = reinterpret_cast<device d3d12_arguments *>("
+               "command_data.argument_buffer + i * "

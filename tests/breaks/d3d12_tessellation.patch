@@ -1,0 +1,22 @@
+# an indirect draw's threadgroups are left unwritten
+# family 8
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -240,7 +240,7 @@
+       source << "uint patches = command_data.threads_per_patch ? arg." << args << "." << count
+              << " / command_data.control_points : 0, per_group = 32 / max(command_data.threads_per_patch, 1u);\n";
+       source << "if (arg." << args << "." << count << " && arg." << args << ".instance_count)\n";
+-      source << "draw.threadgroups = command_data.geometry_threads ? uint3((arg." << args << "." << count
++      source << "uint3 unwritten = command_data.geometry_threads ? uint3((arg." << args << "." << count
+              << " - 1) / command_data.geometry_increment + 1, arg." << args << ".instance_count, 1) : "
+              << "uint3((patches + per_group - 1) / per_group, arg." << args
+              << ".instance_count, patches ? command_data.tessellation_parts : 0);\n";
+@@ -405,7 +405,7 @@
+       }
+       case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH: {
+         source << "if (all(uint3(arg.dispatch_mesh) != 0))\n";
+-        source << "command_data.draws[i].threadgroups = arg.dispatch_mesh;\n";
++        source << "uint3 unwritten = uint3(arg.dispatch_mesh);\n";
+         break;
+       }
+       case D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW: {

@@ -1,0 +1,30 @@
+# an unordered access view of a mip of a 2D texture is of the first mip
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -589,7 +589,7 @@
+     }
+     case D3D12_UAV_DIMENSION_TEXTURE2D: {
+       view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+-      view_descriptor.firstMiplevel = ViewDesc.Texture2D.MipSlice;
++      view_descriptor.firstMiplevel = 0;
+       view_descriptor.miplevelCount = 1;
+       view_descriptor.firstArraySlice = 0;
+       view_descriptor.arraySize = 1;
+@@ -695,7 +695,7 @@
+       if (ViewDesc.Texture2D.PlaneSlice)
+         return E_INVALIDARG;
+       view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+-      view_descriptor.firstMiplevel = ViewDesc.Texture2D.MipSlice;
++      view_descriptor.firstMiplevel = 0;
+       view_descriptor.miplevelCount = 1;
+       view_descriptor.firstArraySlice = 0;
+       view_descriptor.arraySize = 1;
+@@ -811,7 +811,7 @@
+     }
+     case D3D12_DSV_DIMENSION_TEXTURE2D: {
+       view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+-      view_descriptor.firstMiplevel = ViewDesc.Texture2D.MipSlice;
++      view_descriptor.firstMiplevel = 0;
+       view_descriptor.miplevelCount = 1;
+       view_descriptor.firstArraySlice = 0;
+       view_descriptor.arraySize = 1;

@@ -1,0 +1,14 @@
+# binary occlusion divides the count by two instead of returning whether any sample passed
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index fccd5fd..06decf6 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -796,7 +796,7 @@ struct VisibilitySlot {
+   ulong total = 0;
+   for (uint k = 0; k < sum.count; k++)
+     total += *slots[sum.first + k].count;
+-  results[sum.query] = sum.binary ? ulong(total != 0) : total;
++  results[sum.query] = sum.binary ? total >> 1 : total;
+ }
+ 
+ // a predication region (SetPredication): each entry's GPU heap dword gets the value it was recorded with, or when the

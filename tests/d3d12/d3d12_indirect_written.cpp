@@ -5,6 +5,12 @@
 // 32-bit unsigned integer contained in pCountBuffer" (Indirect Drawing; ID3D12GraphicsCommandList::ExecuteIndirect,
 // Microsoft Learn). Microsoft's D3D12ExecuteIndirect sample culls so, and so do engines' GPU-driven passes (Unreal's
 // instance culling and Nanite's raster binning write draw arguments and counts in compute passes of the frame).
+// an allocator is reset only after its work completes: "you should ensure that you don't call Reset until the GPU
+// is done executing command lists associated with the allocator. It's undefined behavior to call Reset on a
+// command allocator while it has a command list still being executed." its list may be recorded again on it:
+// "when ExecuteCommandList() is called on a particular command list, that command list can then be reset at any
+// time and must be before re-recording." (ID3D12CommandAllocator::Reset, Microsoft Learn, Remarks and Examples;
+// https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12commandallocator-reset).
 // a compute shader writes COMMANDS commands and a count that is three fewer. command i draws VERTICES vertices from
 // vertex or index i on, in up to ROWS instances (the number follows i and a SEED the dispatch is given, and some
 // commands have no instances and some no vertices, as the commands of what a culling pass rejects do). vertex v
@@ -31,9 +37,12 @@
 //   the root arguments the list has, since ExecuteIndirect changes only what its signature names ("No command
 //   signature state leaks back to the command list after the execution is complete", Indirect Drawing). an engine
 //   that keeps track of what it has set (Unreal does) sets nothing twice;
+// - a submitted list reset on the same allocator while the queue waits on an unsignalled fence: a longer recording
+//   writes other arguments and draws into another target, before the CPU signals the fence. both pictures keep
+//   their own arguments; recording from the allocator's start again would overwrite the first one's records;
 // - commands that run past the views: what a command reads past its vertex or index buffer view is 0, as in a
 //   direct draw with those arguments (D3D11.3 8.19.2: "the return is 0"). an index 0 is vertex 0 and a vertex of
-//   zeros is in column 0, where the buffer behind the view has other vertices. last, and CASE=n (argv[2]) runs one
+//   zeros is in column 0, where the buffer behind the view has other vertices. CASE=n (argv[2]) runs one
 //   case: a GPU that faults takes the rest of the process's work with it.
 #include "d3d12_test.hpp"
 
@@ -139,7 +148,7 @@ main(int argc, char **argv) {
   CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &target_desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
                                         IID_PPV_ARGS(&target)));
   ComPtr<ID3D12DescriptorHeap> rtv_heap;
-  D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+  D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2};
   CHECK(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtv_heap)));
   auto rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
   device->CreateRenderTargetView(target.Get(), nullptr, rtv);
@@ -164,6 +173,28 @@ main(int argc, char **argv) {
   ComPtr<ID3D12CommandQueue> queue;
   D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+  ComPtr<ID3D12Fence> completed;
+  CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&completed)));
+  UINT64 completion = 0;
+  const DWORD timeout_ms = 10 * 1000;
+  auto run = [&](ID3D12GraphicsCommandList *list = nullptr) -> HRESULT {
+    if (list) {
+      HRESULT hr = list->Close();
+      if (FAILED(hr))
+        return hr;
+      ID3D12CommandList *one[] = {list};
+      queue->ExecuteCommandLists(std::size(one), one);
+    }
+    auto event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    bool done = event && SUCCEEDED(queue->Signal(completed.Get(), ++completion)) &&
+                SUCCEEDED(completed->SetEventOnCompletion(completion, event)) &&
+                WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
+    if (event)
+      CloseHandle(event);
+    if (!expect(done, "the queue did not reach fence %llu within %lu ms", completion, timeout_ms))
+      ExitProcess(verdict());
+    return device->GetDeviceRemovedReason();
+  };
   ComPtr<ID3D12CommandAllocator> allocators[2];
   ComPtr<ID3D12GraphicsCommandList> lists[2];
   for (UINT i = 0; i < 2; i++) {
@@ -210,10 +241,10 @@ main(int argc, char **argv) {
     list->DrawInstanced(commands, 1, 0, 0);
   };
   // a list with the target bound, once for all its draws; the first list of a case clears it
+  const D3D12_VIEWPORT viewport{0, 0, (float)commands, (float)rows, 0, 1};
+  const D3D12_RECT scissor{0, 0, (LONG)commands, (LONG)rows};
   auto begins = [&](UINT i) {
     const float nothing[4] = {};
-    const D3D12_VIEWPORT viewport{0, 0, (float)commands, (float)rows, 0, 1};
-    const D3D12_RECT scissor{0, 0, (LONG)commands, (LONG)rows};
     auto list = lists[i].Get();
     if (!expect(SUCCEEDED(allocators[i]->Reset()) && SUCCEEDED(list->Reset(allocators[i].Get(), nullptr)), "list %u could not be begun", i))
       return false;
@@ -263,7 +294,7 @@ main(int argc, char **argv) {
         to{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprint}};
     list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
     transition(list, target.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    HRESULT ran = submit(device.Get(), queue.Get(), list);
+    HRESULT ran = run(list);
     const char *out;
     if (!expect(ran == S_OK, "the device after the lists: %08lx", ran) || FAILED(readback->Map(0, nullptr, (void **)&out)))
       return;
@@ -292,7 +323,7 @@ main(int argc, char **argv) {
     const Made first{0, 1, 0, 1, commands}, second{1, 2, 1, 1, commands};
     pass(lists[0].Get(), first);
     pass(lists[0].Get(), second);
-    if (expect(submit(device.Get(), queue.Get(), lists[0].Get()) == S_OK, "the list did not run"))
+    if (expect(run(lists[0].Get()) == S_OK, "the list did not run"))
       holds({first, second});
   }
   if (chosen("two lists of one ExecuteCommandLists: commands written in the first, drawn indexed in the second") && begins(0) && begins(1)) {
@@ -305,7 +336,8 @@ main(int argc, char **argv) {
     ID3D12CommandList *both[] = {lists[0].Get(), lists[1].Get()};
     if (expect(SUCCEEDED(lists[0]->Close()) && SUCCEEDED(lists[1]->Close()), "the lists did not close")) {
       queue->ExecuteCommandLists(2, both);
-      holds({made});
+      if (expect(run() == S_OK, "the lists did not run"))
+        holds({made});
     }
   }
   if (chosen("two ExecuteCommandLists with no barrier and no wait: commands written in the first, drawn in the second") && begins(0) && begins(1)) {
@@ -316,7 +348,8 @@ main(int argc, char **argv) {
     if (expect(SUCCEEDED(lists[0]->Close()) && SUCCEEDED(lists[1]->Close()), "the lists did not close")) {
       queue->ExecuteCommandLists(1, first);
       queue->ExecuteCommandLists(1, second);
-      holds({made});
+      if (expect(run() == S_OK, "the lists did not run"))
+        holds({made});
     }
   }
   if (chosen("one list: the commands of an indirect dispatch written by a dispatch") && begins(0)) {
@@ -344,7 +377,7 @@ main(int argc, char **argv) {
       transition(list, written.Get(), reading, common);
       transition(list, tally.Get(), writing, D3D12_RESOURCE_STATE_COPY_SOURCE);
       list->CopyResource(tallied.Get(), tally.Get());
-      HRESULT ran = submit(device.Get(), queue.Get(), list);
+      HRESULT ran = run(list);
       if (expect(ran == S_OK, "the device after the list: %08lx", ran) && SUCCEEDED(tallied->Map(0, nullptr, (void **)&got))) {
         std::vector<UINT> want(places);
         for (UINT i = 0; i < counted; i++)
@@ -363,7 +396,7 @@ main(int argc, char **argv) {
     const Made first{4, 1, 0, 1, commands}, second{5, 2, 1, 1, commands};
     pass(lists[0].Get(), first, true);
     pass(lists[0].Get(), second, true);
-    if (expect(submit(device.Get(), queue.Get(), lists[0].Get()) == S_OK, "the list did not run"))
+    if (expect(run(lists[0].Get()) == S_OK, "the list did not run"))
       holds({first, second});
   }
   if (chosen("one list: commands drawn, replaced by a copy and drawn indexed") && begins(0)) {
@@ -383,14 +416,14 @@ main(int argc, char **argv) {
     draw(list, second);
     transition(list, written.Get(), reading, common);
     transition(list, staged.Get(), copied, common);
-    if (expect(submit(device.Get(), queue.Get(), list) == S_OK, "the list did not run"))
+    if (expect(run(list) == S_OK, "the list did not run"))
       holds({first, second});
   }
   if (chosen("one list: commands written, each drawn by calls of its own, written again and drawn so indexed") && begins(0)) {
     const Made first{8, 1, 0, 1, commands, calls}, second{9, 2, 1, 1, commands, calls};
     pass(lists[0].Get(), first);
     pass(lists[0].Get(), second);
-    if (expect(submit(device.Get(), queue.Get(), lists[0].Get()) == S_OK, "the list did not run"))
+    if (expect(run(lists[0].Get()) == S_OK, "the list did not run"))
       holds({first, second});
   }
   if (chosen("one list: commands drawn and then a direct draw with nothing set in between, not indexed and indexed") && begins(0)) {
@@ -402,7 +435,7 @@ main(int argc, char **argv) {
     list->DrawInstanced(1, rows, vertex, 0);
     pass(list, second);
     list->DrawIndexedInstanced(1, rows, index_start, 0, 0);
-    if (expect(submit(device.Get(), queue.Get(), list) == S_OK, "the list did not run"))
+    if (expect(run(list) == S_OK, "the list did not run"))
       holds({first, second}, false, {{column_of(0, vertex), first.number}, {column_of(1, index_start), second.number}});
   }
   for (UINT indexed = 0; indexed < 2; indexed++)
@@ -410,8 +443,46 @@ main(int argc, char **argv) {
       // the last commands that count read past a view of as many elements as there are commands that count
       const Made made{indexed, 1, indexed, over, counted};
       pass(lists[0].Get(), made);
-      if (expect(submit(device.Get(), queue.Get(), lists[0].Get()) == S_OK, "the list did not run"))
+      if (expect(run(lists[0].Get()) == S_OK, "the list did not run"))
         holds({made}, true);
     }
+  if (chosen("one list reset on the same allocator without waiting: each recording keeps its arguments") && begins(0)) {
+    const Made first{0, 1, 0, 1, commands, 1}, second{1, 2, 0, 1, commands, first.calls + 1};
+    ComPtr<ID3D12Resource> other;
+    CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &target_desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                          nullptr, IID_PPV_ARGS(&other)));
+    auto other_rtv = rtv;
+    other_rtv.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    device->CreateRenderTargetView(other.Get(), nullptr, other_rtv);
+    ComPtr<ID3D12Fence> held;
+    CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&held)));
+    auto list = lists[0].Get();
+    pass(list, first);
+    CHECK(list->Close());
+    CHECK(queue->Wait(held.Get(), 1));
+    ID3D12CommandList *one[] = {list};
+    queue->ExecuteCommandLists(std::size(one), one);
+    if (!expect(SUCCEEDED(list->Reset(allocators[0].Get(), nullptr)), "the submitted list could not be reset"))
+      ExitProcess(verdict());
+    const float nothing[4] = {};
+    list->ClearRenderTargetView(other_rtv, nothing, 0, nullptr);
+    list->SetGraphicsRootSignature(rs.Get());
+    list->OMSetRenderTargets(1, &other_rtv, FALSE, nullptr);
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+    pass(list, second);
+    if (!expect(SUCCEEDED(list->Close()), "the second recording did not close"))
+      ExitProcess(verdict());
+    queue->ExecuteCommandLists(std::size(one), one);
+    if (!expect(held->GetCompletedValue() == 0 && SUCCEEDED(held->Signal(1)), "the queue's hold was not released"))
+      ExitProcess(verdict());
+    if (expect(run() == S_OK, "the two recordings did not run")) {
+      holds({first});
+      target.Swap(other);
+      holds({second});
+      target.Swap(other);
+    }
+  }
   return verdict();
 }

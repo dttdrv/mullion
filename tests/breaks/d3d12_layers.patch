@@ -1,0 +1,12 @@
+# a helper pass on a layered target has one layer
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -507,7 +507,7 @@
+   encoder->render_target_height = std::min<uint32_t>(encoder->render_target_height, texture->height(viewId));
+   encoder->render_target_array_length = texture->textureType() == WMTTextureType3D
+                                             ? (texture->depth(viewId) - depth_plane)
+-                                            : texture->arrayLength(viewId);
++                                            : 0;
+   encoder->default_raster_sample_count = texture->sampleCount();
+ }
+ 

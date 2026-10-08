@@ -1,0 +1,14 @@
+# an occlusion query sums only its first visibility slot
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index fccd5fd..8193f8a 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -794,7 +794,7 @@ struct VisibilitySlot {
+ ) {
+   OcclusionSum sum = sums[i];
+   ulong total = 0;
+-  for (uint k = 0; k < sum.count; k++)
++  for (uint k = 0; k < min(sum.count, 1u); k++)
+     total += *slots[sum.first + k].count;
+   results[sum.query] = sum.binary ? ulong(total != 0) : total;
+ }

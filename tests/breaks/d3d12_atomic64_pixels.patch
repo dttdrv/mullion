@@ -1,0 +1,12 @@
+# a 64-bit atomic max whose result is not used is a min
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2889,7 +2889,7 @@
+       unsigned first = exchange ? 2 : 3;
+       const int32_t no_offset[3] = {};
+       if (ty->isIntegerTy(64) && native_extremes) {
+-        bool max = atomic_op(constant(a(2))) == AtomicRMWInst::UMax;
++        bool max = atomic_op(constant(a(2))) != AtomicRMWInst::UMax;
+         if (h.buffer) {
+           air.CreateAtomicMinMax64(
+               max,

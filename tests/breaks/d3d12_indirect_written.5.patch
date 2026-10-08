@@ -1,0 +1,12 @@
+# an indirect draw's zero indices past its view are not drawn
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -374,7 +374,7 @@
+                   "arg.draw_indexed.start_instance_location);\n";
+         source << "}\n";
+         source << "uint ib_rest = min(arg.draw_indexed.index_count_per_instance - ib_count, command_data.zero_count);\n";
+-        source << "if (command_data.zeros && ib_rest)\n";
++        source << "if (false)\n";
+         source << "rest.draw_indexed_primitives((primitive_type)command_data.primitive_type, ib_rest, "
+                   "command_data.zeros, arg.draw_indexed.instance_count, arg.draw_indexed.base_vertex_location, "
+                   "arg.draw_indexed.start_instance_location);\n";

@@ -1,0 +1,11 @@
+# the pass of an indirect draw's resolver does not wait for the passes before it
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -675,7 +675,6 @@
+           }
+           if (data->before_head.next.get()) {
+             auto before = cmdbuf.computeCommandEncoder(false);
+-            before.waitForFence(fence_);
+             before.encodeCommands(&data->before_head);
+             before.updateFence(fence_);
+             before.endEncoding();

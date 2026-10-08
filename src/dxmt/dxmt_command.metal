@@ -773,8 +773,8 @@ struct DXMTClearUintMetadata {
   // empty
 }
 
-// an occlusion query's result: the visibility counts of the pass segments it was active in, which the heap buffer
-// holds at the `slots` indices it names, summed; a binary query's is whether any sample passed
+// an occlusion query's result: the visibility counts of the pass segments it was active in, each where its entry of
+// `slots` points, summed; a binary query's is whether any sample passed
 struct OcclusionSum {
   uint query;
   uint first;
@@ -782,17 +782,20 @@ struct OcclusionSum {
   uint binary;
 };
 
+struct VisibilitySlot {
+  device const ulong *count;
+};
+
 [[kernel]] void sum_occlusion(
     constant OcclusionSum *sums [[buffer(0)]],
-    constant uint *slots [[buffer(1)]],
-    device const ulong *counts [[buffer(2)]],
-    device ulong *results [[buffer(3)]],
+    constant VisibilitySlot *slots [[buffer(1)]],
+    device ulong *results [[buffer(2)]],
     uint i [[thread_position_in_grid]]
 ) {
   OcclusionSum sum = sums[i];
   ulong total = 0;
   for (uint k = 0; k < sum.count; k++)
-    total += counts[slots[sum.first + k]];
+    total += *slots[sum.first + k].count;
   results[sum.query] = sum.binary ? ulong(total != 0) : total;
 }
 

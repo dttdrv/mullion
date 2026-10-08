@@ -1,0 +1,14 @@
+# ending the last active query leaves visibility counting on
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..d700873 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -219,7 +219,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+     auto render = allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render
+                       ? static_cast<RenderEncoderData *>(allocator_->encoder_current)
+                       : nullptr;
+-    if (!render)
++    if (!render || active_queries_.empty())
+       return;
+     auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
+     cmd.type = WMTRenderCommandSetVisibilityMode;

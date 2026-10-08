@@ -1,0 +1,14 @@
+# the R32 indexed draw resolver drops the start instance
+diff --git a/src/d3d12/d3d12_command_signature.cpp b/src/d3d12/d3d12_command_signature.cpp
+index dd9ff61..31088b8 100644
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -365,7 +365,7 @@ public:
+                   "ib_count, "
+                   "reinterpret_cast<device uint *>(ib) + arg.draw_indexed.start_index_location, "
+                   "arg.draw_indexed.instance_count, arg.draw_indexed.base_vertex_location, "
+-                  "arg.draw_indexed.start_instance_location);\n";
++                  "0);\n";
+         source << "} else {\n";
+         source << "cmd.draw_indexed_primitives((primitive_type)command_data.primitive_type, "
+                   "ib_count, "

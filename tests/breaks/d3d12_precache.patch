@@ -1,0 +1,12 @@
+# a pipeline writes every channel whatever its write mask
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -468,7 +468,7 @@
+       if (pDesc->BlendState.IndependentBlendEnable && renderTarget.LogicOpEnable)
+         return E_INVALIDARG;
+ 
+-      rt.write_mask = kColorWriteMaskMap[renderTarget.RenderTargetWriteMask];
++      rt.write_mask = kColorWriteMaskMap[D3D12_COLOR_WRITE_ENABLE_ALL];
+ 
+       if (rt.pixel_format == WMTPixelFormatRGB9E5Float)
+         rt.write_mask = (rt.write_mask & ~WMTColorWriteMaskAlpha) ? WMTColorWriteMaskAll : 0;

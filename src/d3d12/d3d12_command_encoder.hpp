@@ -107,6 +107,7 @@ struct RenderEncoderData : EncoderData {
   // DXMT_D3D12_GPU_ERRORS: where each of the pass's indirect commands' resolvers keeps its largest numbers
   struct Most {
     const uint32_t *words;
+    const struct IndirectRenderCommandData *call;
     Most *next;
   } *most;
   uint8_t dsv_planar_flags;

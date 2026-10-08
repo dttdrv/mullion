@@ -33,10 +33,7 @@
   "verdict": "passed"
  },
  "test_clear_depth_stencil_view": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: test_clear_depth_stencil_view at d3d11.c:16582:15",
-  "why": "bug: a staging texture of a depth format (D24_UNORM_S8_UINT, and the depth format of the clear test) is not created: E_FAIL, with nothing logged; the tests then read a readback they were not given",
-  "failures": 0
+  "verdict": "passed"
  },
  "test_clear_during_render": {
   "verdict": "passed"
@@ -54,11 +51,7 @@
   "verdict": "passed"
  },
  "test_clear_state": {
-  "verdict": "crashed",
-  "at": "d3d11.dll: dxmt::MTLD3D11DeviceContextImplBase<dxmt::ContextInternalState>::SetVertexBuffers(unsigned int, unsigned int, ID3D11Buffer* const*, unsigned int const*, unsigned int const*) at ??:0:0",
-  "why": "crash: an illegal instruction in SetVertexBuffers after ClearState",
-  "first": "d3d11.c:12562: Test failed: Got unexpected blend factor {0.00000000e+000, 0.00000000e+000, 0.00000000e+000, 0.00000000e+000}.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_clip_distance": {
   "verdict": "passed"
@@ -143,11 +136,7 @@
   "failures": 4
  },
  "test_create_input_layout": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: check_layout_element_exclusion at d3d11.c:19061:13",
-  "why": "bug: CreateInputLayout refuses (E_INVALIDARG) a layout with an element the shader takes as a system value ('ps: SV_InstanceID excluded'); the test then releases what it was not given",
-  "first": "d3d11.c:19240: Test failed: Format 0x10: Got refcount 1, expected 2.",
-  "failures": 19
+  "verdict": "passed"
  },
  "test_create_query": {
   "verdict": "failed",
@@ -246,10 +235,10 @@
   "failures": 1
  },
  "test_depth_bias": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: test_depth_bias at d3d11.c:28698:25",
-  "why": "bug: a staging texture of a depth format (D24_UNORM_S8_UINT, and the depth format of the clear test) is not created: E_FAIL, with nothing logged; the tests then read a readback they were not given",
-  "failures": 0
+  "verdict": "failed",
+  "why": "semantics: the depth bias of a 24-bit UNORM depth format is not Direct3D's (the first checks are D24_UNORM_S8_UINT, constant bias; the slope-scaled values of D16_UNORM differ in the last bits)",
+  "first": "d3d11.c:28752: Test failed: Format 0x2d: z 0.125000, bias -10000, clamp 0.000000: Got 0x1ff63b, expected 0x1fd8f0 at (0, 0, 0), sub-resource 0.",
+  "failures": 205
  },
  "test_depth_clip": {
   "verdict": "passed"
@@ -348,10 +337,7 @@
   "failures": 111
  },
  "test_geometry_shader": {
-  "verdict": "failed",
-  "why": "lenient: by its first failing check only",
-  "first": "d3d11.c:26263: Test failed: Got unexpected hr 0.",
-  "failures": 2
+  "verdict": "passed"
  },
  "test_getdc": {
   "verdict": "failed",
@@ -381,10 +367,7 @@
   "verdict": "passed"
  },
  "test_index_buffer_offset": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d11.c:21064: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_initial_depth_stencil_state": {
   "verdict": "passed"
@@ -501,11 +484,7 @@
   "failures": 2246
  },
  "test_resource_map": {
-  "verdict": "crashed",
-  "at": "kernelbase.dll+0x14dd3",
-  "why": "crash: Map of a staging resource's subresource other than 0 fails assert(Subresource == 0)",
-  "first": "d3d11.c:15344: Test failed: Got unexpected hr 0.",
-  "failures": 4
+  "verdict": "passed"
  },
  "test_rtv_depth_slice": {
   "verdict": "passed"
@@ -583,10 +562,7 @@
   "verdict": "passed"
  },
  "test_state_refcounting": {
-  "verdict": "failed",
-  "why": "semantics: Direct3D 10 and 11 state objects: descriptions are not normalized as Windows normalizes them (a sampler's anisotropy and comparison function, a depth stencil state's masks), equal states are not one object, and states keep or lose references the tests count",
-  "first": "d3d11.c:7180: Test failed: Feature level 0xb100: Got refcount 1, expected 0.",
-  "failures": 8
+  "verdict": "passed"
  },
  "test_stencil_export": {
   "verdict": "passed"
@@ -595,26 +571,16 @@
   "verdict": "passed"
  },
  "test_stream_output": {
-  "verdict": "crashed",
-  "at": "d3d11.dll: long dxmt::ExtractStreamOutputElements<D3D11_SO_DECLARATION_ENTRY>(void const*, std::__1::span<D3D11_SO_DECLARATION_ENTRY const, 18446744073709551615ull>, std::__1::vector<SM50_STREAM_OUTPUT_ELEMENT2, std::__1::allocator<SM50_STREAM_OUTPUT_ELEMENT2>>&) at ??:0:0",
-  "why": "crash: ExtractStreamOutputElements faults on a stream output declaration Windows refuses",
-  "first": "d3d11.c:27085: Test failed: Got unexpected hr 0.",
-  "failures": 104
+  "verdict": "passed"
  },
  "test_stream_output_components": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d11.c:27853: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_stream_output_resume": {
   "verdict": "passed"
  },
  "test_stream_output_vs": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d11.c:28035: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_swapchain_flip": {
   "verdict": "crashed",
@@ -707,10 +673,7 @@
   "verdict": "passed"
  },
  "test_vertex_id": {
-  "verdict": "failed",
-  "why": "semantics: by its first failing check only",
-  "first": "d3d11.c:14095: Test failed: Device has 1 references left.",
-  "failures": 1
+  "verdict": "passed"
  },
  "test_vs_input_relative_addressing": {
   "verdict": "passed"

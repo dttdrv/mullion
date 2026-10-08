@@ -1,0 +1,14 @@
+# enhanced stream-output barriers leave the writer in the render pass
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index e3f21ec..8d22430 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3330,7 +3330,7 @@ public:
+     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render)
+       return;
+     constexpr auto draw_writes = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS | D3D12_BARRIER_ACCESS_RENDER_TARGET |
+-                                 D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE | D3D12_BARRIER_ACCESS_STREAM_OUTPUT;
++                                 D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+     // common access is any access, writes included
+     auto writes = [&](D3D12_BARRIER_ACCESS access) {
+       return access == D3D12_BARRIER_ACCESS_COMMON || (access != D3D12_BARRIER_ACCESS_NO_ACCESS && (access & draw_writes));

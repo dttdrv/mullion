@@ -1,0 +1,14 @@
+# predication reads the start of the buffer instead of the requested offset
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..73db922 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2325,7 +2325,7 @@ public:
+     cmd_setpso.pso = device_->predicate;
+     cmd_setpso.threadgroup_size = {1, 1, 1};
+     const std::pair<obj_handle_t, uint64_t> buffers[] = {
+-        {static_cast<MTLD3D12Resource *>(pBuffer)->buffer->current()->buffer(), AlignedBufferOffset},
++        {static_cast<MTLD3D12Resource *>(pBuffer)->buffer->current()->buffer(), 0},
+         {allocator_->gpu_heap_buffer_, offset},
+         {allocator_->gpu_heap_buffer_, 0},
+     };

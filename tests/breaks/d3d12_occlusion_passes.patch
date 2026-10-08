@@ -1,0 +1,16 @@
+# each render pass reuses its window first counter
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..adab934 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -228,6 +228,10 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+     if (active_queries_.empty())
+       return;
+     auto [window, address, offset] = allocator_->VisibilitySlot();
++    if (!render->visibility_buffer) {
++      address -= offset - sizeof(uint64_t);
++      offset = sizeof(uint64_t);
++    }
+     // a pass counts in one window: when that is full the pass ends, and the next pass counts in the next window
+     if (render->visibility_buffer && render->visibility_buffer != window.handle)
+       return allocator_->InvalidateCurrentPass();

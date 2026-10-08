@@ -1,0 +1,12 @@
+# a view of one mip of a 2D texture shows the first mip
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -447,7 +447,7 @@
+     }
+     case D3D12_SRV_DIMENSION_TEXTURE2D: {
+       view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+-      view_descriptor.firstMiplevel = ViewDesc.Texture2D.MostDetailedMip;
++      view_descriptor.firstMiplevel = 0;
+       if (ViewDesc.Texture2D.MipLevels == ~0u)
+         view_descriptor.miplevelCount = desc_.MipLevels - ViewDesc.Texture2D.MostDetailedMip;
+       else

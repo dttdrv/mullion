@@ -1,0 +1,14 @@
+# the argument buffer offset is lost for every indirect call
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index b2166ec..a173e57 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2351,7 +2351,7 @@ public:
+     auto arg_buffer = static_cast<MTLD3D12Resource *>(pArgBuffer);
+     if (!arg_buffer || !arg_buffer->buffer)
+       return;
+-    auto ArgBufferAddress = arg_buffer->buffer->current()->gpuAddress() + ArgBufferOffset;
++    auto ArgBufferAddress = arg_buffer->buffer->current()->gpuAddress();
+     uint64_t CountBufferAddress = 0;
+     if (auto count_buffer = static_cast<MTLD3D12Resource *>(pCountBuffer)) {
+       if (!count_buffer->buffer)

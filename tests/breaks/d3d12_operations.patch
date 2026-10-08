@@ -1,0 +1,12 @@
+# countbits counts one too many
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3139,7 +3139,7 @@
+       break;
+     case Countbits:
+       // DXIL counts into 32 bits, whatever the operand's width
+-      ret = ir.CreateZExtOrTrunc(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, a(1)), ty);
++      ret = ir.CreateAdd(ir.CreateZExtOrTrunc(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, a(1)), ty), ConstantInt::get(ty, 1));
+       break;
+     case FMax:
+       ret = air.CreateFPBinOp(llvm::air::AIRBuilder::fmax, a(1), a(2), false);

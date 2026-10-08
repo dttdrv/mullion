@@ -1,0 +1,12 @@
+# SampleLevel samples the first mip
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2505,7 +2505,7 @@
+           break;
+         }
+         case SampleLevel: {
+-          auto lod = llvm::air::sample_level{min_lod(tex, ir.CreateFAdd(a(10), bias))};
++          auto lod = llvm::air::sample_level{min_lod(tex, bias)};
+           read = [&, lod](Value *s, Value *) {
+             return air.CreateSample(texture, handle, s, coord, array, offset, lod);
+           };

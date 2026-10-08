@@ -1,0 +1,14 @@
+# GPU descriptor copies retain the destination heap's old words
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 4b47c20..82dab50 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -373,8 +373,6 @@ public:
+   CopyDescriptors(UINT From, MTLD3D12DescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+     for (unsigned i = 0; i < CopyCount; i++) {
+       static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->descriptors_[DescriptorTo + i] = descriptors_[From + i];
+-      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->mapped_argument_buffer_[DescriptorTo + i] =
+-          mapped_argument_buffer_[From + i];
+     }
+   }
+ };

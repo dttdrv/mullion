@@ -12,8 +12,16 @@ This is a pre-release. Things will break. Tell us when they do, and tell us what
 - It talks to Metal directly. Nothing sits between Direct3D and the GPU's own API.
 - One install covers Direct3D 10, 11 and 12.
 - It works with the Wine you already have. It needs no patched Wine and no DLL overrides, and it installs the way DXMT does.
-- It is held to the Direct3D specification. 99 test programs draw, read the result back and compare it with what the specification says.
+- It is held to the Direct3D specification. 114 test programs draw, read the result back and compare it with what the specification says.
 - It is open source under the LGPL. You can read it, build it, and ship it with your own tools.
+
+## How it runs today
+
+The Black Myth: Wukong benchmark runs from start to finish on Mullion. On an M5 Pro at the High preset, 1512 × 982, with no upscaling and no frame generation, it averages 23 to 24 FPS. That is about 70% of what D3DMetal gets on the same machine with the same settings (34 FPS). The fog in it still flickers, and we are working on that.
+
+| Mullion | D3DMetal |
+|---|---|
+| ![Black Myth: Wukong benchmark result on Mullion: 23 FPS average](docs/wukong-mullion.jpg) | ![The same benchmark on D3DMetal: 34 FPS average](docs/wukong-d3dmetal.jpg) |
 
 ## Requirements
 

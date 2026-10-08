@@ -146,6 +146,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   std::deque<EncoderData> encoder_lists_;
 
   small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
+  uint64_t visibility_address_ = 0;
+  size_t visibility_used_ = kVisibilityWindow;
   // the acceleration structures the lists' commands name, some of them replaced at their addresses since
   std::vector<std::shared_ptr<AccelerationStructure>> acceleration_structures_;
   // and the inputs they kept, which a rebuilt structure replaces
@@ -231,7 +233,8 @@ public:
       // a run starts at a block, which is aligned for anything recorded
       auto run = arena.Acquire(Length);
       if (!run) {
-        exhausted_ = true;
+        if (!std::exchange(exhausted_, true))
+          ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
         if (spill_.empty() || spill_.back().size() < Length + Alignment)
           spill_.emplace_back(Length + Alignment);
         auto at = (size_t)spill_.back().data();
@@ -332,6 +335,31 @@ public:
   AllocateGPUHeap(size_t Length, size_t Alignment) {
     auto at = Length ? Allocate(device_->recording.arguments, gpu_cursor_, Length, Alignment) : std::nullopt;
     return {at ? ptr_add(gpu_heap_, *at) : nullptr, at.value_or(0)};
+  }
+
+  // a render pass stores the counts of its first 4096 counting segments; later ones it adds to what the buffer held,
+  // and far ones it does not write (measured on an Apple10 GPU; Apple documents the offset's limit alone, "Maximum
+  // visibility query offset" in the Metal feature set tables). so occlusion queries count in windows of that many
+  // slots, each a buffer, and a pass counts in one window: the window's buffer, the next slot's GPU address, and
+  // its offset in the window. without a window the list fails when it is closed
+  static constexpr size_t kVisibilitySegments = 4096;
+  static constexpr size_t kVisibilityWindow = (1 + kVisibilitySegments) * sizeof(uint64_t);
+  std::vector<WMT::Reference<WMT::Buffer>> visibility_;
+  std::tuple<WMT::Buffer, uint64_t, size_t>
+  VisibilitySlot() {
+    if (visibility_used_ == kVisibilityWindow) {
+      WMTBufferInfo info;
+      info.memory.set(nullptr);
+      info.length = kVisibilityWindow;
+      info.options = WMTResourceHazardTrackingModeUntracked;
+      visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
+      exhausted_ |= !visibility_.back();
+      visibility_address_ = info.gpu_address;
+      // offset 0 is the one counting is turned off at, and a pass takes an offset once
+      visibility_used_ = sizeof(uint64_t);
+    }
+    auto used = std::exchange(visibility_used_, visibility_used_ + sizeof(uint64_t));
+    return {visibility_.back(), visibility_address_ + used, used};
   }
 
   std::tuple<WMT::Buffer, uint64_t>

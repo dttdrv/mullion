@@ -1,0 +1,12 @@
+# a null shader resource view leaves the descriptor as it was
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -643,8 +643,6 @@
+       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+       if (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)
+         Heap->AddAccelerationStructureView(Index, pDesc->RaytracingAccelerationStructure.Location);
+-      else
+-        Heap->AddShaderResourceView(Index, pDesc);
+       return;
+     }
+     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);

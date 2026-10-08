@@ -1,0 +1,21 @@
+# a colour target has one layer
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -565,7 +565,7 @@
+         rt.store_action = WMTStoreActionStore;
+         render_target_width = std::min(render_target_width, AttachmentDesc.Width);
+         render_target_height = std::min(render_target_height, AttachmentDesc.Height);
+-        render_target_array_length = std::max(render_target_array_length, AttachmentDesc.RenderTargetArrayLength);
++        render_target_array_length = 0;
+       }
+       while (dsv.ptr) {
+         effective_rtvs++;
+@@ -594,7 +594,7 @@
+             AttachmentDesc.Flags & (D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL);
+         render_target_width = std::min(render_target_width, AttachmentDesc.Width);
+         render_target_height = std::min(render_target_height, AttachmentDesc.Height);
+-        render_target_array_length = std::max(render_target_array_length, AttachmentDesc.RenderTargetArrayLength);
++        render_target_array_length = 0;
+         break;
+       }
+       render->render_target_width = render_target_width;

@@ -1,0 +1,22 @@
+# an occlusion sum record runs only once, retaining the first execution's result
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index fccd5fd..8be957c 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -787,12 +787,15 @@ struct VisibilitySlot {
+ };
+ 
+ [[kernel]] void sum_occlusion(
+-    constant OcclusionSum *sums [[buffer(0)]],
++    device OcclusionSum *sums [[buffer(0)]],
+     constant VisibilitySlot *slots [[buffer(1)]],
+     device ulong *results [[buffer(2)]],
+     uint i [[thread_position_in_grid]]
+ ) {
+   OcclusionSum sum = sums[i];
++  if (sum.query == ~0u)
++    return;
++  sums[i].query = ~0u;
+   ulong total = 0;
+   for (uint k = 0; k < sum.count; k++)
+     total += *slots[sum.first + k].count;

@@ -1,0 +1,18 @@
+# an active query loses its segments before a window rollover
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..a19e505 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -229,8 +229,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+       return;
+     auto [window, address, offset] = allocator_->VisibilitySlot();
+     // a pass counts in one window: when that is full the pass ends, and the next pass counts in the next window
+-    if (render->visibility_buffer && render->visibility_buffer != window.handle)
++    if (render->visibility_buffer && render->visibility_buffer != window.handle) {
++      for (auto &query : active_queries_)
++        query.first = (uint32_t)visibility_slots_.size();
+       return allocator_->InvalidateCurrentPass();
++    }
+     visibility_slots_.push_back(address);
+     render->visibility_buffer = window;
+     cmd.mode = WMTVisibilityResultModeCounting;

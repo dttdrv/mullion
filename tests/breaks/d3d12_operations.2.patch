@@ -1,0 +1,12 @@
+# round to nearest even rounds down
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3114,7 +3114,7 @@
+       break;
+     }
+     case Round_ne:
+-      ret = fp_unary(llvm::air::AIRBuilder::rint, a(1));
++      ret = fp_unary(llvm::air::AIRBuilder::floor, a(1));
+       break;
+     case Round_ni:
+       ret = fp_unary(llvm::air::AIRBuilder::floor, a(1));

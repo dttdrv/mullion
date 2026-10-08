@@ -1,0 +1,18 @@
+# visibility counts use far offsets in the allocator's whole recording buffer
+diff --git a/src/d3d12/d3d12_command_allocator.hpp b/src/d3d12/d3d12_command_allocator.hpp
+index 43806c1..3abcbb2 100644
+--- a/src/d3d12/d3d12_command_allocator.hpp
++++ b/src/d3d12/d3d12_command_allocator.hpp
+@@ -355,8 +355,10 @@ public:
+       // offset 0 is the one counting is turned off at, and a pass takes an offset once
+       visibility_used_ = sizeof(uint64_t);
+     }
+-    auto used = std::exchange(visibility_used_, visibility_used_ + sizeof(uint64_t));
+-    return {visibility_.back(), visibility_address_ + used, used};
++    std::exchange(visibility_used_, visibility_used_ + sizeof(uint64_t));
++    auto [mapped, offset] = AllocateGPUHeap(sizeof(uint64_t), sizeof(uint64_t));
++    *static_cast<uint64_t *>(mapped) = 0;
++    return {gpu_heap_buffer_, gpu_heap_buffer_address_ + offset, offset};
+   }
+ 
+   std::tuple<WMT::Buffer, uint64_t>

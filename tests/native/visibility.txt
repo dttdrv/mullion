@@ -1,0 +1,16 @@
+a count at one offset of a pass lands at:
+  8: ["8"]
+  65528: ["65528"]
+  65536: ["65536"]
+  262136: ["262136"]
+  262144: ["0"]
+  524288: ["0"]
+the segments of one pass, by what is at their offset afterwards:
+  20000 segments: 0...4095 stored, 4096...16382 added, 16383...19999 zero
+  the same pass twice: 0...4095 stored, 4096...16382 added, 16383...19999 zero
+  offsets 16 bytes apart: 0...4095 stored, 4096...15999 added
+  counting off at offset 0 before each, as the library encodes a slot: 0...4095 stored, 4096...16382 added, 16383...19999 zero
+  the same twice: 0...4095 stored, 4096...16382 added, 16383...19999 zero
+  the same, a draw in every second segment only (of those): 0...4094 stored, 4096...16382 added, 16384...19998 zero
+  4096 segments twice: 0...4095 stored
+  4097 segments twice: 0...4095 stored, 4096...4096 added

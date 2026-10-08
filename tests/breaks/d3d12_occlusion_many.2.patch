@@ -1,0 +1,19 @@
+# a full visibility window reuses its buffer and counter offsets
+diff --git a/src/d3d12/d3d12_command_allocator.hpp b/src/d3d12/d3d12_command_allocator.hpp
+--- a/src/d3d12/d3d12_command_allocator.hpp
++++ b/src/d3d12/d3d12_command_allocator.hpp
+@@ -352,9 +352,11 @@
+       info.memory.set(nullptr);
+       info.length = kVisibilityWindow;
+       info.options = WMTResourceHazardTrackingModeUntracked;
+-      visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
+-      exhausted_ |= !visibility_.back();
+-      visibility_address_ = info.gpu_address;
++      if (visibility_.empty()) {
++        visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
++        exhausted_ |= !visibility_.back();
++        visibility_address_ = info.gpu_address;
++      }
+       // offset 0 is the one counting is turned off at, and a pass takes an offset once
+       visibility_used_ = sizeof(uint64_t);
+     }

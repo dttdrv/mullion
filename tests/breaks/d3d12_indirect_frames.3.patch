@@ -1,0 +1,32 @@
+# submitting a frame releases its GPU recording storage before the held queue can read it
+diff --git a/src/d3d12/d3d12_command_allocator.hpp b/src/d3d12/d3d12_command_allocator.hpp
+index d8d5a6e..451bbef 100644
+--- a/src/d3d12/d3d12_command_allocator.hpp
++++ b/src/d3d12/d3d12_command_allocator.hpp
+@@ -117,6 +117,7 @@ constexpr unsigned kMostWords = 6;
+ 
+ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllocator> {
+   friend class MTLD3D12GraphicsCommandListImpl;
++  friend class MTLD3D12CommandQueueImpl;
+   friend struct SimpleCommandContext<MTLD3D12CommandAllocatorImpl>;
+ 
+   D3D12_COMMAND_LIST_TYPE type_;
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 6cb2ceb..9097206 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -521,8 +521,13 @@ public:
+     for (UINT i = 0; i < Count; i++) {
+       auto list = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+       recorded[i] = list->entry;
+-      if ((allocators[i] = list->recorded_on))
++      if ((allocators[i] = list->recorded_on)) {
+         allocators[i]->pending++;
++        auto allocator = static_cast<MTLD3D12CommandAllocatorImpl *>(allocators[i].ptr());
++        for (auto &run : allocator->gpu_cursor_.runs)
++          device_->recording.arguments.Release(run);
++        allocator->gpu_cursor_ = {};
++      }
+     }
+     Trace("ExecuteCommandLists of ", Count);
+     auto work = [this, recorded = std::move(recorded), allocators = std::move(allocators)]() mutable {

@@ -198,8 +198,8 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   FLOAT depth_bounds_[2];
   bool depth_bounds_set_ = false;
 
-  // occlusion queries: the running ones, each from the first visibility slot it counts in; the slots, as qword indices
-  // of the GPU heap, in order; and the sums the ended ones need (sum_occlusion's), made before their results are read
+  // occlusion queries: the running ones, each from the first visibility slot it counts in; the slots' GPU addresses,
+  // in order; and the sums the ended ones need (sum_occlusion's), made before their results are read
   struct ActiveQuery {
     MTLD3D12QueryHeap *heap;
     UINT index;
@@ -209,7 +209,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     uint32_t query, first, count, binary;
   };
   std::vector<ActiveQuery> active_queries_;
-  std::vector<uint32_t> visibility_slots_;
+  std::vector<uint64_t> visibility_slots_;
   std::vector<std::pair<MTLD3D12QueryHeap *, OcclusionSum>> occlusion_sums_;
 
   // a render pass counts samples in a new slot whenever the running queries change: Metal accumulates a slot within
@@ -227,9 +227,12 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     cmd.offset = 0;
     if (active_queries_.empty())
       return;
-    auto [_, offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t), sizeof(uint64_t));
-    visibility_slots_.push_back(offset / sizeof(uint64_t));
-    render->visibility_buffer = allocator_->gpu_heap_buffer_;
+    auto [window, address, offset] = allocator_->VisibilitySlot();
+    // a pass counts in one window: when that is full the pass ends, and the next pass counts in the next window
+    if (render->visibility_buffer && render->visibility_buffer != window.handle)
+      return allocator_->InvalidateCurrentPass();
+    visibility_slots_.push_back(address);
+    render->visibility_buffer = window;
     cmd.mode = WMTVisibilityResultModeCounting;
     cmd.offset = offset;
   }
@@ -319,7 +322,13 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       memcpy(mapped, data, length);
       return offset;
     };
-    auto slots = upload(visibility_slots_.data(), visibility_slots_.size() * sizeof(uint32_t));
+    auto slots = upload(visibility_slots_.data(), visibility_slots_.size() * sizeof(uint64_t));
+    for (auto &window : allocator_->visibility_) {
+      auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_useresource>();
+      cmd.type = WMTComputeCommandUseResource;
+      cmd.usage = WMTResourceUsageRead;
+      cmd.resource = window;
+    }
     std::stable_sort(occlusion_sums_.begin(), occlusion_sums_.end(), [](auto &x, auto &y) { return x.first < y.first; });
     for (auto first = occlusion_sums_.begin(); first != occlusion_sums_.end();) {
       auto last = std::find_if(first, occlusion_sums_.end(), [&](auto &x) { return x.first != first->first; });
@@ -333,7 +342,6 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       const std::pair<obj_handle_t, uint64_t> buffers[] = {
           {allocator_->gpu_heap_buffer_, upload(sums.data(), sums.size() * sizeof(OcclusionSum))},
           {allocator_->gpu_heap_buffer_, slots},
-          {allocator_->gpu_heap_buffer_, 0},
           {first->first->results, 0},
       };
       for (uint8_t i = 0; i < std::size(buffers); i++) {
@@ -475,6 +483,7 @@ public:
     SumOcclusion();
     EndPredication();
     HRESULT hr = allocator_->EndRecord(&encoder_count);
+    recorded_on = allocator_.ptr();
     // a list that did not fit is closed with nothing in it ("If an error was encountered during recording, the error
     // code is returned here", ID3D12GraphicsCommandList::Close)
     if (FAILED(hr))
@@ -1017,12 +1026,9 @@ public:
       if (!StreamOutputRasterizes())
         return;
     }
-    // indices past the view's end, and every index of a draw without an index buffer, read as 0 (D3D11.3 8.20),
-    // which draws vertex 0; Metal would read what lies behind the view, mapped or not. the draw is the indices the
-    // view has, then as many zeros of the heap as it lacks (a line that is half in the view is not drawn)
+    // Metal reads behind the view; Direct3D reads zero there, including with no index buffer (D3D11.3 8.19.2)
     const uint64_t index_size = index_type == WMTIndexTypeUInt32 ? sizeof(uint32_t) : sizeof(uint16_t);
     const uint64_t there = index_buffer ? index_view_.SizeInBytes / index_size : 0;
-    const UINT inside = StartVertexLocation < there ? std::min<uint64_t>(IndexCountPerInstance, there - StartVertexLocation) : 0;
     auto draw = [&](WMT::Buffer indices, uint64_t indices_offset, UINT start, UINT count) {
       if (!count)
         return;
@@ -1050,13 +1056,21 @@ public:
       cmd_draw.base_vertex = BaseVertexLocation;
       cmd_draw.base_instance = StartInstanceLocation;
     };
-    draw(index_buffer, index_offset, StartVertexLocation, inside);
-    if (auto outside = IndexCountPerInstance - inside) {
-      auto [zeros, offset] = allocator_->AllocateGPUHeap(outside * index_size, index_size);
-      if (!zeros)
-        return;
-      memset(zeros, 0, outside * index_size);
-      draw(allocator_->gpu_heap_buffer_, offset, 0, outside);
+    // the byte address wraps, including its initial multiplication (D3D11.3 8.6.1, 8.19.1)
+    const uint64_t period = (uint64_t(~UINT(0)) + 1) / index_size;
+    for (uint64_t consumed = 0; consumed < IndexCountPerInstance;) {
+      const UINT start = (StartVertexLocation + consumed) % period;
+      const UINT count = std::min<uint64_t>(IndexCountPerInstance - consumed, period - start);
+      const UINT inside = start < there ? std::min<uint64_t>(count, there - start) : 0;
+      draw(index_buffer, index_offset, start, inside);
+      if (auto outside = count - inside) {
+        auto [zeros, offset] = allocator_->AllocateGPUHeap(outside * index_size, index_size);
+        if (!zeros)
+          return;
+        memset(zeros, 0, outside * index_size);
+        draw(allocator_->gpu_heap_buffer_, offset, 0, outside);
+      }
+      consumed += count;
     }
   };
 
@@ -1730,13 +1744,14 @@ public:
   };
 
   // passes are already ordered by the queue's fence (each waits for the one before), so a barrier matters only inside
-  // a render pass, where draws run unordered: one that orders writes a draw made (UAV, render target, depth) or
-  // aliases memory ends the pass, and the next draw opens one that loads what this one stored
+  // a render pass, where draws run unordered: one that orders writes a draw made (UAV, render target, depth, stream
+  // output) or aliases memory ends the pass, and the next draw opens one that loads what this one stored
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render)
       return;
     constexpr auto draw_writes =
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE |
+        D3D12_RESOURCE_STATE_STREAM_OUT;
     for (auto &barrier : std::span(barriers, Count)) {
       if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || (barrier.Transition.StateBefore & draw_writes)) {
         allocator_->InvalidateCurrentPass();
@@ -3328,7 +3343,7 @@ public:
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render)
       return;
     constexpr auto draw_writes = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS | D3D12_BARRIER_ACCESS_RENDER_TARGET |
-                                 D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+                                 D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE | D3D12_BARRIER_ACCESS_STREAM_OUTPUT;
     // common access is any access, writes included
     auto writes = [&](D3D12_BARRIER_ACCESS access) {
       return access == D3D12_BARRIER_ACCESS_COMMON || (access != D3D12_BARRIER_ACCESS_NO_ACCESS && (access & draw_writes));

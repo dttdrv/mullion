@@ -1,0 +1,14 @@
+# predication tests only the low 32 bits of its 64-bit value
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index fccd5fd..747711d 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -819,7 +819,7 @@ struct PredicationRegion {
+     device PredicationRegion *region [[buffer(1)]],
+     device uint *heap [[buffer(2)]]
+ ) {
+-  bool skip = (*predicate == 0) == bool(region->skip_if_zero);
++  bool skip = (uint(*predicate) == 0) == bool(region->skip_if_zero);
+   region->skips = skip;
+   device const PredicatedWord *entries = (device const PredicatedWord *)(heap + region->entries);
+   for (uint i = 0; i < region->count; i++)

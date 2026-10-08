@@ -1066,6 +1066,7 @@ convert_pass_through_geometry_shader(
                        : air::MeshOutputTopology::Point
   });
   uint32_t tg_in_grid_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
+  func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
   // what the vertex shader outputs, as the mesh's: the position, the layer and viewport its first vertex chooses,
   // and its other registers as varyings
   struct Varying {
@@ -1130,6 +1131,14 @@ convert_pass_through_geometry_shader(
   builder.CreateCondBr(is_valid, active, done);
 
   builder.SetInsertPoint(active);
+  // mesh threadgroups each emit one primitive, so its ID counts the draw's preceding primitives (D3D11.3 8.17)
+  auto below = builder.CreateSub(builder.CreateShl(one, lane), one);
+  air.CreateSetMeshPrimitiveID(
+      zero, builder.CreateAdd(
+                word(kPayloadPrimitivesBefore),
+                air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid, below))
+            )
+  );
   auto odd = strip_parity(builder, air, valid, lane, word(kPayloadStripOffset));
   uint32_t registers = pVertexStage->max_output_register;
   // component `c` of register `reg` of the primitive's vertex `corner`

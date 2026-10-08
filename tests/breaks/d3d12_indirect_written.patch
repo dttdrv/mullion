@@ -1,0 +1,12 @@
+# an indirect dispatch has groups of one thread
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -212,7 +212,7 @@
+ 
+   auto data = EncodeComputeResolver(pCmdSig, MaxCount);
+   data->cmd_buf = info.gpu_resource_id;
+-  data->tgsize_x = pPSO->threadgroup_size.width;
++  data->tgsize_x = 1;
+   data->tgsize_y = pPSO->threadgroup_size.height;
+   data->tgsize_z = pPSO->threadgroup_size.depth;
+ 

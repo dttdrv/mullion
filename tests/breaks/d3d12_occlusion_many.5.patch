@@ -1,0 +1,14 @@
+# a partial query resolve truncates its starting index to eight bits
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6683c58..d892c87 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2304,7 +2304,7 @@ public:
+     auto &cmd = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+     cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+     cmd.src = heap->results;
+-    cmd.src_offset = StartIndex * heap->result_size;
++    cmd.src_offset = (uint8_t)StartIndex * heap->result_size;
+     cmd.dst = dst;
+     cmd.dst_offset = AlignedDstBufferOffset;
+     cmd.copy_length = QueryCount * heap->result_size;

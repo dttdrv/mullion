@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""reads Mullion's profile records and says where a frame's time goes.
+
+the libraries write a record when DXMT_DIAG=profile and DXMT_DIAG_PATH names a directory:
+
+  DXMT_DIAG=profile DXMT_DIAG_PATH=/some/dir <the program>
+  mullion-diag report /some/dir
+  mullion-diag frames /some/dir
+
+DXMT_DIAG_PATH is a path of macOS, not of the Wine prefix. each process writes mullion-<process id>.diag there.
+calculations return nanoseconds; printing converts them to milliseconds. a CPU span belongs to the frame of its
+start time. bridge totals cover the intervals recorded at presents; the trailing frame has no bridge totals.
+"""
+import argparse
+import re
+import statistics
+from bisect import bisect_left
+from collections import defaultdict
+from pathlib import Path
+
+# an unsampled GPU timestamp (Mullion profile record contract, pass)
+NO_SAMPLE = 18446744073709551615
+
+
+def short_name(name):
+    return " ".join(shader[:8] for shader in name.split())
+
+
+def union(intervals):
+    total, end = 0, 0
+    for start, stop in sorted(intervals):
+        total += max(0, stop - max(start, end))
+        end = max(end, stop)
+    return total
+
+
+class Pass:
+    def __init__(self, queue, cmdbuf, number, kind, encoding, runs, *clock):
+        self.queue, self.cmdbuf, self.number, self.kind = queue, int(cmdbuf), int(number), kind
+        self.encoding = int(encoding)
+        self.runs = [(name.strip(), int(draws), int(vertices), int(indices))
+                     for name, draws, vertices, indices in (run.split("*") for run in runs.split("|") if run)]
+        self.pipelines = tuple(dict.fromkeys(name for name, *_ in self.runs))
+        self.draws, self.vertices, self.indices = (sum(run[n] for run in self.runs) for n in range(1, 4))
+        clock = [int(sample) for sample in clock]
+        if len(clock) % 2:
+            raise ValueError("pass has an unpaired stage timestamp")
+        self.stages = [(start, end) for start, end in zip(clock[::2], clock[1::2])
+                       if NO_SAMPLE not in (start, end)]
+        self.gpu = sum(end - start for start, end in self.stages)
+
+    def what(self):
+        return ", ".join(map(short_name, self.pipelines)) or f"(no pipeline: {self.kind})"
+
+
+class Record:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.calls, self.passes, self.cmdbufs, self.frames, self.spans, self.unix = {}, [], {}, [], [], []
+        with self.path.open() as file:
+            for line in file:
+                kind, *rest = line.rstrip("\r\n").split("\t")
+                if kind == "call":
+                    self.calls[int(rest[0])] = rest[1].lstrip("_")
+                elif kind == "cmdbuf":
+                    queue, number, *times = rest
+                    self.cmdbufs[queue, int(number)] = tuple(map(int, times))
+                elif kind == "pass":
+                    self.passes.append(Pass(*rest))
+                elif kind == "frame":
+                    self.frames.append(int(rest[2]))
+                elif kind == "span":
+                    work, of, thread, began, took, *calls = rest
+                    self.spans.append((work, of.strip(), int(began), int(took),
+                                       {int(code): int(time) for code, time in (call.split(":") for call in calls)}))
+                elif kind == "unix":
+                    self.unix.append({int(code): (int(count), int(time))
+                                      for code, count, time in (call.split(":") for call in rest)})
+
+    def frame_at(self, time):
+        return bisect_left(self.frames, time)
+
+    def frame_of(self, a_pass):
+        return self.frame_at(self.cmdbufs[a_pass.queue, a_pass.cmdbuf][0])
+
+    def passes_in(self, frame=None):
+        return [p for p in self.passes if frame is None or self.frame_of(p) == frame]
+
+    def compiling(self, calls):
+        convert = sum(time for code, time in calls.items() if "SM50" in self.calls.get(code, ""))
+        metal = sum(time for code, time in calls.items()
+                    if any(word in self.calls.get(code, "") for word in ("newLibrary", "PipelineState", "newFunction")))
+        return convert, metal
+
+    def waits(self, calls):
+        return sum(time for code, time in calls.items()
+                   if re.search("wait|nextDrawable", self.calls.get(code, ""), re.I))
+
+
+def by_kind(passes):
+    found = defaultdict(lambda: [0, 0])
+    for p in passes:
+        found[p.kind][0] += p.gpu
+        found[p.kind][1] += 1
+    return dict(found)
+
+
+def by_pipeline(passes):
+    """a shared pass's GPU time stays with its pipelines together, never divided between them."""
+    found = defaultdict(lambda: [0, 0, 0, 0, 0])
+    for p in passes:
+        for n, value in enumerate((p.gpu, 1, p.draws, p.vertices, p.indices)):
+            found[p.pipelines][n] += value
+    return dict(found)
+
+
+def pipeline_runs(passes):
+    found = defaultdict(lambda: [0, 0, 0])
+    for p in passes:
+        for name, *counts in p.runs:
+            for n, count in enumerate(counts):
+                found[name][n] += count
+    return dict(found)
+
+
+def cpu_totals(record, frame=None):
+    work, made, bridge = (defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0, 0, 0]),
+                          defaultdict(lambda: [0, 0]))
+    for kind, of, began, took, calls in record.spans:
+        if frame is not None and record.frame_at(began) != frame:
+            continue
+        work[kind][0] += took
+        work[kind][1] += 1
+        if kind == "pipeline":
+            for n, value in enumerate((took, 1, *record.compiling(calls))):
+                made[of][n] += value
+    intervals = record.unix[:len(record.frames)]
+    if frame is not None:
+        intervals = intervals[frame:frame + 1]
+    for calls in intervals:
+        for code, (count, took) in calls.items():
+            bridge[code][0] += took
+            bridge[code][1] += count
+    return dict(work), dict(made), dict(bridge)
+
+
+def frame_rows(record):
+    passes, spans = defaultdict(list), defaultdict(lambda: defaultdict(int))
+    for p in record.passes:
+        passes[record.frame_of(p)].append(p)
+    for work, of, began, took, calls in record.spans:
+        cpu = spans[record.frame_at(began)]
+        cpu[work] += took
+        if work == "pipeline":
+            convert, metal = record.compiling(calls)
+            cpu["converter"] += convert
+            cpu["metal"] += metal
+    rows = []
+    for n in range(len(record.frames) + 1):
+        selected = passes[n]
+        row = dict(spans[n])
+        for work in ("execute", "present", "pipeline", "converter", "metal"):
+            row.setdefault(work, 0)
+        row.update(frame=n, since=record.frames[n] - record.frames[n - 1] if 0 < n < len(record.frames) else None,
+                   passes=len(selected), gpu_sum=sum(p.gpu for p in selected),
+                   gpu_clock=union(stage for p in selected for stage in p.stages),
+                   draws=sum(p.draws for p in selected), vertices=sum(p.vertices for p in selected),
+                   indices=sum(p.indices for p in selected), waits=None)
+        if n < min(len(record.frames), len(record.unix)):
+            row["waits"] = record.waits({code: time for code, (count, time) in record.unix[n].items()})
+        rows.append(row)
+    return rows
+
+
+def frame_stats(record, first=0, last=None):
+    last = len(record.frames) - 1 if last is None else min(last, len(record.frames) - 1)
+    times = [later - earlier for earlier, later in zip(record.frames[first:last], record.frames[first + 1:last + 1])]
+    mean = statistics.mean(times) if times else None
+    return dict(presented=len(record.frames), first=first, last=last, intervals=len(times), mean=mean,
+                median=statistics.median(times) if times else None, longest=max(times) if times else None,
+                fps=1e9 / mean if mean else None)
+
+
+def records(path):
+    path = Path(path)
+    return sorted(path.glob("*.diag")) if path.is_dir() else [path]
+
+
+def ms(ns):
+    return "n/a" if ns is None else f"{ns / 1e6:.3f}"
+
+
+def ranked(rows, top):
+    rows = sorted(rows, reverse=True)
+    return rows[:top], sum(time for time, _ in rows[top:]), len(rows[top:]), sum(time for time, _ in rows)
+
+
+def table(title, rows, top):
+    rows, rest, count, whole = ranked(rows, top)
+    whole = whole or 1
+    print(f"\n{title} (ms)")
+    for time, text in rows:
+        print(f"  {ms(time):>10}  {100 * time / whole:5.1f}%  {text}")
+    if count:
+        print(f"  {ms(rest):>10}  {100 * rest / whole:5.1f}%  {count} more")
+
+
+def report(record, top=15, frame=None):
+    print(f"{record.path}")
+    print("frames (ms; draws includes dispatches): n/a means no preceding present or no bridge interval; "
+          "the trailing frame has no bridge totals")
+    keys = ("frame", "since", "passes", "gpu_sum", "gpu_clock", "draws", "vertices", "indices",
+            "execute", "present", "pipeline", "converter", "metal", "waits")
+    times = {"since", "gpu_sum", "gpu_clock", "execute", "present", "pipeline", "converter", "metal", "waits"}
+    print("  " + " ".join(f"{key:>10}" for key in keys))
+    for row in frame_rows(record):
+        print("  " + " ".join(f"{ms(row[key]) if key in times else row[key]:>10}" for key in keys))
+    passes = record.passes_in(frame)
+    table("GPU time by kind of pass", [(time, f"{kind}: {count} passes")
+                                      for kind, (time, count) in by_kind(passes).items()], top)
+    totals = pipeline_runs(passes)
+    rows = []
+    for names, (time, count, draws, vertices, indices) in by_pipeline(passes).items():
+        name = ", ".join(map(short_name, names)) or "(no pipeline)"
+        own = "; ".join(f"{short_name(name)}: {d} draws, {v} vertices, {i} indices"
+                        for name in names for d, v, i in [totals[name]])
+        rows.append((time, f"{name}: {count} passes, {draws} draws, {vertices} vertices, {indices} indices"
+                     + (f"; pipeline totals across selected passes: {own}" if names else "")))
+    table("GPU time by pipeline (a shared pass counts under its pipelines together)", rows, top)
+    table("GPU time by pass", [(p.gpu, f"queue {p.queue} command buffer {p.cmdbuf} pass {p.number} {p.kind} "
+                               f"[{', '.join(ms(end - start) for start, end in p.stages)} ms] {p.what()}: "
+                               f"{p.draws} draws, {p.vertices} vertices, {p.indices} indices; "
+                               f"CPU encoding {ms(p.encoding)} ms") for p in passes], top)
+    work, made, bridge = cpu_totals(record, frame)
+    table("CPU time by work", [(time, f"{kind}: {count} spans") for kind, (time, count) in work.items()], top)
+    table("CPU time by pipeline made", [(time, f"{short_name(name)}: {count} spans, converter {ms(convert)} ms, "
+                                        f"Metal's compiler {ms(metal)} ms")
+                                       for name, (time, count, convert, metal) in made.items()], top)
+    table("CPU time by bridge call (recorded at presents; unavailable for the trailing frame)",
+          [(time, f"{record.calls.get(code, code)}: {count} calls") for code, (time, count) in bridge.items()], top)
+
+
+def frames(record, first=0, last=None):
+    s = frame_stats(record, first, last)
+    text = f"{record.path.name}: {s['presented']} frames presented; frames {s['first']} to {s['last']}"
+    if not s["intervals"]:
+        print(text + ": no intervals between presents")
+    else:
+        fps = "n/a" if s["fps"] is None else f"{s['fps']:.2f}"
+        print(text + f": mean {ms(s['mean'])} ms, median {ms(s['median'])} ms, "
+              f"longest {ms(s['longest'])} ms, {fps} frames a second")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    command = commands.add_parser("report", help="frame rows and the work taking the most time")
+    command.add_argument("record", type=Path)
+    command.add_argument("--top", type=int, default=15)
+    command.add_argument("--frame", type=int, help="tables for this frame alone, counted from 0")
+    command = commands.add_parser("frames", help="one line a record to compare runs")
+    command.add_argument("record", type=Path)
+    command.add_argument("--from", dest="first", type=int, default=0)
+    command.add_argument("--to", type=int)
+    args = parser.parse_args()
+    if any(value is not None and value < 0 for name, value in vars(args).items()
+           if name in ("top", "frame", "first", "to")):
+        parser.error("frame numbers and --top must be nonnegative")
+    try:
+        for path in records(args.record):
+            record = Record(path)
+            if args.command == "report":
+                report(record, args.top, args.frame)
+            else:
+                frames(record, args.first, args.to)
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(str(error))
+
+
+if __name__ == "__main__":
+    main()
