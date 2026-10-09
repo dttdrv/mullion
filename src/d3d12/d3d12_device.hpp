@@ -385,6 +385,10 @@ public:
     uint64_t address = 0;
     // blocks of `arguments` nothing writes: the zeros an indirect draw's indices past their view read
     std::optional<RecordingArena::Run> zeros;
+    // where ExecuteIndirect's resolver leaves the most stream output scratch a command lacked, by which the next
+    // ExecuteIndirect grows the scratch its commands share from its size, D3D11's to start with (dxmt_context.cpp)
+    std::optional<RecordingArena::Run> so_overflow;
+    std::atomic<uint64_t> so_scratch_budget{0x2000000};
     dxmt::mutex mutex;
   } recording;
 

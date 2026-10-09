@@ -110,6 +110,15 @@ struct IndirectRenderCommandData {
   // past it, as many of these zero indices of 16 bits (D3D11.3 8.19.2: "the return is 0"), `zero_count` at most
   uint64_t zeros;
   uint32_t zero_count;
+  // a geometry pipeline's stream output: each command's invocations per object threadgroup and its targets
+  // (SM50_STREAM_OUTPUT_TARGETS), whose scratch the resolver gives from the commands' share (to write to and its
+  // address to give, and its size), and where the resolver leaves what a command lacked. no targets without it
+  uint32_t so_invocations;
+  uint64_t so_targets;
+  uint64_t so_scratch_area;
+  uint64_t so_scratch;
+  uint64_t so_scratch_size;
+  uint64_t so_overflow;
 };
 
 // the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were

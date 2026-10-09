@@ -84,6 +84,17 @@ struct dxmt_vertex_buffer {
   uint length;
 };
 
+// SM50_STREAM_OUTPUT_TARGETS
+struct dxmt_stream_output_targets {
+  ulong address[4];
+  ulong size[4];
+  ulong filled[4];
+  ulong scratch;
+  uint warps;
+  uint instances;
+  ulong statistics[4];
+};
+
 struct dxmt_render_command_data {
   command_buffer cmd_buf;
   ulong max_count;
@@ -111,6 +122,12 @@ struct dxmt_render_command_data {
   device dxmt_indirect_mesh_draw * draws;
   device ushort * zeros;
   uint zero_count;
+  uint so_invocations;
+  device dxmt_stream_output_targets * so_targets;
+  device uint * so_scratch_area;
+  ulong so_scratch;
+  ulong so_scratch_size;
+  device ulong * so_overflow;
 };
 
 )";
@@ -245,6 +262,26 @@ public:
              << " - 1) / command_data.geometry_increment + 1, arg." << args << ".instance_count, 1) : "
              << "uint3((patches + per_group - 1) / per_group, arg." << args
              << ".instance_count, patches ? command_data.tessellation_parts : 0);\n";
+      // stream output: the command's scratch area (SM50StreamOutputScratch) from the commands' share, its filled sizes
+      // and totals zeroed; a command it has no room for draws nothing, and leaves what the commands needed with it
+      source << "if (command_data.so_targets && draw.threadgroups.x) {\n";
+      source << "ulong groups = ulong(draw.threadgroups.x) * draw.threadgroups.y, zeroed = 32 + 16 * (groups + "
+             << "((groups + " << (1u << SM50_STREAM_OUTPUT_BLOCK_SHIFT) - 1 << ") >> " << SM50_STREAM_OUTPUT_BLOCK_SHIFT
+             << "));\n";
+      source << "ulong need = (zeroed + 16 * groups * command_data.so_invocations + 15) & ~15ul;\n";
+      source << "if (so_used + need > command_data.so_scratch_size) {\n";
+      source << "*command_data.so_overflow = max(*command_data.so_overflow, so_used + need);\n";
+      source << "draw.threadgroups = uint3(0);\n";
+      source << "} else {\n";
+      source << "device uint *scratch = command_data.so_scratch_area + so_used / 4;\n";
+      source << "for (ulong word = 0; word < zeroed / 4; word++)\n";
+      source << "scratch[word] = 0;\n";
+      source << "command_data.so_targets[i].scratch = command_data.so_scratch + so_used;\n";
+      source << "command_data.so_targets[i].warps = draw.threadgroups.x;\n";
+      source << "command_data.so_targets[i].instances = draw.threadgroups.y;\n";
+      source << "so_used += need;\n";
+      source << "}\n";
+      source << "}\n";
       source << "} else\n";
     };
     // DXMT_D3D12_GPU_ERRORS: the largest numbers the commands ask for, which the report of a failed command buffer
@@ -268,6 +305,8 @@ public:
 
     source << "uint count = command_data.max_count_buffer ? "
               "command_data.max_count_buffer[0] : command_data.max_count;\n";
+    if (!is_compute)
+      source << "ulong so_used = 0;\n";
     source << "for (ulong i = 0; i < command_data.max_count; i++) {\n";
     source << "device d3d12_arguments& arg = reinterpret_cast<device d3d12_arguments *>("
               "command_data.argument_buffer + i * "

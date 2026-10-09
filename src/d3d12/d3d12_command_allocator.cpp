@@ -244,6 +244,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
     }
     if (!recording.zeros && !(recording.zeros = recording.arguments.Acquire(1)))
       return E_OUTOFMEMORY;
+    if (!recording.so_overflow && !(recording.so_overflow = recording.arguments.Acquire(sizeof(uint64_t))))
+      return E_OUTOFMEMORY;
   }
   cpu_heap_ = recording.commands.base, gpu_heap_ = recording.arguments.base;
   gpu_heap_buffer_ = recording.buffer, gpu_heap_buffer_address_ = recording.address;
@@ -478,6 +480,12 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     data->vertex_slots = pPSO->slot_mask;
     data->geometry_threads = 0;
     data->geometry_increment = 0;
+    data->so_invocations = 0;
+    data->so_targets = 0;
+    data->so_scratch_area = 0;
+    data->so_scratch = 0;
+    data->so_scratch_size = 0;
+    data->so_overflow = 0;
     for (unsigned i = 0; i < 3; i++) {
       data->object_threads[i] = pPSO->mesh_shader ? pPSO->object_threads[i] : 0;
       data->mesh_threads[i] = pPSO->mesh_shader ? pPSO->mesh_threads[i] : 0;

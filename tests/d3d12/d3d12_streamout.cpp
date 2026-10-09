@@ -9,6 +9,9 @@
 // span several object threadgroups and the draws two instances, and the expectations are the same shaders run on the
 // CPU. a statistics query per stream counts the primitives written and those that would have been. the stream points
 // and the vertex shader's points, drawn again from many vertices, span thousands of object threadgroups.
+// ExecuteIndirect draws "with the contents of the indirect argument buffer" as the command signature says (Microsoft
+// Learn, Indirect Drawing): the vertex shader's points and the strips stream out from it as from the direct draws, the
+// strips a second time from an indexed draw's arguments.
 #include "d3d12_test.hpp"
 #include <array>
 #include <cstdint>
@@ -176,7 +179,12 @@ main(int argc, char **argv) {
                alone_at = stream1_at + stream_bytes, alone_bytes = 16 * alone.size(),
                many0_at = alone_at + alone_bytes, many1_at = many0_at + 4 * many0.size(),
                many_alone_at = many1_at + 4 * many1.size(), many_alone_bytes = 16 * many_alone.size(),
-               filled_at = (many_alone_at + many_alone_bytes + 7) & ~7ull, total = filled_at + 8 * 9;
+               indirect0_at = many_alone_at + many_alone_bytes,
+               indirect0_bytes = 3 * strip_strides[0] * triangles.size() * 2,
+               indirect1_at = indirect0_at + indirect0_bytes,
+               indirect1_bytes = 3 * strip_strides[1] * triangles.size() * 2,
+               indirect_alone_at = indirect1_at + indirect1_bytes, indirect_alone_bytes = 16 * instances * points,
+               filled_at = (indirect_alone_at + indirect_alone_bytes + 7) & ~7ull, total = filled_at + 8 * 12;
   auto out = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, total, D3D12_RESOURCE_STATE_COPY_DEST);
   auto upload = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_STATE_GENERIC_READ);
   auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -184,8 +192,8 @@ main(int argc, char **argv) {
   CHECK(upload->Map(0, nullptr, (void **)&init));
   std::fill_n(reinterpret_cast<uint32_t *>(init), filled_at / 4, sentinel);
   // filled sizes: the strip slots (slot 0 past a triangle), the small slot, the two streams, the vertex shader's, the
-  // many points'
-  const UINT64 filled[9] = {start0};
+  // many points', and the ExecuteIndirect strip slots and points
+  const UINT64 filled[12] = {start0};
   memcpy(init + filled_at, filled, sizeof(filled));
 
   ComPtr<ID3D12CommandQueue> queue;
@@ -202,9 +210,9 @@ main(int argc, char **argv) {
     return D3D12_STREAM_OUTPUT_BUFFER_VIEW{base + at, bytes, base + filled_at + 8 * filled_index};
   };
   ComPtr<ID3D12QueryHeap> statistics;
-  D3D12_QUERY_HEAP_DESC statistics_desc{D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, 2};
+  D3D12_QUERY_HEAP_DESC statistics_desc{D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, 3};
   CHECK(device->CreateQueryHeap(&statistics_desc, IID_PPV_ARGS(&statistics)));
-  auto statistics_out = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, 2 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS), D3D12_RESOURCE_STATE_COPY_DEST);
+  auto statistics_out = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, 3 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS), D3D12_RESOURCE_STATE_COPY_DEST);
   list->SetGraphicsRootSignature(rs.Get());
   list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
   list->BeginQuery(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0, 0);
@@ -258,6 +266,47 @@ main(int argc, char **argv) {
   D3D12_STREAM_OUTPUT_BUFFER_VIEW many_alone_view = view(many_alone_at, many_alone_bytes, 8);
   list->SOSetTargets(0, 1, &many_alone_view);
   list->DrawInstanced(many_points, instances, 0, 0);
+  // the points and the strips again through ExecuteIndirect: a draw's arguments, then an indexed draw's that appends
+  D3D12_INDIRECT_ARGUMENT_DESC draw_argument{D3D12_INDIRECT_ARGUMENT_TYPE_DRAW},
+      indexed_argument{D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED};
+  D3D12_COMMAND_SIGNATURE_DESC draw_signature_desc{sizeof(D3D12_DRAW_ARGUMENTS), 1, &draw_argument},
+      indexed_signature_desc{sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), 1, &indexed_argument};
+  ComPtr<ID3D12CommandSignature> draw_signature, indexed_signature;
+  CHECK(device->CreateCommandSignature(&draw_signature_desc, nullptr, IID_PPV_ARGS(&draw_signature)));
+  CHECK(device->CreateCommandSignature(&indexed_signature_desc, nullptr, IID_PPV_ARGS(&indexed_signature)));
+  const D3D12_DRAW_ARGUMENTS draw_arguments{points, instances, 0, 0};
+  const D3D12_DRAW_INDEXED_ARGUMENTS indexed_arguments{points, instances, 0, 0, 0};
+  auto arguments = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(draw_arguments) + sizeof(indexed_arguments),
+                          D3D12_RESOURCE_STATE_GENERIC_READ);
+  auto indices =
+      buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, points * sizeof(UINT16), D3D12_RESOURCE_STATE_GENERIC_READ);
+  uint8_t *mapped;
+  CHECK(arguments->Map(0, nullptr, (void **)&mapped));
+  memcpy(mapped, &draw_arguments, sizeof(draw_arguments));
+  memcpy(mapped + sizeof(draw_arguments), &indexed_arguments, sizeof(indexed_arguments));
+  CHECK(indices->Map(0, nullptr, (void **)&mapped));
+  for (UINT p = 0; p < points; p++)
+    reinterpret_cast<UINT16 *>(mapped)[p] = p;
+  D3D12_STREAM_OUTPUT_BUFFER_VIEW indirect_alone_view = view(indirect_alone_at, indirect_alone_bytes, 11);
+  list->SOSetTargets(0, 1, &indirect_alone_view);
+  list->ExecuteIndirect(draw_signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
+  list->SetPipelineState(strips_pso.Get());
+  D3D12_STREAM_OUTPUT_BUFFER_VIEW indirect_views[] = {
+      view(indirect0_at, indirect0_bytes, 9), view(indirect1_at, indirect1_bytes, 10)
+  };
+  list->SOSetTargets(0, 2, indirect_views);
+  D3D12_INDEX_BUFFER_VIEW index_view{
+      indices->GetGPUVirtualAddress(), UINT(points * sizeof(UINT16)), DXGI_FORMAT_R16_UINT
+  };
+  list->IASetIndexBuffer(&index_view);
+  list->BeginQuery(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0, 2);
+  list->ExecuteIndirect(draw_signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
+  list->ExecuteIndirect(indexed_signature.Get(), 1, arguments.Get(), sizeof(draw_arguments), nullptr, 0);
+  list->EndQuery(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0, 2);
+  list->ResolveQueryData(
+      statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0, 2, 1, statistics_out.Get(),
+      2 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS)
+  );
   transition(list.Get(), out.Get(), D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_RESOURCE_STATE_COPY_SOURCE);
   list->CopyBufferRegion(readback.Get(), 0, out.Get(), 0, total);
   transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -321,12 +370,31 @@ main(int argc, char **argv) {
   expect("many points, stream 0 filled", filled_size(6), 4 * many0.size());
   expect("many points, stream 1 filled", filled_size(7), 4 * many1.size());
   expect("many points, vertex shader alone filled", filled_size(8), many_alone_bytes);
+  // through ExecuteIndirect: the strips twice, the second time indexed, and the vertex shader's points, the last of
+  // `alone`
+  for (UINT64 v = 0; v < 3 * triangles.size() * 2; v++) {
+    auto &want = triangles[v / 3 % triangles.size()][v % 3];
+    UINT64 at = indirect0_at + v * strip_strides[0];
+    expect("indirect slot 0 x", word(at), want[0]);
+    expect("indirect slot 0 y", word(at + 4), want[1]);
+    expect("indirect slot 0 w", word(at + 12), want[3]);
+    expect("indirect slot 1 z", word(indirect1_at + v * strip_strides[1]), want[2]);
+  }
+  expect("indirect slot 0 filled", filled_size(9), indirect0_bytes);
+  expect("indirect slot 1 filled", filled_size(10), indirect1_bytes);
+  const size_t first_point = alone.size() - instances * points;
+  for (size_t v = 0; v < instances * points; v++)
+    for (int c = 0; c < 4; c++)
+      expect("indirect vertex shader alone", word(indirect_alone_at + 16 * v + 4 * c), alone[first_point + v][c]);
+  expect("indirect vertex shader alone filled", filled_size(11), indirect_alone_bytes);
   D3D12_QUERY_DATA_SO_STATISTICS *counted;
   CHECK(statistics_out->Map(0, nullptr, (void **)&counted));
   expect("stream 0 primitives written", counted[0].NumPrimitivesWritten, written);
   expect("stream 0 primitives needed", counted[0].PrimitivesStorageNeeded, 3 * triangles.size());
   expect("stream 1 primitives written", counted[1].NumPrimitivesWritten, stream1.size());
   expect("stream 1 primitives needed", counted[1].PrimitivesStorageNeeded, stream1.size());
+  expect("primitives written through ExecuteIndirect", counted[2].NumPrimitivesWritten, 2 * triangles.size());
+  expect("primitives needed through ExecuteIndirect", counted[2].PrimitivesStorageNeeded, 2 * triangles.size());
   uint8_t *drawn;
   CHECK(pixels->Map(0, nullptr, (void **)&drawn));
   for (UINT y = 0; y < size; y++)

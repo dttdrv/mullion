@@ -2476,8 +2476,9 @@ public:
     // a tessellated command binds every buffer itself, as does a geometry pipeline's and a mesh shader pipeline's
     bool geometry = pso_graphics_ && Geometry();
     bool tessellation = pso_graphics_ && (pso_graphics_->threads_per_patch || geometry || dispatch_mesh);
-    if (pso_graphics_ && pso_graphics_->stream_output) {
-      ERR("ExecuteIndirect: stream output is not implemented yet");
+    // stream output without a geometry shader whose stream rasterizes too would then draw each command as usual
+    if (pso_graphics_ && pso_graphics_->stream_output && StreamOutputRasterizes()) {
+      ERR("ExecuteIndirect: stream output that also rasterizes without a geometry shader is not implemented yet");
       return;
     }
     bool encode_binding = tessellation || sig->UpdateRootArguments || sig->UpdateIndexBuffer || sig->UpdateVertexBuffers;
@@ -2512,6 +2513,41 @@ public:
     }
     if (geometry)
       std::tie(cmd->geometry_threads, cmd->geometry_increment) = get_gs_vertex_count(topology_, pso_graphics_->vertex_registers);
+    // stream output: each command's targets, whose scratch the resolver gives each from the commands' share, grown
+    // first by what an earlier ExecuteIndirect lacked
+    if (geometry && pso_graphics_->stream_output) {
+      auto &recording = device_->recording;
+      auto lacked = reinterpret_cast<uint64_t *>(ptr_add(recording.arguments.base, recording.so_overflow->offset));
+      if (uint64_t need = __atomic_exchange_n(lacked, 0, __ATOMIC_RELAXED)) {
+        uint64_t budget = recording.so_scratch_budget;
+        while (budget < need)
+          budget *= 2;
+        recording.so_scratch_budget = budget;
+        ERR("ExecuteIndirect: stream output needed ", need, " bytes of scratch, more than it had: the command was not "
+            "drawn, and the scratch grows to ", budget);
+      }
+      SM50_STREAM_OUTPUT_TARGETS targets{};
+      for (unsigned b = 0; b < std::size(so_views_); b++) {
+        targets.address[b] = so_views_[b].BufferLocation;
+        targets.size[b] = so_views_[b].SizeInBytes;
+        targets.filled[b] = so_views_[b].BufferFilledSizeLocation;
+        targets.statistics[b] = so_statistics_[b];
+      }
+      uint64_t budget = recording.so_scratch_budget;
+      auto [Targets, TargetsOffset] = allocator_->AllocateGPUHeap(sizeof(targets) * MaxCommandCount, 16);
+      auto [Scratch, ScratchOffset] = allocator_->AllocateGPUHeap(budget, 16);
+      // commands whose targets or scratch no heap has room for: the list fails when it is closed
+      if (!Targets || !Scratch)
+        return;
+      for (UINT i = 0; i < MaxCommandCount; i++)
+        reinterpret_cast<SM50_STREAM_OUTPUT_TARGETS *>(Targets)[i] = targets;
+      auto heap = allocator_->gpu_heap_buffer_address_;
+      cmd->so_invocations = cmd->geometry_threads * pso_graphics_->gs_instances;
+      cmd->so_targets = heap + TargetsOffset;
+      cmd->so_scratch_area = cmd->so_scratch = heap + ScratchOffset;
+      cmd->so_scratch_size = budget;
+      cmd->so_overflow = recording.address + recording.so_overflow->offset;
+    }
     if (!encode_binding)
       return;
     cmd->rootsig_qwords = EncodeRootArgument(
@@ -2565,12 +2601,34 @@ public:
             WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS
         );
       }
-      auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
-      draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
-      draw.indirect_args_buffer = allocator_->gpu_heap_buffer_;
-      draw.indirect_args_offset = at + offsetof(IndirectMeshDraw, threadgroups);
-      draw.object_threadgroup_size = object;
-      draw.mesh_threadgroup_size = mesh;
+      auto encode_draw = [&] {
+        auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
+        draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
+        draw.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+        draw.indirect_args_offset = at + offsetof(IndirectMeshDraw, threadgroups);
+        draw.object_threadgroup_size = object;
+        draw.mesh_threadgroup_size = mesh;
+      };
+      if (!cmd->so_targets) {
+        encode_draw();
+        continue;
+      }
+      // with stream output each command draws as a direct draw does: counting, then after a barrier writing
+      auto targets = cmd->so_targets - heap + i * sizeof(SM50_STREAM_OUTPUT_TARGETS);
+      EncodeBuffer(WMTRenderCommandSetObjectBuffer, targets, SM50_BINDING_INDEX_STREAM_OUTPUT0);
+      EncodeBuffer(WMTRenderCommandSetMeshBuffer, targets, SM50_BINDING_INDEX_STREAM_OUTPUT0);
+      for (bool counting : {true, false}) {
+        auto &set = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+        set.type = WMTRenderCommandSetPSO;
+        set.pso = Pipeline(counting);
+        encode_draw();
+        auto &barrier = allocator_->EncodeRenderCommand<wmtcmd_render_memory_barrier>();
+        barrier.type = WMTRenderCommandMemoryBarrier;
+        barrier.scope = WMTBarrierScopeBuffers;
+        barrier.stages_after = WMTRenderStageMesh;
+        barrier.stages_before = counting ? WMTRenderStagePreRaster
+                                         : WMTRenderStages(WMTRenderStagePreRaster | WMTRenderStageFragment);
+      }
     }
   };
 
