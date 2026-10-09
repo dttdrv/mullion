@@ -6,6 +6,7 @@
 // inside each patch, 0 outside. pixels whose centre is on a patch's long edge are left out.
 // the factors differ from edge to edge and patch to patch, over the whole range to MAX_FACTOR.
 #include "d3d12_test.hpp"
+#include <cmath>
 
 static const char hlsl[] = R"hlsl(
 struct CP { float2 p : P; uint cell : CELL; };
