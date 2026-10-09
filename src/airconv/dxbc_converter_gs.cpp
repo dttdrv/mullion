@@ -73,6 +73,23 @@ add_stream_output_statistics(llvm::IRBuilder<> &builder, air::AirType &types, pv
   builder.SetInsertPoint(no);
 }
 constexpr uint32_t kStreamOutputTotals = 8; // after the 4 filled sizes, in 32-bit words
+// per stream, the totals of each block of object threadgroups (SM50_STREAM_OUTPUT_BLOCK_SHIFT) follow the groups'
+// totals, so a group adds up the blocks before its own and its block's groups before it, not every group before it;
+// then each invocation's counts
+constexpr uint32_t kStreamOutputBlockShift = SM50_STREAM_OUTPUT_BLOCK_SHIFT;
+
+static pvalue
+stream_output_blocks(llvm::IRBuilder<> &builder, pvalue groups) {
+  return builder.CreateAdd(builder.getInt32(kStreamOutputTotals), builder.CreateMul(groups, builder.getInt32(4)));
+}
+
+static pvalue
+stream_output_counts(llvm::IRBuilder<> &builder, pvalue groups) {
+  auto blocks = builder.CreateLShr(
+      builder.CreateAdd(groups, builder.getInt32((1u << kStreamOutputBlockShift) - 1)), kStreamOutputBlockShift
+  );
+  return builder.CreateAdd(stream_output_blocks(builder, groups), builder.CreateMul(blocks, builder.getInt32(4)));
+}
 // the last words of the payload: the primitives each stream wrote before the object threadgroup's, 64 bits each as
 // the counters they end in are (D3D11.3 14.5)
 constexpr uint32_t kPayloadStreamOutputBase = SM50_GEOMETRY_PAYLOAD_SIZE / 4 - 8;
@@ -628,7 +645,7 @@ convert_dxbc_geometry_shader(
   setup_immediate_constant_buffer(shader_info, resource_map, types, module, builder);
 
   // this invocation's place: draw instance, object threadgroup, primitive, geometry instance
-  pvalue so_invocation = nullptr, so_warp = nullptr, so_counts = nullptr;
+  pvalue so_invocation = nullptr, so_warp = nullptr, so_groups = nullptr, so_counts = nullptr;
   if (so) {
     auto targets_type = stream_output_targets_type(context, types);
     auto targets = function->getArg(so_idx);
@@ -649,9 +666,8 @@ convert_dxbc_geometry_shader(
         ),
         resource_map.gs_instance_id
     );
-    so_counts = builder.CreateAdd(
-        builder.getInt32(kStreamOutputTotals), builder.CreateMul(builder.CreateMul(warps, instances), builder.getInt32(4))
-    );
+    so_groups = builder.CreateMul(warps, instances);
+    so_counts = stream_output_counts(builder, so_groups);
     auto snapshots = builder.CreateBitCast(so_scratch, types._long->getPointerTo((uint32_t)air::AddressSpace::device));
     for (uint32_t b = 0; b < 4; b++) {
       so_address[b] = field(0, b);
@@ -920,8 +936,7 @@ convert_dxbc_geometry_shader(
                              : builder.CreateICmpEQ(
                                    builder.CreateAdd(so_invocation, one_const),
                                    builder.CreateMul(
-                                       builder.CreateLShr(builder.CreateSub(so_counts, builder.getInt32(kStreamOutputTotals)), 2),
-                                       builder.getInt32(warp_primitive_count * pShaderInternal->gs_instance_count)
+                                       so_groups, builder.getInt32(warp_primitive_count * pShaderInternal->gs_instance_count)
                                    )
                                );
     for (uint32_t s = 0; so->counting && s < 4; s++) {
@@ -932,6 +947,12 @@ convert_dxbc_geometry_shader(
       air.CreateAtomicRMW(
           llvm::AtomicRMWInst::Add,
           at(builder.CreateAdd(builder.getInt32(kStreamOutputTotals), builder.CreateAdd(builder.CreateMul(so_warp, builder.getInt32(4)), builder.getInt32(s)))),
+          count
+      );
+      auto block = builder.CreateLShr(so_warp, kStreamOutputBlockShift);
+      air.CreateAtomicRMW(
+          llvm::AtomicRMWInst::Add,
+          at(builder.CreateAdd(stream_output_blocks(builder, so_groups), builder.CreateAdd(builder.CreateMul(block, builder.getInt32(4)), builder.getInt32(s)))),
           count
       );
     }
@@ -1252,9 +1273,15 @@ stream_out_primitives(
     slots |= 1u << so->elements[i].output_slot;
   auto first = builder.CreateICmpEQ(lane, zero);
   if (so->counting) {
-    // the group's total, and from the draw's first group, the filled sizes it starts at
+    // the group's total, added to its block's too, and from the draw's first group, the filled sizes it starts at
     when(first, [&] {
       builder.CreateStore(count, builder.CreateGEP(types._int, scratch, {builder.CreateAdd(builder.getInt32(kStreamOutputTotals), builder.CreateMul(group, builder.getInt32(4)))}));
+      auto block = builder.CreateMul(builder.CreateLShr(group, kStreamOutputBlockShift), builder.getInt32(4));
+      air.CreateAtomicRMW(
+          llvm::AtomicRMWInst::Add,
+          builder.CreateGEP(types._int, scratch, {builder.CreateAdd(stream_output_blocks(builder, builder.CreateMul(field(4), field(5))), block)}),
+          count
+      );
       when(builder.CreateICmpEQ(group, zero), [&] {
         for (uint32_t b = 0; b < 4; b++)
           if (slots & (1u << b))
@@ -1736,8 +1763,8 @@ convert_dxbc_vertex_for_geometry_shader(
 
   air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
 
-  // the primitives each stream had before this object threadgroup: the group's threads sum the earlier groups' totals
-  // in turn, then over the SIMD group
+  // the primitives each stream had before this object threadgroup: the group's threads sum the totals of the blocks
+  // before its block, then of its block's groups before it, in turn, then over the SIMD group
   pvalue so_before[4] = {};
   if (so_base) {
     auto targets_type = stream_output_targets_type(context, types);
@@ -1747,10 +1774,14 @@ convert_dxbc_vertex_for_geometry_shader(
     };
     auto scratch = builder.CreateIntToPtr(field(3), types._int->getPointerTo((uint32_t)air::AddressSpace::device));
     auto group = builder.CreateAdd(builder.CreateMul(instance_id, field(4)), warp_id);
+    auto blocks_before = builder.CreateLShr(group, kStreamOutputBlockShift);
+    auto block_start = builder.CreateShl(blocks_before, kStreamOutputBlockShift);
+    auto items = builder.CreateAdd(blocks_before, builder.CreateSub(group, block_start));
+    auto blocks = stream_output_blocks(builder, builder.CreateMul(field(4), field(5)));
     auto head = builder.GetInsertBlock();
     auto loop = llvm::BasicBlock::Create(context, "so_before", function, dispatch);
     auto done = llvm::BasicBlock::Create(context, "so_summed", function, dispatch);
-    builder.CreateCondBr(builder.CreateICmpULT(warp_vertex_id, group), loop, done);
+    builder.CreateCondBr(builder.CreateICmpULT(warp_vertex_id, items), loop, done);
     builder.SetInsertPoint(loop);
     auto g = builder.CreatePHI(types._int, 2);
     g->addIncoming(warp_vertex_id, head);
@@ -1760,15 +1791,20 @@ convert_dxbc_vertex_for_geometry_shader(
       sums[s] = builder.CreatePHI(types._long, 2);
       sums[s]->addIncoming(builder.getInt64(0), head);
     }
+    // the first items are the blocks before the group's, the rest its block's groups before it
+    auto item = builder.CreateSelect(
+        builder.CreateICmpULT(g, blocks_before), builder.CreateAdd(blocks, builder.CreateMul(g, builder.getInt32(4))),
+        builder.CreateAdd(
+            builder.getInt32(kStreamOutputTotals),
+            builder.CreateMul(builder.CreateAdd(block_start, builder.CreateSub(g, blocks_before)), builder.getInt32(4))
+        )
+    );
     for (uint32_t s = 0; s < 4; s++) {
       auto sum = sums[s];
       next_sums[s] = builder.CreateAdd(
           sum, builder.CreateZExt(
                    builder.CreateLoad(
-                       types._int, builder.CreateGEP(
-                                       types._int, scratch,
-                                       {builder.CreateAdd(builder.getInt32(kStreamOutputTotals), builder.CreateAdd(builder.CreateMul(g, builder.getInt32(4)), builder.getInt32(s)))}
-                                   )
+                       types._int, builder.CreateGEP(types._int, scratch, {builder.CreateAdd(item, builder.getInt32(s))})
                    ),
                    types._long
                )
@@ -1778,7 +1814,7 @@ convert_dxbc_vertex_for_geometry_shader(
     g->addIncoming(next_g, loop);
     for (uint32_t s = 0; s < 4; s++)
       sums[s]->addIncoming(next_sums[s], loop);
-    builder.CreateCondBr(builder.CreateICmpULT(next_g, group), loop, done);
+    builder.CreateCondBr(builder.CreateICmpULT(next_g, items), loop, done);
     builder.SetInsertPoint(done);
     llvm::PHINode *partials[4];
     for (uint32_t s = 0; s < 4; s++) {

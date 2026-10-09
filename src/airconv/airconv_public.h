@@ -5,7 +5,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 31
+#define AIRCONV_VERSION 32
 
 #ifdef __cplusplus
 #include <string>
@@ -282,7 +282,9 @@ struct SM50_SHADER_STREAM_OUTPUT_DATA {
 
 /* what a stream output draw binds at SM50_BINDING_INDEX_STREAM_OUTPUT0: each slot's buffer, size and BufferFilledSize
    address (0 when unbound), and a scratch area zeroed for the draw: the filled sizes as the draw starts (4 qwords),
-   then per stream each object threadgroup's primitive total, then each geometry invocation's */
+   then per stream each object threadgroup's primitive total, each block's of 1 << SM50_STREAM_OUTPUT_BLOCK_SHIFT
+   groups, then each geometry invocation's (SM50StreamOutputScratch) */
+enum { SM50_STREAM_OUTPUT_BLOCK_SHIFT = 10 };
 struct SM50_STREAM_OUTPUT_TARGETS {
   uint64_t address[4];
   uint64_t size[4];
@@ -292,6 +294,17 @@ struct SM50_STREAM_OUTPUT_TARGETS {
   uint32_t instances;
   uint64_t statistics[4]; /* per stream, an active query's D3D12_QUERY_DATA_SO_STATISTICS to add to, or 0 */
 };
+/* the bytes of a draw's scratch area before the invocations' counts, which it starts with zeroed, for `groups` object
+   threadgroups */
+static inline uint64_t
+SM50StreamOutputZeroed(uint64_t groups) {
+  return 8 * 4 + 4 * 4 * (groups + ((groups + (1u << SM50_STREAM_OUTPUT_BLOCK_SHIFT) - 1) >> SM50_STREAM_OUTPUT_BLOCK_SHIFT));
+}
+/* the bytes of the whole area, for object threadgroups of at most `invocations` geometry invocations each */
+static inline uint64_t
+SM50StreamOutputScratch(uint64_t groups, uint32_t invocations) {
+  return SM50StreamOutputZeroed(groups) + 4 * 4 * groups * invocations;
+}
 
 enum SM50_SHADER_METAL_VERSION {
   SM50_SHADER_METAL_310 = 310,

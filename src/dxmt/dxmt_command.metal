@@ -584,11 +584,13 @@ struct DXMTGSDispatchMarshal {
       output.z = 1;
     }
 
-    // stream output's scratch area (encodeStreamOutputTargets): the filled sizes, then per stream a total per object
-    // threadgroup and a count per invocation. the counts are written before they are read, the rest starts at zero.
-    // a draw it has no room for does not run, and leaves what the encoder's draws needed with it
+    // stream output's scratch area (SM50_STREAM_OUTPUT_TARGETS, SM50StreamOutputScratch): the filled sizes, then per
+    // stream a total per object threadgroup and per block of 1 << 10 of them, and a count per invocation. the counts
+    // are written before they are read, the rest starts at zero. a draw it has no room for does not run, and leaves
+    // what the encoder's draws needed with it
     if (task.so_targets && output.x) {
-      ulong groups = (ulong)output.x * output.y, need = (32 + 16 * groups * (1 + task.so_invocations) + 15) & ~15ul;
+      ulong groups = (ulong)output.x * output.y, zeroed = 32 + 16 * (groups + ((groups + 1023) >> 10));
+      ulong need = (zeroed + 16 * groups * task.so_invocations + 15) & ~15ul;
       if (so_used + need > task.so_scratch_size) {
         *task.so_overflow = max(*task.so_overflow, so_used + need);
         output.x = 0;
@@ -596,7 +598,7 @@ struct DXMTGSDispatchMarshal {
         output.z = 0;
       } else {
         device uint* scratch = task.so_scratch_area + so_used / 4;
-        for (ulong i = 0; i < 8 + 4 * groups; i++)
+        for (ulong i = 0; i < zeroed / 4; i++)
           scratch[i] = 0;
         task.so_targets->scratch = task.so_scratch + so_used;
         task.so_targets->warps = output.x;

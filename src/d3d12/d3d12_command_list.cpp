@@ -925,7 +925,7 @@ public:
       targets.statistics[b] = so_statistics_[b];
     }
     uint64_t groups = uint64_t(warps) * Args.InstanceCount;
-    uint64_t scratch_bytes = sizeof(uint64_t) * 4 + sizeof(uint32_t) * 4 * groups * (1 + vertex_per_warp * pso_graphics_->gs_instances);
+    uint64_t scratch_bytes = SM50StreamOutputScratch(groups, vertex_per_warp * pso_graphics_->gs_instances);
     auto [Scratch, ScratchOffset] = allocator_->AllocateGPUHeap(scratch_bytes, 16);
     // a draw whose scratch no heap has room for: the list fails when it is closed
     if (!Scratch)

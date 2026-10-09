@@ -1,11 +1,11 @@
 # the GS dispatch marshal does not leave what an indirect stream output draw lacked
 diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
-index 8b0a8e9..d8d4507 100644
+index 25d41ae..cc690ab 100644
 --- a/src/dxmt/dxmt_command.metal
 +++ b/src/dxmt/dxmt_command.metal
-@@ -590,7 +590,6 @@ struct DXMTGSDispatchMarshal {
-     if (task.so_targets && output.x) {
-       ulong groups = (ulong)output.x * output.y, need = (32 + 16 * groups * (1 + task.so_invocations) + 15) & ~15ul;
+@@ -592,7 +592,6 @@ struct DXMTGSDispatchMarshal {
+       ulong groups = (ulong)output.x * output.y, zeroed = 32 + 16 * (groups + ((groups + 1023) >> 10));
+       ulong need = (zeroed + 16 * groups * task.so_invocations + 15) & ~15ul;
        if (so_used + need > task.so_scratch_size) {
 -        *task.so_overflow = max(*task.so_overflow, so_used + need);
          output.x = 0;
