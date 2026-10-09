@@ -1746,10 +1746,6 @@ public:
   GeometryDrawIndirect(
     ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs
   ) {
-    if (StreamOutputLayout()) {
-      ERR("stream output from an indirect draw is not implemented");
-      return;
-    }
     auto max_object_threadgroups = max_object_threadgroups_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
@@ -1765,19 +1761,30 @@ public:
           return;
   
         enc.bumpVisibilityResultOffset();
+        enc.resolveRenderPassBarrier();
+        auto draw = [&] {
+          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
+          cmd.type = WMTRenderCommandDXMTGeometryDrawIndirect;
+          cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
+          cmd.dispatch_args_offset = dispatch_arg.offset;
+          cmd.vertex_per_warp = vertex_per_warp;
+          cmd.indirect_args_buffer = buffer->buffer();
+          cmd.indirect_args_offset = buffer_offset + AlignedByteOffsetForArgs;
+          cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        };
+        // with stream output, the marshal sizes the draw's scratch from the arguments it reads
+        auto encoder = enc.currentRenderEncoder();
+        uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
+        uint64_t targets = 0;
+        if (encoder->so_count_pso)
+          targets = enc.encodeStreamOutputDraw(0, 0, invocations, draw);
+        else
+          draw();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups, targets,
+          invocations
         );
-        enc.resolveRenderPassBarrier();
-        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
-        cmd.type = WMTRenderCommandDXMTGeometryDrawIndirect;
-        cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
-        cmd.dispatch_args_offset = dispatch_arg.offset;
-        cmd.vertex_per_warp = vertex_per_warp;
-        cmd.indirect_args_buffer = buffer->buffer();
-        cmd.indirect_args_offset = buffer_offset + AlignedByteOffsetForArgs;
-        cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
       });
     }
   }
@@ -1786,10 +1793,6 @@ public:
   GeometryDrawIndexedIndirect(
     ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs
   ) {
-    if (StreamOutputLayout()) {
-      ERR("stream output from an indirect draw is not implemented");
-      return;
-    }
     auto IndexBuffer = MeshIndexBuffer();
     auto max_object_threadgroups = max_object_threadgroups_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
@@ -1808,21 +1811,32 @@ public:
         auto [index_buffer, index_buffer_offset] = IndexBuffer(enc);
   
         enc.bumpVisibilityResultOffset();
+        enc.resolveRenderPassBarrier();
+        auto draw = [&] {
+          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed_indirect>();
+          cmd.type = WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
+          cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
+          cmd.dispatch_args_offset = dispatch_arg.offset;
+          cmd.vertex_per_warp = vertex_per_warp;
+          cmd.indirect_args_buffer = buffer->buffer();
+          cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
+          cmd.index_buffer = index_buffer;
+          cmd.index_buffer_offset = index_buffer_offset;
+          cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        };
+        // with stream output, the marshal sizes the draw's scratch from the arguments it reads
+        auto encoder = enc.currentRenderEncoder();
+        uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
+        uint64_t targets = 0;
+        if (encoder->so_count_pso)
+          targets = enc.encodeStreamOutputDraw(0, 0, invocations, draw);
+        else
+          draw();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups, targets,
+          invocations
         );
-        enc.resolveRenderPassBarrier();
-        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed_indirect>();
-        cmd.type = WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
-        cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
-        cmd.dispatch_args_offset = dispatch_arg.offset;
-        cmd.vertex_per_warp = vertex_per_warp;
-        cmd.indirect_args_buffer = buffer->buffer();
-        cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
-        cmd.index_buffer = index_buffer;
-        cmd.index_buffer_offset = index_buffer_offset;
-        cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
       });
     }
   }

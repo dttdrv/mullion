@@ -10,6 +10,8 @@
 // object threadgroups, and the expectations are the same shaders run on the CPU. the queries count per stream the
 // primitives written and those that needed room, between their Begin and End, overlapping ones included; an overflow
 // predicate is whether the two differ, the unnumbered one for any stream (D3D11.3 functional spec, 20.4).
+// DrawInstancedIndirect and DrawIndexedInstancedIndirect take the same arguments from a buffer (8.7, 8.8): the strips
+// and the vertex shader's points stream out from them as from the direct draws, the strips a second time indexed.
 #include "d3d11_test.hpp"
 #include <array>
 
@@ -235,6 +237,35 @@ main() {
   targets(out_alone.Get(), append);
   context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
   context->DrawInstanced(points, instances, 0, 0);
+  // the points and the strips again, from arguments in a buffer: a draw's, then an indexed draw's that appends
+  const UINT argument_words[] = {points, instances, 0, 0, points, instances, 0, 0, 0};
+  D3D11_BUFFER_DESC arguments_desc{
+      sizeof(argument_words), D3D11_USAGE_DEFAULT, 0, 0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS
+  };
+  D3D11_SUBRESOURCE_DATA arguments_data{argument_words};
+  ComPtr<ID3D11Buffer> arguments, indices;
+  CHECK(device->CreateBuffer(&arguments_desc, &arguments_data, &arguments));
+  std::vector<UINT16> index_words(points);
+  for (UINT p = 0; p < points; p++)
+    index_words[p] = p;
+  D3D11_BUFFER_DESC index_desc{UINT(points * sizeof(UINT16)), D3D11_USAGE_DEFAULT, D3D11_BIND_INDEX_BUFFER};
+  D3D11_SUBRESOURCE_DATA index_data{index_words.data()};
+  CHECK(device->CreateBuffer(&index_desc, &index_data, &indices));
+  auto indirect0 = target(3 * strip_strides[0] * triangles.size() * 2 + 4),
+       indirect1 = target(3 * strip_strides[1] * triangles.size() * 2 + 4),
+       indirect_alone = target(16 * instances * points + 4);
+  auto indirect_statistics = query(D3D11_QUERY_SO_STATISTICS);
+  targets(indirect_alone.Get(), 0);
+  context->DrawInstancedIndirect(arguments.Get(), 0);
+  context->VSSetShader(vertex.Get(), nullptr, 0);
+  context->GSSetShader(strips.Get(), nullptr, 0);
+  context->IASetIndexBuffer(indices.Get(), DXGI_FORMAT_R16_UINT, 0);
+  context->Begin(indirect_statistics.Get());
+  targets(indirect0.Get(), 0, indirect1.Get(), 0);
+  context->DrawInstancedIndirect(arguments.Get(), 0);
+  targets(indirect0.Get(), append, indirect1.Get(), append);
+  context->DrawIndexedInstancedIndirect(arguments.Get(), 4 * sizeof(UINT));
+  context->End(indirect_statistics.Get());
   context->SOSetTargets(0, nullptr, nullptr);
 
   // the queries from a deferred context's list: a draw that fits both its buffers, and one past its second
@@ -315,6 +346,25 @@ main() {
     for (int c = 0; c < 4; c++)
       expect("vertex shader alone", got_alone[4 * v + c], alone[v][c]);
   expect("vertex shader alone past the draws", got_alone[4 * alone.size()], sentinel);
+  // from arguments: the strips twice, and the vertex shader's points, the last of `alone`
+  auto got_indirect0 = read(device.Get(), context.Get(), indirect0.Get()),
+       got_indirect1 = read(device.Get(), context.Get(), indirect1.Get()),
+       got_indirect_alone = read(device.Get(), context.Get(), indirect_alone.Get());
+  for (UINT64 v = 0; v < 3 * triangles.size() * 2; v++) {
+    auto &want = triangles[v / 3 % triangles.size()][v % 3];
+    auto at = v * strip_strides[0] / 4;
+    expect("indirect slot 0 x", got_indirect0[at], want[0]);
+    expect("indirect slot 0 y", got_indirect0[at + 1], want[1]);
+    expect("indirect slot 0 w", got_indirect0[at + 3], want[3]);
+    expect("indirect slot 1 z", got_indirect1[v * strip_strides[1] / 4], want[2]);
+  }
+  expect("indirect slot 0 past the draws", got_indirect0[3 * triangles.size() * 2 * strip_strides[0] / 4], sentinel);
+  expect("indirect slot 1 past the draws", got_indirect1[3 * triangles.size() * 2 * strip_strides[1] / 4], sentinel);
+  const size_t first_point = alone.size() - instances * points;
+  for (size_t v = 0; v < instances * points; v++)
+    for (int c = 0; c < 4; c++)
+      expect("indirect vertex shader alone", got_indirect_alone[4 * v + c], alone[first_point + v][c]);
+  expect("indirect vertex shader alone past the draw", got_indirect_alone[4 * instances * points], sentinel);
 
   auto result = [&](ID3D11Query *q, void *data, UINT size) {
     HRESULT hr;
@@ -345,6 +395,9 @@ main() {
   expect("a list's draw that fits overflowed", overflowed, FALSE);
   result(listed_overflowing.Get(), &overflowed, sizeof(overflowed));
   expect("a list's draw past its buffer overflowed", overflowed, TRUE);
+  result(indirect_statistics.Get(), &counted, sizeof(counted));
+  expect("primitives written from arguments", counted.NumPrimitivesWritten, 2 * triangles.size());
+  expect("primitives needed from arguments", counted.PrimitivesStorageNeeded, 2 * triangles.size());
 
   texture_desc.Usage = D3D11_USAGE_STAGING;
   texture_desc.BindFlags = 0;
