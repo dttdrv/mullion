@@ -115,12 +115,17 @@ HRESULT CreateStagingTextureInternal(MTLD3D11Device *pDevice,
     if (FAILED(GetLinearTextureLayout(pDevice, finalDesc, sub.MipLevel, bpr, bpi, buf_len))) {
       return E_FAIL;
     }
+    uint32_t initial_row_bytes, initial_image_bytes, initial_length;
+    if (pInitialData && is_1d_tex &&
+        FAILED(GetLinearTextureLayout(pDevice, finalDesc, sub.MipLevel, initial_row_bytes, initial_image_bytes,
+                                      initial_length, false)))
+      return E_FAIL;
     D3D11_ASSERT(subresources.size() == sub.SubresourceId);
     auto buffer = new StagingResource(metal, buf_len, bpr, bpi);
     if (pInitialData) {
       auto mapped = buffer->mappedImmediateMemory();
       auto bpi_read = is_3d_tex ? pInitialData[sub.SubresourceId].SysMemSlicePitch : 0;
-      auto bpr_read = is_1d_tex ? 0 : pInitialData[sub.SubresourceId].SysMemPitch;
+      auto bpr_read = is_1d_tex ? initial_row_bytes : pInitialData[sub.SubresourceId].SysMemPitch;
       for (auto image = 0u; image < d; image++) {
         for (auto row = 0u; row < (bpi / bpr); row++) {
           auto dst_data = ptr_add(mapped, image * bpi + row * bpr);

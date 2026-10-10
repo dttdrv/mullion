@@ -1,0 +1,13 @@
+# ignore an empty Z interval of a buffer box
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4046,7 +4046,7 @@
+     } else {
+       SrcBox = {0, 0, 0, src_desc.ByteWidth, 1, 1};
+     }
+-    if (SrcBox.right <= SrcBox.left || SrcBox.bottom <= SrcBox.top || SrcBox.back <= SrcBox.front)
++    if (SrcBox.right <= SrcBox.left || SrcBox.bottom <= SrcBox.top)
+       return;
+     if (auto staging_dst = GetStagingResource(pDstResource, DstSubresource)) {
+       if (auto staging_src = GetStagingResource(pSrcResource, SrcSubresource)) {

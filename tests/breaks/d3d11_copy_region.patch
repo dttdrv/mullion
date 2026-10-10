@@ -1,0 +1,14 @@
+# reject copies between texture dimensions
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -279,6 +279,9 @@
+       DstSubresource(DstSubresource),
+       SrcFormat(Src_.FormatDescription),
+       DstFormat(Dst_.FormatDescription) {
++    if (Dst_.Dimension != Src_.Dimension)
++      return;
++
+     if (SrcFormat.PixelFormat == WMTPixelFormatInvalid)
+       return;
+     if (DstFormat.PixelFormat == WMTPixelFormatInvalid)

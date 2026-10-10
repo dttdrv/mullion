@@ -279,9 +279,6 @@ public:
       DstSubresource(DstSubresource),
       SrcFormat(Src_.FormatDescription),
       DstFormat(Dst_.FormatDescription) {
-    if (Dst_.Dimension != Src_.Dimension)
-      return;
-
     if (SrcFormat.PixelFormat == WMTPixelFormatInvalid)
       return;
     if (DstFormat.PixelFormat == WMTPixelFormatInvalid)
@@ -293,14 +290,6 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
       D3D11_TEXTURE1D_DESC &dst_desc = Dst_.Texture1DDesc;
-      D3D11_TEXTURE1D_DESC &src_desc = Src_.Texture1DDesc;
-
-      Src.Format = src_desc.Format;
-      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
-      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
-      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
-      Src.Height = 1;
-      Src.Depth = 1;
 
       Dst.Format = dst_desc.Format;
       Dst.MipLevel = DstSubresource % dst_desc.MipLevels;
@@ -312,14 +301,6 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
       D3D11_TEXTURE2D_DESC1 &dst_desc = Dst_.Texture2DDesc;
-      D3D11_TEXTURE2D_DESC1 &src_desc = Src_.Texture2DDesc;
-
-      Src.Format = src_desc.Format;
-      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
-      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
-      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
-      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
-      Src.Depth = 1;
 
       Dst.Format = dst_desc.Format;
       Dst.MipLevel = DstSubresource % dst_desc.MipLevels;
@@ -331,6 +312,44 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
       D3D11_TEXTURE3D_DESC1 &dst_desc = Dst_.Texture3DDesc;
+
+      Dst.Format = dst_desc.Format;
+      Dst.MipLevel = DstSubresource;
+      Dst.ArraySlice = 0;
+      Dst.Width = std::max(1u, dst_desc.Width >> Dst.MipLevel);
+      Dst.Height = std::max(1u, dst_desc.Height >> Dst.MipLevel);
+      Dst.Depth = std::max(1u, dst_desc.Depth >> Dst.MipLevel);
+      break;
+    }
+    }
+
+    switch (Src_.Dimension) {
+    default: {
+      return;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+      D3D11_TEXTURE1D_DESC &src_desc = Src_.Texture1DDesc;
+
+      Src.Format = src_desc.Format;
+      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
+      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
+      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
+      Src.Height = 1;
+      Src.Depth = 1;
+      break;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+      D3D11_TEXTURE2D_DESC1 &src_desc = Src_.Texture2DDesc;
+
+      Src.Format = src_desc.Format;
+      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
+      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
+      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
+      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
+      Src.Depth = 1;
+      break;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
       D3D11_TEXTURE3D_DESC1 &src_desc = Src_.Texture3DDesc;
 
       Src.Format = src_desc.Format;
@@ -339,14 +358,6 @@ public:
       Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
       Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
       Src.Depth = std::max(1u, src_desc.Depth >> Src.MipLevel);
-
-      Dst.Format = dst_desc.Format;
-      Dst.MipLevel = DstSubresource;
-      Dst.ArraySlice = 0;
-      Dst.Width = std::max(1u, dst_desc.Width >> Dst.MipLevel);
-      Dst.Height = std::max(1u, dst_desc.Height >> Dst.MipLevel);
-      Dst.Depth = std::max(1u, dst_desc.Depth >> Dst.MipLevel);
-
       break;
     }
     }
@@ -4033,10 +4044,9 @@ public:
     if (pSrcBox) {
       SrcBox = *pSrcBox;
     } else {
-      SrcBox.left = 0;
-      SrcBox.right = src_desc.ByteWidth;
+      SrcBox = {0, 0, 0, src_desc.ByteWidth, 1, 1};
     }
-    if (SrcBox.right <= SrcBox.left)
+    if (SrcBox.right <= SrcBox.left || SrcBox.bottom <= SrcBox.top || SrcBox.back <= SrcBox.front)
       return;
     if (auto staging_dst = GetStagingResource(pDstResource, DstSubresource)) {
       if (auto staging_src = GetStagingResource(pSrcResource, SrcSubresource)) {

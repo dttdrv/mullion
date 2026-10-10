@@ -1,0 +1,13 @@
+# discard the initial texels of a 1D staging texture
+diff --git a/src/d3d11/d3d11_resource_staging.cpp b/src/d3d11/d3d11_resource_staging.cpp
+--- a/src/d3d11/d3d11_resource_staging.cpp
++++ b/src/d3d11/d3d11_resource_staging.cpp
+@@ -125,7 +125,7 @@
+     if (pInitialData) {
+       auto mapped = buffer->mappedImmediateMemory();
+       auto bpi_read = is_3d_tex ? pInitialData[sub.SubresourceId].SysMemSlicePitch : 0;
+-      auto bpr_read = is_1d_tex ? initial_row_bytes : pInitialData[sub.SubresourceId].SysMemPitch;
++      auto bpr_read = is_1d_tex ? 0 : pInitialData[sub.SubresourceId].SysMemPitch;
+       for (auto image = 0u; image < d; image++) {
+         for (auto row = 0u; row < (bpi / bpr); row++) {
+           auto dst_data = ptr_add(mapped, image * bpi + row * bpr);
