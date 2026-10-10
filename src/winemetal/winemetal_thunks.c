@@ -1528,3 +1528,28 @@ MTLComputePipelineState_newVisibleFunctionTable(obj_handle_t pso, const obj_hand
   UNIX_CALL(163, &params);
   return params.ret;
 }
+
+WINEMETAL_API obj_handle_t
+MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
+                                       const struct WMTSampleBufferAttachmentInfo *samples,
+                                       const struct WMTRenderPassInfo *render_info) {
+  struct unixcall_mtlcommandbuffer_sampledcommandencoder params;
+  params.cmdbuf = cmdbuf;
+  WMT_MEMPTR_SET(params.samples, samples);
+  WMT_MEMPTR_SET(params.render_info, render_info);
+  params.type = type;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixSampledEncoder, &params);
+  return params.ret;
+}
+
+WINEMETAL_API uint32_t
+WMTDiagWrite(const char *directory, const char *lines, uint64_t length) {
+  struct unixcall_wmtdiag_write params;
+  WMT_MEMPTR_SET(params.directory, directory);
+  WMT_MEMPTR_SET(params.lines, lines);
+  params.length = length;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixDiagWrite, &params);
+  return params.ret;
+}

@@ -18,6 +18,7 @@
 
 #include "d3d12_command_allocator.hpp"
 #include "com/com_pointer.hpp"
+#include "dxmt_diag.hpp"
 #include <map>
 
 namespace dxmt {
@@ -170,6 +171,10 @@ MTLD3D12CommandAllocatorImpl::GPURecordsFor(EncoderData *Root) {
 }
 
 MTLD3D12CommandAllocatorImpl::~MTLD3D12CommandAllocatorImpl() {
+  if (diag::profile)
+    for (auto &list : encoder_lists_)
+      for (auto pass = list.next; pass; pass = pass->next)
+        device_->PassName(pass);
   ReleaseRuns();
   delete records_;
 }
@@ -189,7 +194,7 @@ MTLD3D12CommandAllocatorImpl::ReleaseRuns() {
 MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type) :
     MTLD3D12Pageable<MTLD3D12CommandAllocator>(pDevice),
     type_(Type),
-    records_(device_->NamesPasses() ? new GPURecording : nullptr),
+    records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
     clear_rtv_(device_->GetMTLDevice(), *this),
@@ -294,6 +299,8 @@ MTLD3D12CommandAllocatorImpl::Reset() {
   for (auto &encoder_list : encoder_lists_) {
     EncoderData *next = encoder_list.next;
     while (next) {
+      if (diag::profile)
+        device_->PassName(next);
       switch (next->type) {
       case EncoderType::Null:
         break;
@@ -488,7 +495,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   }
 
   data->most = 0;
-  if (device_->NamesPasses()) {
+  if (diag::errors) {
     auto [words, offset] = AllocateGPUHeap(kMostWords * sizeof(uint32_t), sizeof(uint32_t));
     memset(words, 0, kMostWords * sizeof(uint32_t));
     data->most = gpu_heap_buffer_address_ + offset;

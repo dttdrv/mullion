@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_acceleration_structure.hpp"
+#include "dxmt_diag.hpp"
 #include "airconv_ray.h"
 #include "d3d12_device.hpp"
 #include "d3d12_device_child.hpp"
@@ -76,7 +77,7 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   dxmt::mutex residency_lock_;
   std::atomic<HRESULT> removed_ = S_OK;
   dxmt::mutex pass_names_lock_;
-  std::unordered_map<uint64_t, std::string> pass_names_;
+  std::unordered_map<const EncoderData *, std::string> pass_names_;
   uint64_t late_pipelines_ = 0;
   double pipeline_ms_ = 0, longest_pipeline_ms_ = 0;
   dxmt::mutex acceleration_structure_lock_;
@@ -1768,20 +1769,27 @@ public:
 
   bool
   NamesPasses() {
-    static const bool names = !env::getEnvVar("DXMT_D3D12_GPU_ERRORS").empty();
+    static const bool names = diag::errors || diag::profile;
     return names;
   }
 
   void
-  NamePass(uint64_t id, const std::string &pipeline) {
+  NamePass(const EncoderData *pass, const std::string &pipeline) {
     std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
-    pass_names_[id] += pipeline;
+    auto &name = pass_names_[pass];
+    if (diag::profile && !name.empty())
+      name += '|';
+    name += pipeline;
   }
 
   std::string
-  PassName(uint64_t id) {
+  PassName(const EncoderData *pass, bool consume) {
     std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
-    auto name = pass_names_.extract(id);
+    if (!consume) {
+      auto name = pass_names_.find(pass);
+      return name == pass_names_.end() ? std::string() : name->second;
+    }
+    auto name = pass_names_.extract(pass);
     return name ? std::move(name.mapped()) : std::string();
   }
 

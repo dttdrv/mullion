@@ -736,6 +736,11 @@ public:
   }
 
   uint64_t
+  gpuStartTime() {
+    return MTLCommandBuffer_property(handle, WMTCommandBufferPropertyGPUStartTime);
+  }
+
+  uint64_t
   gpuEndTime() {
     return MTLCommandBuffer_property(handle, WMTCommandBufferPropertyGPUEndTime);
   }
@@ -753,6 +758,22 @@ public:
   RenderCommandEncoder
   renderCommandEncoder(WMTRenderPassInfo &info) {
     return RenderCommandEncoder{MTLCommandBuffer_renderCommandEncoder(handle, &info)};
+  }
+
+  RenderCommandEncoder
+  renderCommandEncoder(WMTRenderPassInfo &info, const WMTSampleBufferAttachmentInfo &samples) {
+    return RenderCommandEncoder{MTLCommandBuffer_sampledCommandEncoder(handle, WMTSampledRender, &samples, &info)};
+  }
+
+  ComputeCommandEncoder
+  computeCommandEncoder(const WMTSampleBufferAttachmentInfo &samples) {
+    return ComputeCommandEncoder{MTLCommandBuffer_sampledCommandEncoder(handle, WMTSampledCompute, &samples, nullptr)};
+  }
+
+  AccelerationStructureCommandEncoder
+  accelerationStructureCommandEncoder(const WMTSampleBufferAttachmentInfo &samples) {
+    return AccelerationStructureCommandEncoder{
+        MTLCommandBuffer_sampledCommandEncoder(handle, WMTSampledAccelerationStructure, &samples, nullptr)};
   }
 
   BlitCommandEncoder

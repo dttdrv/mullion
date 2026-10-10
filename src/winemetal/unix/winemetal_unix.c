@@ -1,5 +1,7 @@
 #include <stdatomic.h>
 #include <dlfcn.h>
+#include <pthread.h>
+#include <unistd.h>
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
 #import <ColorSync/ColorSync.h>
@@ -424,7 +426,7 @@ _MTLCommandBuffer_computeCommandEncoder(void *obj) {
 }
 
 static NTSTATUS
-_MTLCommandBuffer_renderCommandEncoder(void *obj) {
+renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *sample) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
   struct WMTRenderPassInfo *info = (struct WMTRenderPassInfo *)params->arg;
   MTLRenderPassDescriptor *descriptor = [[MTLRenderPassDescriptor alloc] init];
@@ -476,10 +478,25 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
     descriptor.tileHeight = info->tile_height;
   }
 
+  if (sample) {
+    MTLRenderPassSampleBufferAttachmentDescriptor *samples = descriptor.sampleBufferAttachments[0];
+    bool vertex =
+        sample->end_of_encoder_sample_index - sample->start_of_encoder_sample_index + 1 == WMTRenderTimestampSamples;
+    samples.sampleBuffer = (id<MTLCounterSampleBuffer>)sample->sample_buffer;
+    samples.startOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index : MTLCounterDontSample;
+    samples.endOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index + 1 : MTLCounterDontSample;
+    samples.startOfFragmentSampleIndex = sample->end_of_encoder_sample_index - 1;
+    samples.endOfFragmentSampleIndex = sample->end_of_encoder_sample_index;
+  }
   params->ret = (obj_handle_t)[(id<MTLCommandBuffer>)params->handle renderCommandEncoderWithDescriptor:descriptor];
 
   [descriptor release];
   return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLCommandBuffer_renderCommandEncoder(void *obj) {
+  return renderCommandEncoder(obj, NULL);
 }
 
 static NTSTATUS
@@ -3753,6 +3770,61 @@ _MTLComputePipelineState_newVisibleFunctionTable(void *obj) {
   return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+_MTLCommandBuffer_sampledCommandEncoder(void *obj) {
+  struct unixcall_mtlcommandbuffer_sampledcommandencoder *params = obj;
+  id<MTLCommandBuffer> cmdbuf = (id<MTLCommandBuffer>)params->cmdbuf;
+  const struct WMTSampleBufferAttachmentInfo *samples = params->samples.ptr;
+  if (params->type == WMTSampledRender) {
+    struct unixcall_generic_obj_uint64_obj_ret render = {params->cmdbuf, (uint64_t)params->render_info.ptr, 0};
+    NTSTATUS status = renderCommandEncoder(&render, samples);
+    params->ret = render.ret;
+    return status;
+  }
+  if (params->type == WMTSampledAccelerationStructure) {
+    MTLAccelerationStructurePassDescriptor *desc = [[MTLAccelerationStructurePassDescriptor alloc] init];
+    desc.sampleBufferAttachments[0].sampleBuffer = (id<MTLCounterSampleBuffer>)samples->sample_buffer;
+    desc.sampleBufferAttachments[0].startOfEncoderSampleIndex = samples->start_of_encoder_sample_index;
+    desc.sampleBufferAttachments[0].endOfEncoderSampleIndex = samples->end_of_encoder_sample_index;
+    params->ret = (obj_handle_t)[cmdbuf accelerationStructureCommandEncoderWithDescriptor:desc];
+    [desc release];
+  } else {
+    MTLComputePassDescriptor *desc = [[MTLComputePassDescriptor alloc] init];
+    desc.sampleBufferAttachments[0].sampleBuffer = (id<MTLCounterSampleBuffer>)samples->sample_buffer;
+    desc.sampleBufferAttachments[0].startOfEncoderSampleIndex = samples->start_of_encoder_sample_index;
+    desc.sampleBufferAttachments[0].endOfEncoderSampleIndex = samples->end_of_encoder_sample_index;
+    params->ret = (obj_handle_t)[cmdbuf computeCommandEncoderWithDescriptor:desc];
+    [desc release];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_WMTDiagWrite(void *obj) {
+  struct unixcall_wmtdiag_write *params = obj;
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  static FILE *file;
+  static bool opened;
+  params->ret = getpid();
+  if (!params->lines.ptr)
+    return STATUS_SUCCESS;
+  pthread_mutex_lock(&lock);
+  if (!opened) {
+    opened = true;
+    NSString *path =
+        [NSString stringWithFormat:@"%s/mullion-%u.diag", (const char *)params->directory.ptr, params->ret];
+    file = fopen(path.fileSystemRepresentation, "w");
+    if (!file)
+      perror("mullion-diag: open record");
+  }
+  if (!file || fwrite(params->lines.ptr, 1, params->length, file) != params->length || fflush(file)) {
+    params->ret = 0;
+    perror("mullion-diag: write record");
+  }
+  pthread_mutex_unlock(&lock);
+  return STATUS_SUCCESS;
+}
+
 const void *__wine_unix_call_funcs[] = {
     &_NSObject_retain,
     &_NSObject_release,
@@ -3921,6 +3993,8 @@ const void *__wine_unix_call_funcs[] = {
     &thunk_SM50GetRayShader,
     &_MetalView_setPlacement,
     &_MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid,
+    &_MTLCommandBuffer_sampledCommandEncoder,
+    &_WMTDiagWrite,
 };
 
 #ifndef DXMT_NATIVE
@@ -4092,5 +4166,12 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &thunk32_SM50GetRayShader,
     &_MetalView_setPlacement,
     &_MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid,
+    &_MTLCommandBuffer_sampledCommandEncoder,
+    &_WMTDiagWrite,
 };
+_Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
+               "32-bit bridge call count");
 #endif
+
+_Static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == WMTUnixCallCount,
+               "bridge call count");

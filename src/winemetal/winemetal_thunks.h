@@ -514,6 +514,18 @@ struct unixcall_mtlcomputepso_newvisiblefunctiontable {
   obj_handle_t ret;
 };
 
+struct unixcall_mtlcommandbuffer_sampledcommandencoder {
+  obj_handle_t cmdbuf;
+  struct WMTConstMemoryPointer samples, render_info;
+  obj_handle_t ret;
+  enum WMTSampledEncoder type;
+};
+struct unixcall_wmtdiag_write {
+  struct WMTConstMemoryPointer directory, lines;
+  uint64_t length;
+  uint32_t ret;
+};
+
 #pragma pack(pop)
 
 #endif

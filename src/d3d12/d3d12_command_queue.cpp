@@ -27,6 +27,7 @@
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
 #include "util_env.hpp"
+#include "dxmt_diag.hpp"
 #include <atomic>
 #include <charconv>
 #include <fstream>
@@ -199,6 +200,25 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     bool presents = false;
   };
 
+  struct ProfileBuffer {
+    uint32_t samples = 0;
+    uint64_t committed = 0;
+    struct Pass {
+      const EncoderData *pass;
+      uint64_t id;
+      EncoderType type;
+      uint32_t first, count, last;
+      uint64_t encoding;
+    };
+    std::vector<Pass> passes;
+  };
+  struct ProfileQueue {
+    static inline std::atomic_uint64_t queues{0};
+    uint64_t id = ++queues;
+    std::array<ProfileBuffer, kCommandQueueSize> buffers;
+  };
+  std::unique_ptr<ProfileQueue> profile_ = diag::profile ? std::make_unique<ProfileQueue>() : nullptr;
+
   std::array<InflightCommandBuffer, kCommandQueueSize> inflight_cmdbuf_pool_;
   dxmt::thread inflight_cmdbuf_wait_thread_;
 
@@ -258,6 +278,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       Watched(internal_seq);
       if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
         inflight.cmdbuf.waitUntilCompleted();
+      auto completed = profile_ ? diag::Now() : 0;
       Watched(0);
       Trace("command buffer ", internal_seq, " completed");
       if (record_totals_)
@@ -276,10 +297,38 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         device_->LoseDevice();
       }
 
-      std::vector<uint64_t> clock(inflight.sampled.size());
+      std::vector<uint64_t> clock(profile_ && profile_->buffers[internal_seq % kCommandQueueSize].samples
+                                      ? device_->timestamp_samples.limit
+                                      : inflight.sampled.size(),
+                                  profile_ ? ~uint64_t(0) : 0);
       if (inflight.samples) {
         inflight.samples.resolveCounterRange(0, clock.size(), clock.data(), clock.size() * sizeof(uint64_t));
         device_->timestamp_samples.Return(std::move(inflight.samples));
+      }
+      if (profile_) {
+        auto &buffer = profile_->buffers[internal_seq % kCommandQueueSize];
+        auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
+                                inflight.cmdbuf.gpuStartTime(), inflight.cmdbuf.gpuEndTime());
+        for (auto &pass : buffer.passes) {
+          const char *kind = pass.type == EncoderType::Clear     ? "Clear"
+                             : pass.type == EncoderType::Render  ? "Render"
+                             : pass.type == EncoderType::Blit    ? "Blit"
+                             : pass.type == EncoderType::Compute ? "Compute"
+                             : pass.type == EncoderType::Resolve ? "Resolve"
+                                                                 : "AccelerationStructure";
+          std::string runs;
+          std::istringstream names(device_->PassName(pass.pass, false));
+          for (std::string name; std::getline(names, name, '|');)
+            runs += (runs.empty() ? "" : "|") + name + "*0*0*0";
+          auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, kind, pass.encoding, runs);
+          line.pop_back();
+          for (uint32_t i = 0; i < pass.count; i++)
+            line += str::format('\t', pass.first == ~0u ? ~uint64_t(0)
+                                                       : clock[i + 1 == pass.count ? pass.last : pass.first + i]);
+          lines += line + '\n';
+        }
+        diag::Write(lines);
+        buffer = {};
       }
       // samples and resolves in the order the lists had them: a query sampled again after a resolve is another value
       size_t read = 0;
@@ -291,7 +340,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         sample(resolve.after);
         memcpy(resolve.to, &resolve.heap->timestamps[resolve.first], resolve.count * sizeof(uint64_t));
       }
-      sample(clock.size());
+      sample(inflight.sampled.size());
       for (auto &allocator : inflight.allocators)
         if (allocator)
           allocator->pending--;
@@ -335,6 +384,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     WMT::Reference<WMT::CommandBuffer>
     End() {
       auto ended = inflight->cmdbuf;
+      if (queue->profile_)
+        queue->profile_->buffers[queue->inflight_cmdbuf_seq_.load() % kCommandQueueSize].committed = diag::Now();
       inflight = nullptr;
       ended.commit();
       queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
@@ -394,7 +445,7 @@ public:
 
   HRESULT
   Initialize(const D3D12_COMMAND_QUEUE_DESC *pDesc) {
-    if (device_->NamesPasses())
+    if (diag::errors)
       record_totals_ = CreateGPURecordTotals();
     // TODO: validate and normalize
     desc_ = *pDesc;
@@ -408,6 +459,11 @@ public:
 
     fence_ = metal_device.newFence();
     timestamps_read_ = new Fence(metal_device);
+    if (profile_) {
+      UINT64 cpu, gpu;
+      GetClockCalibration(&gpu, &cpu);
+      diag::Write(diag::Line("clock", diag::Nanoseconds(cpu), gpu));
+    }
 
     return S_OK;
   }
@@ -557,7 +613,10 @@ public:
     }
     Trace("ExecuteCommandLists of ", Count);
     auto work = [this, recorded = std::move(recorded), allocators = std::move(allocators)]() mutable {
+      auto began = profile_ ? diag::Now() : 0;
       Commit(recorded, std::move(allocators));
+      if (profile_)
+        diag::Write(diag::Line("span", "execute", recorded.size(), GetCurrentThreadId(), began, diag::Now() - began));
     };
     if (!Hold(work))
       work();
@@ -576,6 +635,11 @@ public:
     } keeps{scope, std::move(allocators)};
     static const bool isolate = !env::getEnvVar("DXMT_D3D12_ISOLATE").empty();
     WMT::CommandBuffer cmdbuf = scope.inflight->cmdbuf;
+    uint64_t queries = 0;
+    if (profile_)
+      for (auto list : recorded)
+        for (auto pass = list; pass; pass = pass->next)
+          queries += pass->type == EncoderType::Blit && static_cast<BlitEncoderData *>(pass)->timestamps;
     // ends the command buffer and waits for it: what the work so far leaves in memory is then there
     auto settle = [&] {
       std::shared_ptr<GPURecordChecks> checks;
@@ -642,6 +706,36 @@ public:
         if (record_totals_ && current->type != EncoderType::Render && current->type != EncoderType::Compute)
           SnapshotGPURecords(records, current, "unlabelled", scope.inflight->records);
         scope.inflight->encoders[size_t(current->type)]++;
+        WMTSampleBufferAttachmentInfo attachment{};
+        ProfileBuffer::Pass *profiled = nullptr;
+        if (profile_ &&
+            (current->type == EncoderType::Clear || current->type == EncoderType::Render ||
+             current->type == EncoderType::Blit || current->type == EncoderType::Compute ||
+             current->type == EncoderType::Resolve || current->type == EncoderType::AccelerationStructure)) {
+          auto &pool = device_->timestamp_samples;
+          if (current->type == EncoderType::Blit && static_cast<BlitEncoderData *>(current)->timestamps &&
+              scope.inflight->samples && scope.inflight->sampled.size() == pool.limit) {
+            scope.End();
+            scope.Start();
+            cmdbuf = scope.inflight->cmdbuf;
+          }
+          auto &buffer = profile_->buffers[inflight_cmdbuf_seq_.load() % kCommandQueueSize];
+          if (!scope.inflight->samples && buffer.passes.empty())
+            scope.inflight->samples = pool.Take(device_->GetMTLDevice(), false);
+          auto count = current->type == EncoderType::Render ? WMTRenderTimestampSamples : WMTTimestampSamplesPerStage;
+          uint32_t first = ~0u;
+          // queries keep their slots; extra profile passes stay unsampled instead of splitting a command buffer
+          if (scope.inflight->samples &&
+              count <= pool.limit - buffer.samples -
+                           std::min<uint64_t>(scope.inflight->sampled.size() + queries, pool.limit)) {
+            buffer.samples += count;
+            first = pool.limit - buffer.samples;
+            attachment = {scope.inflight->samples, first, first + count - 1};
+          }
+          buffer.passes.push_back({current, current->id, current->type, first, uint32_t(count),
+                                   uint32_t(attachment.end_of_encoder_sample_index), diag::Now()});
+          profiled = &buffer.passes.back();
+        }
         switch (current->type) {
         case EncoderType::Null:
           break;
@@ -675,7 +769,8 @@ public:
               info.colors[0].depth_plane = data->depth_plane;
             }
             info.render_target_array_length = data->array_length;
-            auto encoder = cmdbuf.renderCommandEncoder(info);
+            auto encoder = attachment.sample_buffer ? cmdbuf.renderCommandEncoder(info, attachment)
+                                                    : cmdbuf.renderCommandEncoder(info);
             encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
             encoder.waitForFence(fence_, WMTRenderStageFragment);
             encoder.updateFence(fence_, WMTRenderStageFragment);
@@ -740,9 +835,10 @@ public:
             before.updateFence(fence_);
             before.endEncoding();
           }
-          auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
-          if (device_->NamesPasses()) {
-            auto label = "render " + device_->PassName(current->id);
+          auto encoder = attachment.sample_buffer ? cmdbuf.renderCommandEncoder(render_pass_info, attachment)
+                                                  : cmdbuf.renderCommandEncoder(render_pass_info);
+          if (record_totals_) {
+            auto label = "render " + device_->PassName(current, !profile_);
             SnapshotGPURecords(records, current, label, scope.inflight->records);
             encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
             for (auto most = data->most; most; most = most->next)
@@ -777,9 +873,16 @@ public:
               ERR("EndQuery: Metal has no counter sample buffer for a timestamp");
             }
           }
-          WMTSampleBufferAttachmentInfo attachment{samples, sample, ~0ull /* MTLCounterDontSample */};
-          auto encoder = samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(&attachment, 1)
-                                 : cmdbuf.blitCommandEncoder();
+          WMTSampleBufferAttachmentInfo query{samples, sample, ~0ull /* MTLCounterDontSample */};
+          if (attachment.sample_buffer && samples) {
+            attachment.start_of_encoder_sample_index = sample;
+            profiled->first = sample;
+          }
+          auto &sampling = attachment.sample_buffer ? attachment : query;
+          auto encoder = sampling.sample_buffer ? cmdbuf.blitCommandEncoderWithSampleBuffers(&sampling, 1)
+                                               : cmdbuf.blitCommandEncoder();
+          if (profile_ && data->timestamps)
+            queries--;
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -798,7 +901,8 @@ public:
             else
               structure.inputs = nullptr;
           }
-          auto encoder = cmdbuf.accelerationStructureCommandEncoder();
+          auto encoder = attachment.sample_buffer ? cmdbuf.accelerationStructureCommandEncoder(attachment)
+                                                  : cmdbuf.accelerationStructureCommandEncoder();
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -807,9 +911,10 @@ public:
         }
         case EncoderType::Compute: {
           auto data = static_cast<ComputeEncoderData *>(current);
-          auto encoder = cmdbuf.computeCommandEncoder(false);
-          if (device_->NamesPasses()) {
-            auto label = "compute " + device_->PassName(current->id);
+          auto encoder =
+              attachment.sample_buffer ? cmdbuf.computeCommandEncoder(attachment) : cmdbuf.computeCommandEncoder(false);
+          if (record_totals_) {
+            auto label = "compute " + device_->PassName(current, !profile_);
             SnapshotGPURecords(records, current, label, scope.inflight->records);
             encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
           }
@@ -917,7 +1022,8 @@ public:
           info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
           info.colors[0].resolve_texture = data->dst.texture();
 
-          auto encoder = cmdbuf.renderCommandEncoder(info);
+          auto encoder = attachment.sample_buffer ? cmdbuf.renderCommandEncoder(info, attachment)
+                                                  : cmdbuf.renderCommandEncoder(info);
           encoder.waitForFence(fence_, WMTRenderStageFragment);
           encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
           encoder.updateFence(fence_, WMTRenderStageFragment);
@@ -926,6 +1032,8 @@ public:
           break;
         }
         }
+        if (profiled)
+          profiled->encoding = diag::Now() - profiled->encoding;
         current = current->next;
         // what an application's pass has filled may be what a deserialized top-level structure waited for
         for (size_t i = 0; !own && i < unresolved_.size();) {
@@ -1190,6 +1298,8 @@ public:
     Trace("Present");
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight->cmdbuf;
+    if (profile_)
+      diag::Frame(profile_->id, inflight_cmdbuf_seq_.load());
 
     auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
     auto &view = g->texture->view(g->texture->fullView);

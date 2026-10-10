@@ -375,7 +375,7 @@ struct TimestampSamples {
   uint32_t limit = 0;
 
   WMT::Reference<WMT::CounterSampleBuffer>
-  Take(WMT::Device metal) {
+  Take(WMT::Device metal, bool wait = true) {
     std::unique_lock<dxmt::mutex> lock(mutex);
     if (!limit)
       for (limit = 1; metal.newCounterSampleBuffer(limit * 2); limit *= 2)
@@ -390,7 +390,7 @@ struct TimestampSamples {
         made++;
         return buffer;
       }
-      if (!made)
+      if (!made || !wait)
         return {};
       if (Logger::logLevel() == LogLevel::Trace)
         TRACE("timestamps: waits for one of ", made, " sample buffers");
@@ -447,8 +447,8 @@ public:
   // DXMT_D3D12_GPU_ERRORS: passes carry the names of their pipelines to Metal, whose report of a command buffer
   // the GPU failed then says which pass it was. `NamePass` adds a pipeline to a pass's name, `PassName` takes it
   virtual bool NamesPasses() = 0;
-  virtual void NamePass(uint64_t id, const std::string &pipeline) = 0;
-  virtual std::string PassName(uint64_t id) = 0;
+  virtual void NamePass(const EncoderData *pass, const std::string &pipeline) = 0;
+  virtual std::string PassName(const EncoderData *pass, bool consume = true) = 0;
   // shared by every queue and swap chain: the first non-test Present accepted by a queue
   std::atomic<std::chrono::steady_clock::time_point> first_present{};
   virtual void PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) = 0;

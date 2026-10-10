@@ -18,6 +18,7 @@
 
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
+#include "dxmt_diag.hpp"
 #include "d3d12_pageable.hpp"
 #include "d3d12_command_allocator.hpp"
 
@@ -249,7 +250,7 @@ public:
     // DXMT_D3D12_GPU_ERRORS: the largest numbers the commands ask for, which the report of a failed command buffer
     // gives with the pass: instances, vertices or indices, their start, the base vertex as written, start instance
     auto most = [&](const char *args, const char *count, const char *start, const char *base) {
-      if (!device_->NamesPasses())
+      if (!diag::errors)
         return;
       const char *of[] = {"instance_count", count, start, base, "start_instance_location"};
       for (unsigned word = 0; word < std::size(of); word++)
