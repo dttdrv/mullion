@@ -1,0 +1,12 @@
+# compiled collections retain their configurations
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -457,7 +457,7 @@
+           name += collection->name;
+         Export(collection->shaders_, {desc.pExports, desc.NumExports}, shaders_);
+         Export(collection->exports_, {desc.pExports, desc.NumExports}, exports_);
+-        if (!collection->deferred_) {
++        if (false) {
+           for (auto &[name, shader] : collection->shaders_)
+             configured.insert(shader.library.get());
+           for (unsigned of = ShaderConfig; of < SubobjectKinds; of++)

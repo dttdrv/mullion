@@ -1,4 +1,5 @@
 #include "DXBCParser/BlobContainer.h"
+#include "DXBCParser/DXBCUtils.h"
 #include "d3d12_device.hpp"
 #include "d3d12_device_child.hpp"
 #include "d3d12_pipeline.hpp"
@@ -8,10 +9,12 @@
 #include "sha1/sha1_util.hpp"
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 // DXR state objects (DXR spec, "State objects"). a ray tracing shader is a visible function of Metal at a table slot
 // the device gave it, and a shader identifier holds its shaders' slots (airconv_ray.h): a pipeline is the kernel
@@ -55,8 +58,8 @@ struct LibrarySubobject {
   std::span<const uint8_t> bytes;
   // an association's subobject, then its exports; a hit group's any hit, closest hit and intersection shaders
   std::vector<std::wstring> names;
-  // a pipeline config's recursion depth and flags; a state object config's flags
-  uint32_t values[2];
+  // a shader config's payload and attribute sizes, a pipeline config's depth and flags, or state object flags
+  uint32_t values[2]{};
 };
 
 // the subobjects in a library's runtime data, the container's RDAT part: a version and a count of parts, the parts'
@@ -110,6 +113,9 @@ ReadSubobjects(const D3D12_SHADER_BYTECODE &library) {
       for (uint32_t n = 0, row = field(3), length = word(parts[Indices], (uint64_t)row * 4); n < length; n++)
         subobject.names.push_back(string(word(parts[Indices], ((uint64_t)row + 1 + n) * 4)));
       break;
+    case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG:
+      subobject.values[1] = field(3);
+      [[fallthrough]];
     case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG:
       subobject.values[0] = field(2);
       break;
@@ -141,10 +147,10 @@ struct HitGroup {
 // before one that names none, and that before a subobject no association of its scope gives exports
 enum Strength { LibraryDeclared, LibraryDefault, LibraryExplicit, Declared, Default, Explicit };
 
-enum RootKind { Global, Local, RootKinds };
+enum SubobjectKind { Global, Local, ShaderConfig, PipelineConfig, SubobjectKinds };
 
 struct Association {
-  RootKind kind;
+  SubobjectKind kind;
   ID3D12RootSignature *root;
   Strength strength;
   // the export, or none for every export of the scope
@@ -153,9 +159,9 @@ struct Association {
   // if its shaders were left for the state object that takes the collection to compile
   const RayLibrary *library;
   const void *collection;
-  // the library subobject it names, while no library the state object has seen defines it: it has no root until one
-  // does ("Explicit associations": the subobject need not "be visible yet")
+  // an unresolved library subobject (DXR "Explicit associations": the subobject need not "be visible yet")
   std::wstring subobject;
+  std::pair<uint32_t, uint32_t> values{};
 };
 
 // a shader compiled with its root signatures
@@ -189,11 +195,13 @@ StackSize(uint32_t kind) {
 
 class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, ID3D12StateObjectProperties> {
   D3D12_STATE_OBJECT_TYPE type_ = D3D12_STATE_OBJECT_TYPE_COLLECTION;
+  uint32_t flags_ = 0;
   // every shader the state object has seen, by name, for the hit groups that import them
   std::unordered_map<std::wstring, RayShader> shaders_;
   std::unordered_map<std::wstring, RayExport> exports_;
   std::vector<Com<ID3D12RootSignature>> root_signatures_;
   D3D12_RAYTRACING_PIPELINE_CONFIG1 pipeline_config_{};
+  std::optional<std::pair<uint32_t, uint32_t>> configurations_[SubobjectKinds - ShaderConfig];
   uint64_t stack_size_ = 0;
   // the libraries of this state object's own description, whose functions its shaders may call
   std::vector<std::shared_ptr<RayLibrary>> libraries_;
@@ -203,9 +211,9 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
   bool deferred_ = false;
   std::vector<HitGroup> deferred_hit_groups_;
   std::vector<Association> deferred_associations_;
-  // the libraries' root signatures by their subobjects' names, and the names of all their subobjects: an association
+  // the libraries' definitions by their subobjects' names, and the names of all their subobjects: an association
   // may name one of another scope
-  std::unordered_map<std::wstring, std::pair<RootKind, ID3D12RootSignature *>> library_roots_;
+  std::unordered_map<std::wstring, Association> library_definitions_;
   std::unordered_set<std::wstring> library_names_;
 
   struct Pipeline {
@@ -365,41 +373,76 @@ public:
       shaders_ = pParent->shaders_;
       exports_ = pParent->exports_;
       root_signatures_ = pParent->root_signatures_;
-      library_roots_ = pParent->library_roots_;
-      library_names_ = pParent->library_names_;
       pipeline_config_ = pParent->pipeline_config_;
+      std::copy(std::begin(pParent->configurations_), std::end(pParent->configurations_), configurations_);
     }
     std::span subobjects(pDesc->pSubobjects, pDesc->NumSubobjects);
 
     using Subobject = const D3D12_STATE_SUBOBJECT *;
     auto kind = [](D3D12_STATE_SUBOBJECT_TYPE type) {
-      return type == D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE  ? (int)Global
-             : type == D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE ? (int)Local
-                                                                       : -1;
+      return type == D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE      ? (int)Global
+             : type == D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE     ? (int)Local
+             : type == D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG ? (int)ShaderConfig
+             : type == D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG ||
+                     type == D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1
+                 ? (int)PipelineConfig
+                 : -1;
     };
-    auto root_of = [](Subobject subobject) {
-      return ((const D3D12_GLOBAL_ROOT_SIGNATURE *)subobject->pDesc)->pGlobalRootSignature;
+    auto definition = [&](Subobject subobject) {
+      Association made{(SubobjectKind)kind(subobject->Type)};
+      if (made.kind == Global || made.kind == Local)
+        made.root = ((const D3D12_GLOBAL_ROOT_SIGNATURE *)subobject->pDesc)->pGlobalRootSignature;
+      else if (made.kind == ShaderConfig) {
+        auto &config = *(const D3D12_RAYTRACING_SHADER_CONFIG *)subobject->pDesc;
+        made.values = {config.MaxPayloadSizeInBytes, config.MaxAttributeSizeInBytes};
+      } else if (made.kind == PipelineConfig) {
+        made.values.first = ((const D3D12_RAYTRACING_PIPELINE_CONFIG *)subobject->pDesc)->MaxTraceRecursionDepth;
+        if (subobject->Type == D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1)
+          made.values.second = ((const D3D12_RAYTRACING_PIPELINE_CONFIG1 *)subobject->pDesc)->Flags;
+      }
+      return made;
+    };
+    auto same = [](const Association &a, const Association &b) {
+      if (a.kind >= ShaderConfig)
+        return a.values == b.values;
+      if (a.root == b.root)
+        return true;
+      if (!a.root || !b.root)
+        return false;
+      const void *first, *second;
+      static_cast<MTLD3D12RootSignature *>(a.root)->GetBlob(&first);
+      static_cast<MTLD3D12RootSignature *>(b.root)->GetBlob(&second);
+      UINT size, other_size;
+      return SUCCEEDED(microsoft::DXBCGetRootSignature(first, &first, &size)) &&
+             SUCCEEDED(microsoft::DXBCGetRootSignature(second, &second, &other_size)) && size == other_size &&
+             !memcmp(first, second, size);
+    };
+    bool failed = false;
+    auto configuration = [&](SubobjectKind of, const std::pair<uint32_t, uint32_t> &values) {
+      auto &seen = configurations_[of - ShaderConfig];
+      if (seen && *seen != values) {
+        ERR("CreateStateObject: ray tracing configurations do not match across exports");
+        failed = true;
+      }
+      seen = values;
     };
     std::vector<Association> associations;
-    // the state object's root signatures that an association of its own gives exports
+    std::unordered_set<const RayLibrary *> configured;
+    if (pParent)
+      for (auto &[name, shader] : pParent->shaders_)
+        configured.insert(shader.library.get());
+    // the state object's subobjects that an association of its own gives exports
     std::unordered_set<Subobject> associated;
     std::vector<HitGroup> hit_groups;
     std::vector<std::pair<const RayLibrary *, LibrarySubobject>> library_subobjects;
-    uint32_t flags = 0;
     for (auto &subobject : subobjects) {
       switch (subobject.Type) {
       case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG:
-        flags |= ((const D3D12_STATE_OBJECT_CONFIG *)subobject.pDesc)->Flags;
-        break;
-      case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG:
-        pipeline_config_ = {((const D3D12_RAYTRACING_PIPELINE_CONFIG *)subobject.pDesc)->MaxTraceRecursionDepth};
-        break;
-      case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1:
-        pipeline_config_ = *(const D3D12_RAYTRACING_PIPELINE_CONFIG1 *)subobject.pDesc;
+        flags_ |= ((const D3D12_STATE_OBJECT_CONFIG *)subobject.pDesc)->Flags;
         break;
       case D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE:
       case D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE:
-        root_signatures_.push_back(root_of(&subobject));
+        root_signatures_.push_back(definition(&subobject).root);
         break;
       case D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY:
         if (HRESULT hr = AddLibrary(*(const D3D12_DXIL_LIBRARY_DESC *)subobject.pDesc, library_subobjects); FAILED(hr))
@@ -412,6 +455,13 @@ public:
           name += collection->name;
         Export(collection->shaders_, {desc.pExports, desc.NumExports}, shaders_);
         Export(collection->exports_, {desc.pExports, desc.NumExports}, exports_);
+        if (!collection->deferred_) {
+          for (auto &[name, shader] : collection->shaders_)
+            configured.insert(shader.library.get());
+          for (unsigned of = ShaderConfig; of < SubobjectKinds; of++)
+            if (auto &config = collection->configurations_[of - ShaderConfig]; config)
+              configuration((SubobjectKind)of, *config);
+        }
         root_signatures_.insert(
             root_signatures_.end(), collection->root_signatures_.begin(), collection->root_signatures_.end()
         );
@@ -433,7 +483,7 @@ public:
               associations.back().name = taken_as.Name;
             }
         }
-        library_roots_.insert(collection->library_roots_.begin(), collection->library_roots_.end());
+        library_definitions_.insert(collection->library_definitions_.begin(), collection->library_definitions_.end());
         library_names_.insert(collection->library_names_.begin(), collection->library_names_.end());
         libraries_.insert(libraries_.end(), collection->libraries_.begin(), collection->libraries_.end());
         break;
@@ -452,27 +502,34 @@ public:
         auto of = kind(association.pSubobjectToAssociate->Type);
         if (of < 0)
           break;
-        auto root = root_of(association.pSubobjectToAssociate);
+        auto made = definition(association.pSubobjectToAssociate);
         // without exports it declares the default ("Declaring a default association")
+        made.strength = Default;
         if (!association.NumExports)
-          associations.push_back({(RootKind)of, root, Default});
+          associations.push_back(made);
         else
           associated.insert(association.pSubobjectToAssociate);
-        for (auto name : std::span(association.pExports, association.NumExports))
-          associations.push_back({(RootKind)of, root, Explicit, name});
+        for (auto name : std::span(association.pExports, association.NumExports)) {
+          made.strength = Explicit;
+          made.name = name;
+          associations.push_back(made);
+        }
         break;
       }
       default:
         break;
       }
     }
-    // as does a root signature that no association gives exports
+    // as does a subobject that no association gives exports
     for (auto &subobject : subobjects)
-      if (auto of = kind(subobject.Type); of >= 0 && !associated.count(&subobject))
-        associations.push_back({(RootKind)of, root_of(&subobject), Declared});
+      if (auto of = kind(subobject.Type); of >= 0 && !associated.count(&subobject)) {
+        auto made = definition(&subobject);
+        made.strength = Declared;
+        associations.push_back(made);
+      }
 
     // the libraries' subobjects ("Subobjects in DXIL libraries"): a library is a scope of its own
-    auto &library_roots = library_roots_;
+    auto &library_definitions = library_definitions_;
     for (auto &[library, subobject] : library_subobjects) {
       library_names_.insert(subobject.name);
       switch (subobject.type) {
@@ -484,15 +541,19 @@ public:
           return E_INVALIDARG;
         }
         root_signatures_.push_back(root);
-        library_roots[subobject.name] = {(RootKind)kind(subobject.type), root.ptr()};
+        library_definitions[subobject.name] = {
+            (SubobjectKind)kind(subobject.type), root.ptr(), LibraryDeclared, {}, library};
         break;
       }
       case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG:
-        flags |= subobject.values[0];
+        flags_ |= subobject.values[0];
         break;
+      case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG:
       case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG:
       case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1:
-        pipeline_config_ = {subobject.values[0], (D3D12_RAYTRACING_PIPELINE_FLAGS)subobject.values[1]};
+        library_definitions[subobject.name] = {
+            (SubobjectKind)kind(subobject.type),       nullptr, LibraryDeclared, {}, library, nullptr, {},
+            {subobject.values[0], subobject.values[1]}};
         break;
       case D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP:
         // a library names any hit before closest hit
@@ -503,16 +564,23 @@ public:
       }
     }
     // an association of a library's subobject: one of a library's own (`library`), or the state object's. a
-    // subobject no library defines here waits under its name; one that is no root signature has nothing to give
+    // subobject no library defines here waits under its name
     auto associate = [&](const RayLibrary *library, const std::wstring &name, std::span<const std::wstring> exports) {
-      auto found = library_roots.find(name);
-      if (found == library_roots.end() && library_names_.count(name))
+      auto found = library_definitions.find(name);
+      if (found == library_definitions.end() && library_names_.count(name))
         return;
-      auto [of, root] = found == library_roots.end() ? std::pair{RootKinds, (ID3D12RootSignature *)nullptr} : found->second;
+      auto made = found == library_definitions.end() ? Association{SubobjectKinds} : found->second;
+      made.library = library;
+      if (found == library_definitions.end())
+        made.subobject = name;
+      made.strength = library ? LibraryDefault : Default;
       if (exports.empty())
-        associations.push_back({of, root, library ? LibraryDefault : Default, {}, library, nullptr, root ? L"" : name});
-      for (auto &e : exports)
-        associations.push_back({of, root, library ? LibraryExplicit : Explicit, e, library, nullptr, root ? L"" : name});
+        associations.push_back(made);
+      for (auto &e : exports) {
+        made.strength = library ? LibraryExplicit : Explicit;
+        made.name = e;
+        associations.push_back(made);
+      }
     };
     std::unordered_set<std::wstring> library_associated;
     for (auto &[library, subobject] : library_subobjects)
@@ -523,20 +591,21 @@ public:
       }
     for (auto &[library, subobject] : library_subobjects)
       if (auto of = kind(subobject.type); of >= 0 && !library_associated.count(subobject.name))
-        associations.push_back({(RootKind)of, library_roots[subobject.name].second, LibraryDeclared, {}, library});
+        associations.push_back(library_definitions[subobject.name]);
     for (auto &subobject : subobjects)
       if (subobject.Type == D3D12_STATE_SUBOBJECT_TYPE_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION) {
         auto &association = *(const D3D12_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION *)subobject.pDesc;
         std::vector<std::wstring> exports(association.pExports, association.pExports + association.NumExports);
         associate(nullptr, association.SubobjectToAssociate, exports);
       }
-    // the subobjects that were not there when an association named them may be now; an executable state object
-    // needs them all
+    // DXR "Explicit associations": an executable state object needs both ends of an association resolved
     for (auto &association : associations) {
       if (association.subobject.empty())
         continue;
-      if (auto found = library_roots.find(association.subobject); found != library_roots.end()) {
-        std::tie(association.kind, association.root) = found->second;
+      if (auto found = library_definitions.find(association.subobject); found != library_definitions.end()) {
+        association.kind = found->second.kind;
+        association.root = found->second.root;
+        association.values = found->second.values;
         association.subobject.clear();
       } else if (type_ == D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE && !library_names_.count(association.subobject)) {
         ERR("CreateStateObject: an association names a subobject that no DXIL library defines");
@@ -544,8 +613,11 @@ public:
       }
     }
 
+    if (pParent && (!(flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_STATE_OBJECT_ADDITIONS) ||
+                    !(pParent->flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_STATE_OBJECT_ADDITIONS)))
+      return E_INVALIDARG;
     deferred_ = type_ == D3D12_STATE_OBJECT_TYPE_COLLECTION &&
-                (flags & D3D12_STATE_OBJECT_FLAG_ALLOW_LOCAL_DEPENDENCIES_ON_EXTERNAL_DEFINITIONS);
+                (flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_LOCAL_DEPENDENCIES_ON_EXTERNAL_DEFINITIONS);
     if (deferred_) {
       for (auto &[name, shader] : shaders_)
         shader.collection = this;
@@ -559,8 +631,7 @@ public:
     std::vector<sm50_shader_t> linkable;
     for (auto &library : libraries_)
       linkable.push_back(library->shader);
-    bool failed = false;
-    // the root signature of a shader: the strongest association with the shader, by the name it exports under or,
+    // the subobject of a shader: the strongest association with the shader, by the name it exports under or,
     // from its own library, the name it has there, with its hit group ("Subobject associations for hit groups"), or
     // with every export of a scope the shader is in. two of one strength that name exports must agree
     // ("Conflicting subobject associations")
@@ -568,35 +639,60 @@ public:
     // state object's associations "do not override any existing associations in contained collections". one of its
     // own that names the shader is a conflict with one of the collection's that does, and stands where the
     // collection gave the shader only a default
-    auto root = [&](RootKind of, const std::wstring &name, const RayShader &shader, const std::wstring *group) {
+    auto resolve = [&](SubobjectKind of, const std::wstring &name, const RayShader &shader, const std::wstring *group) {
       auto source = ExportName(shader.function);
-      // the strongest of the shader's collection, and of everything else
       const Association *best[2] = {};
+      auto applies = [&](const Association &a) {
+        return a.kind == of && (a.name.empty() ? (!a.library || a.library == shader.library.get()) &&
+                                                     (!a.collection || a.collection == shader.collection)
+                                               : a.name == name || (group && a.name == *group) ||
+                                                     (a.library == shader.library.get() && a.name == source));
+      };
+      bool ambiguous[std::size(best)] = {};
       for (auto &a : associations) {
-        if (a.kind != of || !a.root)
+        unsigned scope = shader.collection && a.collection == shader.collection;
+        auto &strongest = best[scope];
+        if (!applies(a))
           continue;
-        bool applies = a.name.empty()
-                           ? (!a.library || a.library == shader.library.get()) &&
-                                 (!a.collection || a.collection == shader.collection)
-                           : a.name == name || (group && a.name == *group) ||
-                                 (a.library == shader.library.get() && a.name == source);
-        auto &strongest = best[shader.collection && a.collection == shader.collection];
-        if (!applies || (strongest && a.strength < strongest->strength))
-          continue;
-        if (strongest && a.strength == strongest->strength && !a.name.empty() && a.root != strongest->root) {
-          ERR("CreateStateObject: two associations give a shader different root signatures");
-          failed = true;
-        }
-        strongest = &a;
+        if (!strongest || a.strength > strongest->strength) {
+          strongest = &a;
+          ambiguous[scope] = false;
+        } else if (a.strength == strongest->strength)
+          ambiguous[scope] |= !same(a, *strongest);
       }
+      for (unsigned i = 0; i < std::size(best); i++)
+        if (ambiguous[i]) {
+          if (!best[i]->name.empty()) {
+            ERR("CreateStateObject: conflicting explicit subobject associations");
+            failed = true;
+          }
+          best[i] = nullptr;
+        }
       auto [outer, inner] = best;
-      if (!outer || !inner)
-        return outer ? outer->root : inner ? inner->root : nullptr;
-      if (!outer->name.empty() && !inner->name.empty() && outer->root != inner->root) {
-        ERR("CreateStateObject: an association gives a collection's shader another root signature than its collection");
+      if (!outer || !inner) {
+        if (!outer && !inner && of >= ShaderConfig && (ambiguous[0] || ambiguous[1]))
+          failed = true;
+        return outer ? outer : inner;
+      }
+      if (!outer->name.empty() && !inner->name.empty() && !same(*outer, *inner)) {
+        ERR("CreateStateObject: a subobject association conflicts with its collection's");
         failed = true;
       }
-      return (outer->name.empty() ? inner : outer)->root;
+      return outer->name.empty() ? inner : outer;
+    };
+    auto validate = [&](const std::wstring &name, const RayShader &shader, const std::wstring *group, bool inherited) {
+      // DXR "Subobject association requirements": shader and pipeline configs are required and matching for all exports
+      for (unsigned of = ShaderConfig; of < SubobjectKinds; of++) {
+        auto config = resolve((SubobjectKind)of, name, shader, group);
+        if (!config) {
+          if (inherited && configurations_[of - ShaderConfig])
+            continue;
+          ERR("CreateStateObject: a ray tracing shader has no unambiguous configuration");
+          failed = true;
+          return;
+        }
+        configuration((SubobjectKind)of, config->values);
+      }
     };
     // a shader compiles once for each pair of root signatures it is used with
     std::map<std::tuple<sm50_shader_t, std::string, ID3D12RootSignature *, ID3D12RootSignature *>,
@@ -609,7 +705,15 @@ public:
         failed = true;
         return;
       }
-      auto global = root(Global, name, shader->second, group), local = root(Local, name, shader->second, group);
+      validate(name, shader->second, group, configured.count(shader->second.library.get()));
+      if (failed)
+        return;
+      auto global_association = resolve(Global, name, shader->second, group),
+           local_association = resolve(Local, name, shader->second, group);
+      auto global = global_association ? global_association->root : nullptr,
+           local = local_association ? local_association->root : nullptr;
+      if (failed)
+        return;
       auto &made = compiled[{shader->second.library->shader, shader->second.function, global, local}];
       if (!made && !(made = Compile(shader->second, global, local, linkable))) {
         failed = true;
@@ -624,6 +728,17 @@ public:
       bool named = of == SM50_RAY_SHADER_RAY_GENERATION || of == SM50_RAY_SHADER_MISS || of == SM50_RAY_SHADER_CALLABLE;
       if (named && !exports_.count(name))
         function(exports_[name], 0, name, nullptr);
+      else if ((!pParent || !pParent->shaders_.count(name)) &&
+               std::none_of(hit_groups.begin(), hit_groups.end(), [&](const HitGroup &group) {
+                 return std::find(std::begin(group.imports), std::end(group.imports), name) != std::end(group.imports);
+               })) {
+        if (named || configured.count(shader.library.get()))
+          validate(name, shader, nullptr, configured.count(shader.library.get()));
+        else {
+          RayExport checked;
+          function(checked, 0, name, nullptr);
+        }
+      }
     }
     for (auto &group : hit_groups) {
       if (exports_.count(group.name)) {
@@ -637,6 +752,8 @@ public:
     }
     if (failed)
       return E_INVALIDARG;
+    if (auto &config = configurations_[PipelineConfig - ShaderConfig]; config)
+      pipeline_config_ = {config->first, (D3D12_RAYTRACING_PIPELINE_FLAGS)config->second};
 
     // "Default pipeline stack size": the deepest any chain of the shaders there are can get, with callable shaders
     // two deep

@@ -42,6 +42,8 @@
 // the first of three commands, where the second has no width and the third is past what the count buffer allows.
 // a pipeline's stack size starts as "Default pipeline stack size" makes it of its shaders' sizes and its recursion
 // depth, wherever the pipeline config comes from, and a grown pipeline starts with the size of the one it grew from.
+// pipeline skip flags cull geometry for every ray, including secondary rays; their presence "does not show up in a
+// RayFlags() call from a shader" (DXR functional spec, D3D12_RAYTRACING_PIPELINE_FLAGS).
 #include "d3d12_rays.hpp"
 
 static const char hlsl[] = R"hlsl(
@@ -575,8 +577,8 @@ main(int argc, char **argv) {
   CHECK(commands->Map(0, nullptr, (void **)&command));
   CHECK(count->Map(0, nullptr, &counted));
   memcpy(counted, &commands_run, sizeof(commands_run));
-  // dispatches every case through a state object and reads the results back
-  auto trace = [&](ID3D12StateObject *state, bool indirect = false) -> HRESULT {
+  auto trace = [&](ID3D12StateObject *state, bool indirect = false,
+                   UINT cases_run = sizeof(cases) / sizeof(*cases)) -> HRESULT {
     if (HRESULT hr = fill(state); FAILED(hr))
       return hr;
     // no result of an earlier trace stands in for this one's
@@ -600,7 +602,7 @@ main(int argc, char **argv) {
       if (n % 2)
         command[n].rays.Width = 0;
     }
-    for (UINT c = 0; c < case_count; c++) {
+    for (UINT c = 0; c < cases_run; c++) {
       if (indirect) {
         list->ExecuteIndirect(signature.Get(), commands_run + 1, commands.Get(), 2 * c * sizeof(Command), count.Get(), 0);
       } else {
@@ -620,7 +622,7 @@ main(int argc, char **argv) {
     return hr;
   };
 
-  unsigned failures = 0, hits = 0, marks_checked = 0;
+  unsigned failures = 0, hits = 0, marks_checked = 0, rays_checked = 0;
   float margin = 1;
   // whether the shaders of an export read their record's two constants the other way round
   std::function<bool(const std::wstring &)> swapped = [](const std::wstring &) { return false; };
@@ -632,7 +634,7 @@ main(int argc, char **argv) {
     );
   };
   // a ray's result, as its shaders leave it. `miss_shaders` is how many miss shaders the state object has
-  auto model = [&](const Case &c, float x, float y, UINT miss_shaders) {
+  auto model = [&](const Case &c, float x, float y, UINT miss_shaders, UINT pipeline_flags) {
     auto record_of = [&](UINT instance, UINT geometry) {
       return c.ray_contribution + c.multiplier * geometry + scene.instances[instance].contribution;
     };
@@ -640,7 +642,7 @@ main(int argc, char **argv) {
       return groups[hit_records[record_of(instance, geometry)]];
     };
     auto hit = cast(
-        scene.instances, c.flags, c.mask, c.tmin, c.tmax, x, y, scene.z0,
+        scene.instances, c.flags | pipeline_flags, c.mask, c.tmin, c.tmax, x, y, scene.z0,
         {[&](UINT instance, const Triangle &t) {
            return !group_of(instance, t.geometry).any_hit || (t.primitive + scene.instances[instance].id) % 2 == 0;
          },
@@ -693,16 +695,17 @@ main(int argc, char **argv) {
     arguments(hit_at + record_of(hit.instance, hit.geometry));
     return r;
   };
-  auto compare = [&](const char *what, UINT miss_shaders, UINT first_case, UINT count) {
+  auto compare = [&](const char *what, UINT miss_shaders, UINT first_case, UINT count, UINT pipeline_flags = 0) {
+    rays_checked += count * rays;
     for (UINT c = first_case; c < first_case + count; c++)
       for (UINT i = 0; i < rays; i++) {
         Result got;
         memcpy(&got, out + (c * rays + i) * sizeof(Result), sizeof(got));
         float x = scene.ray_x(i), y = scene.ray_y(i);
-        auto want = model(cases[c], x, y, miss_shaders);
+        auto want = model(cases[c], x, y, miss_shaders, pipeline_flags);
         // the second ray, from a closest hit shader: with no flags, the first hit groups and the second miss shader
         if (want.status == 1 || want.status == 2) {
-          auto second = model({0, 0xff, 0, distant, 0, 1, 1}, x + shift, y, miss_shaders);
+          auto second = model({0, 0xff, 0, distant, 0, 1, 1}, x + shift, y, miss_shaders, pipeline_flags);
           want.secondary = second.status + 16 * second.instance + 256 * second.miss;
         }
         // the callable shader the thread chooses, with its record's arguments
@@ -805,6 +808,21 @@ main(int argc, char **argv) {
   compare("pipeline", 2, 0, case_count);
   CHECK(trace(pipeline.Get(), true));
   compare("indirect", 2, 0, case_count);
+  D3D12_RAYTRACING_PIPELINE_CONFIG1 flagged{pipeline_config.MaxTraceRecursionDepth};
+  for (auto &subobject : subobjects)
+    if (subobject.Type == D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG)
+      subobject = {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1, &flagged};
+  for (auto flags : {D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_TRIANGLES,
+                     D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_PROCEDURAL_PRIMITIVES}) {
+    flagged.Flags = flags;
+    ComPtr<ID3D12StateObject> state;
+    CHECK(state_object(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, subobjects, state));
+    for (bool indirect : {false, true}) {
+      step("pipeline flags %u, indirect %u", flags, indirect);
+      CHECK(trace(state.Get(), indirect, 1));
+      compare("pipeline flags", 2, 0, 1, flags);
+    }
+  }
   CHECK(trace(collected.Get()));
   compare("of a collection", 2, 0, 1);
   // the grown pipeline has the added miss shader; the identifiers the first pipeline gave are still its own
@@ -984,6 +1002,6 @@ main(int argc, char **argv) {
     printf("failed: no ray crosses a box\n");
     return 1;
   }
-  printf("passed: %u hits of %u rays\n", hits, (2 * case_count + 5 + 2 * ((UINT)std::size(own_cases) + 5)) * rays);
+  printf("passed: %u hits of %u rays\n", hits, rays_checked);
   return 0;
 }

@@ -1,0 +1,12 @@
+# an addition cannot see its parent's embedded definitions
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -373,6 +373,8 @@
+       shaders_ = pParent->shaders_;
+       exports_ = pParent->exports_;
+       root_signatures_ = pParent->root_signatures_;
++      library_definitions_ = pParent->library_definitions_;
++      library_names_ = pParent->library_names_;
+       pipeline_config_ = pParent->pipeline_config_;
+       std::copy(std::begin(pParent->configurations_), std::end(pParent->configurations_), configurations_);
+     }

@@ -1,0 +1,12 @@
+# ungrouped hit exports need root bindings too
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -736,7 +736,7 @@
+           validate(name, shader, nullptr, configured.count(shader.library.get()));
+         else {
+           RayExport checked;
+-          function(checked, 0, name, nullptr);
++          validate(name, shader, nullptr, configured.count(shader.library.get()));
+         }
+       }
+     }

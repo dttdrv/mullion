@@ -1,0 +1,13 @@
+# both the parent and the addition must opt in
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -613,9 +613,6 @@
+       }
+     }
+ 
+-    if (pParent && (!(flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_STATE_OBJECT_ADDITIONS) ||
+-                    !(pParent->flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_STATE_OBJECT_ADDITIONS)))
+-      return E_INVALIDARG;
+     deferred_ = type_ == D3D12_STATE_OBJECT_TYPE_COLLECTION &&
+                 (flags_ & D3D12_STATE_OBJECT_FLAG_ALLOW_LOCAL_DEPENDENCIES_ON_EXTERNAL_DEFINITIONS);
+     if (deferred_) {

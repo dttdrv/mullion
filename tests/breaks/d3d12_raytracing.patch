@@ -1,0 +1,12 @@
+# the resolved pipeline flags govern the rays that are traced
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -753,7 +753,7 @@
+     if (failed)
+       return E_INVALIDARG;
+     if (auto &config = configurations_[PipelineConfig - ShaderConfig]; config)
+-      pipeline_config_ = {config->first, (D3D12_RAYTRACING_PIPELINE_FLAGS)config->second};
++      pipeline_config_ = {config->first, D3D12_RAYTRACING_PIPELINE_FLAG_NONE};
+ 
+     // "Default pipeline stack size": the deepest any chain of the shaders there are can get, with callable shaders
+     // two deep

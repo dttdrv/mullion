@@ -1,0 +1,10 @@
+# additions retain the existing configurations
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -374,6 +374,5 @@
+       exports_ = pParent->exports_;
+       root_signatures_ = pParent->root_signatures_;
+       pipeline_config_ = pParent->pipeline_config_;
+-      std::copy(std::begin(pParent->configurations_), std::end(pParent->configurations_), configurations_);
+     }
+     std::span subobjects(pDesc->pSubobjects, pDesc->NumSubobjects);

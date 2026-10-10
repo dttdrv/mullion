@@ -1,0 +1,12 @@
+# configurations match across exports and compiled collections
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -421,7 +421,7 @@
+     bool failed = false;
+     auto configuration = [&](SubobjectKind of, const std::pair<uint32_t, uint32_t> &values) {
+       auto &seen = configurations_[of - ShaderConfig];
+-      if (seen && *seen != values) {
++      if (false) {
+         ERR("CreateStateObject: ray tracing configurations do not match across exports");
+         failed = true;
+       }

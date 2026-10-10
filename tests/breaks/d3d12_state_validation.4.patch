@@ -1,0 +1,18 @@
+# separate root objects with matching definitions agree
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -410,13 +410,7 @@
+         return true;
+       if (!a.root || !b.root)
+         return false;
+-      const void *first, *second;
+-      static_cast<MTLD3D12RootSignature *>(a.root)->GetBlob(&first);
+-      static_cast<MTLD3D12RootSignature *>(b.root)->GetBlob(&second);
+-      UINT size, other_size;
+-      return SUCCEEDED(microsoft::DXBCGetRootSignature(first, &first, &size)) &&
+-             SUCCEEDED(microsoft::DXBCGetRootSignature(second, &second, &other_size)) && size == other_size &&
+-             !memcmp(first, second, size);
++      return false;
+     };
+     bool failed = false;
+     auto configuration = [&](SubobjectKind of, const std::pair<uint32_t, uint32_t> &values) {

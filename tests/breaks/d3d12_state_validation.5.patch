@@ -1,0 +1,12 @@
+# embedded attribute sizes are read from their own RDAT field
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -114,7 +114,7 @@
+         subobject.names.push_back(string(word(parts[Indices], ((uint64_t)row + 1 + n) * 4)));
+       break;
+     case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG:
+-      subobject.values[1] = field(3);
++      subobject.values[1] = 0;
+       [[fallthrough]];
+     case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG:
+       subobject.values[0] = field(2);

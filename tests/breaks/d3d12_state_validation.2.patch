@@ -1,0 +1,12 @@
+# different default definitions leave no association
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -653,7 +653,7 @@
+           ambiguous[scope] |= !same(a, *strongest);
+       }
+       for (unsigned i = 0; i < std::size(best); i++)
+-        if (ambiguous[i]) {
++        if (false) {
+           if (!best[i]->name.empty()) {
+             ERR("CreateStateObject: conflicting explicit subobject associations");
+             failed = true;

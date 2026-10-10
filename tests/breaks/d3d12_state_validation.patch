@@ -1,0 +1,16 @@
+# missing configurations are refused
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -677,11 +677,7 @@
+       for (unsigned of = ShaderConfig; of < SubobjectKinds; of++) {
+         auto config = resolve((SubobjectKind)of, name, shader, group);
+         if (!config) {
+-          if (inherited && configurations_[of - ShaderConfig])
+-            continue;
+-          ERR("CreateStateObject: a ray tracing shader has no unambiguous configuration");
+-          failed = true;
+-          return;
++          continue;
+         }
+         configuration((SubobjectKind)of, config->values);
+       }

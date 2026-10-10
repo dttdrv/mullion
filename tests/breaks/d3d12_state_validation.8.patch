@@ -1,0 +1,12 @@
+# hit group configuration associations cover their components
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -637,7 +637,7 @@
+       auto applies = [&](const Association &a) {
+         return a.kind == of && (a.name.empty() ? (!a.library || a.library == shader.library.get()) &&
+                                                      (!a.collection || a.collection == shader.collection)
+-                                               : a.name == name || (group && a.name == *group) ||
++                                               : a.name == name ||
+                                                      (a.library == shader.library.get() && a.name == source));
+       };
+       bool ambiguous[std::size(best)] = {};
