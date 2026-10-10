@@ -648,7 +648,7 @@ public:
       if (Logger::logLevel() == LogLevel::Trace)
         TRACE("pass ", allocator_->encoder_current->id, ": graphics pipeline ", pso_graphics_->name);
       if (device_->NamesPasses())
-        device_->NamePass(allocator_->encoder_current, pso_graphics_->name);
+        device_->NamePass(allocator_->encoder_current, pso_graphics_->name, pipeline);
 
       auto &cmd_setdsso = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
       cmd_setdsso.type = WMTRenderCommandSetDepthStencilState;
@@ -1154,7 +1154,7 @@ public:
       if (Logger::logLevel() == LogLevel::Trace)
         TRACE("pass ", allocator_->encoder_current->id, ": compute pipeline ", pso_compute_->name);
       if (device_->NamesPasses())
-        device_->NamePass(allocator_->encoder_current, pso_compute_->name);
+        device_->NamePass(allocator_->encoder_current, pso_compute_->name, pso_compute_->pso);
     }
     BindComputeRootArguments(SkipResourceBinding);
     return true;
@@ -3334,7 +3334,7 @@ public:
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute)
       StartComputePass();
     if (device_->NamesPasses())
-      device_->NamePass(allocator_->encoder_current, state_object_->name);
+      device_->NamePass(allocator_->encoder_current, state_object_->name, pipeline);
     auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
     pso.type = WMTComputeCommandSetPSO;
     pso.pso = pipeline;

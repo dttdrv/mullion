@@ -3790,6 +3790,7 @@ _MTLCommandBuffer_sampledCommandEncoder(void *obj) {
     [desc release];
   } else {
     MTLComputePassDescriptor *desc = [[MTLComputePassDescriptor alloc] init];
+    desc.dispatchType = params->type == WMTSampledConcurrentCompute ? MTLDispatchTypeConcurrent : MTLDispatchTypeSerial;
     desc.sampleBufferAttachments[0].sampleBuffer = (id<MTLCounterSampleBuffer>)samples->sample_buffer;
     desc.sampleBufferAttachments[0].startOfEncoderSampleIndex = samples->start_of_encoder_sample_index;
     desc.sampleBufferAttachments[0].endOfEncoderSampleIndex = samples->end_of_encoder_sample_index;

@@ -1,0 +1,14 @@
+# erase per-pass encoding time
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index 21c7ac9..cc814a8 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -1349,7 +1349,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
+     }
+     if constexpr (Profile)
+       if (profiled)
+-        profiled->passes.back().encoding = diag::Now() - profiled->passes.back().encoding;
++        profiled->passes.back().encoding = 0;
+     encoder_index--;
+   }
+   encoder_head.next = nullptr;

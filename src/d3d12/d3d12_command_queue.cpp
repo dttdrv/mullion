@@ -276,7 +276,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
       Trace("waits for command buffer ", internal_seq);
       Watched(internal_seq);
-      if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
+      if (profile_ || inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
         inflight.cmdbuf.waitUntilCompleted();
       auto completed = profile_ ? diag::Now() : 0;
       Watched(0);
@@ -317,9 +317,14 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
                              : pass.type == EncoderType::Resolve ? "Resolve"
                                                                  : "AccelerationStructure";
           std::string runs;
-          std::istringstream names(device_->PassName(pass.pass, false));
-          for (std::string name; std::getline(names, name, '|');)
-            runs += (runs.empty() ? "" : "|") + name + "*0*0*0";
+          auto name = [&](uint64_t pipeline) {
+            auto label = device_->PassName(pass.pass, false, pipeline);
+            return label.empty() ? str::format(kind, ':', pipeline) : label;
+          };
+          if (pass.type == EncoderType::Render)
+            runs = diag::PipelineRuns(static_cast<const RenderEncoderData *>(pass.pass)->cmd_head, name);
+          else if (pass.type == EncoderType::Compute)
+            runs = diag::PipelineRuns(static_cast<const ComputeEncoderData *>(pass.pass)->cmd_head, name);
           auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, kind, pass.encoding, runs);
           line.pop_back();
           for (uint32_t i = 0; i < pass.count; i++)

@@ -1,0 +1,14 @@
+# mislabel an event-only chunk as having a GPU pass
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..da211b9 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -320,7 +320,7 @@ CommandQueue::WaitForFinishThread() {
+       }
+       auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
+                               chunk.attached_cmdbuf.gpuStartTime(), chunk.attached_cmdbuf.gpuEndTime(),
+-                              buffer.submitted, buffer.passes.size(), buffer.presents, buffer.timestamps);
++                              buffer.submitted, buffer.passes.size() + 1, buffer.presents, buffer.timestamps);
+       for (auto &pass : buffer.passes) {
+         auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, pass.kind, pass.encoding, pass.runs);
+         line.pop_back();

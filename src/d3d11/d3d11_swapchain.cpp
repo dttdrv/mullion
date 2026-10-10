@@ -1,3 +1,4 @@
+#include "dxmt_diag.hpp"
 #include "dxmt_window.hpp"
 #include "d3d11_swapchain.hpp"
 #include "com/com_guid.hpp"
@@ -751,6 +752,7 @@ public:
   STDMETHODCALLTYPE
   Present1(UINT SyncInterval, UINT PresentFlags,
            const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+    auto began = diag::profile ? diag::Now() : 0;
     if (SyncInterval > 4)
       return DXGI_ERROR_INVALID_CALL;
 
@@ -832,6 +834,8 @@ public:
     lock.unlock(); // since PresentBoundary() will and should only stall current thread
 
     cmd_queue.PresentBoundary();
+    if (diag::profile)
+      diag::Write(diag::Line("span", "present", "", GetCurrentThreadId(), began, diag::Now() - began));
 
     return hr;
   };

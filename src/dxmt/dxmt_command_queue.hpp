@@ -25,6 +25,7 @@
 #include "dxmt_command.hpp"
 #include "dxmt_command_list.hpp"
 #include "dxmt_context.hpp"
+#include "dxmt_diag.hpp"
 #include "dxmt_counter.hpp"
 #include "dxmt_occlusion_query.hpp"
 #include "dxmt_resource_initializer.hpp"
@@ -116,7 +117,8 @@ public:
     list_enc.execute(enc);
     attached_cmdbuf = cmdbuf;
     auto t1 = clock::now();
-    readback = enc.flushCommands(cmdbuf, chunk_id, chunk_event_id);
+    readback = diag::profile ? enc.flushCommands<true>(cmdbuf, chunk_id, chunk_event_id)
+                            : enc.flushCommands<false>(cmdbuf, chunk_id, chunk_event_id);
     auto t2 = clock::now();
     statistics.encode_prepare_interval += (t1 - t0);
     statistics.encode_flush_interval += (t2 - t1);
@@ -175,6 +177,14 @@ private:
   // DXGI's default (IDXGIDevice1::SetMaximumFrameLatency)
   static constexpr uint32_t kDefaultLatency = 3;
   uint32_t max_latency_ = kDefaultLatency;
+
+  struct ProfileQueue {
+    static inline std::atomic_uint64_t queues{0};
+    std::string id = str::format("d3d11:", ++queues);
+    diag::TimestampSamples samples;
+    std::array<diag::ProfileBuffer, kCommandChunkCount> buffers;
+  };
+  std::unique_ptr<ProfileQueue> profile_ = diag::profile ? std::make_unique<ProfileQueue>() : nullptr;
 
   dxmt::thread encodeThread;
   dxmt::thread finishThread;
@@ -252,6 +262,8 @@ public:
 
   */
   void CommitCurrentChunk();
+
+  WMTSampleBufferAttachmentInfo ProfilePass(EncoderData *pass, diag::ProfileBuffer *&buffer);
 
   uint64_t CurrentFrameSeq() {
     return frame_count + 1;

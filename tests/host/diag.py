@@ -255,7 +255,28 @@ def empty_and_short(directory):
     assert tool.records(empty) == []
 
 
+def d3d11(directory):
+    path = directory / "d3d11.diag"
+    path.write_text("frame\t1\t1\t200\n"
+                    "frame\td3d11:1\t1\t100\n"
+                    "cmdbuf\t1\t1\t190\t200\t180\t190\n"
+                    "cmdbuf\td3d11:1\t1\t110\t180\t120\t160\t90\t1\t0\t0\n"
+                    "cmdbuf\td3d11:1\t2\t111\t181\t0\t0\t90\t0\t0\t0\n"
+                    "pass\td3d11:1\t1\t2\tRender\t7\tRender:123456789*2*6*0\t120\t130\t140\t160\n"
+                    "target\td3d11:1\t1\t2\tcolor\t0\t123\t8\t4\t70\t0\t0\n")
+    record = tool.Record(path)
+    assert record.frames == [100, 200] and len(record.cmdbufs) == 3
+    assert record.cmdbufs["d3d11:1", 2] == (111, 181, 0, 0, 90, 0, 0, 0)
+    assert record.frame_of(record.passes[0]) == 0, "encoder delay must not move a submitted pass into the next frame"
+    assert record.targets["d3d11:1", 1, 2] == [("color", "0", "123", "8", "4", "70", "0", "0")]
+    assert tool.frame_rows(record)[0]["gpu_clock"] == 30
+    assert tool.short_name("Render:123456789") == "Render:123456789"
+    tile = tool.Pass("d3d11:1", "1", "3", "Render", "1", "Tile:45*1*0*0|Render:123456789*2*6*0", "1", "2")
+    assert tile.draws == 2 and tile.tile_dispatches == 1 and tile.pipelines == ("Tile:45", "Render:123456789")
+
+
 with tempfile.TemporaryDirectory() as directory:
     profile(Path(directory))
     empty_and_short(Path(directory))
+    d3d11(Path(directory))
 print("passed: host_diag_profile")

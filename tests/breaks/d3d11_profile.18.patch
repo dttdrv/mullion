@@ -1,0 +1,14 @@
+# lose presentation-only GPU work
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..1fb99e4 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -36,7 +36,7 @@ CommandChunk::allocate_cpu_heap(size_t size, size_t alignment) {
+ WMTSampleBufferAttachmentInfo
+ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+   auto &buffer = profile_->buffers[argument_encoding_ctx.currentSeqId() % kCommandChunkCount];
+-  buffer.presents += pass->type == EncoderType::Present;
++  buffer.presents += 0;
+   buffer.timestamps += pass->type == EncoderType::SampleTimestamp;
+   const char *kind = pass->type == EncoderType::Render            ? "Render"
+                      : pass->type == EncoderType::Compute         ? "Compute"

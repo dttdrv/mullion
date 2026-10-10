@@ -887,6 +887,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
 
 constexpr unsigned kEncoderOptimizerThreshold = 64;
 
+template <bool Profile>
 QueryReadbacks
 ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id) {
   assert(!encoder_current);
@@ -940,6 +941,28 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
   while (encoder_index) {
     auto current = encoders[encoder_count - encoder_index];
+    diag::ProfileBuffer *profiled = nullptr;
+    WMTSampleBufferAttachmentInfo samples{};
+    if constexpr (Profile)
+      samples = queue_.ProfilePass(current, profiled);
+    auto scaler_boundary = [&](bool end) {
+      if constexpr (Profile) {
+        if (samples.sample_buffer) {
+          auto boundary = samples;
+          boundary.start_of_encoder_sample_index = end ? ~uint64_t(0) : samples.start_of_encoder_sample_index;
+          boundary.end_of_encoder_sample_index = end ? samples.end_of_encoder_sample_index : ~uint64_t(0);
+          auto encoder = cmdbuf.blitCommandEncoderWithSampleBuffers(&boundary, 1);
+          // Metal does not sample an empty blit encoder (D3D11 timestamp sampling uses the same write)
+          wmtcmd_blit_fillbuffer fill{};
+          fill.type = WMTBlitCommandFillBuffer;
+          fill.buffer = dummy_cbuffer_;
+          fill.length = sizeof(uint32_t);
+          encoder.encodeCommands(reinterpret_cast<const wmtcmd_blit_nop *>(&fill));
+          return encoder;
+        }
+      }
+      return cmdbuf.blitCommandEncoder();
+    };
     switch (current->type) {
     case EncoderType::Render: {
       auto data = static_cast<RenderEncoderData *>(current);
@@ -996,7 +1019,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
             readbacks.visibility->visibility_result_windows[data->visibility_result_window];
       }
       auto gpu_buffer_ = data->allocated_argbuf;
-      auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+      auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(render_pass_info, samples)
+                                          : cmdbuf.renderCommandEncoder(render_pass_info);
       data->fence_wait.forEach(
           data->fence_wait_vertex, // if a fence is waited pre-raster, no need to wait again at fragment
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
@@ -1120,7 +1144,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::Compute: {
       auto data = static_cast<ComputeEncoderData *>(current);
-      auto encoder = cmdbuf.computeCommandEncoder(true);
+      auto encoder = samples.sample_buffer ? cmdbuf.computeCommandEncoder(samples, true)
+                                          : cmdbuf.computeCommandEncoder(true);
       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
       struct wmtcmd_compute_setbuffer setcmd;
       setcmd.type = WMTComputeCommandSetBuffer;
@@ -1139,7 +1164,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::Blit: {
       auto data = static_cast<BlitEncoderData *>(current);
-      auto encoder = cmdbuf.blitCommandEncoder();
+      auto encoder = samples.sample_buffer ? cmdbuf.blitCommandEncoderWithSampleBuffers(&samples, 1)
+                                          : cmdbuf.blitCommandEncoder();
       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
       encoder.encodeCommands(&data->cmd_head);
       data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id]); });
@@ -1196,7 +1222,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           info.colors[0].store_action = WMTStoreActionStore;
         }
         info.render_target_array_length = data->array_length;
-        auto encoder = cmdbuf.renderCommandEncoder(info);
+        auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(info, samples)
+                                            : cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
         data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); });
         data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id], WMTRenderStageFragment); });
@@ -1215,7 +1242,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
         info.colors[0].resolve_texture = data->dst.texture();
 
-        auto encoder = cmdbuf.renderCommandEncoder(info);
+        auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(info, samples)
+                                            : cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
         data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); });
         data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id], WMTRenderStageFragment); });
@@ -1227,7 +1255,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::SpatialUpscale: {
       auto data = static_cast<SpatialUpscaleData *>(current);
 
-      auto begin_scaler = cmdbuf.blitCommandEncoder();
+      auto begin_scaler = scaler_boundary(false);
       begin_scaler.setLabel(WMT::String::string("BeginScaler", WMTUTF8StringEncoding));
       data->fence_wait.forEach([&](auto id) { begin_scaler.waitForFence(fence_pool_[id]); });
       begin_scaler.updateFence(data->scaler->fence());
@@ -1235,7 +1263,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
       cmdbuf.encodeSpatialScale(data->scaler->scaler(), data->backbuffer, data->upscaled, data->scaler->fence());
 
-      auto end_scaler = cmdbuf.blitCommandEncoder();
+      auto end_scaler = scaler_boundary(true);
       end_scaler.waitForFence(data->scaler->fence());
       end_scaler.setLabel(WMT::String::string("EndScaler", WMTUTF8StringEncoding));
       data->fence_update.forEach([&](auto id) { end_scaler.updateFence(fence_pool_[id]); });
@@ -1259,7 +1287,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::TemporalUpscale: {
       auto data = static_cast<TemporalUpscaleData *>(current);
 
-      auto begin_scaler = cmdbuf.blitCommandEncoder();
+      auto begin_scaler = scaler_boundary(false);
       begin_scaler.setLabel(WMT::String::string("BeginScaler", WMTUTF8StringEncoding));
       data->fence_wait.forEach([&](auto id) { begin_scaler.waitForFence(fence_pool_[id]); });
       begin_scaler.updateFence(data->scaler->fence());
@@ -1270,7 +1298,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           data->scaler->fence(), data->props
       );
 
-      auto end_scaler = cmdbuf.blitCommandEncoder();
+      auto end_scaler = scaler_boundary(true);
       end_scaler.waitForFence(data->scaler->fence());
       end_scaler.setLabel(WMT::String::string("EndScaler", WMTUTF8StringEncoding));
       data->fence_update.forEach([&](auto id) { end_scaler.updateFence(fence_pool_[id]); });
@@ -1319,6 +1347,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     default:
       break;
     }
+    if constexpr (Profile)
+      if (profiled)
+        profiled->passes.back().encoding = diag::Now() - profiled->passes.back().encoding;
     encoder_index--;
   }
   encoder_head.next = nullptr;
@@ -1335,6 +1366,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
   return readbacks;
 }
+
+template QueryReadbacks ArgumentEncodingContext::flushCommands<false>(WMT::CommandBuffer, uint64_t, uint64_t);
+template QueryReadbacks ArgumentEncodingContext::flushCommands<true>(WMT::CommandBuffer, uint64_t, uint64_t);
 
 DXMT_ENCODER_LIST_OP
 ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *latter) {

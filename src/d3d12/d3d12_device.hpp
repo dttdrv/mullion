@@ -26,6 +26,7 @@
 #include "airconv_public.h"
 #include "dxmt_buffer.hpp"
 #include "dxmt_command.hpp"
+#include "dxmt_diag.hpp"
 #include "dxmt_fence.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_presenter.hpp"
@@ -366,45 +367,7 @@ public:
 // timestamp queries sample the GPU's clock into counter sample buffers. Metal makes few of them, with few samples
 // each, so they go round the device's command buffers, one each: a command buffer that needs one while the others hold
 // them all waits for the first to complete
-struct TimestampSamples {
-  dxmt::mutex mutex;
-  dxmt::condition_variable returned;
-  std::vector<WMT::Reference<WMT::CounterSampleBuffer>> free;
-  uint32_t made = 0;
-  // the most samples Metal lets a buffer hold
-  uint32_t limit = 0;
-
-  WMT::Reference<WMT::CounterSampleBuffer>
-  Take(WMT::Device metal, bool wait = true) {
-    std::unique_lock<dxmt::mutex> lock(mutex);
-    if (!limit)
-      for (limit = 1; metal.newCounterSampleBuffer(limit * 2); limit *= 2)
-        ;
-    for (;;) {
-      if (!free.empty()) {
-        auto buffer = std::move(free.back());
-        free.pop_back();
-        return buffer;
-      }
-      if (auto buffer = metal.newCounterSampleBuffer(limit)) {
-        made++;
-        return buffer;
-      }
-      if (!made || !wait)
-        return {};
-      if (Logger::logLevel() == LogLevel::Trace)
-        TRACE("timestamps: waits for one of ", made, " sample buffers");
-      returned.wait(lock);
-    }
-  }
-
-  void
-  Return(WMT::Reference<WMT::CounterSampleBuffer> &&buffer) {
-    std::lock_guard<dxmt::mutex> lock(mutex);
-    free.push_back(std::move(buffer));
-    returned.notify_one();
-  }
-};
+using TimestampSamples = diag::TimestampSamples;
 
 class MTLD3D12Device : public ID3D12Device10 {
 public:
@@ -447,8 +410,8 @@ public:
   // DXMT_D3D12_GPU_ERRORS: passes carry the names of their pipelines to Metal, whose report of a command buffer
   // the GPU failed then says which pass it was. `NamePass` adds a pipeline to a pass's name, `PassName` takes it
   virtual bool NamesPasses() = 0;
-  virtual void NamePass(const EncoderData *pass, const std::string &pipeline) = 0;
-  virtual std::string PassName(const EncoderData *pass, bool consume = true) = 0;
+  virtual void NamePass(const EncoderData *pass, const std::string &pipeline, obj_handle_t metal) = 0;
+  virtual std::string PassName(const EncoderData *pass, bool consume = true, obj_handle_t metal = 0) = 0;
   // shared by every queue and swap chain: the first non-test Present accepted by a queue
   std::atomic<std::chrono::steady_clock::time_point> first_present{};
   virtual void PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) = 0;

@@ -1,0 +1,14 @@
+# misclassify render passes
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..b4c8e5f 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -38,7 +38,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+   auto &buffer = profile_->buffers[argument_encoding_ctx.currentSeqId() % kCommandChunkCount];
+   buffer.presents += pass->type == EncoderType::Present;
+   buffer.timestamps += pass->type == EncoderType::SampleTimestamp;
+-  const char *kind = pass->type == EncoderType::Render            ? "Render"
++  const char *kind = pass->type == EncoderType::Render            ? "Compute"
+                      : pass->type == EncoderType::Compute         ? "Compute"
+                      : pass->type == EncoderType::Blit            ? "Blit"
+                      : pass->type == EncoderType::Clear           ? "Clear"

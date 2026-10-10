@@ -1,0 +1,14 @@
+# erase command buffer GPU clocks
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..52eb889 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -319,7 +319,7 @@ CommandQueue::WaitForFinishThread() {
+           samples.buffer.resolveCounterRange(0, samples.used, clock.data(), clock.size() * sizeof(uint64_t));
+       }
+       auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
+-                              chunk.attached_cmdbuf.gpuStartTime(), chunk.attached_cmdbuf.gpuEndTime(),
++                              uint64_t(0), uint64_t(0),
+                               buffer.submitted, buffer.passes.size(), buffer.presents, buffer.timestamps);
+       for (auto &pass : buffer.passes) {
+         auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, pass.kind, pass.encoding, pass.runs);

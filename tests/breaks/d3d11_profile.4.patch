@@ -1,0 +1,14 @@
+# omit attachment records
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..b034175 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -51,7 +51,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+   auto seq = pass->id;
+   std::string runs, targets;
+   auto target = [&](const char *binding, unsigned slot, WMT::Texture texture, unsigned level, unsigned slice) {
+-    if (texture)
++    if (false && texture)
+       targets +=
+           diag::Line("target", profile_->id, argument_encoding_ctx.currentSeqId(), seq, binding, slot, texture.handle,
+                      texture.width(), texture.height(), uint64_t(texture.pixelFormat()), level, slice);

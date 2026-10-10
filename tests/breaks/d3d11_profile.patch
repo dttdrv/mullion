@@ -1,0 +1,14 @@
+# record without the profile setting
+diff --git a/src/dxmt/dxmt_diag.hpp b/src/dxmt/dxmt_diag.hpp
+index 1055177..cfd16d3 100644
+--- a/src/dxmt/dxmt_diag.hpp
++++ b/src/dxmt/dxmt_diag.hpp
+@@ -48,7 +48,7 @@ struct TimestampSamples {
+   }
+ };
+
+-inline const bool profile = env::getEnvVar("DXMT_DIAG") == "profile";
++inline const bool profile = true;
+ inline const bool errors = !env::getEnvVar("DXMT_D3D12_GPU_ERRORS").empty();
+
+ inline uint64_t

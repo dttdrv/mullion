@@ -1,0 +1,14 @@
+# disable per-pass GPU timestamp attachment
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..32211fc 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -112,7 +112,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+   auto &samples = buffer.samples.back();
+   uint32_t first = ~0u;
+   WMTSampleBufferAttachmentInfo attachment{};
+-  if (samples.buffer && count <= profile_->samples.limit - samples.used) {
++  if (false && samples.buffer && count <= profile_->samples.limit - samples.used) {
+     first = samples.used;
+     samples.used += count;
+     attachment = {samples.buffer, first, first + count - 1};

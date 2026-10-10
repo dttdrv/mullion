@@ -766,8 +766,9 @@ public:
   }
 
   ComputeCommandEncoder
-  computeCommandEncoder(const WMTSampleBufferAttachmentInfo &samples) {
-    return ComputeCommandEncoder{MTLCommandBuffer_sampledCommandEncoder(handle, WMTSampledCompute, &samples, nullptr)};
+  computeCommandEncoder(const WMTSampleBufferAttachmentInfo &samples, bool concurrent = false) {
+    return ComputeCommandEncoder{MTLCommandBuffer_sampledCommandEncoder(
+        handle, concurrent ? WMTSampledConcurrentCompute : WMTSampledCompute, &samples, nullptr)};
   }
 
   AccelerationStructureCommandEncoder

@@ -52,6 +52,7 @@ private:
 };
 
 class EmulatedCommandContext {
+  friend class CommandQueue;
 public:
   EmulatedCommandContext(WMT::Device device, InternalCommandLibrary &lib, ArgumentEncodingContext &ctx);
 

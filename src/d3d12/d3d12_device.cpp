@@ -78,6 +78,7 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   std::atomic<HRESULT> removed_ = S_OK;
   dxmt::mutex pass_names_lock_;
   std::unordered_map<const EncoderData *, std::string> pass_names_;
+  std::unordered_map<const EncoderData *, std::unordered_map<obj_handle_t, std::string>> pass_pipelines_;
   uint64_t late_pipelines_ = 0;
   double pipeline_ms_ = 0, longest_pipeline_ms_ = 0;
   dxmt::mutex acceleration_structure_lock_;
@@ -1774,21 +1775,31 @@ public:
   }
 
   void
-  NamePass(const EncoderData *pass, const std::string &pipeline) {
+  NamePass(const EncoderData *pass, const std::string &pipeline, obj_handle_t metal) {
     std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
     auto &name = pass_names_[pass];
     if (diag::profile && !name.empty())
       name += '|';
     name += pipeline;
+    if (diag::profile)
+      pass_pipelines_[pass][metal] = pipeline;
   }
 
   std::string
-  PassName(const EncoderData *pass, bool consume) {
+  PassName(const EncoderData *pass, bool consume, obj_handle_t metal) {
     std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
+    if (metal) {
+      auto pass_name = pass_pipelines_.find(pass);
+      if (pass_name == pass_pipelines_.end())
+        return {};
+      auto name = pass_name->second.find(metal);
+      return name == pass_name->second.end() ? std::string() : name->second;
+    }
     if (!consume) {
       auto name = pass_names_.find(pass);
       return name == pass_names_.end() ? std::string() : name->second;
     }
+    pass_pipelines_.erase(pass);
     auto name = pass_names_.extract(pass);
     return name ? std::move(name.mapped()) : std::string();
   }

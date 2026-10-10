@@ -33,6 +33,96 @@ CommandChunk::allocate_cpu_heap(size_t size, size_t alignment) {
   return queue->AllocateCommandData(size, alignment);
 }
 
+WMTSampleBufferAttachmentInfo
+CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+  auto &buffer = profile_->buffers[argument_encoding_ctx.currentSeqId() % kCommandChunkCount];
+  buffer.presents += pass->type == EncoderType::Present;
+  buffer.timestamps += pass->type == EncoderType::SampleTimestamp;
+  const char *kind = pass->type == EncoderType::Render            ? "Render"
+                     : pass->type == EncoderType::Compute         ? "Compute"
+                     : pass->type == EncoderType::Blit            ? "Blit"
+                     : pass->type == EncoderType::Clear           ? "Clear"
+                     : pass->type == EncoderType::Resolve         ? "Resolve"
+                     : pass->type == EncoderType::SpatialUpscale  ? "SpatialUpscale"
+                     : pass->type == EncoderType::TemporalUpscale ? "TemporalUpscale"
+                                                                  : nullptr;
+  if (!kind)
+    return {};
+  auto seq = pass->id;
+  std::string runs, targets;
+  auto target = [&](const char *binding, unsigned slot, WMT::Texture texture, unsigned level, unsigned slice) {
+    if (texture)
+      targets +=
+          diag::Line("target", profile_->id, argument_encoding_ctx.currentSeqId(), seq, binding, slot, texture.handle,
+                     texture.width(), texture.height(), uint64_t(texture.pixelFormat()), level, slice);
+  };
+  auto run = [&](uint64_t pipeline) {
+    if (!runs.empty())
+      runs += '|';
+    runs += str::format("Render:", pipeline, "*1*1*0");
+  };
+  if (pass->type == EncoderType::Render) {
+    auto data = static_cast<RenderEncoderData *>(pass);
+    for (unsigned i = 0; i < data->colors.size(); i++) {
+      auto &color = data->colors[i];
+      target("color", i, color.attachment.texture(), color.level, color.slice);
+      target("resolve", i, color.resolve_attachment.texture(), color.resolve_level, color.resolve_slice);
+    }
+    target("depth", 0, data->depth.attachment.texture(), data->depth.level, data->depth.slice);
+    target("stencil", 0, data->stencil.attachment.texture(), data->stencil.level, data->stencil.slice);
+    auto &commands = argument_encoding_ctx.emulated_cmd;
+    if (!data->draw_auto_marshal_tasks.empty())
+      run(commands.draw_auto_arguments_marshal);
+    if (!data->gs_arg_marshal_tasks.empty())
+      run(commands.gs_draw_arguments_marshal);
+    if (!data->ts_arg_marshal_tasks.empty())
+      run(commands.ts_draw_arguments_marshal);
+    auto drawn = diag::PipelineRuns(data->cmd_head, [](uint64_t pipeline) {
+      return str::format("Render:", pipeline);
+    });
+    if (!runs.empty() && !drawn.empty())
+      runs += '|';
+    runs += drawn;
+  } else if (pass->type == EncoderType::Compute) {
+    runs = diag::PipelineRuns(static_cast<ComputeEncoderData *>(pass)->cmd_head, [](uint64_t pipeline) {
+      return str::format("Compute:", pipeline);
+    });
+  } else if (pass->type == EncoderType::Clear) {
+    auto data = static_cast<ClearEncoderData *>(pass);
+    target(data->clear_dsv ? "depth-stencil" : "color", 0, data->attachment.texture(), 0, 0);
+  } else if (pass->type == EncoderType::Resolve) {
+    auto data = static_cast<ResolveEncoderData *>(pass);
+    target("color", 0, data->src.texture(), 0, 0);
+    target("resolve", 0, data->dst.texture(), 0, 0);
+  } else if (pass->type == EncoderType::SpatialUpscale) {
+    auto data = static_cast<SpatialUpscaleData *>(pass);
+    target("input", 0, data->backbuffer, 0, 0);
+    target("output", 0, data->upscaled, 0, 0);
+  } else if (pass->type == EncoderType::TemporalUpscale) {
+    auto data = static_cast<TemporalUpscaleData *>(pass);
+    target("input", 0, data->input, 0, 0);
+    target("output", 0, data->output, 0, 0);
+    target("depth", 0, data->depth, 0, 0);
+    target("motion", 0, data->motion_vector, 0, 0);
+    target("exposure", 0, data->exposure, 0, 0);
+  }
+  const uint32_t count = pass->type == EncoderType::Render ? WMTRenderTimestampSamples : WMTTimestampSamplesPerStage;
+  if (buffer.samples.empty() || count > profile_->samples.limit - buffer.samples.back().used)
+    buffer.samples.push_back({profile_->samples.Take(device, false)});
+  auto &samples = buffer.samples.back();
+  uint32_t first = ~0u;
+  WMTSampleBufferAttachmentInfo attachment{};
+  if (samples.buffer && count <= profile_->samples.limit - samples.used) {
+    first = samples.used;
+    samples.used += count;
+    attachment = {samples.buffer, first, first + count - 1};
+  }
+  buffer.passes.push_back(
+      {seq, diag::Now(), kind, std::move(runs), std::move(targets), uint32_t(buffer.samples.size() - 1), first, count});
+  profiled = &buffer;
+  return attachment;
+}
+
 CommandQueue::CommandQueue(WMT::Device device) :
     encodeThread([this]() { this->EncodingThread(); }),
     finishThread([this]() { this->WaitForFinishThread(); }),
@@ -92,6 +182,7 @@ CommandQueue::~CommandQueue() {
 
 void
 CommandQueue::CommitCurrentChunk() {
+  auto began = profile_ ? diag::Now() : 0;
   auto chunk_id = ready_for_encode.load(std::memory_order_relaxed);
   auto &chunk = chunks[chunk_id % kCommandChunkCount];
   chunk.chunk_id = chunk_id;
@@ -100,6 +191,11 @@ CommandQueue::CommitCurrentChunk() {
   chunk.resource_initializer_event_id = initializer.flushToWait();
   auto& statistics = CurrentFrameStatistics();
   statistics.command_buffer_count++;
+  if (profile_) {
+    profile_->buffers[chunk_id % kCommandChunkCount].submitted = began;
+    if (chunk.signal_frame_latency_fence_ != ~0ull)
+      diag::Frame(profile_->id, chunk_id);
+  }
 #if ASYNC_ENCODING
   ready_for_encode.fetch_add(1, std::memory_order_release);
   ready_for_encode.notify_one();
@@ -115,6 +211,8 @@ CommandQueue::CommitCurrentChunk() {
 #endif
 
   cpu_command_allocator.free_blocks(cpu_coherent.signaledValue());
+  if (profile_)
+    diag::Write(diag::Line("span", "execute", chunk_id, GetCurrentThreadId(), began, diag::Now() - began));
 }
 
 void
@@ -157,7 +255,12 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
   if (chunk.resource_initializer_event_id) {
     cmdbuf.encodeWaitForEvent(initializer.event(), chunk.resource_initializer_event_id);
   }
+  auto began = profile_ ? diag::Now() : 0;
   chunk.encode(chunk.attached_cmdbuf, this->argument_encoding_ctx);
+  if (profile_)
+    diag::Write(diag::Line("span", "encode", seq, GetCurrentThreadId(), began, diag::Now() - began));
+  if (profile_)
+    profile_->buffers[seq % kCommandChunkCount].committed = diag::Now();
   cmdbuf.commit();
 
   ready_for_commit.fetch_add(1, std::memory_order_release);
@@ -194,9 +297,10 @@ CommandQueue::WaitForFinishThread() {
     if (stopped.load())
       break;
     auto &chunk = chunks[internal_seq % kCommandChunkCount];
-    if (chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+    if (profile_ || chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
       chunk.attached_cmdbuf.waitUntilCompleted();
     }
+    auto completed = profile_ ? diag::Now() : 0;
     if (chunk.attached_cmdbuf.status() == WMTCommandBufferStatusError) {
       ERR("Device error at frame ", chunk.frame_, ": ", chunk.attached_cmdbuf.error().description().getUTF8String());
     }
@@ -204,6 +308,31 @@ CommandQueue::WaitForFinishThread() {
       for (auto &log : logs.elements()) {
         ERR("Frame ", chunk.frame_, ": ", log.description().getUTF8String());
       }
+    }
+
+    if (profile_) {
+      auto &buffer = profile_->buffers[internal_seq % kCommandChunkCount];
+      std::vector<std::vector<uint64_t>> clocks;
+      for (auto &samples : buffer.samples) {
+        auto &clock = clocks.emplace_back(samples.used, ~uint64_t(0));
+        if (samples.buffer)
+          samples.buffer.resolveCounterRange(0, samples.used, clock.data(), clock.size() * sizeof(uint64_t));
+      }
+      auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
+                              chunk.attached_cmdbuf.gpuStartTime(), chunk.attached_cmdbuf.gpuEndTime(),
+                              buffer.submitted, buffer.passes.size(), buffer.presents, buffer.timestamps);
+      for (auto &pass : buffer.passes) {
+        auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, pass.kind, pass.encoding, pass.runs);
+        line.pop_back();
+        for (uint32_t i = 0; i < pass.count; i++)
+          line += str::format('\t', pass.first == ~0u ? ~uint64_t(0) : clocks[pass.buffer][pass.first + i]);
+        lines += line + '\n' + pass.targets;
+      }
+      diag::Write(lines);
+      for (auto &samples : buffer.samples)
+        if (samples.buffer)
+          profile_->samples.Return(std::move(samples.buffer));
+      buffer = {};
     }
 
     if (chunk.completed)

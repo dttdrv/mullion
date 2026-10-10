@@ -1,0 +1,14 @@
+# associate shader names with the wrong Metal pipeline
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index eb2893c..adf6911 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1782,7 +1782,7 @@ public:
+       name += '|';
+     name += pipeline;
+     if (diag::profile)
+-      pass_pipelines_[pass][metal] = pipeline;
++      pass_pipelines_[pass][0] = pipeline;
+   }
+
+   std::string

@@ -1,0 +1,14 @@
+# erase the encoder thread chunk interval
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..85386b8 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -258,7 +258,7 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
+   auto began = profile_ ? diag::Now() : 0;
+   chunk.encode(chunk.attached_cmdbuf, this->argument_encoding_ctx);
+   if (profile_)
+-    diag::Write(diag::Line("span", "encode", seq, GetCurrentThreadId(), began, diag::Now() - began));
++    diag::Write(diag::Line("span", "encode", seq, GetCurrentThreadId(), began, uint64_t(0)));
+   if (profile_)
+     profile_->buffers[seq % kCommandChunkCount].committed = diag::Now();
+   cmdbuf.commit();

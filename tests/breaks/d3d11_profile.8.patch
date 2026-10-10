@@ -1,0 +1,13 @@
+# discard a pipeline run on a PSO change
+diff --git a/src/dxmt/dxmt_diag.hpp b/src/dxmt/dxmt_diag.hpp
+index 1055177..4a3b25a 100644
+--- a/src/dxmt/dxmt_diag.hpp
++++ b/src/dxmt/dxmt_diag.hpp
+@@ -104,7 +104,6 @@ PipelineRuns(Head head, Name name) {
+   auto set = [&](uint64_t next) {
+     if (pipeline == next)
+       return;
+-    run();
+     pipeline = next;
+     label = name(pipeline);
+     calls = vertices = indices = 0;

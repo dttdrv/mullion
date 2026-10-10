@@ -1,0 +1,14 @@
+# erase pipeline run counts
+diff --git a/src/dxmt/dxmt_diag.hpp b/src/dxmt/dxmt_diag.hpp
+index 1055177..3813f0c 100644
+--- a/src/dxmt/dxmt_diag.hpp
++++ b/src/dxmt/dxmt_diag.hpp
+@@ -99,7 +99,7 @@ PipelineRuns(Head head, Name name) {
+       return;
+     if (!runs.empty())
+       runs += '|';
+-    runs += str::format(label, '*', calls, '*', vertices, '*', indices);
++    runs += str::format(label, '*', uint64_t(0), '*', uint64_t(0), '*', uint64_t(0));
+   };
+   auto set = [&](uint64_t next) {
+     if (pipeline == next)

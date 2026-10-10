@@ -1,0 +1,14 @@
+# erase the present API interval
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index e2324e6..11fce1a 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -835,7 +835,7 @@ public:
+
+     cmd_queue.PresentBoundary();
+     if (diag::profile)
+-      diag::Write(diag::Line("span", "present", "", GetCurrentThreadId(), began, diag::Now() - began));
++      diag::Write(diag::Line("span", "present", "", GetCurrentThreadId(), began, uint64_t(0)));
+
+     return hr;
+   };

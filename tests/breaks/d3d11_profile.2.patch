@@ -1,0 +1,14 @@
+# omit real present boundaries
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..6d9fd86 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -194,7 +194,7 @@ CommandQueue::CommitCurrentChunk() {
+   if (profile_) {
+     profile_->buffers[chunk_id % kCommandChunkCount].submitted = began;
+     if (chunk.signal_frame_latency_fence_ != ~0ull)
+-      diag::Frame(profile_->id, chunk_id);
++      (void)chunk_id;
+   }
+ #if ASYNC_ENCODING
+   ready_for_encode.fetch_add(1, std::memory_order_release);

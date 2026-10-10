@@ -1,0 +1,14 @@
+# erase the calling thread queue interval
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..6b74a45 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -212,7 +212,7 @@ CommandQueue::CommitCurrentChunk() {
+
+   cpu_command_allocator.free_blocks(cpu_coherent.signaledValue());
+   if (profile_)
+-    diag::Write(diag::Line("span", "execute", chunk_id, GetCurrentThreadId(), began, diag::Now() - began));
++    diag::Write(diag::Line("span", "execute", chunk_id, GetCurrentThreadId(), began, uint64_t(0)));
+ }
+
+ void

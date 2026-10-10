@@ -1,0 +1,14 @@
+# erase pipeline identities
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..7a158ea 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -78,7 +78,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+     if (!data->ts_arg_marshal_tasks.empty())
+       run(commands.ts_draw_arguments_marshal);
+     auto drawn = diag::PipelineRuns(data->cmd_head, [](uint64_t pipeline) {
+-      return str::format("Render:", pipeline);
++      return str::format("Render:", uint64_t(0));
+     });
+     if (!runs.empty() && !drawn.empty())
+       runs += '|';

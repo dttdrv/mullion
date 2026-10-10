@@ -1,0 +1,14 @@
+# misattribute chunks to the first frame
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..b1b7771 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -192,7 +192,7 @@ CommandQueue::CommitCurrentChunk() {
+   auto& statistics = CurrentFrameStatistics();
+   statistics.command_buffer_count++;
+   if (profile_) {
+-    profile_->buffers[chunk_id % kCommandChunkCount].submitted = began;
++    profile_->buffers[chunk_id % kCommandChunkCount].submitted = 0;
+     if (chunk.signal_frame_latency_fence_ != ~0ull)
+       diag::Frame(profile_->id, chunk_id);
+   }

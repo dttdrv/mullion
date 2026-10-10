@@ -2401,7 +2401,9 @@ WINEMETAL_API obj_handle_t MTLComputePipelineState_newVisibleFunctionTable(
 
 // Metal, Sampling GPU data into counter sample buffers: two bounds per stage, vertex then fragment for render
 enum { WMTTimestampSamplesPerStage = 2, WMTRenderTimestampSamples = 2 * WMTTimestampSamplesPerStage };
-enum WMTSampledEncoder { WMTSampledCompute, WMTSampledAccelerationStructure, WMTSampledRender };
+enum WMTSampledEncoder {
+  WMTSampledCompute, WMTSampledAccelerationStructure, WMTSampledRender, WMTSampledConcurrentCompute
+};
 // appended calls keep the preceding bridge ABI indices
 enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,

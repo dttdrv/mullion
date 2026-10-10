@@ -1,0 +1,14 @@
+# ignore instances in direct input totals
+diff --git a/src/dxmt/dxmt_diag.hpp b/src/dxmt/dxmt_diag.hpp
+index 1055177..ab17c8f 100644
+--- a/src/dxmt/dxmt_diag.hpp
++++ b/src/dxmt/dxmt_diag.hpp
+@@ -118,7 +118,7 @@ PipelineRuns(Head head, Name name) {
+       case WMTRenderCommandDraw: {
+         auto draw = reinterpret_cast<const wmtcmd_render_draw *>(cmd);
+         calls++;
+-        vertices += draw->vertex_count * draw->instance_count;
++        vertices += draw->vertex_count;
+         break;
+       }
+       case WMTRenderCommandDrawIndexed: {

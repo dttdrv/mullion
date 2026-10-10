@@ -1,0 +1,14 @@
+# stop sampling at the first counter buffer boundary
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..65c5bfd 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -107,7 +107,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+     target("exposure", 0, data->exposure, 0, 0);
+   }
+   const uint32_t count = pass->type == EncoderType::Render ? WMTRenderTimestampSamples : WMTTimestampSamplesPerStage;
+-  if (buffer.samples.empty() || count > profile_->samples.limit - buffer.samples.back().used)
++  if (buffer.samples.empty())
+     buffer.samples.push_back({profile_->samples.Take(device, false)});
+   auto &samples = buffer.samples.back();
+   uint32_t first = ~0u;

@@ -1,7 +1,9 @@
 // contract: profiling records each pass's stages and pipelines, each present and each submission without changing
-// results. "When the GPU starts or finishes a stage, it samples the counters" (Apple, Sampling GPU data into counter
+// results, including each pipeline run's draw/dispatch, vertex and index counts. "When the GPU starts or finishes a
+// stage, it samples the counters" (Apple, Sampling GPU data into counter
 // sample buffers, Sample counters at stage boundaries). queries retain "The value should be sampled at the instant
 // that the GPU is finished with all the preceding workload." (D3D11.3 20.4.3). the record follows the profile contract.
+// vertex and index counts include instances: "same set repeated for each Instance" (D3D11.3 8.4 and 8.6).
 #include "d3d12_test.hpp"
 #include <dxgi1_4.h>
 #include <wincrypt.h>
@@ -20,6 +22,7 @@
 #include <tuple>
 
 static constexpr UINT frames = 4, concurrent_frames = 12, width = 8, height = 4, turns = 4096, threads = 32;
+static constexpr UINT indices[] = {0, 1, 2}, instances[] = {1, 2};
 static const char hlsl[] = R"hlsl(
 float4 vs(uint id : SV_VertexID) : SV_Position {
   float2 uv = float2((id << 1) & 2, id & 2);
@@ -196,11 +199,23 @@ child(char **argv, const ComPtr<ID3D12Device> &device, const std::string &vs, co
   D3D12_VIEWPORT viewport{0, 0, width, height, 0, 1};
   list->RSSetViewports(1, &viewport);
   list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  auto index_buffer = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(indices), D3D12_RESOURCE_STATE_GENERIC_READ);
+  if (!expect(index_buffer != nullptr, "index buffer allocation failed"))
+    return verdict();
+  void *index_data;
+  CHECK(index_buffer->Map(0, nullptr, &index_data));
+  memcpy(index_data, indices, sizeof(indices));
+  index_buffer->Unmap(0, nullptr);
+  D3D12_INDEX_BUFFER_VIEW index_view{index_buffer->GetGPUVirtualAddress(), sizeof(indices), DXGI_FORMAT_R32_UINT};
+  list->IASetIndexBuffer(&index_view);
   for (UINT i = 0; i < std::size(graphics); i++) {
     D3D12_RECT scissor{LONG(i * width / 2), 0, LONG((i + 1) * width / 2), height};
     list->RSSetScissorRects(1, &scissor);
     list->SetPipelineState(graphics[i].Get());
-    list->DrawInstanced(3, 1, 0, 0);
+    list->DrawInstanced(0, 1, 0, 0);
+    for (auto count : instances)
+      list->DrawInstanced(std::size(indices), count, 0, 0);
+    list->DrawIndexedInstanced(std::size(indices), instances[i], 0, 0, 0);
   }
   list->SetComputeRootSignature(rs.Get());
   list->SetComputeRootUnorderedAccessView(0, output->GetGPUVirtualAddress());
@@ -209,7 +224,8 @@ child(char **argv, const ComPtr<ID3D12Device> &device, const std::string &vs, co
     list->SetPipelineState(compute[i].Get());
     UINT args[] = {7, i};
     list->SetComputeRoot32BitConstants(1, std::size(args), args, 0);
-    list->Dispatch(1, 1, 1);
+    for (UINT dispatch = 0; dispatch < std::size(instances); dispatch++)
+      list->Dispatch(1, 1, 1);
     list->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
     list->ResolveQueryData(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, query_desc.Count, queries.Get(),
                            i * query_desc.Count * sizeof(UINT64));
@@ -444,6 +460,13 @@ main(int argc, char **argv) {
     facts >> query_start >> query_end >> ended;
     expect(facts.good(), "child facts incomplete");
     facts.close();
+    std::string render_runs[2], compute_runs[2];
+    for (UINT i = 0; i < std::size(render_runs); i++) {
+      render_runs[i] = names[i] + '*' + std::to_string(std::size(instances) + 1) + '*' +
+                       std::to_string(std::size(indices) * (instances[0] + instances[1])) + '*' +
+                       std::to_string(std::size(indices) * instances[i]);
+      compute_runs[i] = names[i + std::size(render_runs)] + '*' + std::to_string(std::size(instances)) + "*0*0";
+    }
     using Key = std::pair<std::string, UINT64>;
     std::map<Key, std::vector<std::string>> buffers;
     std::vector<std::vector<std::string>> passes, presents;
@@ -547,14 +570,14 @@ main(int argc, char **argv) {
                  "render stages were not sampled");
         auto runs = fields(row[6], '|');
         if (row[4] == "Render")
-          expect(runs.size() == 2 && runs[0] == names[0] + "*0*0*0" && runs[1] == names[1] + "*0*0*0",
+          expect(runs.size() == 2 && runs[0] == render_runs[0] && runs[1] == render_runs[1],
                  "render pipelines missing or out of order");
         else if (row[4] == "Compute") {
-          expect(runs.size() == 1 && (runs[0] == names[2] + "*0*0*0" || runs[0] == names[3] + "*0*0*0"),
+          expect(runs.size() == 1 && (runs[0] == compute_runs[0] || runs[0] == compute_runs[1]),
                  "compute pipeline wrong");
           if (runs.size() == 1) {
             auto &times = kernel_times[runs[0]];
-            if (runs[0] == names[3] + "*0*0*0" && times.size() < frames) {
+            if (runs[0] == compute_runs[1] && times.size() < frames) {
               auto &query = sampled_queries[times.size()];
               expect(query[0] <= number(row[7]) + rounding && number(row[8]) <= query[1] + rounding,
                      "application query does not bracket the sampled kernel");
@@ -578,10 +601,11 @@ main(int argc, char **argv) {
                  kinds["Blit"] == 5 * frames + 2 && kinds.size() == 4,
              "pass kinds or counts differ from recording");
       expect(unsampled > 0, "overflow did not use unsampled sentinel");
-      for (auto &name : names)
-        expect(run_counts[name + "*0*0*0"] == frames, "pipeline lost on list replay");
+      for (UINT i = 0; i < std::size(render_runs); i++)
+        expect(run_counts[render_runs[i]] == frames && run_counts[compute_runs[i]] == frames,
+               "pipeline lost on list replay");
       for (UINT frame = 0; frame < frames; frame++) {
-        auto &fast = kernel_times[names[2] + "*0*0*0"], &slow = kernel_times[names[3] + "*0*0*0"];
+        auto &fast = kernel_times[compute_runs[0]], &slow = kernel_times[compute_runs[1]];
         if (expect(fast.size() == frames && slow.size() == frames, "kernel samples missing"))
           expect(slow[frame] > fast[frame] && fast[frame] > 0, "long kernel not slower in frame %u", frame);
       }

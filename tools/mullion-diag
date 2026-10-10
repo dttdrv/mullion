@@ -9,7 +9,12 @@ the libraries write a record when DXMT_DIAG=profile and DXMT_DIAG_PATH names a d
 
 DXMT_DIAG_PATH is a path of macOS, not of the Wine prefix. each process writes mullion-<process id>.diag there.
 calculations return nanoseconds; printing converts them to milliseconds. a CPU span belongs to the frame of its
-start time. bridge totals cover the intervals recorded at presents; the trailing frame has no bridge totals.
+start time. D3D11 command buffers append the caller submission time, pass count, present count and timestamp-command
+count; an event-only buffer has no encoder and may have zero GPU clocks. the submission time decides its frame;
+target records describe binding, slot, Metal texture, width, height, Metal format, mip and slice.
+pipeline identities in D3D11 are process-local Metal handles; Tile runs count tile dispatches.
+indirect vertex/index totals are unavailable.
+bridge totals cover the intervals recorded at presents; the trailing frame has no bridge totals.
 """
 import argparse
 import re
@@ -23,6 +28,8 @@ NO_SAMPLE = 18446744073709551615
 
 
 def short_name(name):
+    if name.startswith(("Render:", "Compute:", "Tile:")):
+        return name
     return " ".join(shader[:8] for shader in name.split())
 
 
@@ -42,6 +49,8 @@ class Pass:
                      for name, draws, vertices, indices in (run.split("*") for run in runs.split("|") if run)]
         self.pipelines = tuple(dict.fromkeys(name for name, *_ in self.runs))
         self.draws, self.vertices, self.indices = (sum(run[n] for run in self.runs) for n in range(1, 4))
+        self.tile_dispatches = sum(count for name, count, *_ in self.runs if name.startswith("Tile:"))
+        self.draws -= self.tile_dispatches
         clock = [int(sample) for sample in clock]
         if len(clock) % 2:
             raise ValueError("pass has an unpaired stage timestamp")
@@ -57,6 +66,7 @@ class Record:
     def __init__(self, path):
         self.path = Path(path)
         self.calls, self.passes, self.cmdbufs, self.frames, self.spans, self.unix = {}, [], {}, [], [], []
+        self.targets = defaultdict(list)
         with self.path.open() as file:
             for line in file:
                 kind, *rest = line.rstrip("\r\n").split("\t")
@@ -67,6 +77,9 @@ class Record:
                     self.cmdbufs[queue, int(number)] = tuple(map(int, times))
                 elif kind == "pass":
                     self.passes.append(Pass(*rest))
+                elif kind == "target":
+                    queue, cmdbuf, number, *target = rest
+                    self.targets[queue, int(cmdbuf), int(number)].append(tuple(target))
                 elif kind == "frame":
                     self.frames.append(int(rest[2]))
                 elif kind == "span":
@@ -76,12 +89,14 @@ class Record:
                 elif kind == "unix":
                     self.unix.append({int(code): (int(count), int(time))
                                       for code, count, time in (call.split(":") for call in rest)})
+        self.frames.sort()
 
     def frame_at(self, time):
         return bisect_left(self.frames, time)
 
     def frame_of(self, a_pass):
-        return self.frame_at(self.cmdbufs[a_pass.queue, a_pass.cmdbuf][0])
+        times = self.cmdbufs[a_pass.queue, a_pass.cmdbuf]
+        return self.frame_at(times[4] if len(times) > 4 else times[0])
 
     def passes_in(self, frame=None):
         return [p for p in self.passes if frame is None or self.frame_of(p) == frame]
@@ -229,8 +244,10 @@ def report(record, top=15, frame=None):
     table("GPU time by pipeline (a shared pass counts under its pipelines together)", rows, top)
     table("GPU time by pass", [(p.gpu, f"queue {p.queue} command buffer {p.cmdbuf} pass {p.number} {p.kind} "
                                f"[{', '.join(ms(end - start) for start, end in p.stages)} ms] {p.what()}: "
-                               f"{p.draws} draws, {p.vertices} vertices, {p.indices} indices; "
-                               f"CPU encoding {ms(p.encoding)} ms") for p in passes], top)
+                               f"{p.draws} {'dispatches' if p.kind == 'Compute' else 'draws'}, "
+                               f"{p.tile_dispatches} tile dispatches, {p.vertices} vertices, {p.indices} indices; "
+                               f"CPU encoding {ms(p.encoding)} ms; targets "
+                               f"{record.targets.get((p.queue, p.cmdbuf, p.number), [])}") for p in passes], top)
     work, made, bridge = cpu_totals(record, frame)
     table("CPU time by work", [(time, f"{kind}: {count} spans") for kind, (time, count) in work.items()], top)
     table("CPU time by pipeline made", [(time, f"{short_name(name)}: {count} spans, converter {ms(convert)} ms, "

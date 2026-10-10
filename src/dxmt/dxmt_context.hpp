@@ -831,6 +831,7 @@ public:
   
   AllocatedTempBufferSlice allocateTempBuffer1(size_t size, size_t alignment);
 
+  template <bool Profile = false>
   QueryReadbacks flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id);
 
   uint64_t currentSeqId() {return seq_id_;}

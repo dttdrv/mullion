@@ -1,0 +1,14 @@
+# omit a render stage from sampling
+diff --git a/src/dxmt/dxmt_command_queue.cpp b/src/dxmt/dxmt_command_queue.cpp
+index b459e15..4f66863 100644
+--- a/src/dxmt/dxmt_command_queue.cpp
++++ b/src/dxmt/dxmt_command_queue.cpp
+@@ -106,7 +106,7 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
+     target("motion", 0, data->motion_vector, 0, 0);
+     target("exposure", 0, data->exposure, 0, 0);
+   }
+-  const uint32_t count = pass->type == EncoderType::Render ? WMTRenderTimestampSamples : WMTTimestampSamplesPerStage;
++  const uint32_t count = pass->type == EncoderType::Render ? WMTTimestampSamplesPerStage : WMTTimestampSamplesPerStage;
+   if (buffer.samples.empty() || count > profile_->samples.limit - buffer.samples.back().used)
+     buffer.samples.push_back({profile_->samples.Take(device, false)});
+   auto &samples = buffer.samples.back();
