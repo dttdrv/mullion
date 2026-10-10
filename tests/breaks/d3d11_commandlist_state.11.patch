@@ -1,0 +1,10 @@
+# an empty range removes existing vertex-buffer bindings
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3944,4 +3944,6 @@
+     auto &VertexBuffers = state_.InputAssembler.VertexBuffers;
++    if (!NumBuffers)
++      VertexBuffers = {};
+     for (unsigned slot = StartSlot; slot < StartSlot + NumBuffers; slot++) {
+       auto pVertexBuffer = GetResourceCommon(ppVertexBuffers[slot - StartSlot]);
+       if (pVertexBuffer && (pVertexBuffer->bindFlags() & D3D11_BIND_VERTEX_BUFFER) && ValidateIAHazard(pVertexBuffer)) {

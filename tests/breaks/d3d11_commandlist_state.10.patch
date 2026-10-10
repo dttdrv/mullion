@@ -1,0 +1,9 @@
+# default blend factors are zero instead of one
+--- a/src/d3d11/d3d11_context_state.hpp
++++ b/src/d3d11/d3d11_context_state.hpp
+@@ -121,4 +121,4 @@
+   IMTLD3D11BlendState* BlendState;
+-  FLOAT BlendFactor[4] = {1, 1, 1, 1};
++  FLOAT BlendFactor[4] = {};
+
+   UINT SampleMask = 0xffffffff;

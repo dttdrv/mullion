@@ -24,6 +24,10 @@
 // CreateDeferredContext3 specifies the same errors for invalid ContextFlags and a single-threaded device.
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d11_3/nf-d3d11_3-id3d11device3-createdeferredcontext3
 // every legal binding slot is checked, including SRVs on both sides of the implementation's 64-bit masks.
+// D3D11.3 8.1.4: "A set of up to 32 Buffers can be bound at once." every vertex-buffer range, including empty
+// ranges, preserves bindings outside it. IASetVertexBuffers binds "each subsequent input slot" (Microsoft Learn).
+// https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-iasetvertexbuffers
+// getters check every slot; draws check replacement and metadata changes in ranges ending at the last slot.
 // draws add the VB word, VS/GS/PS constants, sampled texels and shader tags; dispatches add the CS equivalents.
 // "Fetching from a ConstantBuffer slot with no Buffer present always returns 0" (D3D11.3 7.5).
 // "Sampling from a slot with no texture bound returns 0 in all components." (7.18.17). each operation copies both
@@ -576,6 +580,40 @@ main() {
     expect(predicate.Get() == (s ? s->predicate.Get() : nullptr) && (!s || value == (p != 0)), "predication differs");
   };
 
+  for (UINT version = 0; version <= deferred.size(); version++) {
+    auto c = version == deferred.size() ? context.Get() : deferred[version].Get();
+    step("context %u initial defaults before binding vertex buffers", version);
+    snapshot(c, -1);
+    ID3D11Buffer *buffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+    UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+    for (UINT slot = 0; slot < std::size(buffers); slot++) {
+      buffers[slot] = state[slot % std::size(state)].vb.Get();
+      strides[slot] = (slot + 1) * sizeof(UINT);
+      offsets[slot] = (slot + 1) * sizeof(std::array<UINT, 4>);
+    }
+    c->IASetVertexBuffers(0, std::size(buffers), buffers, strides, offsets);
+    for (UINT count = 0; count <= std::size(buffers); count++)
+      for (UINT first = 0; first < std::size(buffers) && first + count <= std::size(buffers); first++)
+        for (bool bound : {true, false}) {
+          step("context %u vertex-buffer range first=%u count=%u bound=%d", version, first, count, bound);
+          for (UINT slot = first; slot < first + count; slot++) {
+            buffers[slot] = bound ? state[(slot + count) % std::size(state)].vb.Get() : nullptr;
+            strides[slot] = bound ? (count + slot + 1) * sizeof(UINT) : 0;
+            offsets[slot] = bound ? (count + slot + 1) * sizeof(std::array<UINT, 4>) : 0;
+          }
+          c->IASetVertexBuffers(first, count, buffers + first, strides + first, offsets + first);
+          for (UINT slot = 0; slot < std::size(buffers); slot++) {
+            ComPtr<ID3D11Buffer> got;
+            UINT stride = ~0u, offset = ~0u;
+            c->IAGetVertexBuffers(slot, 1, &got, &stride, &offset);
+            expect(got.Get() == buffers[slot] && stride == strides[slot] && offset == offsets[slot],
+                   "VB slot %u returned stride=%u offset=%u with the wrong binding or metadata", slot, stride, offset);
+          }
+        }
+    c->ClearState();
+    snapshot(c, -1);
+  }
+
   struct Capture {
     UINT p;
     bool inputs;
@@ -626,6 +664,37 @@ main() {
     c->SetPredication(state[p].predicate.Get(), p != 0);
     return hr;
   };
+  for (UINT version = 0; version <= deferred.size(); version++) {
+    auto c = version == deferred.size() ? context.Get() : deferred[version].Get();
+    for (UINT p = 0; p < std::size(state); p++)
+      for (UINT count = 0; count <= D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; count++)
+        for (bool same : {false, true}) {
+          step("context %u draw vertex-buffer range count=%u state=%u same=%d", version, count, p, same);
+          bind(c, p);
+          const UINT last = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT - 1;
+          if (count) {
+            D3D11_BUFFER_DESC desc;
+            state[p].vb->GetDesc(&desc);
+            ID3D11Buffer *old = state[same ? p : (p + 1) % std::size(state)].vb.Get();
+            c->IASetVertexBuffers(last, 1, &old, &state[p].stride, &desc.ByteWidth);
+          }
+          ID3D11Buffer *buffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+          UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+          for (UINT i = 0; i < std::size(buffers); i++) {
+            buffers[i] = state[p].vb.Get();
+            strides[i] = state[p].stride;
+            offsets[i] = state[p].offset;
+          }
+          c->IASetVertexBuffers(count ? std::size(buffers) - count : 0, count, buffers, strides, offsets);
+          CHECK(output(c, p));
+          if (version != deferred.size()) {
+            ComPtr<ID3D11CommandList> list;
+            CHECK(c->FinishCommandList(FALSE, &list));
+            context->ExecuteCommandList(list.Get(), FALSE);
+          }
+          c->ClearState();
+        }
+  }
   for (UINT version = 0; version < deferred.size(); version++) {
     auto c = deferred[version].Get();
     step("version %u initial defaults", version);

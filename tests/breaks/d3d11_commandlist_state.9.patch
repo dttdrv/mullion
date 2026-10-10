@@ -1,0 +1,12 @@
+# vertex-buffer storage has only half the API's slots
+--- a/src/d3d11/d3d11_context_state.hpp
++++ b/src/d3d11/d3d11_context_state.hpp
+@@ -96,7 +96,7 @@
+ struct D3D11InputAssemblerStageState {
+   Com<IMTLD3D11InputLayout, false> InputLayout;
+-  BindingSet<VERTEX_BUFFER_B, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> VertexBuffers;
++  BindingSet<VERTEX_BUFFER_B, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT / 2> VertexBuffers;
+   Com<D3D11ResourceCommon, false> IndexBuffer;
+   /**
+   either DXGI_FORMAT_R16_UINT or DXGI_FORMAT_R32_UINT
+   */

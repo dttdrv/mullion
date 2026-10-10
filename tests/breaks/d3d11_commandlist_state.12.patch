@@ -1,0 +1,13 @@
+# multi-buffer replacement changes CPU state without changing draw inputs
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3977,7 +3977,8 @@
+         entry.Buffer = pVertexBuffer;
+           EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.Offset,
+                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
+-            enc.bindVertexBuffer(slot, offset, stride, forward_rc(buffer));
++            if (NumBuffers <= 1)
++              enc.bindVertexBuffer(slot, offset, stride, forward_rc(buffer));
+         });
+       } else {
+         if (VertexBuffers.unbind(slot)) {

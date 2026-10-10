@@ -1,0 +1,13 @@
+# multi-buffer metadata changes never reach draw inputs
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3959,7 +3959,8 @@
+           }
+           EmitST([=, offset = entry.Offset,
+                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
+-            enc.bindVertexBufferOffset(slot, offset, stride);
++            if (NumBuffers <= 1)
++              enc.bindVertexBufferOffset(slot, offset, stride);
+           });
+           continue;
+         }
