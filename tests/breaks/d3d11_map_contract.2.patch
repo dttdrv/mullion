@@ -1,0 +1,15 @@
+# accept a subresource beyond a dynamic buffer
+diff --git a/src/d3d11/d3d11_resource.hpp b/src/d3d11/d3d11_resource.hpp
+index 71512ad..25a180b 100644
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -298,7 +298,8 @@ public:
+         subresources *= desc.ArraySize;
+     }
+     // D3D11.3 5.6.1.1 and D3D11_MAP/Map remarks: access and usage constrain the CPU's map, not internal updates.
+-    if (Subresource >= subresources || MapType < D3D11_MAP_READ || MapType > D3D11_MAP_WRITE_NO_OVERWRITE ||
++    if ((Subresource >= subresources && tag::dimension != D3D11_RESOURCE_DIMENSION_BUFFER) ||
++        MapType < D3D11_MAP_READ || MapType > D3D11_MAP_WRITE_NO_OVERWRITE ||
+         ((MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) && MapType >= D3D11_MAP_WRITE_DISCARD) ||
+         (ContextType == D3D11_DEVICE_CONTEXT_DEFERRED && MapType < D3D11_MAP_WRITE_DISCARD))
+       return false;

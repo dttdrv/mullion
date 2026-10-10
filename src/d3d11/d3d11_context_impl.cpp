@@ -610,6 +610,19 @@ public:
 
 #pragma region Resource Manipulation
 
+  HRESULT
+  STDMETHODCALLTYPE
+  Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+      D3D11_MAPPED_SUBRESOURCE *pMappedResource) final {
+    std::lock_guard<mutex_t> lock(mutex);
+    if (unlikely(!pResource || !pMappedResource))
+      return E_INVALIDARG;
+    pMappedResource->pData = nullptr;
+    if (!GetResourceCommon(pResource)->CanMap(Subresource, MapType, MapFlags, GetType()))
+      return E_INVALIDARG;
+    return MapResource(pResource, Subresource, MapType, MapFlags, pMappedResource);
+  }
+
   void
   STDMETHODCALLTYPE
   ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4]) override {
@@ -1180,14 +1193,14 @@ public:
       if (auto dynamic = GetDynamicBuffer(pDstResource, &buffer_len, &unused_bind_flag)) {
         D3D11_MAPPED_SUBRESOURCE mapped;
         if ((CopyFlags & D3D11_COPY_DISCARD) || (copy_len == buffer_len && copy_offset == 0)) {
-          Map(pDstResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+          MapResource(pDstResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
           auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
           allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
           Unmap(pDstResource, 0);
           return;
         }
         if (CopyFlags & D3D11_COPY_NO_OVERWRITE) {
-          Map(pDstResource, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+          MapResource(pDstResource, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
           auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
           allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
           Unmap(pDstResource, 0);
@@ -3435,6 +3448,10 @@ public:
 #pragma endregion
 
 #pragma region Internal
+
+  // UpdateSubresource1 can rename DEFAULT buffers without granting CPU access (D3D11.3 5.6.9).
+  virtual HRESULT MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+                              D3D11_MAPPED_SUBRESOURCE *pMappedResource) = 0;
 
   template <CommandWithContext<ArgumentEncodingContext> cmd> void EmitST(cmd &&fn);
   template <CommandWithContext<ArgumentEncodingContext> cmd> void EmitOP(cmd &&fn);

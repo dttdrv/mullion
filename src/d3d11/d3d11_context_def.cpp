@@ -168,21 +168,12 @@ public:
   }
 
   HRESULT
-  STDMETHODCALLTYPE
-  Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
-      D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
+  MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+              D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
-      // a buffer is one subresource
-      if (!pMappedResource || Subresource)
-        return E_INVALIDARG;
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
+      if (MapType == D3D11_MAP_WRITE_DISCARD) {
         if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
           state_.InputAssembler.VertexBuffers.set_dirty();
         }
@@ -200,94 +191,55 @@ public:
         pMappedResource->pData = MapDynamicBuffer(dynamic);
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
-        break;
-      }
-      case D3D11_MAP_WRITE_NO_OVERWRITE: {
+      } else {
         auto ret = ctx_state.current_dynamic_buffer_allocations.find(dynamic.ptr());
         if (ret == ctx_state.current_dynamic_buffer_allocations.end()) {
           ERR("DeferredContext: Invalid NO_OVERWRITE map on deferred context occurs without any prior DISCARD map.");
-          return E_INVALIDARG;
+          return D3D11_ERROR_DEFERRED_CONTEXT_MAP_WITHOUT_INITIAL_DISCARD;
         }
         auto &allocation_state = ret->second;
         pMappedResource->pData = allocation_state.allocation->mappedMemory(allocation_state.suballocation);
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
-        break;
-      }
       }
       return S_OK;
     }
     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
-      if (!pMappedResource)
-        return E_INVALIDARG;
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-        }
-        Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
-        uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
-        // track the current allocation in case of a following NO_OVERWRITE map
-        auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
-        if (ret == ctx_state.current_dynamic_texture_allocations.end()) {
-          ctx_state.current_dynamic_texture_allocations.insert(
-              ret, {dynamic.ptr(), {new_allocation.ptr(), id}});
-        } else {
-          auto previous_allocation_id = ret->second.second;
-          ctx_state.current_cmdlist->used_dynamic_lineartextures[previous_allocation_id].latest = false;
-          ret->second = {new_allocation.ptr(), id};
-        }
-        // collect allocated buffers and recycle them when the command list is released
-        ctx_state.current_cmdlist->used_dynamic_lineartextures.push_back({dynamic, new_allocation, false});
-        EmitST([allocation = new_allocation, texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
-          auto _ = texture->rename(forward_rc(allocation));
-        });
+      for (auto &stage : state_.ShaderStages) {
+        stage.SRVs.set_dirty();
+      }
+      Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+      uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
+      auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
+      if (ret == ctx_state.current_dynamic_texture_allocations.end()) {
+        ctx_state.current_dynamic_texture_allocations.insert(
+            ret, {dynamic.ptr(), {new_allocation.ptr(), id}});
+      } else {
+        auto previous_allocation_id = ret->second.second;
+        ctx_state.current_cmdlist->used_dynamic_lineartextures[previous_allocation_id].latest = false;
+        ret->second = {new_allocation.ptr(), id};
+      }
+      // collect allocated buffers and recycle them when the command list is released
+      ctx_state.current_cmdlist->used_dynamic_lineartextures.push_back({dynamic, new_allocation, false});
+      EmitST([allocation = new_allocation, texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
+        auto _ = texture->rename(forward_rc(allocation));
+      });
 
-        pMappedResource->pData = new_allocation->mappedMemory;
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
-      }
-      case D3D11_MAP_WRITE_NO_OVERWRITE: {
-        auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
-        if (ret == ctx_state.current_dynamic_texture_allocations.end()) {
-          ERR("DeferredContext: Invalid NO_OVERWRITE map on deferred context occurs without any prior DISCARD map.");
-          return E_INVALIDARG;
-        }
-        pMappedResource->pData = ret->second.first->mappedMemory;
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
-      }
-      }
+      pMappedResource->pData = new_allocation->mappedMemory;
+      pMappedResource->RowPitch = row_pitch;
+      pMappedResource->DepthPitch = depth_pitch;
       return S_OK;
     }
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
-      if (!pMappedResource)
-        return E_INVALIDARG;
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-      case D3D11_MAP_WRITE_NO_OVERWRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-        }
-        pMappedResource->pData = MapDynamicBuffer(dynamic);
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
+      for (auto &stage : state_.ShaderStages) {
+        stage.SRVs.set_dirty();
       }
-      }
+      pMappedResource->pData = MapDynamicBuffer(dynamic);
+      pMappedResource->RowPitch = row_pitch;
+      pMappedResource->DepthPitch = depth_pitch;
       return S_OK;
     }
-    return E_FAIL;
+    return E_INVALIDARG;
   }
 
   void

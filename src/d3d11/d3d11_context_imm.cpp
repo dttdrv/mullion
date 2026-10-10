@@ -134,27 +134,14 @@ public:
   }
 
   HRESULT
-  STDMETHODCALLTYPE
-  Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
-      D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
-    std::lock_guard<d3d11_device_mutex> lock(mutex);
-
-    if (unlikely(!pResource || !pMappedResource))
-      return E_INVALIDARG;
+  MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+              D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     auto current_seq_id = cmd_queue.CurrentSeqId();
     auto coherent_seq_id = cmd_queue.CoherentSeqId();
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
-      // a buffer is one subresource
-      if (Subresource)
-        return E_INVALIDARG;
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
+      if (MapType == D3D11_MAP_WRITE_DISCARD) {
         if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
           state_.InputAssembler.VertexBuffers.set_dirty();
         }
@@ -172,72 +159,40 @@ public:
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
-        break;
-      }
-      case D3D11_MAP_WRITE_NO_OVERWRITE: {
+      } else {
         pMappedResource->pData = dynamic->immediateMappedMemory();
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
-        break;
-      }
       }
       return S_OK;
     }
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-      case D3D11_MAP_WRITE_NO_OVERWRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-          stage.SRVs.set_dirty();
-        }
+      for (auto &stage : state_.ShaderStages) {
+        stage.SRVs.set_dirty();
+      }
 
-        pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
-      }
-      }
+      pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+      pMappedResource->RowPitch = row_pitch;
+      pMappedResource->DepthPitch = depth_pitch;
       return S_OK;
     }
     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
-      switch (MapType) {
-      case D3D11_MAP_READ:
-      case D3D11_MAP_WRITE:
-      case D3D11_MAP_READ_WRITE:
-        return E_INVALIDARG;
-      case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-          stage.SRVs.set_dirty();
-        }
+      for (auto &stage : state_.ShaderStages) {
+        stage.SRVs.set_dirty();
+      }
 
-        dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
-        EmitST([allocation = dynamic->immediateName(),
-              texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
-          auto _ = texture->rename(forward_rc(allocation));
-        });
+      dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
+      EmitST([allocation = dynamic->immediateName(),
+            texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
+        auto _ = texture->rename(forward_rc(allocation));
+      });
 
-        pMappedResource->pData = dynamic->mappedMemory();
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
-      }
-      case D3D11_MAP_WRITE_NO_OVERWRITE: {
-        pMappedResource->pData = dynamic->mappedMemory();
-        pMappedResource->RowPitch = row_pitch;
-        pMappedResource->DepthPitch = depth_pitch;
-        break;
-      }
-      }
+      pMappedResource->pData = dynamic->mappedMemory();
+      pMappedResource->RowPitch = row_pitch;
+      pMappedResource->DepthPitch = depth_pitch;
       return S_OK;
     }
     if (auto staging = GetStagingResource(pResource, Subresource)) {
-      if (MapType > 3 || MapType == 0)
-          return E_INVALIDARG;
-
       if (ignore_map_flag_no_wait_)
         MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;
 
@@ -282,9 +237,6 @@ public:
         coherent_seq_id = cmd_queue.CoherentSeqId();
       };
     };
-    // a default resource is not mapped (MapOnDefaultBuffers and MapOnDefaultTextures are not offered), nor a
-    // subresource the resource does not have, and neither gives a pointer
-    pMappedResource->pData = nullptr;
     return E_INVALIDARG;
   }
 

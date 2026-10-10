@@ -1,0 +1,13 @@
+# reject no-overwrite even after a deferred buffer discard
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index 370c7a6..651bd68 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -192,6 +192,7 @@ public:
+         pMappedResource->RowPitch = buffer_length;
+         pMappedResource->DepthPitch = buffer_length;
+       } else {
++        return E_INVALIDARG;
+         auto ret = ctx_state.current_dynamic_buffer_allocations.find(dynamic.ptr());
+         if (ret == ctx_state.current_dynamic_buffer_allocations.end()) {
+           ERR("DeferredContext: Invalid NO_OVERWRITE map on deferred context occurs without any prior DISCARD map.");

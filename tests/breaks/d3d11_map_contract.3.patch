@@ -1,0 +1,14 @@
+# return no storage for a successful buffer discard map
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 9dbfa90..9c81bd3 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -156,7 +156,7 @@ public:
+           }
+         }
+
+-        pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
++        pMappedResource->pData = nullptr;
+         pMappedResource->RowPitch = buffer_length;
+         pMappedResource->DepthPitch = buffer_length;
+       } else {

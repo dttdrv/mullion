@@ -1,0 +1,14 @@
+# accept discard on staging resources
+diff --git a/src/d3d11/d3d11_resource.hpp b/src/d3d11/d3d11_resource.hpp
+index 71512ad..a349795 100644
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -306,7 +306,7 @@ public:
+       if (MapType < D3D11_MAP_WRITE_DISCARD ||
+           (MapType == D3D11_MAP_WRITE_NO_OVERWRITE && tag::dimension != D3D11_RESOURCE_DIMENSION_BUFFER))
+         return false;
+-    } else if (desc.Usage != D3D11_USAGE_STAGING || MapType > D3D11_MAP_READ_WRITE) {
++    } else if (desc.Usage != D3D11_USAGE_STAGING || MapType > D3D11_MAP_WRITE_DISCARD) {
+       return false;
+     }
+     return ((MapType != D3D11_MAP_READ && MapType != D3D11_MAP_READ_WRITE) ||

@@ -1,0 +1,14 @@
+# leave a staging resource mapped after Unmap
+diff --git a/src/dxmt/dxmt_staging.cpp b/src/dxmt/dxmt_staging.cpp
+index 80a3d62..b48ad9e 100644
+--- a/src/dxmt/dxmt_staging.cpp
++++ b/src/dxmt/dxmt_staging.cpp
+@@ -56,7 +56,7 @@ StagingResource::tryMap(uint64_t coherent_seq_id, bool read, bool write) {
+
+ void
+ StagingResource::unmap() {
+-  mapped = false;
++  mapped = true;
+ }
+
+ uint64_t

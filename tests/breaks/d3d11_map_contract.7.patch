@@ -1,0 +1,16 @@
+# write beyond the output of a failed resource map
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index 1ffe62a..1ce3dcf 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -618,7 +618,9 @@ public:
+     if (unlikely(!pResource || !pMappedResource))
+       return E_INVALIDARG;
+     pMappedResource->pData = nullptr;
+-    if (!GetResourceCommon(pResource)->CanMap(Subresource, MapType, MapFlags, GetType()))
++    if (!GetResourceCommon(pResource)->CanMap(Subresource, MapType, MapFlags, GetType())) {
++      pMappedResource[1].RowPitch = 0;
+       return E_INVALIDARG;
++    }
+     return MapResource(pResource, Subresource, MapType, MapFlags, pMappedResource);
+   }

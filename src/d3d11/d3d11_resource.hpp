@@ -137,6 +137,7 @@ struct D3D11ResourceCommon : ID3D11Resource {
   virtual Rc<DynamicBuffer> dynamicBuffer(UINT *pBufferLength, UINT *pBindFlags) = 0;
   virtual Rc<DynamicLinearTexture> dynamicLinearTexture(UINT *pBytesPerRow, UINT *pBytesPerImage) = 0;
   virtual Rc<DynamicBuffer> dynamicTexture(UINT Subresource, UINT *pBytesPerRow, UINT *pBytesPerImage) = 0;
+  virtual bool CanMap(UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_DEVICE_CONTEXT_TYPE ContextType) = 0;
 
   Rc<Buffer> buffer_{};
   Rc<Texture> texture_{};
@@ -286,6 +287,31 @@ public:
 
   void STDMETHODCALLTYPE GetType(D3D11_RESOURCE_DIMENSION *pResourceDimension) final {
     *pResourceDimension = tag::dimension;
+  }
+
+  bool
+  CanMap(UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_DEVICE_CONTEXT_TYPE ContextType) final {
+    UINT subresources = 1;
+    if constexpr (tag::dimension != D3D11_RESOURCE_DIMENSION_BUFFER) {
+      subresources = desc.MipLevels;
+      if constexpr (tag::dimension != D3D11_RESOURCE_DIMENSION_TEXTURE3D)
+        subresources *= desc.ArraySize;
+    }
+    // D3D11.3 5.6.1.1 and D3D11_MAP/Map remarks: access and usage constrain the CPU's map, not internal updates.
+    if (Subresource >= subresources || MapType < D3D11_MAP_READ || MapType > D3D11_MAP_WRITE_NO_OVERWRITE ||
+        ((MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) && MapType >= D3D11_MAP_WRITE_DISCARD) ||
+        (ContextType == D3D11_DEVICE_CONTEXT_DEFERRED && MapType < D3D11_MAP_WRITE_DISCARD))
+      return false;
+    if (desc.Usage == D3D11_USAGE_DYNAMIC) {
+      if (MapType < D3D11_MAP_WRITE_DISCARD ||
+          (MapType == D3D11_MAP_WRITE_NO_OVERWRITE && tag::dimension != D3D11_RESOURCE_DIMENSION_BUFFER))
+        return false;
+    } else if (desc.Usage != D3D11_USAGE_STAGING || MapType > D3D11_MAP_READ_WRITE) {
+      return false;
+    }
+    return ((MapType != D3D11_MAP_READ && MapType != D3D11_MAP_READ_WRITE) ||
+            (desc.CPUAccessFlags & D3D11_CPU_ACCESS_READ)) &&
+           (MapType == D3D11_MAP_READ || (desc.CPUAccessFlags & D3D11_CPU_ACCESS_WRITE));
   }
 
   void STDMETHODCALLTYPE SetEvictionPriority(UINT EvictionPriority) final {}

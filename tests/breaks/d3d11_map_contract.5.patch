@@ -1,0 +1,14 @@
+# return no row pitch for a linear texture discard map
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 9dbfa90..6c66403 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -188,7 +188,7 @@ public:
+       });
+
+       pMappedResource->pData = dynamic->mappedMemory();
+-      pMappedResource->RowPitch = row_pitch;
++      pMappedResource->RowPitch = 0;
+       pMappedResource->DepthPitch = depth_pitch;
+       return S_OK;
+     }

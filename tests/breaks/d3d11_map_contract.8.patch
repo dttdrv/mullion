@@ -1,0 +1,15 @@
+# accept CPU reads of a write-only dynamic buffer
+diff --git a/src/d3d11/d3d11_resource.hpp b/src/d3d11/d3d11_resource.hpp
+index 71512ad..ed05f9d 100644
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -302,6 +302,9 @@ public:
+         ((MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) && MapType >= D3D11_MAP_WRITE_DISCARD) ||
+         (ContextType == D3D11_DEVICE_CONTEXT_DEFERRED && MapType < D3D11_MAP_WRITE_DISCARD))
+       return false;
++    if (desc.Usage == D3D11_USAGE_DYNAMIC && tag::dimension == D3D11_RESOURCE_DIMENSION_BUFFER &&
++        MapType == D3D11_MAP_READ)
++      return true;
+     if (desc.Usage == D3D11_USAGE_DYNAMIC) {
+       if (MapType < D3D11_MAP_WRITE_DISCARD ||
+           (MapType == D3D11_MAP_WRITE_NO_OVERWRITE && tag::dimension != D3D11_RESOURCE_DIMENSION_BUFFER))
