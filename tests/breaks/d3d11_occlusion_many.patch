@@ -1,0 +1,9 @@
+--- a/src/dxmt/dxmt_occlusion_query.hpp
++++ b/src/dxmt/dxmt_occlusion_query.hpp
+@@ -17,5 +17,5 @@
+   // only the first 4096 counting segments of a pass store their counts (tests/native/visibility.swift and .txt);
+   // later ones add to old contents or return zero. Apple documents only the offset limit
+-  static constexpr uint64_t kVisibilitySegments = 4096;
++  static constexpr uint64_t kVisibilitySegments = ~uint64_t(0);
+
+   void

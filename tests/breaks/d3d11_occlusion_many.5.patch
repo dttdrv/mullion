@@ -1,0 +1,16 @@
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -1461,13 +1461,2 @@
+-      if (r0->use_visibility_result) {
+-        // a render pass begins with visibility disabled (MTLRenderCommandEncoder::setVisibilityResultMode)
+-        auto visibility = allocate<wmtcmd_render_setvisibilitymode>();
+-        visibility->type = WMTRenderCommandSetVisibilityMode;
+-        visibility->mode = WMTVisibilityResultModeDisabled;
+-        visibility->offset = 0;
+-        visibility->next.set(r1->cmd_head.next.get());
+-        r1->cmd_head.next.set(visibility);
+-        if ((void *)r1->cmd_tail == &r1->cmd_head)
+-          r1->cmd_tail = (wmtcmd_base *)visibility;
+-      }
+       if ((void *)r0->cmd_tail != &r0->cmd_head) {
+         r0->cmd_tail->next.set(r1->cmd_head.next.get());

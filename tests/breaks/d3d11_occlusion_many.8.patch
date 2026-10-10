@@ -1,0 +1,9 @@
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -1440,6 +1440,4 @@
+     if (r0->visibility_result_count + r1->visibility_result_count <=
+             VisibilityResultOffsetBumpState::kVisibilitySegments &&
+-        (!r0->use_visibility_result || !r1->use_visibility_result ||
+-         r0->visibility_result_window == r1->visibility_result_window) &&
+         isEncoderSignatureMatched(r0, r1) &&
+         // can't merge if latter's vertex wait for former's fragment

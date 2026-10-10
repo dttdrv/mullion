@@ -1,0 +1,16 @@
+--- a/src/dxmt/dxmt_occlusion_query.hpp
++++ b/src/dxmt/dxmt_occlusion_query.hpp
+@@ -124,4 +124,6 @@
+     assert(seqId >= seq_id_begin);
+     assert(seqId <= seq_id_end);
++    if (seqId != seq_id_begin)
++      accumulated_value_ = 0;
+     auto first = seqId == seq_id_begin ? occlusion_counter_begin : 0;
+     auto end = seqId == seq_id_end ? occlusion_counter_end : offsets.back();
+@@ -129,4 +131,6 @@
+     auto window = std::upper_bound(offsets.begin(), offsets.end(), first) - offsets.begin() - 1;
+     while (first < end) {
++      if (window)
++        accumulated_value_ = 0;
+       auto data = (const uint64_t *)buffers[window].memory.get();
+       auto stop = std::min(end, offsets[window + 1]);

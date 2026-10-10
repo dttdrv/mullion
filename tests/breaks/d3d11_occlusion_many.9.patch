@@ -1,0 +1,8 @@
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -392,4 +392,4 @@
+       VisibilityQueryBoundary(true);
+-      if (counted && ctx_state.current_cmdlist->issued_visibility_query[query_id].second &&
++      if (ctx_state.current_cmdlist->issued_visibility_query[query_id].second &&
+           ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+         InvalidateCurrentPass(true);

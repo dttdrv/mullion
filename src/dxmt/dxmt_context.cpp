@@ -40,6 +40,8 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     timestamp_state_(device),
     device_(device),
     queue_(queue) {
+  // Metal feature set tables, "Maximum visibility query offset": 256 KB from Apple7, 65,528 B before it
+  visibility_result_size_ = device.supportsFamily(WMTGPUFamilyApple7) ? 256 * 1024 : 65528 + sizeof(uint64_t);
   dummy_sampler_info_.support_argument_buffers = true;
   dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
   dummy_sampler_info_.compare_function = WMTCompareFunctionNever;
@@ -788,7 +790,14 @@ ArgumentEncodingContext::bumpVisibilityResultOffset() {
       cmd.offset = 0;
     } else {
       cmd.mode = WMTVisibilityResultModeCounting;
-      cmd.offset = offset << 3;
+      if (!render_encoder->visibility_result_count++) {
+        if (visibility_result_offsets_.empty() ||
+            offset - visibility_result_offsets_.back() + VisibilityResultOffsetBumpState::kVisibilitySegments >
+                visibility_result_size_ / sizeof(uint64_t))
+          visibility_result_offsets_.push_back(offset);
+        render_encoder->visibility_result_window = visibility_result_offsets_.size() - 1;
+      }
+      cmd.offset = (offset - visibility_result_offsets_[render_encoder->visibility_result_window]) * sizeof(uint64_t);
     }
   }
 }
@@ -912,13 +921,19 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
   }
 
+  if (Logger::logLevel() == LogLevel::Trace) {
+    auto &statistics = currentFrameStatistics();
+    TRACE("render passes: ", statistics.render_pass_count, ", merged: ", statistics.render_pass_optimized);
+  }
+
   QueryReadbacks readbacks{};
 
   if (auto count = vro_state_.reset()) {
     readbacks.visibility = std::make_unique<VisibilityResultReadback>(
-        device_, seqId, count, pending_queries_
+        device_, seqId, count, pending_queries_, std::move(visibility_result_offsets_)
     );
   }
+  visibility_result_offsets_.clear();
   std::erase_if(pending_queries_, [=](auto &query) -> bool { return query->queryEndAt() == seqId; });
 
   readbacks.timestamp = timestamp_state_.flush(cmdbuf);
@@ -977,7 +992,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       }
       if (data->use_visibility_result) {
         assert(readbacks.visibility);
-        render_pass_info.visibility_buffer = readbacks.visibility->visibility_result_heap;
+        render_pass_info.visibility_buffer =
+            readbacks.visibility->visibility_result_windows[data->visibility_result_window];
       }
       auto gpu_buffer_ = data->allocated_argbuf;
       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
@@ -1427,7 +1443,11 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
     auto r1 = reinterpret_cast<RenderEncoderData *>(latter);
     auto r0 = reinterpret_cast<RenderEncoderData *>(former);
 
-    if (isEncoderSignatureMatched(r0, r1) &&
+    if (r0->visibility_result_count + r1->visibility_result_count <=
+            VisibilityResultOffsetBumpState::kVisibilitySegments &&
+        (!r0->use_visibility_result || !r1->use_visibility_result ||
+         r0->visibility_result_window == r1->visibility_result_window) &&
+        isEncoderSignatureMatched(r0, r1) &&
         // can't merge if latter's vertex wait for former's fragment
         !r1->fence_wait_vertex.intersectedWith(r0->fence_update)) {
       for (unsigned i = 0; i < r0->render_target_count; i++) {
@@ -1444,6 +1464,17 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       r1->stencil.clear_stencil = r0->stencil.clear_stencil;
       r1->stencil.store_action = r0->stencil.store_action;
 
+      if (r0->use_visibility_result) {
+        // a render pass begins with visibility disabled (MTLRenderCommandEncoder::setVisibilityResultMode)
+        auto visibility = allocate<wmtcmd_render_setvisibilitymode>();
+        visibility->type = WMTRenderCommandSetVisibilityMode;
+        visibility->mode = WMTVisibilityResultModeDisabled;
+        visibility->offset = 0;
+        visibility->next.set(r1->cmd_head.next.get());
+        r1->cmd_head.next.set(visibility);
+        if ((void *)r1->cmd_tail == &r1->cmd_head)
+          r1->cmd_tail = (wmtcmd_base *)visibility;
+      }
       if ((void *)r0->cmd_tail != &r0->cmd_head) {
         r0->cmd_tail->next.set(r1->cmd_head.next.get());
         r1->cmd_head.next.set(r0->cmd_head.next.get());
@@ -1470,7 +1501,10 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       r1->draw_auto_marshal_tasks = std::move(r0->draw_auto_marshal_tasks);
       r1->gs_arg_marshal_tasks = std::move(r0->gs_arg_marshal_tasks);
       r1->ts_arg_marshal_tasks = std::move(r0->ts_arg_marshal_tasks);
+      if (!r1->use_visibility_result)
+        r1->visibility_result_window = r0->visibility_result_window;
       r1->use_visibility_result = r0->use_visibility_result || r1->use_visibility_result;
+      r1->visibility_result_count += r0->visibility_result_count;
 
       r1->fence_update.merge(r0->fence_update);
       r1->fence_wait.merge(r0->fence_wait);

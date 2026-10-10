@@ -1,0 +1,12 @@
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4537,4 +4537,3 @@
+       allocated_encoder_argbuf_size_ = nullptr;
+-      visibility_result_segments_ = 0;
+       break;
+     }
+@@ -4556,3 +4555,4 @@
+ 
++    visibility_result_segments_ = 0;
+     cmdbuf_state = CommandBufferState::Idle;
+     if (promote_flush && !defer_commit) {

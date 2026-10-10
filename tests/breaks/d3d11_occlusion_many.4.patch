@@ -1,0 +1,10 @@
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -799,4 +799,7 @@
+       }
+       cmd.offset = (offset - visibility_result_offsets_[render_encoder->visibility_result_window]) * sizeof(uint64_t);
++      if (render_encoder->visibility_result_window && cmd.offset >= sizeof(uint64_t) &&
++          cmd.offset <= 2 * sizeof(uint64_t))
++        cmd.offset += sizeof(uint64_t);
+     }
+   }

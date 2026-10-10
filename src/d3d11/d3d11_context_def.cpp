@@ -4,6 +4,7 @@
 #include "dxmt_buffer.hpp"
 #include "dxmt_command_queue.hpp"
 #include "dxmt_dynamic.hpp"
+#include <unordered_set>
 
 namespace dxmt {
 
@@ -20,6 +21,7 @@ struct DeferredContextInternalState {
   std::unordered_map<DynamicBuffer *, DynamicBufferAllocation> current_dynamic_buffer_allocations;
   std::unordered_map<DynamicLinearTexture *, std::pair<TextureAllocation *, uint32_t>> current_dynamic_texture_allocations;
   std::unordered_map<void *, std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> building_visibility_queries;
+  std::unordered_set<uint32_t> pending_visibility_queries;
 };
 
 template<typename Object> Rc<Object> forward_rc(Rc<Object>& obj) {
@@ -78,6 +80,21 @@ DeferredContextBase::GetDynamicBufferAllocation(Rc<DynamicBuffer> &dynamic) {
       "GetDynamicBufferAllocation() failed on deferred context");
   auto &ret = ctx_state.current_dynamic_buffer_allocations.at(dynamic.ptr());
   return {ret.allocation, ret.suballocation};
+}
+
+template <>
+void
+DeferredContextBase::VisibilityQueryBoundary(bool counting) {
+  if (dirty_state.any(DirtyState::VisibilityQuery))
+    return;
+  dirty_state.set(DirtyState::VisibilityQuery);
+  bool began = !ctx_state.pending_visibility_queries.empty();
+  for (auto query_id : ctx_state.pending_visibility_queries)
+    ctx_state.current_cmdlist->issued_visibility_query[query_id].second = true;
+  ctx_state.pending_visibility_queries.clear();
+  // an enclosing query can count before a deferred Begin is confirmed by a draw (D3D11.3 6.3.6)
+  if (counting && began && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+    InvalidateCurrentPass(true);
 }
 
 class MTLD3D11DeferredContext : public DeferredContextBase {
@@ -301,18 +318,18 @@ public:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
       auto building_query = ctx_state.building_visibility_queries.find(pAsync);
       if (building_query != ctx_state.building_visibility_queries.end()) {
-        // need to figure out if it's the intended behavior
         D3D11_ASSERT(0 && "unexpected branch condition hit, please file an issue.");
-        // Begin() after another Begin()
-        EmitST([query_id = building_query->second.second](ArgumentEncodingContext &enc) mutable {
-          enc.endVisibilityResultQuery(enc.currentDeferredVisibilityQuery(query_id));
-        });
-        ctx_state.current_cmdlist->issued_visibility_query.push_back(std::move(building_query->second));
-        ctx_state.building_visibility_queries.erase(building_query);
+        End(pAsync);
       }
-      auto query_id = ctx_state.current_cmdlist->visibility_query_count++;
-      EmitST([=](ArgumentEncodingContext &enc) mutable {
-        enc.beginVisibilityResultQuery(enc.currentDeferredVisibilityQuery(query_id));
+      VisibilityQueryBoundary(true);
+      auto query_id = ctx_state.current_cmdlist->issued_visibility_query.size();
+      ctx_state.current_cmdlist->issued_visibility_query.emplace_back(
+          static_cast<MTLD3D11OcclusionQuery *>(pAsync), false
+      );
+      ctx_state.pending_visibility_queries.insert(query_id);
+      EmitST([list = ctx_state.current_cmdlist.ptr(), query_id](ArgumentEncodingContext &enc) {
+        if (list->issued_visibility_query[query_id].second)
+          enc.beginVisibilityResultQuery(enc.currentDeferredVisibilityQuery(query_id));
       });
       ctx_state.building_visibility_queries.insert(
           {(void *)pAsync, {static_cast<MTLD3D11OcclusionQuery *>(pAsync), query_id}}
@@ -373,10 +390,22 @@ public:
         return;
       }
       promote_flush = true;
-      EmitST([query_id = building_query->second.second](ArgumentEncodingContext &enc) mutable {
-        enc.endVisibilityResultQuery(enc.currentDeferredVisibilityQuery(query_id));
+      auto query_id = building_query->second.second;
+      bool counted = !dirty_state.any(DirtyState::VisibilityQuery);
+      VisibilityQueryBoundary(true);
+      if (counted && ctx_state.current_cmdlist->issued_visibility_query[query_id].second &&
+          ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+        InvalidateCurrentPass(true);
+      EmitST([list = ctx_state.current_cmdlist.ptr(), query_id](ArgumentEncodingContext &enc) {
+        auto query = enc.currentDeferredVisibilityQuery(query_id);
+        if (list->issued_visibility_query[query_id].second) {
+          enc.endVisibilityResultQuery(std::move(query));
+        } else {
+          query->begin(enc.currentSeqId(), 0);
+          query->end(enc.currentSeqId(), 0);
+        }
       });
-      ctx_state.current_cmdlist->issued_visibility_query.push_back(std::move(building_query->second));
+      ctx_state.pending_visibility_queries.erase(query_id);
       ctx_state.building_visibility_queries.erase(building_query);
       break;
     }
@@ -428,6 +457,9 @@ public:
   void
   STDMETHODCALLTYPE
   ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override{
+    for (auto query_id : ctx_state.pending_visibility_queries)
+      ctx_state.current_cmdlist->issued_visibility_query[query_id].second = true;
+    ctx_state.pending_visibility_queries.clear();
     // the list is a region of the one being recorded, and runs where it is when that one does; it starts from the
     // default state and leaves it, as a list does on the immediate context
     ResetEncodingContextState();
@@ -452,9 +484,6 @@ public:
       End(building_query.first.ptr());
     }
     ctx_state.building_visibility_queries.clear();
-    D3D11_ASSERT(
-        ctx_state.current_cmdlist->visibility_query_count == ctx_state.current_cmdlist->issued_visibility_query.size()
-    );
     ctx_state.current_dynamic_buffer_allocations.clear();
     ctx_state.current_dynamic_texture_allocations.clear();
 

@@ -326,10 +326,12 @@ public:
       break;
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
-      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin())
+      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin()) {
+        VisibilityQueryBoundary(active_visibility_queries_++ != 0);
         EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
           enc.beginVisibilityResultQuery(std::move(query));
         });
+      }
       break;
     }
     case D3D11_QUERY_SO_STATISTICS:
@@ -395,10 +397,12 @@ public:
     }
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
-      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->End())
+      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->End()) {
+        VisibilityQueryBoundary(active_visibility_queries_-- != 0);
         EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
           enc.endVisibilityResultQuery(std::move(query));
         });
+      }
       promote_flush = true;
       break;
     }
@@ -591,10 +595,10 @@ public:
     promote_flush |= cmdlist->promote_flush;
 
     // shared by the list's regions, which a wait for a predicate's data puts in chunks of their own
-    auto query_list = std::make_shared<std::vector<Rc<VisibilityResultQuery>>>(cmdlist->visibility_query_count);
-    for (const auto &[query, index] : cmdlist->issued_visibility_query) {
-      (*query_list)[index] = new VisibilityResultQuery();
-      query->DoDeferredQuery((*query_list)[index].ptr());
+    auto query_list = std::make_shared<std::vector<Rc<VisibilityResultQuery>>>(cmdlist->issued_visibility_query.size());
+    for (size_t i = 0; i < cmdlist->issued_visibility_query.size(); i++) {
+      (*query_list)[i] = new VisibilityResultQuery();
+      cmdlist->issued_visibility_query[i].first->DoDeferredQuery((*query_list)[i].ptr());
     }
 
     for (const auto &query : cmdlist->issued_event_query) {

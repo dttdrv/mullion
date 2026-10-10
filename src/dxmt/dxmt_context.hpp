@@ -222,6 +222,8 @@ struct RenderEncoderData : EncoderData {
   uint8_t dsv_readonly_flags;
   uint8_t render_target_count;
   bool use_visibility_result = 0;
+  size_t visibility_result_window = 0;
+  uint64_t visibility_result_count = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
   TileBarrierPSOKey tile_barrier_pso_key = {};
@@ -972,6 +974,8 @@ private:
   VisibilityResultOffsetBumpState vro_state_;
   std::vector<Rc<VisibilityResultQuery>> pending_queries_;
   unsigned active_visibility_query_count_ = 0;
+  uint64_t visibility_result_size_;
+  std::vector<uint64_t> visibility_result_offsets_;
   TimestampQueryState timestamp_state_;
   std::vector<Rc<VisibilityResultQuery> *> deferred_visibility_query_stack_;
 

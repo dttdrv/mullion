@@ -1,0 +1,9 @@
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -1442,5 +1442,5 @@
+         (!r0->use_visibility_result || !r1->use_visibility_result ||
+          r0->visibility_result_window == r1->visibility_result_window) &&
+-        isEncoderSignatureMatched(r0, r1) &&
++        !r0->use_visibility_result && !r1->use_visibility_result && isEncoderSignatureMatched(r0, r1) &&
+         // can't merge if latter's vertex wait for former's fragment
+         !r1->fence_wait_vertex.intersectedWith(r0->fence_update)) {

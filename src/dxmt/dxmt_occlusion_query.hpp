@@ -3,15 +3,21 @@
 #include "Metal.hpp"
 #include "rc/util_rc_ptr.hpp"
 #include "wsi_platform.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace dxmt {
 class VisibilityResultOffsetBumpState {
 public:
+  // only the first 4096 counting segments of a pass store their counts (tests/native/visibility.swift and .txt);
+  // later ones add to old contents or return zero. Apple documents only the offset limit
+  static constexpr uint64_t kVisibilitySegments = 4096;
+
   void
   beginEncoder() {
     assert(!within_encoder);
@@ -114,15 +120,19 @@ public:
   };
 
   void
-  issue(uint64_t seqId, uint64_t const *readbackBuffer, unsigned numResults) {
+  issue(uint64_t seqId, std::vector<WMTBufferInfo> &buffers, const std::vector<uint64_t> &offsets) {
     assert(seqId >= seq_id_begin);
     assert(seqId <= seq_id_end);
-    uint64_t const *start = seqId == seq_id_begin ? readbackBuffer + occlusion_counter_begin : readbackBuffer;
-    uint64_t const *end = seqId == seq_id_end ? readbackBuffer + occlusion_counter_end : readbackBuffer + numResults;
-    assert(start <= end);
-    while (start != end) {
-      accumulated_value_ += *start;
-      start++;
+    auto first = seqId == seq_id_begin ? occlusion_counter_begin : 0;
+    auto end = seqId == seq_id_end ? occlusion_counter_end : offsets.back();
+    assert(first <= end);
+    auto window = std::upper_bound(offsets.begin(), offsets.end(), first) - offsets.begin() - 1;
+    while (first < end) {
+      auto data = (const uint64_t *)buffers[window].memory.get();
+      auto stop = std::min(end, offsets[window + 1]);
+      for (; first < stop; first++)
+        accumulated_value_ += data[first - offsets[window]];
+      window++;
     }
     seq_id_issued = seqId;
   }
@@ -159,25 +169,30 @@ private:
 class VisibilityResultReadback {
 public:
   VisibilityResultReadback(
-      WMT::Device device, uint64_t seq_id, uint64_t num_results, std::vector<Rc<VisibilityResultQuery>> &queries
+      WMT::Device device, uint64_t seq_id, uint64_t num_results, std::vector<Rc<VisibilityResultQuery>> &queries,
+      std::vector<uint64_t> &&offsets
   ) :
       seq_id(seq_id),
-      num_results(num_results),
-      queries(queries) {
-        visibility_result_heap_info.options = WMTResourceHazardTrackingModeUntracked;
-        visibility_result_heap_info.memory.set(nullptr);
+      queries(queries),
+      visibility_result_offsets(std::move(offsets)) {
+    visibility_result_offsets.push_back(num_results);
+    for (size_t i = 0; i + 1 < visibility_result_offsets.size(); i++) {
+      auto &info = visibility_result_heap_info.emplace_back();
+      info.options = WMTResourceHazardTrackingModeUntracked;
+      info.length = (visibility_result_offsets[i + 1] - visibility_result_offsets[i]) * sizeof(uint64_t);
 #ifdef __i386__
-        visibility_result_heap_info.memory.set(wsi::aligned_malloc(num_results * sizeof(uint64_t), DXMT_PAGE_SIZE));
+      info.length = (info.length + DXMT_PAGE_SIZE - 1) / DXMT_PAGE_SIZE * DXMT_PAGE_SIZE;
+      info.memory.set(wsi::aligned_malloc(info.length, DXMT_PAGE_SIZE));
 #endif
-        visibility_result_heap_info.length = num_results * sizeof(uint64_t);
-        visibility_result_heap = device.newBuffer(visibility_result_heap_info);
-      }
-  ~VisibilityResultReadback() {
-    for (auto query : queries) {
-      query->issue(seq_id, (uint64_t *)visibility_result_heap_info.memory.get(), num_results);
+      visibility_result_windows.emplace_back(device.newBuffer(info));
     }
+  }
+  ~VisibilityResultReadback() {
+    for (auto query : queries)
+      query->issue(seq_id, visibility_result_heap_info, visibility_result_offsets);
 #ifdef __i386__
-    wsi::aligned_free(visibility_result_heap_info.memory.get());
+    for (auto &info : visibility_result_heap_info)
+      wsi::aligned_free(info.memory.get());
 #endif
   }
 
@@ -185,10 +200,10 @@ public:
   VisibilityResultReadback(VisibilityResultReadback &&) = delete;
 
   uint64_t seq_id;
-  uint64_t num_results;
   std::vector<Rc<VisibilityResultQuery>> queries;
-  WMTBufferInfo visibility_result_heap_info;
-  WMT::Reference<WMT::Buffer> visibility_result_heap;
+  std::vector<uint64_t> visibility_result_offsets;
+  std::vector<WMTBufferInfo> visibility_result_heap_info;
+  std::vector<WMT::Reference<WMT::Buffer>> visibility_result_windows;
 };
 
 /**

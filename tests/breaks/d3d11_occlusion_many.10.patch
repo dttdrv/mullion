@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4504,3 +4504,3 @@
+-    if (counting && !dirty_state.any(DirtyState::VisibilityQuery) &&
++    if (counting && active_visibility_queries_ != 0 && !dirty_state.any(DirtyState::VisibilityQuery) &&
+         ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments)
+       InvalidateCurrentPass(true);

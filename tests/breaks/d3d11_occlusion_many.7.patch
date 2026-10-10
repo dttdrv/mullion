@@ -1,0 +1,9 @@
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -94,5 +94,5 @@
+   ctx_state.pending_visibility_queries.clear();
+   // an enclosing query can count before a deferred Begin is confirmed by a draw (D3D11.3 6.3.6)
+-  if (counting && began && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
++  if (counting && (began || ctx_state.building_visibility_queries.empty()) && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+     InvalidateCurrentPass(true);
+ }

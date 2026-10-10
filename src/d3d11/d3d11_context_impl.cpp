@@ -4496,6 +4496,16 @@ public:
 #pragma region CommandEncoder Maintain State
 
   bool promote_flush = false;
+  unsigned active_visibility_queries_ = 0;
+  uint64_t visibility_result_segments_ = 0;
+
+  void
+  VisibilityQueryBoundary(bool counting) {
+    if (counting && !dirty_state.any(DirtyState::VisibilityQuery) &&
+        ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments)
+      InvalidateCurrentPass(true);
+    dirty_state.set(DirtyState::VisibilityQuery);
+  }
 
   /**
   Render pass can be invalidated by reasons:
@@ -4507,6 +4517,7 @@ public:
   */
   bool
   InvalidateCurrentPass(bool defer_commit = false) {
+    VisibilityQueryBoundary(false);
     switch (cmdbuf_state) {
     case CommandBufferState::Idle:
       break;
@@ -4524,6 +4535,7 @@ public:
         enc.endPass();
       });
       allocated_encoder_argbuf_size_ = nullptr;
+      visibility_result_segments_ = 0;
       break;
     }
     case CommandBufferState::ComputeEncoderActive:
@@ -5395,6 +5407,7 @@ public:
     BlendFactorAndStencilRef,
     Viewport,
     Scissors,
+    VisibilityQuery,
   };
 
   Flags<DirtyState> dirty_state = 0;
@@ -5702,7 +5715,6 @@ public:
     }
     read_staging_resources.clear();
     written_staging_resources.clear();
-    visibility_query_count = 0;
     issued_visibility_query.clear();
     issued_event_query.clear();
     issued_timestamp_query.clear();
@@ -5788,8 +5800,7 @@ public:
   std::vector<used_dynamic_lineartexture> used_dynamic_lineartextures;
   std::vector<Rc<StagingResource>> read_staging_resources;
   std::vector<Rc<StagingResource>> written_staging_resources;
-  uint32_t visibility_query_count = 0;
-  std::vector<std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> issued_visibility_query;
+  std::vector<std::pair<Com<MTLD3D11OcclusionQuery>, bool>> issued_visibility_query;
   std::vector<Com<MTLD3D11EventQuery>> issued_event_query;
   std::vector<Com<MTLD3D11TimestampQuery>> issued_timestamp_query;
 
