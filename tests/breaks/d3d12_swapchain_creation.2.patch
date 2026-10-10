@@ -1,0 +1,11 @@
+# the desktop window reaches swap-chain construction
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1203,7 +1203,5 @@
+   ) {
+     if (desc_.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+       return DXGI_ERROR_INVALID_CALL;
+-    if (hWnd == GetDesktopWindow())
+-      return E_ACCESSDENIED;
+     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
+   }

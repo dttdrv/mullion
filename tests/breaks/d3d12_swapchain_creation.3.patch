@@ -1,0 +1,13 @@
+# only flip-discard swap chains validate their queue and window
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1202,7 +1202,7 @@
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
+   ) {
+-    if (desc_.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
++    if (pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD && desc_.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+       return DXGI_ERROR_INVALID_CALL;
+-    if (hWnd == GetDesktopWindow())
++    if (pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD && hWnd == GetDesktopWindow())
+       return E_ACCESSDENIED;
+     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);

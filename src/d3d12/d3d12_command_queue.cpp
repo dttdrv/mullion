@@ -1201,6 +1201,10 @@ public:
       IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
   ) {
+    if (desc_.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+      return DXGI_ERROR_INVALID_CALL;
+    if (hWnd == GetDesktopWindow())
+      return E_ACCESSDENIED;
     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
   }
 

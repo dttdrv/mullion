@@ -1,0 +1,12 @@
+# a non-direct queue reaches swap-chain construction
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1201,8 +1201,6 @@
+       IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
+   ) {
+-    if (desc_.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+-      return DXGI_ERROR_INVALID_CALL;
+     if (hWnd == GetDesktopWindow())
+       return E_ACCESSDENIED;
+     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);

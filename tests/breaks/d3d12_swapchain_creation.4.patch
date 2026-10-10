@@ -1,0 +1,11 @@
+# explicit buffer dimensions are overwritten with the window size
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -119,6 +119,5 @@
+     DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
+
+-    wsi::getWindowSize(hWnd, desc.Width ? nullptr : &desc.Width,
+-                       desc.Height ? nullptr : &desc.Height);
++    wsi::getWindowSize(hWnd, &desc.Width, &desc.Height);
+
+     // If necessary, set up a default set of
