@@ -7,7 +7,8 @@
 // its own buffer. without a geometry shader, the vertex shader's primitives go out as lists: a triangle strip, which
 // also rasterizes over the whole target, and points over several object threadgroups and two instances. the points
 // span several object threadgroups and the draws two instances, and the expectations are the same shaders run on the
-// CPU. a statistics query per stream counts the primitives written and those that would have been.
+// CPU. a statistics query per stream counts the primitives written and those that would have been. the stream points
+// and the vertex shader's points, drawn again from many vertices, span thousands of object threadgroups.
 #include "d3d12_test.hpp"
 #include <array>
 #include <cstdint>
@@ -150,9 +151,22 @@ main(int argc, char **argv) {
       for (uint32_t j = 0; j < id % 3; j++)
         stream1.push_back(id * 10 + j);
     }
+  // the same from many points, and the vertex shader's points from as many
+  const UINT many_points = 40000;
+  std::vector<uint32_t> many0, many1;
+  std::vector<Vertex> many_alone;
+  for (UINT instance = 0; instance < instances; instance++)
+    for (UINT p = 0; p < many_points; p++) {
+      uint32_t id = p + instance * 1000;
+      many0.push_back(id);
+      for (uint32_t j = 0; j < id % 3; j++)
+        many1.push_back(id * 10 + j);
+      many_alone.push_back({p, instance, p * 3, 9});
+    }
 
   // one buffer: slot 0, room for three draws after a triangle already there; slot 1, room for two; the third draw's
-  // small slot 1, room for `fits` triangles and a little more; the two stream buffers; the filled sizes
+  // small slot 1, room for `fits` triangles and a little more; the two stream buffers; the vertex shader's; the many
+  // points'; the filled sizes
   const UINT64 sentinel = 0xa5a5a5a5u, start0 = 3 * strip_strides[0], fits = 37;
   const UINT64 slot0_bytes = start0 + 3 * strip_strides[0] * (triangles.size() * 2 + fits),
                slot1_bytes = 3 * strip_strides[1] * triangles.size() * 2,
@@ -160,15 +174,18 @@ main(int argc, char **argv) {
   const UINT64 slot0_at = 0, slot1_at = slot0_at + slot0_bytes, small_at = slot1_at + slot1_bytes,
                stream0_at = small_at + small_bytes, stream1_at = stream0_at + stream_bytes,
                alone_at = stream1_at + stream_bytes, alone_bytes = 16 * alone.size(),
-               filled_at = (alone_at + alone_bytes + 7) & ~7ull, total = filled_at + 8 * 6;
+               many0_at = alone_at + alone_bytes, many1_at = many0_at + 4 * many0.size(),
+               many_alone_at = many1_at + 4 * many1.size(), many_alone_bytes = 16 * many_alone.size(),
+               filled_at = (many_alone_at + many_alone_bytes + 7) & ~7ull, total = filled_at + 8 * 9;
   auto out = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, total, D3D12_RESOURCE_STATE_COPY_DEST);
   auto upload = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_STATE_GENERIC_READ);
   auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST);
   uint8_t *init;
   CHECK(upload->Map(0, nullptr, (void **)&init));
   std::fill_n(reinterpret_cast<uint32_t *>(init), filled_at / 4, sentinel);
-  // filled sizes: the strip slots (slot 0 past a triangle), the small slot, the two streams
-  const UINT64 filled[6] = {start0, 0, 0, 0, 0, 0};
+  // filled sizes: the strip slots (slot 0 past a triangle), the small slot, the two streams, the vertex shader's, the
+  // many points'
+  const UINT64 filled[9] = {start0};
   memcpy(init + filled_at, filled, sizeof(filled));
 
   ComPtr<ID3D12CommandQueue> queue;
@@ -206,6 +223,9 @@ main(int argc, char **argv) {
   list->BeginQuery(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
   list->DrawInstanced(points, instances, 0, 0);
   list->EndQuery(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
+  D3D12_STREAM_OUTPUT_BUFFER_VIEW many_views[] = {view(many0_at, 4 * many0.size(), 6), view(many1_at, 4 * many1.size(), 7)};
+  list->SOSetTargets(0, 2, many_views);
+  list->DrawInstanced(many_points, instances, 0, 0);
   list->ResolveQueryData(statistics.Get(), D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0, 0, 2, statistics_out.Get(), 0);
   // the vertex shader alone, into one buffer: the strip, drawn too, then the points
   ComPtr<ID3D12Resource> target;
@@ -235,6 +255,9 @@ main(int argc, char **argv) {
   list->SetPipelineState(alone_points_pso.Get());
   list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
   list->DrawInstanced(points, instances, 0, 0);
+  D3D12_STREAM_OUTPUT_BUFFER_VIEW many_alone_view = view(many_alone_at, many_alone_bytes, 8);
+  list->SOSetTargets(0, 1, &many_alone_view);
+  list->DrawInstanced(many_points, instances, 0, 0);
   transition(list.Get(), out.Get(), D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_RESOURCE_STATE_COPY_SOURCE);
   list->CopyBufferRegion(readback.Get(), 0, out.Get(), 0, total);
   transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -288,6 +311,16 @@ main(int argc, char **argv) {
     for (int c = 0; c < 4; c++)
       expect("vertex shader alone", word(alone_at + 16 * v + 4 * c), alone[v][c]);
   expect("vertex shader alone filled", filled_size(5), alone_bytes);
+  for (size_t v = 0; v < many0.size(); v++)
+    expect("many points, stream 0", word(many0_at + 4 * v), many0[v]);
+  for (size_t v = 0; v < many1.size(); v++)
+    expect("many points, stream 1", word(many1_at + 4 * v), many1[v]);
+  for (size_t v = 0; v < many_alone.size(); v++)
+    for (int c = 0; c < 4; c++)
+      expect("many points, vertex shader alone", word(many_alone_at + 16 * v + 4 * c), many_alone[v][c]);
+  expect("many points, stream 0 filled", filled_size(6), 4 * many0.size());
+  expect("many points, stream 1 filled", filled_size(7), 4 * many1.size());
+  expect("many points, vertex shader alone filled", filled_size(8), many_alone_bytes);
   D3D12_QUERY_DATA_SO_STATISTICS *counted;
   CHECK(statistics_out->Map(0, nullptr, (void **)&counted));
   expect("stream 0 primitives written", counted[0].NumPrimitivesWritten, written);

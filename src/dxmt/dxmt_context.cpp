@@ -136,10 +136,9 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
 }
 std::pair<uint64_t, uint64_t>
 ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations) {
-  // the scratch area: the filled sizes, then per stream a total per object threadgroup and a count per invocation. an
-  // indirect draw's (no `warps`) is the GS dispatch marshal's to give
+  // the scratch area (SM50_STREAM_OUTPUT_TARGETS). an indirect draw's (no `warps`) is the GS dispatch marshal's to give
   uint64_t groups = uint64_t(warps) * instances;
-  size_t scratch_bytes = warps ? sizeof(uint64_t) * 4 + sizeof(uint32_t) * 4 * groups * (1 + invocations) : 0;
+  size_t scratch_bytes = warps ? SM50StreamOutputScratch(groups, invocations) : 0;
   auto [mapped, buffer, offset, address] =
       queue_.AllocateAddressedArgumentBuffer(seq_id_, sizeof(SM50_STREAM_OUTPUT_TARGETS) + scratch_bytes);
   auto targets = new (mapped) SM50_STREAM_OUTPUT_TARGETS{};

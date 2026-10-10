@@ -12,6 +12,8 @@
 // predicate is whether the two differ, the unnumbered one for any stream (D3D11.3 functional spec, 20.4).
 // DrawInstancedIndirect and DrawIndexedInstancedIndirect take the same arguments from a buffer (8.7, 8.8): the strips
 // and the vertex shader's points stream out from them as from the direct draws, the strips a second time indexed.
+// the stream points and the vertex shader's points, drawn again from many vertices, directly and from arguments, span
+// thousands of object threadgroups, as many draws of a game do.
 #include "d3d11_test.hpp"
 #include <array>
 
@@ -156,6 +158,18 @@ main() {
       for (uint32_t j = 0; j < id % 3; j++)
         stream1.push_back(id * 10 + j);
     }
+  // the same from many points, and the vertex shader's points from as many
+  const UINT many_points = 40000;
+  std::vector<uint32_t> many0, many1;
+  std::vector<Vertex> many_alone;
+  for (UINT instance = 0; instance < instances; instance++)
+    for (UINT p = 0; p < many_points; p++) {
+      uint32_t id = p + instance * 1000;
+      many0.push_back(id);
+      for (uint32_t j = 0; j < id % 3; j++)
+        many1.push_back(id * 10 + j);
+      many_alone.push_back({p, instance, p * 3, 9});
+    }
 
   // slot 0, room for three draws after a triangle's worth it starts past; slot 1, room for two; the third draw's small
   // slot 1, room for `fits` triangles and a little more; the two stream buffers; the vertex shader's
@@ -221,6 +235,10 @@ main() {
   context->Begin(stream1_statistics.Get());
   context->DrawInstanced(points, instances, 0, 0);
   context->End(stream1_statistics.Get());
+  auto out_many0 = target(4 * many0.size() + 4), out_many1 = target(4 * many1.size() + 4),
+       out_many_alone = target(16 * many_alone.size() + 4);
+  targets(out_many0.Get(), 0, out_many1.Get(), 0);
+  context->DrawInstanced(many_points, instances, 0, 0);
   context->GSSetShader(triangles_out.Get(), nullptr, 0);
   targets(out_strip.Get(), 0);
   context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -237,8 +255,11 @@ main() {
   targets(out_alone.Get(), append);
   context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
   context->DrawInstanced(points, instances, 0, 0);
-  // the points and the strips again, from arguments in a buffer: a draw's, then an indexed draw's that appends
-  const UINT argument_words[] = {points, instances, 0, 0, points, instances, 0, 0, 0};
+  targets(out_many_alone.Get(), 0);
+  context->DrawInstanced(many_points, instances, 0, 0);
+  // the points and the strips again, from arguments in a buffer: a draw's, then an indexed draw's that appends; then
+  // the many points'
+  const UINT argument_words[] = {points, instances, 0, 0, points, instances, 0, 0, 0, many_points, instances, 0, 0};
   D3D11_BUFFER_DESC arguments_desc{
       sizeof(argument_words), D3D11_USAGE_DEFAULT, 0, 0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS
   };
@@ -266,6 +287,17 @@ main() {
   targets(indirect0.Get(), append, indirect1.Get(), append);
   context->DrawIndexedInstancedIndirect(arguments.Get(), 4 * sizeof(UINT));
   context->End(indirect_statistics.Get());
+  // the many points from arguments, on both streams and from the vertex shader alone
+  auto indirect_many0 = target(4 * many0.size() + 4), indirect_many1 = target(4 * many1.size() + 4),
+       indirect_many_alone = target(16 * many_alone.size() + 4);
+  context->VSSetShader(vertex.Get(), nullptr, 0);
+  context->GSSetShader(streams.Get(), nullptr, 0);
+  targets(indirect_many0.Get(), 0, indirect_many1.Get(), 0);
+  context->DrawInstancedIndirect(arguments.Get(), 9 * sizeof(UINT));
+  context->VSSetShader(vertex_alone.Get(), nullptr, 0);
+  context->GSSetShader(alone_points.Get(), nullptr, 0);
+  targets(indirect_many_alone.Get(), 0);
+  context->DrawInstancedIndirect(arguments.Get(), 9 * sizeof(UINT));
   context->SOSetTargets(0, nullptr, nullptr);
 
   // the queries from a deferred context's list: a draw that fits both its buffers, and one past its second
@@ -346,6 +378,19 @@ main() {
     for (int c = 0; c < 4; c++)
       expect("vertex shader alone", got_alone[4 * v + c], alone[v][c]);
   expect("vertex shader alone past the draws", got_alone[4 * alone.size()], sentinel);
+  auto got_many0 = read(device.Get(), context.Get(), out_many0.Get()),
+       got_many1 = read(device.Get(), context.Get(), out_many1.Get()),
+       got_many_alone = read(device.Get(), context.Get(), out_many_alone.Get());
+  for (size_t v = 0; v < many0.size(); v++)
+    expect("many points, stream 0", got_many0[v], many0[v]);
+  expect("many points, stream 0 past the draw", got_many0[many0.size()], sentinel);
+  for (size_t v = 0; v < many1.size(); v++)
+    expect("many points, stream 1", got_many1[v], many1[v]);
+  expect("many points, stream 1 past the draw", got_many1[many1.size()], sentinel);
+  for (size_t v = 0; v < many_alone.size(); v++)
+    for (int c = 0; c < 4; c++)
+      expect("many points, vertex shader alone", got_many_alone[4 * v + c], many_alone[v][c]);
+  expect("many points, vertex shader alone past the draw", got_many_alone[4 * many_alone.size()], sentinel);
   // from arguments: the strips twice, and the vertex shader's points, the last of `alone`
   auto got_indirect0 = read(device.Get(), context.Get(), indirect0.Get()),
        got_indirect1 = read(device.Get(), context.Get(), indirect1.Get()),
@@ -365,6 +410,19 @@ main() {
     for (int c = 0; c < 4; c++)
       expect("indirect vertex shader alone", got_indirect_alone[4 * v + c], alone[first_point + v][c]);
   expect("indirect vertex shader alone past the draw", got_indirect_alone[4 * instances * points], sentinel);
+  auto got_indirect_many0 = read(device.Get(), context.Get(), indirect_many0.Get()),
+       got_indirect_many1 = read(device.Get(), context.Get(), indirect_many1.Get()),
+       got_indirect_many_alone = read(device.Get(), context.Get(), indirect_many_alone.Get());
+  for (size_t v = 0; v < many0.size(); v++)
+    expect("many points from arguments, stream 0", got_indirect_many0[v], many0[v]);
+  expect("many points from arguments, stream 0 past the draw", got_indirect_many0[many0.size()], sentinel);
+  for (size_t v = 0; v < many1.size(); v++)
+    expect("many points from arguments, stream 1", got_indirect_many1[v], many1[v]);
+  expect("many points from arguments, stream 1 past the draw", got_indirect_many1[many1.size()], sentinel);
+  for (size_t v = 0; v < many_alone.size(); v++)
+    for (int c = 0; c < 4; c++)
+      expect("many points from arguments, vertex shader alone", got_indirect_many_alone[4 * v + c], many_alone[v][c]);
+  expect("many points from arguments, vertex shader alone past the draw", got_indirect_many_alone[4 * many_alone.size()], sentinel);
 
   auto result = [&](ID3D11Query *q, void *data, UINT size) {
     HRESULT hr;
