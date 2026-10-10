@@ -10,6 +10,7 @@
 // - the clamp set is the clamp got, and 0 again shows every level.
 // each level of the texture holds its number plus one, and a compute shader samples and loads the level asked for.
 #include "d3d11_test.hpp"
+#include <algorithm>
 #include <cmath>
 
 static const char hlsl[] = R"hlsl(

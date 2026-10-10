@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <tuple>
 #include <vector>
