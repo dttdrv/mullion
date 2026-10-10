@@ -1,0 +1,15 @@
+# DISCARD leaves bound vertex buffers on the old generation (R2/R8)
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..6f087ac 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -155,9 +155,6 @@ public:
+       case D3D11_MAP_READ_WRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
+-          state_.InputAssembler.VertexBuffers.set_dirty();
+-        }
+         if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
+           for (auto &stage : state_.ShaderStages) {
+             stage.ConstantBuffers.set_dirty();

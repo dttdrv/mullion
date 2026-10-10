@@ -1,0 +1,13 @@
+# initial data replaces the final word with the first word (R2)
+diff --git a/src/d3d11/d3d11_buffer.cpp b/src/d3d11/d3d11_buffer.cpp
+index c354db3..48e688f 100644
+--- a/src/d3d11/d3d11_buffer.cpp
++++ b/src/d3d11/d3d11_buffer.cpp
+@@ -106,6 +106,7 @@ public:
+     auto &initializer = device->GetDXMTDevice().queue().initializer;
+     if (pInitialData) {
+       allocation->updateContents(0, pInitialData->pSysMem, pDesc->ByteWidth);
++      allocation->updateContents(pDesc->ByteWidth - sizeof(uint32_t), pInitialData->pSysMem, sizeof(uint32_t));
+     } else if (flags.test(BufferAllocationFlag::GpuPrivate)) {
+       initializer.initWithZero(allocation.ptr(), 0, buffer_->length());
+     }

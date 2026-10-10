@@ -1,0 +1,14 @@
+# a retained command list gives its latest allocation to the immediate recycle queue (G6)
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..bacb147 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -620,7 +620,7 @@ public:
+     for (const auto &used_dynamic : cmdlist->used_dynamic_buffers) {
+       if (!used_dynamic.latest)
+         continue;
+-      used_dynamic.buffer->updateImmediateName(seq_id, Rc(used_dynamic.allocation), used_dynamic.suballocation, true);
++      used_dynamic.buffer->updateImmediateName(seq_id, Rc(used_dynamic.allocation), used_dynamic.suballocation, false);
+     }
+ 
+     for (const auto &used_dynamic : cmdlist->used_dynamic_lineartextures) {

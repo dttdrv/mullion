@@ -1,0 +1,17 @@
+# DISCARD leaves bound constant buffers on the old generation (R8)
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..1f01a3e 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -158,11 +158,6 @@ public:
+         if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
+           state_.InputAssembler.VertexBuffers.set_dirty();
+         }
+-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.ConstantBuffers.set_dirty();
+-          }
+-        }
+         if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
+           for (auto &stage : state_.ShaderStages) {
+             stage.SRVs.set_dirty();

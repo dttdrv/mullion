@@ -1,0 +1,14 @@
+# deferred DISCARD resolves the latest buffer name instead of its recorded allocation (G6)
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index fcff913..0ffbaf5 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -162,7 +162,7 @@ public:
+     );
+     EmitST([allocation = new_allocation, buffer = Rc(dynamic->buffer)](ArgumentEncodingContext &enc) mutable {
+       allocation->useSuballocation(0);
+-      auto _ = buffer->rename(forward_rc(allocation));
++      auto _ = buffer->rename(buffer->current());
+     });
+     return new_allocation->mappedMemory(0);
+   }

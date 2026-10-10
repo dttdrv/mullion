@@ -1,0 +1,17 @@
+# DISCARD leaves bound buffer SRVs on the old generation (R8)
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..a2b9123 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -163,11 +163,6 @@ public:
+             stage.ConstantBuffers.set_dirty();
+           }
+         }
+-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.SRVs.set_dirty();
+-          }
+-        }
+ 
+         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+         pMappedResource->RowPitch = buffer_length;
