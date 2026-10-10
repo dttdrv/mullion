@@ -8,6 +8,7 @@ every repeat: one that fails once, ends without a result or outlives its time ha
 """
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -25,6 +26,8 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit("ended"))
 PATIENCE = 1800
 # after this many tests the machine's lock is left free for this many seconds
 TURNS, TURN = 6, 6
+# how long a test may say nothing after a fault of the GPU's before it counts as hung
+QUIET = 30
 
 
 def libraries(builds):
@@ -76,21 +79,26 @@ def alone():
     its owner's process id and is taken over when the owner is gone. held for one test, so the others get their turn"""
     lock = os.environ.get("MULLION_TEST_LOCK")
     while lock:
-        try:
-            os.mkdir(lock)
-            Path(lock, "pid").write_text(str(os.getpid()))
-            break
-        except FileExistsError:
-            time.sleep(5)
+        # the guard is never removed: publication and takeover must lock the same inode, including shell users
+        with open(lock + ".guard", "a") as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
             try:
-                os.kill(int(Path(lock, "pid").read_text()), 0)
-            except (OSError, ValueError):
-                shutil.rmtree(lock, ignore_errors=True)
+                os.mkdir(lock)
+                Path(lock, "pid").write_text(str(os.getpid()))
+                break
+            except FileExistsError:
+                try:
+                    os.kill(int(Path(lock, "pid").read_text()), 0)
+                except (ProcessLookupError, FileNotFoundError, ValueError):
+                    shutil.rmtree(lock, ignore_errors=True)
+        time.sleep(5)
     try:
         yield
     finally:
         if lock:
-            shutil.rmtree(lock, ignore_errors=True)
+            with open(lock + ".guard", "a") as guard:
+                fcntl.flock(guard, fcntl.LOCK_EX)
+                shutil.rmtree(lock, ignore_errors=True)
             # the others look for the lock every few seconds: every few tests it stays free long enough for them
             alone.held = getattr(alone, "held", 0) + 1
             if alone.held % TURNS == 0:
@@ -107,14 +115,23 @@ def finish(command, env, seconds, log):
             level = subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True, text=True).stdout.strip()
             if level == "1":
                 with open(log, "wb") as out:
+                    end = time.monotonic() + seconds
                     process = subprocess.Popen(
                         command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
                     )
                     # the test and what it started, which nothing else is in the session of, do not outlive their time
                     # or this runner: a test left behind would use the GPU without the lock
                     try:
-                        return process.wait(seconds)
-                    except subprocess.TimeoutExpired:
+                        # a test whose GPU work failed, or that called a result wrong, has failed: once it is also
+                        # quiet, nothing waits for it
+                        while time.monotonic() < end:
+                            try:
+                                return process.wait(QUIET)
+                            except subprocess.TimeoutExpired:
+                                lines = log.read_text(errors="replace").splitlines()
+                                if time.time() - log.stat().st_mtime > QUIET and (
+                                        faults(lines) or any(line.startswith("wrong: ") for line in lines)):
+                                    break
                         return None
                     finally:
                         if process.poll() is None:
@@ -134,7 +151,7 @@ def run(command, env, seconds, log):
     status = finish(command, env, seconds, log)
     lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
     if status is None:
-        return "failed", f"still running after {seconds} s: {lines[-1] if lines else 'nothing'}", time.monotonic() - started
+        return "failed", f"still running after {time.monotonic() - started:.0f} s: {lines[-1] if lines else 'nothing'}", time.monotonic() - started
     # a test's result is the last line that starts with one
     said = next((line for line in reversed(lines) if line.split(":")[0] in (*RESULTS, "failed")), "")
     word = said.split(":")[0]
@@ -175,6 +192,9 @@ def environment(args):
     binary = wine / "bin" / "wine"
     if not (prefix / "drive_c").exists():
         subprocess.run([binary, "wineboot", "-u"], env=base, stdin=subprocess.DEVNULL, check=True)
+        # a display mode a test asks for is Wine's to give (win32u, sysparams.c), never the machine's display's
+        subprocess.run([binary, "reg", "add", r"HKCU\Software\Wine\X11 Driver", "/v", "EmulateModeset", "/d", "Y", "/f"],
+                       env=base, stdin=subprocess.DEVNULL, check=True)
     if not args.no_install:
         install(wine, prefix, unix, pe)
     return builds, binary, base
@@ -204,7 +224,8 @@ def options(parser):
                         help="the Apple GPU families to run as, 'native' for the GPU's own (default: %(default)s)")
     parser.add_argument("--repeat", type=int, default=1, help="how many times each test runs")
     parser.add_argument("--suite", action="append", default=[], help="only tests of this suite (may repeat)")
-    parser.add_argument("tests", nargs="*", help="only tests whose name starts with one of these")
+    parser.add_argument("--exact", action="store_true", help="match whole test names instead of prefixes")
+    parser.add_argument("tests", nargs="*", help="test name prefixes, or whole names with --exact")
 
 
 def chosen(args):
@@ -215,7 +236,8 @@ def chosen(args):
     if not declared:
         sys.exit("no build was set up with tests (-Denable_tests=true)")
     tests = [t for t in declared
-             if (not args.tests or any(t["name"].startswith(name) for name in args.tests))
+             if (not args.tests or any(t["name"] == name if args.exact else t["name"].startswith(name)
+                                       for name in args.tests))
              and (not args.suite or any(suite.split(":")[-1] in args.suite for suite in t["suite"]))]
     missing = [t["cmd"][0] for t in tests if not Path(t["cmd"][0]).exists()]
     if missing or not tests:
