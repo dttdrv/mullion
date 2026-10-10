@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -387,7 +387,7 @@
+   HRESULT
+   STDMETHODCALLTYPE
+   GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
+-    return DXGI_ERROR_INVALID_CALL;
++    return E_FAIL;
+   }
+ 
+   void

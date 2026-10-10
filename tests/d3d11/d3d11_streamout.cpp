@@ -264,7 +264,8 @@ main() {
   deferred->End(listed_statistics.Get());
   ComPtr<ID3D11CommandList> list;
   CHECK(deferred->FinishCommandList(FALSE, &list));
-  // not there before the list has run
+  // a call the immediate context refuses before the list has run: Wine's test_deferred_context_queries records
+  // DXGI_ERROR_INVALID_CALL from Windows between FinishCommandList and ExecuteCommandList
   D3D11_QUERY_DATA_SO_STATISTICS early{};
   HRESULT before_list = context->GetData(listed_statistics.Get(), &early, sizeof(early), D3D11_ASYNC_GETDATA_DONOTFLUSH);
   context->ExecuteCommandList(list.Get(), FALSE);
@@ -336,7 +337,7 @@ main() {
   expect("a draw past its buffer overflowed", overflowed, TRUE);
   result(other_stream.Get(), &overflowed, sizeof(overflowed));
   expect("a stream without primitives overflowed", overflowed, FALSE);
-  expect("the result of a query whose list has not run", before_list, S_FALSE);
+  expect("the result of a query whose list has not run", before_list, DXGI_ERROR_INVALID_CALL);
   result(listed_statistics.Get(), &counted, sizeof(counted));
   expect("primitives written from a list", counted.NumPrimitivesWritten, triangles.size() + fits);
   expect("primitives needed from a list", counted.PrimitivesStorageNeeded, 2 * triangles.size());

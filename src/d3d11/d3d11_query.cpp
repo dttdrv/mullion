@@ -6,8 +6,6 @@ namespace dxmt {
 class OcclusionQuery : public MTLD3DQueryBase<MTLD3D11OcclusionQuery> {
   using MTLD3DQueryBase<MTLD3D11OcclusionQuery>::MTLD3DQueryBase;
 
-  QueryState state_ = QueryState::Signaled;
-
   Rc<VisibilityResultQuery> query_ = new VisibilityResultQuery();
   uint64_t accumulated_value_ = 0;
 
@@ -18,9 +16,6 @@ class OcclusionQuery : public MTLD3DQueryBase<MTLD3D11OcclusionQuery> {
 
   virtual HRESULT
   GetData(void *data) override {
-    if (state_ == QueryState::Building) {
-      return DXGI_ERROR_INVALID_CALL;
-    }
     if (state_ == QueryState::Signaled || query_->getValue(&accumulated_value_)) {
       if (desc_.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
         *((BOOL *)data) = accumulated_value_ != 0;
@@ -36,31 +31,14 @@ class OcclusionQuery : public MTLD3DQueryBase<MTLD3D11OcclusionQuery> {
 
   virtual VisibilityResultQuery *
   Begin() override {
-    if (state_ == QueryState::Signaled) {
-      state_ = QueryState::Building;
-      return query_.ptr();
-    }
-    if (state_ == QueryState::Issued) {
-      // discard previous issued query
-      state_ = QueryState::Building;
+    if (state_ == QueryState::Issued)
       query_ = new VisibilityResultQuery();
-      return query_.ptr();
-    }
-    // FIXME: it's effectively ignoring  Begin() after Begin()
-    return nullptr;
+    state_ = QueryState::Building;
+    return query_.ptr();
   };
 
   virtual VisibilityResultQuery *
   End() override {
-    if (state_ == QueryState::Signaled) {
-      // ignore  a single End()
-      accumulated_value_ = 0;
-      return nullptr;
-    }
-    if (state_ == QueryState::Issued) {
-      // FIXME: it's effectively ignoring End() after End()
-      return nullptr;
-    }
     state_ = QueryState::Issued;
     return query_.ptr();
   };
@@ -83,8 +61,6 @@ CreateOcclusionQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID
 
 class MTLD3D11TimestampQueryImpl : public MTLD3DQueryBase<MTLD3D11TimestampQuery> {
   using MTLD3DQueryBase<MTLD3D11TimestampQuery>::MTLD3DQueryBase;
-
-  QueryState state_ = QueryState::Signaled;
 
   Rc<TimestampQuery> query_ = new TimestampQuery();
   uint64_t latest_value_ = 0;
@@ -170,6 +146,7 @@ public:
   void
   Issue(uint64_t event) override {
     event_ = event;
+    state_ = QueryState::Issued;
   }
 
   HRESULT

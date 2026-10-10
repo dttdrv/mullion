@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -281,7 +281,7 @@
+     case D3D11_QUERY_OCCLUSION:
+     case D3D11_QUERY_OCCLUSION_PREDICATE: {
+       if (static_cast<MTLD3D11Query *>(pAsync)->state_ == QueryState::Building)
+-        End(pAsync);
++        return;
+       auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin();
+       VisibilityQueryBoundary(active_visibility_queries_++ != 0);
+       EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {

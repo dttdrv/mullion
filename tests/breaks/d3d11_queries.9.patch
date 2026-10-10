@@ -1,0 +1,13 @@
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -441,8 +441,8 @@
+     }
+     switch (desc.Query) {
+     case D3D11_QUERY_EVENT: {
+-      if (pData && hr == S_OK)
+-        *static_cast<BOOL *>(pData) = TRUE;
++      if (pData)
++        *static_cast<BOOL *>(pData) = (hr == S_OK);
+       break;
+     }
+     case D3D11_QUERY_OCCLUSION: {

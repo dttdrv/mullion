@@ -270,7 +270,6 @@ public:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
       auto building_query = ctx_state.building_visibility_queries.find(pAsync);
       if (building_query != ctx_state.building_visibility_queries.end()) {
-        D3D11_ASSERT(0 && "unexpected branch condition hit, please file an issue.");
         End(pAsync);
       }
       VisibilityQueryBoundary(true);
@@ -335,11 +334,8 @@ public:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
       auto building_query = ctx_state.building_visibility_queries.find(pAsync);
       if (building_query == ctx_state.building_visibility_queries.end()) {
-        // need to figure out if it's the intended behavior
-        D3D11_ASSERT(0 && "unexpected branch condition hit, please file an issue.");
-        // no corresponding Begin()
-        WARN("DeferredContext: An occclusion query End() is called without corresponding Begin()");
-        return;
+        Begin(pAsync);
+        building_query = ctx_state.building_visibility_queries.find(pAsync);
       }
       promote_flush = true;
       auto query_id = building_query->second.second;
@@ -391,7 +387,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
-    return E_FAIL;
+    return DXGI_ERROR_INVALID_CALL;
   }
 
   void

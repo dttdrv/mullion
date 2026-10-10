@@ -8,6 +8,53 @@
 
 namespace dxmt {
 
+/**
+
+From D3D11.3 Functional Spec:
+
+- Passing IssueFlags with only the D3DISSUE_BEGIN bit set causes the Query to
+enter the "building" state (regardless of whatever state it was in before)
+
+- A second D3DISSUE_BEGIN will result in the range being reset (the first
+D3DISSUE_BEGIN is effectively discarded/ ignored).
+
+- Some Query Types only support D3DISSUE_END
+
+- When the Query is in the "signaled" state, the Query Type supports
+D3DISSUE_BEGIN, and Issue is invoked with just the D3DISSUE_END flag: it is
+equivalent to invoking Issue with both D3DISSUE_BEGIN and D3DISSUE_END bits set,
+as well as being equivalent to an invocation of Issue with D3DISSUE_BEGIN
+followed immediately by another invocation of Issue with D3DISSUE_END
+
+- (BEGIN and END) define a bracketing of graphics commands
+
+- Bracketings of Queries are allowed to overlap and nest.
+ */
+enum class QueryState {
+  /**
+    After DeviceContext::Begin
+   */
+  Building,
+  /**
+    After DeviceContext::End
+   */
+  Issued,
+  /**
+    When data is ready
+   */
+  Signaled,
+  Undefined,
+};
+
+class MTLD3D11Query : public ID3D11Query1 {
+public:
+  QueryState state_ = QueryState::Undefined;
+
+  // the context's hold on what is bound: without the application's count, which holds the device
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
+};
+
 template <typename Query>
 class MTLD3DQueryBase : public MTLD3D11DeviceChild<Query> {
 public:
@@ -26,7 +73,10 @@ public:
     // a predicate is a query of a predicate's kind
     bool predicate = desc_.Query == D3D11_QUERY_OCCLUSION_PREDICATE ||
                      (desc_.Query >= D3D11_QUERY_SO_OVERFLOW_PREDICATE &&
-                      desc_.Query <= D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3);
+                      desc_.Query <= D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3 &&
+                      (desc_.Query - D3D11_QUERY_SO_OVERFLOW_PREDICATE) %
+                              (D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1 -
+                               D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0) == 0);
 
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D11DeviceChild) || riid == __uuidof(ID3D11Asynchronous) ||
         riid == __uuidof(ID3D11Query) || riid == __uuidof(ID3D11Query1) ||
@@ -68,64 +118,25 @@ protected:
 };
 
 template <typename DataType>
-class MTLD3D11DummyQuery : public MTLD3DQueryBase<ID3D11Query1> {
+class MTLD3D11DummyQuery : public MTLD3DQueryBase<MTLD3D11Query> {
 public:
   MTLD3D11DummyQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *desc)
-      : MTLD3DQueryBase<ID3D11Query1>(pDevice, desc) {}
+      : MTLD3DQueryBase<MTLD3D11Query>(pDevice, desc) {}
 
   virtual UINT STDMETHODCALLTYPE GetDataSize() override {
     return sizeof(DataType);
   };
 };
 
-/**
-
-From D3D11.3 Functional Spec:
-
-- Passing IssueFlags with only the D3DISSUE_BEGIN bit set causes the Query to
-enter the "building" state (regardless of whatever state it was in before)
-
-- A second D3DISSUE_BEGIN will result in the range being reset (the first
-D3DISSUE_BEGIN is effectively discarded/ ignored).
-
-- Some Query Types only support D3DISSUE_END
-
-- When the Query is in the "signaled" state, the Query Type supports
-D3DISSUE_BEGIN, and Issue is invoked with just the D3DISSUE_END flag: it is
-equivalent to invoking Issue with both D3DISSUE_BEGIN and D3DISSUE_END bits set,
-as well as being equivalent to an invocation of Issue with D3DISSUE_BEGIN
-followed immediately by another invocation of Issue with D3DISSUE_END
-
-- (BEGIN and END) define a bracketing of graphics commands
-
-- Bracketings of Queries are allowed to overlap and nest.
- */
-enum class QueryState {
-  /**
-    After DeviceContext::Begin
-   */
-  Building,
-  /**
-    After DeviceContext::End
-   */
-  Issued,
-  /**
-    Default state, or when data is ready
-   */
-  Signaled,
-  Undefined,
-};
-
 enum class EventState {
   Pending,
   Signaled,
   Stall,
-  Invalid,
 };
 
 constexpr size_t kEventStallThreshold = 64;
 
-struct MTLD3D11EventQuery : public ID3D11Query1 {
+struct MTLD3D11EventQuery : public MTLD3D11Query {
   virtual void Issue(uint64_t current_seq_id) = 0;
   virtual EventState CheckEventState(uint64_t coherent_seq_id) = 0;
 };
@@ -139,16 +150,14 @@ public:
   UINT STDMETHODCALLTYPE GetDataSize() override { return sizeof(DataType); };
 
   void Issue(uint64_t current_seq_id) override {
-    state = QueryState::Issued;
+    state_ = QueryState::Issued;
     should_be_signaled_at = current_seq_id;
     stall_counter = 0;
   }
 
   EventState CheckEventState(uint64_t coherent_seq_id) override {
-    if (state == QueryState::Undefined)
-      return EventState::Invalid;
     if (should_be_signaled_at <= coherent_seq_id) {
-      state = QueryState::Signaled;
+      state_ = QueryState::Signaled;
       stall_counter = 0;
       return EventState::Signaled;
     }
@@ -163,16 +172,8 @@ public:
   };
 
 private:
-  QueryState state = QueryState::Undefined;
   uint32_t stall_counter = 0;
   uint64_t should_be_signaled_at = 0;
-};
-
-class MTLD3D11Query : public ID3D11Query1 {
-public:
-  // the context's hold on what is bound: without the application's count, which holds the device
-  virtual void AddRefPrivate() = 0;
-  virtual void ReleasePrivate() = 0;
 };
 
 class MTLD3D11OcclusionQuery : public MTLD3D11Query {

@@ -432,14 +432,10 @@ public:
     InitReturnPtr(ppPredicate);
     if (!pPredicateDesc)
       return E_INVALIDARG;
-    // the queries that are predicates (ID3D11Device::CreatePredicate): the stream statistics lie between them
+    // ID3D11Device::CreatePredicate accepts only OCCLUSION_PREDICATE and SO_OVERFLOW_PREDICATE
     switch (pPredicateDesc->Query) {
     case D3D11_QUERY_OCCLUSION_PREDICATE:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
-    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
-    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
-    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
-    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
       break;
     default:
       return E_INVALIDARG;

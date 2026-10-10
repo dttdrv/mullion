@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_query.hpp
++++ b/src/d3d11/d3d11_query.hpp
+@@ -48,7 +48,7 @@
+ 
+ class MTLD3D11Query : public ID3D11Query1 {
+ public:
+-  QueryState state_ = QueryState::Undefined;
++  QueryState state_ = QueryState::Signaled;
+ 
+   // the context's hold on what is bound: without the application's count, which holds the device
+   virtual void AddRefPrivate() = 0;

@@ -273,17 +273,20 @@ public:
     ((ID3D11Query *)pAsync)->GetDesc(&desc);
     switch (desc.Query) {
     case D3D11_QUERY_TIMESTAMP_DISJOINT:
+      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
+      break;
     case D3D11_QUERY_TIMESTAMP:
     case D3D11_QUERY_EVENT:
       break;
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
-      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin()) {
-        VisibilityQueryBoundary(active_visibility_queries_++ != 0);
-        EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
-          enc.beginVisibilityResultQuery(std::move(query));
-        });
-      }
+      if (static_cast<MTLD3D11Query *>(pAsync)->state_ == QueryState::Building)
+        End(pAsync);
+      auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin();
+      VisibilityQueryBoundary(active_visibility_queries_++ != 0);
+      EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
+        enc.beginVisibilityResultQuery(std::move(query));
+      });
       break;
     }
     case D3D11_QUERY_SO_STATISTICS:
@@ -296,11 +299,12 @@ public:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
     case D3D11_QUERY_SO_STATISTICS_STREAM3:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3: {
+      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
       SnapshotStreamOutputStatistics(static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Snapshots(), 0);
       break;
     }
     case D3D11_QUERY_PIPELINE_STATISTICS: {
-      // ignore
+      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
       break;
     }
     default:
@@ -349,12 +353,13 @@ public:
     }
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
-      if (auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->End()) {
-        VisibilityQueryBoundary(active_visibility_queries_-- != 0);
-        EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
-          enc.endVisibilityResultQuery(std::move(query));
-        });
-      }
+      if (static_cast<MTLD3D11Query *>(pAsync)->state_ != QueryState::Building)
+        Begin(pAsync);
+      auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->End();
+      VisibilityQueryBoundary(active_visibility_queries_-- != 0);
+      EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
+        enc.endVisibilityResultQuery(std::move(query));
+      });
       promote_flush = true;
       break;
     }
@@ -370,6 +375,8 @@ public:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3: {
       // the event tells when the copy is done
       auto query = static_cast<MTLD3D11StreamOutputQuery *>(pAsync);
+      if (query->state_ != QueryState::Building)
+        Begin(pAsync);
       SnapshotStreamOutputStatistics(query->Snapshots(), 1);
       auto event_id = cmd_queue.GetNextEventSeqId();
       query->Issue(event_id);
@@ -382,7 +389,7 @@ public:
       break;
     }
     case D3D11_QUERY_PIPELINE_STATISTICS: {
-      // ignore
+      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Issued;
       break;
     }
     default:
@@ -402,6 +409,12 @@ public:
     if (DataSize && DataSize != pAsync->GetDataSize())
       return E_INVALIDARG;
 
+    if (!DataSize)
+      pData = nullptr;
+    auto state = static_cast<MTLD3D11Query *>(pAsync)->state_;
+    if (state == QueryState::Undefined || state == QueryState::Building)
+      return DXGI_ERROR_INVALID_CALL;
+
     HRESULT hr = S_FALSE;
 
     D3D11_QUERY_DESC desc;
@@ -418,8 +431,6 @@ public:
       case EventState::Signaled:
         hr = S_OK;
         break;
-      case EventState::Invalid:
-        return DXGI_ERROR_INVALID_CALL;
       }
       break;
     }
@@ -428,8 +439,8 @@ public:
     }
     switch (desc.Query) {
     case D3D11_QUERY_EVENT: {
-      if (pData)
-        *static_cast<BOOL *>(pData) = (hr == S_OK);
+      if (pData && hr == S_OK)
+        *static_cast<BOOL *>(pData) = TRUE;
       break;
     }
     case D3D11_QUERY_OCCLUSION: {
@@ -451,7 +462,7 @@ public:
       break;
     }
     case D3D11_QUERY_TIMESTAMP_DISJOINT: {
-      if (pData) {
+      if (pData && hr == S_OK) {
         (*static_cast<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT *>(pData)) = {1'000'000'000, FALSE};
       }
       break;

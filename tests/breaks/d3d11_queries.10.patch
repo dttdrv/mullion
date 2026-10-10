@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -464,7 +464,7 @@
+       break;
+     }
+     case D3D11_QUERY_TIMESTAMP_DISJOINT: {
+-      if (pData && hr == S_OK) {
++      if (pData) {
+         (*static_cast<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT *>(pData)) = {1'000'000'000, FALSE};
+       }
+       break;

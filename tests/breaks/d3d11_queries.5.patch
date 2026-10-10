@@ -1,0 +1,10 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -436,6 +436,7 @@
+     switch (pPredicateDesc->Query) {
+     case D3D11_QUERY_OCCLUSION_PREDICATE:
+     case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
++    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+       break;
+     default:
+       return E_INVALIDARG;

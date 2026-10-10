@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -409,7 +409,7 @@
+     if (DataSize && DataSize != pAsync->GetDataSize())
+       return E_INVALIDARG;
+ 
+-    if (!DataSize)
++    if (!pData)
+       pData = nullptr;
+     auto state = static_cast<MTLD3D11Query *>(pAsync)->state_;
+     if (state == QueryState::Undefined || state == QueryState::Building)

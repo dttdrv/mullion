@@ -1,0 +1,10 @@
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -299,7 +299,6 @@
+     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+     case D3D11_QUERY_SO_STATISTICS_STREAM3:
+     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3: {
+-      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
+       SnapshotStreamOutputStatistics(static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Snapshots(), 0);
+       break;
+     }
