@@ -66,6 +66,16 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
   so_statistics_ = new Buffer(sizeof(uint64_t) * 2 * kStreamOutputSlots, device);
   so_statistics_->rename(so_statistics_->allocate({}));
+  // the scratch area is made at the first indirect draw with stream output, this size until a draw needs more
+  so_scratch_budget_ = kStagingBlockSize;
+  so_scratch_overflow_host_ = (uint64_t *)wsi::aligned_malloc(DXMT_PAGE_SIZE, DXMT_PAGE_SIZE);
+  *so_scratch_overflow_host_ = 0;
+  WMTBufferInfo overflow_info{};
+  overflow_info.length = DXMT_PAGE_SIZE;
+  overflow_info.memory.set(so_scratch_overflow_host_);
+  overflow_info.options = WMTResourceStorageModeShared | WMTResourceHazardTrackingModeUntracked;
+  so_scratch_overflow_ = device.newBuffer(overflow_info);
+  so_scratch_overflow_va_ = overflow_info.gpu_address;
   cpu_buffer_chunks_.emplace_back();
   barrier_event_ = device_.newEvent();
   for (unsigned i = 0; i < kParityLane; i++) {
@@ -75,6 +85,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
   wsi::aligned_free(dummy_cbuffer_host_);
+  wsi::aligned_free(so_scratch_overflow_host_);
 };
 
 template void ArgumentEncodingContext::encodeVertexBuffers<PipelineKind::Ordinary>(uint32_t slot_mask, uint64_t argument_buffer_offset);
@@ -125,14 +136,41 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
 }
 std::pair<uint64_t, uint64_t>
 ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations) {
-  // the scratch area: the filled sizes, then per stream a total per object threadgroup and a count per invocation
+  // the scratch area: the filled sizes, then per stream a total per object threadgroup and a count per invocation. an
+  // indirect draw's (no `warps`) is the GS dispatch marshal's to give
   uint64_t groups = uint64_t(warps) * instances;
-  size_t scratch_bytes = sizeof(uint64_t) * 4 + sizeof(uint32_t) * 4 * groups * (1 + invocations);
+  size_t scratch_bytes = warps ? sizeof(uint64_t) * 4 + sizeof(uint32_t) * 4 * groups * (1 + invocations) : 0;
   auto [mapped, buffer, offset, address] =
       queue_.AllocateAddressedArgumentBuffer(seq_id_, sizeof(SM50_STREAM_OUTPUT_TARGETS) + scratch_bytes);
   auto targets = new (mapped) SM50_STREAM_OUTPUT_TARGETS{};
   memset(targets + 1, 0, scratch_bytes);
-  targets->scratch = address + sizeof(*targets);
+  targets->scratch = warps ? address + sizeof(*targets) : 0;
+  auto encoder = currentRenderEncoder();
+  // an indirect draw's scratch is in the context's area, which the encoder's first such draw grows by what an earlier
+  // one lacked. the encoder writes it all, so encoders using it run one after another
+  if (!warps && !encoder->so_scratch) {
+    if (uint64_t lacked = *so_scratch_overflow_host_) {
+      *so_scratch_overflow_host_ = 0;
+      if (lacked > so_scratch_budget_) {
+        while (so_scratch_budget_ < lacked)
+          so_scratch_budget_ *= 2;
+        so_scratch_ = nullptr;
+        ERR("stream output from an indirect draw needed ", lacked, " bytes of scratch, more than it had: the draw "
+            "was not run, and the scratch grows to ", so_scratch_budget_);
+      }
+    }
+    if (!so_scratch_) {
+      so_scratch_ = new Buffer(so_scratch_budget_, device_);
+      so_scratch_->rename(so_scratch_->allocate(BufferAllocationFlag::GpuPrivate));
+    }
+    auto [area, area_offset] = access<PipelineStage::Vertex>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    access<PipelineStage::Geometry>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    encoder->so_scratch = area->buffer();
+    encoder->so_scratch_va = area->gpuAddress() + area_offset;
+    encoder->so_scratch_size = so_scratch_->length();
+  }
   targets->warps = warps;
   targets->instances = instances;
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
@@ -157,7 +195,7 @@ ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t inst
     targets->statistics[stream] = statistics->gpuAddress() + statistics_offset + sizeof(uint64_t) * 2 * stream;
   makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
   makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
-  currentRenderEncoder()->so_targets = buffer;
+  encoder->so_targets = buffer;
   return {offset, address};
 }
 
@@ -1079,10 +1117,21 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           uint64_t max_object_threadgroups;
           uint32_t vertex_count_per_warp;
           uint32_t end_of_command;
+          uint64_t so_targets;
+          uint64_t so_scratch_area;
+          uint64_t so_scratch;
+          uint64_t so_scratch_size;
+          uint64_t so_overflow;
+          uint32_t so_invocations;
         };
         auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
             queue_.AllocateArgumentBuffer(seq_id_, sizeof(GS_MARSHAL_TASK) * task_count);
         auto tasks_data = (GS_MARSHAL_TASK *)mapped_task_data;
+        // indirect draws with stream output share the encoder's scratch area (encodeStreamOutputTargets)
+        if (data->so_scratch) {
+          encoder.useResource(data->so_scratch, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
+          encoder.useResource(so_scratch_overflow_, WMTResourceUsageWrite, WMTRenderStageVertex);
+        }
         for (unsigned i = 0; i<task_count; i++) {
           auto & task = data->gs_arg_marshal_tasks[i];
           tasks_data[i].draw_args = task.draw_arguments_va;
@@ -1090,8 +1139,16 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           tasks_data[i].max_object_threadgroups = task.max_object_threadgroups;
           tasks_data[i].vertex_count_per_warp = task.vertex_count_per_warp;
           tasks_data[i].end_of_command = 0;
+          tasks_data[i].so_targets = task.so_targets_va;
+          tasks_data[i].so_scratch_area = data->so_scratch_va;
+          tasks_data[i].so_scratch = data->so_scratch_va;
+          tasks_data[i].so_scratch_size = data->so_scratch_size;
+          tasks_data[i].so_overflow = so_scratch_overflow_va_;
+          tasks_data[i].so_invocations = task.so_invocations;
           encoder.useResource(task.draw_arguments, WMTResourceUsageRead, WMTRenderStageVertex);
           encoder.useResource(task.dispatch_arguments_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
+          if (task.so_targets_va)
+            encoder.useResource(task.so_targets_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
         }
         tasks_data[task_count - 1].end_of_command = 1;
         emulated_cmd.MarshalGSDispatchArguments(encoder, task_data_buffer, task_data_buffer_offset);

@@ -535,18 +535,39 @@ struct DXMTDrawAutoMarshal {
   };
 }
 
+// SM50_STREAM_OUTPUT_TARGETS (airconv_public.h)
+struct DXMTStreamOutputTargets {
+  ulong address[4];
+  ulong size[4];
+  ulong filled[4];
+  ulong scratch;
+  uint warps;
+  uint instances;
+  ulong statistics[4];
+};
+
 struct DXMTGSDispatchMarshal {
   constant uint2& draw_arguments; // (vertex|index_count, instance_count)
   device DXMTDispatchArguments& dispatch_arguments_out;
   ulong max_object_threadgroups;
   uint vertex_count_per_warp;
   uint end_of_command;
+  // an indirect draw's stream output, or none: its targets, the scratch the encoder's such draws share (to write to
+  // and its address to give) and its size, where to leave what one lacked, and the draw's invocations per object
+  // threadgroup
+  device DXMTStreamOutputTargets* so_targets;
+  device uint* so_scratch_area;
+  ulong so_scratch;
+  ulong so_scratch_size;
+  device ulong* so_overflow;
+  uint so_invocations;
 };
 
 [[vertex]] void gs_draw_arguments_marshal(
     constant DXMTGSDispatchMarshal* tasks [[buffer(kCustomBufferArgumentIndex0)]]
 ) {
   uint index = 0;
+  ulong so_used = 0;
   for(;;) {
     constant DXMTGSDispatchMarshal& task = tasks[index];
 
@@ -561,6 +582,27 @@ struct DXMTGSDispatchMarshal {
       output.x = x;
       output.y = task.draw_arguments.y;
       output.z = 1;
+    }
+
+    // stream output's scratch area (encodeStreamOutputTargets): the filled sizes, then per stream a total per object
+    // threadgroup and a count per invocation. the counts are written before they are read, the rest starts at zero.
+    // a draw it has no room for does not run, and leaves what the encoder's draws needed with it
+    if (task.so_targets && output.x) {
+      ulong groups = (ulong)output.x * output.y, need = (32 + 16 * groups * (1 + task.so_invocations) + 15) & ~15ul;
+      if (so_used + need > task.so_scratch_size) {
+        *task.so_overflow = max(*task.so_overflow, so_used + need);
+        output.x = 0;
+        output.y = 0;
+        output.z = 0;
+      } else {
+        device uint* scratch = task.so_scratch_area + so_used / 4;
+        for (ulong i = 0; i < 8 + 4 * groups; i++)
+          scratch[i] = 0;
+        task.so_targets->scratch = task.so_scratch + so_used;
+        task.so_targets->warps = output.x;
+        task.so_targets->instances = output.y;
+        so_used += need;
+      }
     }
 
     if (task.end_of_command)

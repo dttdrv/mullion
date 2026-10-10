@@ -139,6 +139,11 @@ struct GSDispatchArgumentsMarshal {
   WMT::Buffer dispatch_arguments_buffer;
   uint64_t dispatch_arguments_va;
   uint32_t vertex_count_per_warp;
+  // an indirect draw's stream output: its targets, whose scratch the marshal gives it, and its invocations per object
+  // threadgroup (see DXMTGSDispatchMarshal)
+  WMT::Buffer so_targets_buffer;
+  uint64_t so_targets_va;
+  uint32_t so_invocations;
 };
 
 // see DXMTDrawAutoMarshal
@@ -232,6 +237,10 @@ struct RenderEncoderData : EncoderData {
   WMT::RenderPipelineState so_count_pso = {};
   uint32_t so_geometry_instances = 1;
   WMT::Buffer so_targets = {};
+  // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
+  WMT::Buffer so_scratch = {};
+  uint64_t so_scratch_va = 0;
+  uint64_t so_scratch_size = 0;
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -504,7 +513,8 @@ public:
 
   // a geometry pipeline's draw with stream output (SM50_STREAM_OUTPUT_TARGETS): `draw` encodes it, and it runs twice,
   // once counting each geometry invocation's primitives (at most `invocations` per object threadgroup) and, after a
-  // barrier, again writing them. returns the targets' GPU address
+  // barrier, again writing them. no `warps` is an indirect draw's, whose object threadgroups and scratch the GS
+  // dispatch marshal sets. returns the targets' GPU address
   template <typename Draw>
   uint64_t
   encodeStreamOutputDraw(uint32_t warps, uint32_t instances, uint32_t invocations, Draw &&draw) {
@@ -667,13 +677,15 @@ public:
   void
   encodeGSDispatchArgumentsMarshal(
       WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t vertex_count_per_warp,
-      WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups
+      WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups,
+      uint64_t so_targets_va = 0, uint32_t so_invocations = 0
   ) {
     assert(encoder_current->type == EncoderType::Render);
     auto data = static_cast<RenderEncoderData *>(encoder_current);
     data->gs_arg_marshal_tasks.push_back(
         {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
-         dispatch_args_resource_id + write_offset, vertex_count_per_warp}
+         dispatch_args_resource_id + write_offset, vertex_count_per_warp,
+         so_targets_va ? data->so_targets : WMT::Buffer{}, so_targets_va, so_invocations}
     );
   }
 
@@ -929,6 +941,13 @@ private:
 
   std::array<StreamOutputBinding, kStreamOutputSlots> so_;
   Rc<Buffer> so_statistics_;
+  // the scratch area render encoders' indirect draws with stream output share, one encoder after another, and the most
+  // one needed that it did not have, which the GS dispatch marshal leaves for a later encoder to grow it by
+  Rc<Buffer> so_scratch_;
+  uint64_t so_scratch_budget_;
+  WMT::Reference<WMT::Buffer> so_scratch_overflow_;
+  uint64_t so_scratch_overflow_va_;
+  uint64_t *so_scratch_overflow_host_;
 
   WMT::Reference<WMT::SamplerState> dummy_sampler_;
   WMTSamplerInfo dummy_sampler_info_;
