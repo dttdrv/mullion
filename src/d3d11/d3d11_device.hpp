@@ -68,6 +68,8 @@ public:
   d3d11_device_mutex mutex;
 };
 
+D3D_FEATURE_LEVEL GetMaxFeatureLevel(WMT::Device device);
+
 Com<IMTLDXGIDevice> CreateD3D11Device(std::unique_ptr<Device> &&device,
                                       IMTLDXGIAdapter *pAdapter,
                                       D3D_FEATURE_LEVEL FeatureLevel,

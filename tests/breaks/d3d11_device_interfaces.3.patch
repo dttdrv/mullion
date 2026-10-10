@@ -1,0 +1,6 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -684,3 +684,2 @@
+       }
+-      d3d10_interfaces_ = true;
+     }

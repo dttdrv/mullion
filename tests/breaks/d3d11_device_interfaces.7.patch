@@ -1,0 +1,6 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -645,2 +645,3 @@
+       ID3DDeviceContextState **ppContextState) override {
++    d3d10_interfaces_ = true;
+     InitReturnPtr(ppContextState);

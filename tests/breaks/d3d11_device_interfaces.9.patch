@@ -1,0 +1,12 @@
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -231,2 +231,4 @@
+
++    if (riid == __uuidof(IUnknown))
++      return E_NOINTERFACE;
+     auto hr = ResolveBase<0, Base...>(riid, ppvObject);
+@@ -513,2 +515,4 @@
+
++    if (riid == __uuidof(IUnknown))
++      return E_NOINTERFACE;
+     auto hr = ResolveBase<0, Base...>(riid, ppvObject);

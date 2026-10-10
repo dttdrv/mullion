@@ -1,0 +1,6 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -688,2 +688,3 @@
+       *pChosenFeatureLevel = chosen;
++    d3d10_interfaces_ = true;
+     return ppContextState ? S_OK : S_FALSE;

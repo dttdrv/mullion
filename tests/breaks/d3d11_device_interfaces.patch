@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1117,4 +1117,2 @@
+     if (riid == __uuidof(ID3D10Device) || riid == __uuidof(ID3D10Device1)) {
+-      if (!d3d11_device_.d3d10_interfaces_)
+-        return E_NOINTERFACE;
+       *ppvObject = ref_and_cast<ID3D10Device>(d3d11_device_.d3d10_.get());

@@ -22,6 +22,7 @@
 #include "ftl.hpp"
 #include "d3d11_resource.hpp"
 #include "dxgi_object.hpp"
+#include <atomic>
 #include <memory>
 #include "d3d11_4.h"
 #include "util_win32_compat.h"
@@ -639,14 +640,49 @@ public:
       D3D_FEATURE_LEVEL *pChosenFeatureLevel,
       ID3DDeviceContextState **ppContextState) override {
     InitReturnPtr(ppContextState);
+    if (pChosenFeatureLevel)
+      *pChosenFeatureLevel = D3D_FEATURE_LEVEL(0);
 
-    // TODO: validation
+    if (!pFeatureLevels || !FeatureLevels || SDKVersion != D3D11_SDK_VERSION ||
+        (Flags & ~D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED) ||
+        ((feature_flags_ & D3D11_CREATE_DEVICE_SINGLETHREADED) &&
+         !(Flags & D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED)) ||
+        (EmulatedInterface != __uuidof(ID3D10Device) && EmulatedInterface != __uuidof(ID3D10Device1) &&
+         EmulatedInterface != __uuidof(ID3D11Device) && EmulatedInterface != __uuidof(ID3D11Device1)))
+      return E_INVALIDARG;
 
-    if (ppContextState == nullptr) {
-      return S_FALSE;
+    auto maximum = GetMaxFeatureLevel(GetMTLDevice());
+    D3D_FEATURE_LEVEL chosen{};
+    for (UINT i = 0; i < FeatureLevels; ++i) {
+      switch (pFeatureLevels[i]) {
+      case D3D_FEATURE_LEVEL_9_1:
+      case D3D_FEATURE_LEVEL_9_2:
+      case D3D_FEATURE_LEVEL_9_3:
+      case D3D_FEATURE_LEVEL_10_0:
+      case D3D_FEATURE_LEVEL_10_1:
+      case D3D_FEATURE_LEVEL_11_0:
+      case D3D_FEATURE_LEVEL_11_1:
+        break;
+      default:
+        return E_INVALIDARG;
+      }
+      if (!chosen && pFeatureLevels[i] <= maximum)
+        chosen = pFeatureLevels[i];
     }
-    *ppContextState = ref(new MTLD3D11DeviceContextState(this));
-    return S_OK;
+    if (!chosen)
+      return E_INVALIDARG;
+
+    if (ppContextState) {
+      try {
+        *ppContextState = ref(new MTLD3D11DeviceContextState(this));
+      } catch (const std::bad_alloc &) {
+        return E_OUTOFMEMORY;
+      }
+      d3d10_interfaces_ = true;
+    }
+    if (pChosenFeatureLevel)
+      *pChosenFeatureLevel = chosen;
+    return ppContextState ? S_OK : S_FALSE;
   }
 
   HRESULT STDMETHODCALLTYPE
@@ -1015,6 +1051,7 @@ private:
   /** ensure destructor called first */
   std::unique_ptr<MTLD3D11DeviceContextBase> context_;
   std::unique_ptr<MTLD3D10Device> d3d10_;
+  std::atomic<bool> d3d10_interfaces_ = GetDirectXVersion() == 10;
   D3D11Multithread d3dmt_;
 };
 
@@ -1076,6 +1113,8 @@ public:
     }
 
     if (riid == __uuidof(ID3D10Device) || riid == __uuidof(ID3D10Device1)) {
+      if (!d3d11_device_.d3d10_interfaces_)
+        return E_NOINTERFACE;
       *ppvObject = ref_and_cast<ID3D10Device>(d3d11_device_.d3d10_.get());
       return S_OK;
     }

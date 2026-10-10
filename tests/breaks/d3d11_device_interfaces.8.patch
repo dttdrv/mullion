@@ -1,0 +1,9 @@
+--- a/src/d3d10/d3d10_util.cpp
++++ b/src/d3d10/d3d10_util.cpp
+@@ -9,3 +9,5 @@
+   d3d11->GetDevice(&d3d11_device);
+-  d3d11_device->QueryInterface(IID_PPV_ARGS(ppDevice));
++  Com<ID3D10Device> result;
++  if (SUCCEEDED(d3d11_device->QueryInterface(IID_PPV_ARGS(&result))))
++    *ppDevice = result.ref();
+ }

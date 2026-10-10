@@ -165,29 +165,65 @@ The timeouts were not run again: they ended in GPU timeouts, 'Insufficient Memor
 - tests:
   - `wine-d3d12` `test_create_device` (crashed, 1 checks): `d3d12.c:971: Test failed: Got unexpected hr 0x80070057.`; crash at `d3d12_test.exe: func_d3d12 at d3d12.c:1577:38`
 
-### 15. which interfaces Direct3D 10 and 11 objects answer for, and what GetDevice and private data return, differ from Windows (a Direct3D 11 texture answers for ID3D10Texture2D, a device pointer where the tests expect none)
+### 15. D3D10 device interfaces are exposed before context-state creation; the original entry also grouped independent defects
 
-- class: semantics; 17 tests
-- PLAUSIBLE; where: the QueryInterface of the resources in src/d3d11/d3d11_resource.hpp and src/d3d11/d3d11_texture.cpp
-- Windows: the interfaces the tests record for each creation path
-- tests:
+- class: semantics; 17 recorded tests, separated below by their first failing assertion
+- mixed causes; CONFIRMED for D3D10 device availability in `MTLD3D11DXGIDevice::QueryInterface`
+  (`src/d3d11/d3d11_device.cpp`) and `GetD3D10Device` (`src/d3d10/d3d10_util.cpp`). ordinary D3D11 resources do
+  expose D3D10 resource interfaces; their D3D10 GetDevice returns null until a context-state object is created.
+  D3D10-created devices expose their device interfaces immediately. invalid or validation-only context-state
+  calls do not enable them. `wine-d3d11` `test_device_context_state` in section 19 has the same initial failure
+  at d3d11.c:7425, plus output and argument checks at 7459 and 7466-7476.
+- the device fix addresses the recorded assertions at d3d11.c:2375, 3913, 3364 and 3622, plus the
+  D3D10 GetDevice assertions in test_texture1d_interfaces after its surface failure. section 15 remains open;
+  these are source diagnoses, not new conformance verdicts. the JSON records retain the observed results.
+- independently confirmed causes, outside device availability:
+  - null `pSysMem` in supplied initial data is accepted by CreateTexture1D, CreateTexture2D1 and CreateTexture3D1
+    in `src/d3d11/d3d11_device.cpp`, reached by both front ends: d3d10core.c:1795/2105/2380 and
+    d3d11.c:2598/3103/3424. texture creation tests also cover surface exposure and resource validation.
+  - `ConvertD3D10ResourceFlags` in `src/d3d10/d3d10_util.cpp` discards the invalid raw-buffer flag at
+    d3d10core.c:2564. buffer creation tests also cover constant-buffer size and structured/raw validation.
+  - `MTLDXGIFactory::QueryInterface` in `src/dxgi/dxgi_factory.cpp` always exposes IDXGIFactory1, including
+    legacy creation: d3d10core.c:1725 and wine-dxgi test_create_factory. the latter's recorded line 4091
+    corresponds to the legacy-factory checks at 3935 and 3940 in the supplied Wine-cx-26.2 source.
+  - `TResourceBase::Subresources` and `Surface` in `src/d3d11/d3d11_resource.hpp` only expose surfaces for
+    2D textures with one mip level. d3d10core.c:1945 and d3d11.c:2925 require 1D surfaces; wine-dxgi
+    test_subresource_surface also requires buffer, depth-one 3D and multiple-mip surfaces. its recorded line 8596
+    corresponds to CreateSubresourceSurface at 8438-8439 in the supplied source. an out-of-range request
+    must preserve the sentinel output (8522), while this implementation writes null.
+  - the immediate context in `src/d3d11/d3d11_context_impl.cpp` lacks ID3D11VideoContext (d3d11.c:2450).
+    the debug-device query in test_device_interfaces (d3d11.c:2406) still lacks ID3D11InfoQueue.
+  - `TResourceBase::QueryInterface` in `src/d3d11/d3d11_resource.hpp` unconditionally exposes D3D10
+    resource interfaces. RESOURCE_CLAMP textures and structured buffers must reject them (d3d11.c:2936,
+    3332, 3594 and 3893). those eligibility failures remain after GetDevice is repaired.
+  - constant-buffer alignment, raw-view bind requirements and structured-buffer stride checks are absent
+    from CreateBuffer in `src/d3d11/d3d11_device.cpp`; without BUFFER_STRUCTURED, StructureByteStride
+    must be reported as zero. both buffer creation tests still fail independently of GetDevice.
+  - texture creation also lacks array-size, bind/format and multisample validation exercised by the
+    creation tests. the null-initial-data failure is not their only resource-validation defect.
+- Windows: the interfaces and outputs recorded for each creation path, not one common cause for all 17 tests
+- device availability assertions repaired in source; containing tests still have independent failures:
+  - `wine-d3d11` `test_create_buffer` (failed, 86 checks): `d3d11.c:3913: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
+  - `wine-d3d11` `test_device_interfaces` (failed, 21 checks): `d3d11.c:2375: Test failed: Feature level 0xb100: Got hr 0, expected 0x80004002.`
+  - `wine-d3d11` `test_texture2d_interfaces` (failed, 5 checks): `d3d11.c:3364: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
+  - `wine-d3d11` `test_texture3d_interfaces` (failed, 4 checks): `d3d11.c:3622: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
+- resource creation validation remains open:
   - `wine-d3d10core` `test_create_buffer` (failed, 31 checks): `d3d10core.c:2564: Test failed: Got unexpected hr 0.`
   - `wine-d3d10core` `test_create_texture1d` (failed, 4 checks): `d3d10core.c:1795: Test failed: Got unexpected hr 0.`
   - `wine-d3d10core` `test_create_texture2d` (failed, 21 checks): `d3d10core.c:2105: Test failed: Got unexpected hr 0.`
   - `wine-d3d10core` `test_create_texture3d` (failed, 8 checks): `d3d10core.c:2380: Test failed: Got unexpected hr 0.`
-  - `wine-d3d10core` `test_device_interfaces` (failed, 1 checks): `d3d10core.c:1725: Test failed: Adapter parent should not implement IDXGIFactory1.`
-  - `wine-d3d10core` `test_texture1d_interfaces` (failed, 2 checks): `d3d10core.c:1945: Test failed: Got hr 0x80004002, expected 0.`
-  - `wine-d3d11` `test_create_buffer` (failed, 86 checks): `d3d11.c:3913: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
   - `wine-d3d11` `test_create_texture1d` (failed, 4 checks): `d3d11.c:2598: Test failed: Got unexpected hr 0.`
   - `wine-d3d11` `test_create_texture2d` (failed, 22 checks): `d3d11.c:3103: Test failed: Got unexpected hr 0.`
   - `wine-d3d11` `test_create_texture3d` (failed, 8 checks): `d3d11.c:3424: Test failed: Got unexpected hr 0.`
-  - `wine-d3d11` `test_device_interfaces` (failed, 21 checks): `d3d11.c:2375: Test failed: Feature level 0xb100: Got hr 0, expected 0x80004002.`
-  - `wine-d3d11` `test_immediate_context` (failed, 1 checks): `d3d11.c:2450: Test failed: Got hr 0x80004002, expected 0.`
+- surface creation and exposure remain open:
+  - `wine-d3d10core` `test_texture1d_interfaces` (failed, 2 checks): `d3d10core.c:1945: Test failed: Got hr 0x80004002, expected 0.`
   - `wine-d3d11` `test_texture1d_interfaces` (failed, 8 checks): `d3d11.c:2925: Test failed: Got hr 0x80004002, expected 0.`
-  - `wine-d3d11` `test_texture2d_interfaces` (failed, 5 checks): `d3d11.c:3364: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
-  - `wine-d3d11` `test_texture3d_interfaces` (failed, 4 checks): `d3d11.c:3622: Test failed: Test 0: Got unexpected device pointer 0000000000715270, expected NULL.`
-  - `wine-dxgi` `test_create_factory` (failed, 3 checks): `dxgi.c:4091: Test failed: Got unexpected hr 0, expected 0x80004002.`
   - `wine-dxgi` `test_subresource_surface` (failed, 53 checks): `dxgi.c:8596: Test failed: 0: 0: Got unexpected hr 0x80070057.`
+- legacy factory exposure remains open:
+  - `wine-d3d10core` `test_device_interfaces` (failed, 1 checks): `d3d10core.c:1725: Test failed: Adapter parent should not implement IDXGIFactory1.`
+  - `wine-dxgi` `test_create_factory` (failed, 3 checks): `dxgi.c:4091: Test failed: Got unexpected hr 0, expected 0x80004002.`
+- video context interface remains open:
+  - `wine-d3d11` `test_immediate_context` (failed, 1 checks): `d3d11.c:2450: Test failed: Got hr 0x80004002, expected 0.`
 
 ### 16. fullscreen and display modes: SetFullscreenState and ResizeTarget do not give the window and the output the size and style asked for, and window messages, styles and the associated window differ
 
@@ -676,4 +712,3 @@ These tests are 'partly': they skipped their body with the reason given, which i
 - WARP adapter missing, skipping tests (1): `wine-dxgi` `test_multi_adapter`
 - d3d10: This test requires two outputs (1): `wine-dxgi` `test_get_containing_output`
 - d3d12: This test requires two outputs (1): `wine-dxgi` `test_get_containing_output`
-

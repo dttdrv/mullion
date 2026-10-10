@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -672,3 +672,3 @@
+       }
+-      if (!chosen && pFeatureLevels[i] <= maximum)
++      if (pFeatureLevels[i] <= maximum)
+         chosen = pFeatureLevels[i];

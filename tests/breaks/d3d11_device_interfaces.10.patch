@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -657,3 +657,3 @@
+
+-    auto maximum = GetMaxFeatureLevel(GetMTLDevice());
++    auto maximum = GetFeatureLevel();
+     D3D_FEATURE_LEVEL chosen{};

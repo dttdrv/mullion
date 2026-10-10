@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1055,3 +1055,3 @@
+   std::unique_ptr<MTLD3D10Device> d3d10_;
+-  std::atomic<bool> d3d10_interfaces_ = GetDirectXVersion() == 10;
++  std::atomic<bool> d3d10_interfaces_ = GetDirectXVersion() != 10;
+   D3D11Multithread d3dmt_;

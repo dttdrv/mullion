@@ -29,6 +29,32 @@
 namespace dxmt {
 Logger Logger::s_instance("d3d11.log");
 
+D3D_FEATURE_LEVEL
+GetMaxFeatureLevel(WMT::Device device) {
+  D3D_FEATURE_LEVEL maxFeatureLevel =
+      device.supportsFamily(WMTGPUFamilyApple7) ? D3D_FEATURE_LEVEL_11_1 : D3D_FEATURE_LEVEL_11_0;
+
+  if (auto fl_override = Config::getInstance().getOption<std::string>("d3d11.maxFeatureLevel", "");
+      fl_override != "") {
+    static const std::unordered_map<std::string, D3D_FEATURE_LEVEL> s_feature_levels = {{
+        {"12_1", D3D_FEATURE_LEVEL_12_1},
+        {"12_0", D3D_FEATURE_LEVEL_12_0},
+        {"11_1", D3D_FEATURE_LEVEL_11_1},
+        {"11_0", D3D_FEATURE_LEVEL_11_0},
+        {"10_1", D3D_FEATURE_LEVEL_10_1},
+        {"10_0", D3D_FEATURE_LEVEL_10_0},
+        {"9_3", D3D_FEATURE_LEVEL_9_3},
+        {"9_2", D3D_FEATURE_LEVEL_9_2},
+        {"9_1", D3D_FEATURE_LEVEL_9_1},
+    }};
+    if (auto iter = s_feature_levels.find(fl_override); iter != s_feature_levels.end()) {
+      maxFeatureLevel = iter->second;
+    }
+  }
+
+  return maxFeatureLevel;
+}
+
 extern "C" HRESULT WINAPI
 D3D11CoreCreateDevice(IDXGIFactory *pFactory, IDXGIAdapter *pAdapter,
                       UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels,
@@ -55,28 +81,9 @@ D3D11CoreCreateDevice(IDXGIFactory *pFactory, IDXGIAdapter *pAdapter,
     FeatureLevels = defaultFeatureLevels.size();
   }
 
-  D3D_FEATURE_LEVEL maxFeatureLevel =
-      dxgi_adapter->GetMTLDevice().supportsFamily(WMTGPUFamilyApple7) ? D3D_FEATURE_LEVEL_11_1 : D3D_FEATURE_LEVEL_11_0;
+  D3D_FEATURE_LEVEL maxFeatureLevel = GetMaxFeatureLevel(dxgi_adapter->GetMTLDevice());
   D3D_FEATURE_LEVEL minFeatureLevel = D3D_FEATURE_LEVEL();
   D3D_FEATURE_LEVEL devFeatureLevel = D3D_FEATURE_LEVEL();
-
-  if (auto fl_override = Config::getInstance().getOption<std::string>("d3d11.maxFeatureLevel", "");
-      fl_override != "") {
-    static const std::unordered_map<std::string, D3D_FEATURE_LEVEL> s_feature_levels = {{
-        {"12_1", D3D_FEATURE_LEVEL_12_1},
-        {"12_0", D3D_FEATURE_LEVEL_12_0},
-        {"11_1", D3D_FEATURE_LEVEL_11_1},
-        {"11_0", D3D_FEATURE_LEVEL_11_0},
-        {"10_1", D3D_FEATURE_LEVEL_10_1},
-        {"10_0", D3D_FEATURE_LEVEL_10_0},
-        {"9_3", D3D_FEATURE_LEVEL_9_3},
-        {"9_2", D3D_FEATURE_LEVEL_9_2},
-        {"9_1", D3D_FEATURE_LEVEL_9_1},
-    }};
-    if (auto iter = s_feature_levels.find(fl_override); iter != s_feature_levels.end()) {
-      maxFeatureLevel = iter->second;
-    }
-  }
 
   Logger::info(
       str::format("Maximum supported feature level: ", maxFeatureLevel));

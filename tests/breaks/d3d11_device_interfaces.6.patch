@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -684,3 +684,3 @@
+       }
+-      d3d10_interfaces_ = true;
++      d3d10_interfaces_ = EmulatedInterface == __uuidof(ID3D11Device1);
+     }
