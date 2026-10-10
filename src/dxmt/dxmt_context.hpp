@@ -237,6 +237,10 @@ struct RenderEncoderData : EncoderData {
   WMT::RenderPipelineState so_count_pso = {};
   uint32_t so_geometry_instances = 1;
   WMT::Buffer so_targets = {};
+  // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
+  WMT::Buffer so_scratch = {};
+  uint64_t so_scratch_va = 0;
+  uint64_t so_scratch_size = 0;
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -937,8 +941,9 @@ private:
 
   std::array<StreamOutputBinding, kStreamOutputSlots> so_;
   Rc<Buffer> so_statistics_;
-  // the scratch a render encoder's indirect draws with stream output share, and the most one needed that it did not
-  // have, which the GS dispatch marshal leaves for the next encoder to grow it by
+  // the scratch area render encoders' indirect draws with stream output share, one encoder after another, and the most
+  // one needed that it did not have, which the GS dispatch marshal leaves for a later encoder to grow it by
+  Rc<Buffer> so_scratch_;
   uint64_t so_scratch_budget_;
   WMT::Reference<WMT::Buffer> so_scratch_overflow_;
   uint64_t so_scratch_overflow_va_;

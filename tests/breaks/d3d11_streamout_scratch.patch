@@ -1,0 +1,13 @@
+# the scratch area of indirect stream output draws does not grow after a draw it had no room for
+diff --git a/src/dxmt/dxmt_context.cpp b/src/dxmt/dxmt_context.cpp
+index 9852acc..242e883 100644
+--- a/src/dxmt/dxmt_context.cpp
++++ b/src/dxmt/dxmt_context.cpp
+@@ -152,7 +152,6 @@ ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t inst
+       if (lacked > so_scratch_budget_) {
+         while (so_scratch_budget_ < lacked)
+           so_scratch_budget_ *= 2;
+-        so_scratch_ = nullptr;
+         ERR("stream output from an indirect draw needed ", lacked, " bytes of scratch, more than it had: the draw "
+             "was not run, and the scratch grows to ", so_scratch_budget_);
+       }

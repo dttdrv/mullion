@@ -66,7 +66,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
   so_statistics_ = new Buffer(sizeof(uint64_t) * 2 * kStreamOutputSlots, device);
   so_statistics_->rename(so_statistics_->allocate({}));
-  // the temp ring's block: the scratch takes no more than a block of it until a draw needs more
+  // the scratch area is made at the first indirect draw with stream output, this size until a draw needs more
   so_scratch_budget_ = kStagingBlockSize;
   so_scratch_overflow_host_ = (uint64_t *)wsi::aligned_malloc(DXMT_PAGE_SIZE, DXMT_PAGE_SIZE);
   *so_scratch_overflow_host_ = 0;
@@ -145,6 +145,32 @@ ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t inst
   auto targets = new (mapped) SM50_STREAM_OUTPUT_TARGETS{};
   memset(targets + 1, 0, scratch_bytes);
   targets->scratch = warps ? address + sizeof(*targets) : 0;
+  auto encoder = currentRenderEncoder();
+  // an indirect draw's scratch is in the context's area, which the encoder's first such draw grows by what an earlier
+  // one lacked. the encoder writes it all, so encoders using it run one after another
+  if (!warps && !encoder->so_scratch) {
+    if (uint64_t lacked = *so_scratch_overflow_host_) {
+      *so_scratch_overflow_host_ = 0;
+      if (lacked > so_scratch_budget_) {
+        while (so_scratch_budget_ < lacked)
+          so_scratch_budget_ *= 2;
+        so_scratch_ = nullptr;
+        ERR("stream output from an indirect draw needed ", lacked, " bytes of scratch, more than it had: the draw "
+            "was not run, and the scratch grows to ", so_scratch_budget_);
+      }
+    }
+    if (!so_scratch_) {
+      so_scratch_ = new Buffer(so_scratch_budget_, device_);
+      so_scratch_->rename(so_scratch_->allocate(BufferAllocationFlag::GpuPrivate));
+    }
+    auto [area, area_offset] = access<PipelineStage::Vertex>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    access<PipelineStage::Geometry>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    encoder->so_scratch = area->buffer();
+    encoder->so_scratch_va = area->gpuAddress() + area_offset;
+    encoder->so_scratch_size = so_scratch_->length();
+  }
   targets->warps = warps;
   targets->instances = instances;
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
@@ -169,7 +195,7 @@ ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t inst
     targets->statistics[stream] = statistics->gpuAddress() + statistics_offset + sizeof(uint64_t) * 2 * stream;
   makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
   makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
-  currentRenderEncoder()->so_targets = buffer;
+  encoder->so_targets = buffer;
   return {offset, address};
 }
 
@@ -1101,23 +1127,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
             queue_.AllocateArgumentBuffer(seq_id_, sizeof(GS_MARSHAL_TASK) * task_count);
         auto tasks_data = (GS_MARSHAL_TASK *)mapped_task_data;
-        // indirect draws with stream output share a scratch area, grown first by what an earlier one lacked
-        AllocatedTempBufferSlice so_scratch{};
-        for (auto &task : data->gs_arg_marshal_tasks) {
-          if (!task.so_targets_va || so_scratch.gpu_buffer)
-            continue;
-          if (uint64_t lacked = *so_scratch_overflow_host_) {
-            while (so_scratch_budget_ < lacked)
-              so_scratch_budget_ *= 2;
-            *so_scratch_overflow_host_ = 0;
-            ERR("stream output from an indirect draw needed ", lacked, " bytes of scratch, more than it had: the draw "
-                "was not run, and the scratch grows to ", so_scratch_budget_);
-          }
-          so_scratch = queue_.AllocateTempBuffer1(seq_id_, so_scratch_budget_, 16);
-          encoder.useResource(
-              so_scratch.gpu_buffer, WMTResourceUsageRead | WMTResourceUsageWrite,
-              WMTRenderStageVertex | WMTRenderStageObject | WMTRenderStageMesh
-          );
+        // indirect draws with stream output share the encoder's scratch area (encodeStreamOutputTargets)
+        if (data->so_scratch) {
+          encoder.useResource(data->so_scratch, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
           encoder.useResource(so_scratch_overflow_, WMTResourceUsageWrite, WMTRenderStageVertex);
         }
         for (unsigned i = 0; i<task_count; i++) {
@@ -1128,9 +1140,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           tasks_data[i].vertex_count_per_warp = task.vertex_count_per_warp;
           tasks_data[i].end_of_command = 0;
           tasks_data[i].so_targets = task.so_targets_va;
-          tasks_data[i].so_scratch_area = so_scratch.gpu_address + so_scratch.offset;
-          tasks_data[i].so_scratch = so_scratch.gpu_address + so_scratch.offset;
-          tasks_data[i].so_scratch_size = so_scratch_budget_;
+          tasks_data[i].so_scratch_area = data->so_scratch_va;
+          tasks_data[i].so_scratch = data->so_scratch_va;
+          tasks_data[i].so_scratch_size = data->so_scratch_size;
           tasks_data[i].so_overflow = so_scratch_overflow_va_;
           tasks_data[i].so_invocations = task.so_invocations;
           encoder.useResource(task.draw_arguments, WMTResourceUsageRead, WMTRenderStageVertex);
