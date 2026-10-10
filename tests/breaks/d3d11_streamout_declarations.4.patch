@@ -1,0 +1,9 @@
+# a Direct3D 10 declaration with more than one entry is refused
+diff --git a/src/d3d10/d3d10_device.cpp b/src/d3d10/d3d10_device.cpp
+--- a/src/d3d10/d3d10_device.cpp
++++ b/src/d3d10/d3d10_device.cpp
+@@ -1039,3 +1039,3 @@ MTLD3D10Device::CreateGeometryShaderWithStreamOutput(
+   InitReturnPtr(ppGeometryShader);
+-  if (!NumEntries && OutputStreamStride)
++  if (NumEntries != 1 && OutputStreamStride)
+     return E_INVALIDARG;

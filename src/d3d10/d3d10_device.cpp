@@ -1037,6 +1037,8 @@ MTLD3D10Device::CreateGeometryShaderWithStreamOutput(
     UINT NumEntries, UINT OutputStreamStride, ID3D10GeometryShader **ppGeometryShader
 ) {
   InitReturnPtr(ppGeometryShader);
+  if (!NumEntries && OutputStreamStride)
+    return E_INVALIDARG;
 
   std::vector<D3D11_SO_DECLARATION_ENTRY> entries(NumEntries);
 

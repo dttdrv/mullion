@@ -1,0 +1,9 @@
+# a missing stream reads stream 0's signature
+diff --git a/src/dxmt/dxmt_stream_output.hpp b/src/dxmt/dxmt_stream_output.hpp
+--- a/src/dxmt/dxmt_stream_output.hpp
++++ b/src/dxmt/dxmt_stream_output.hpp
+@@ -40,3 +40,3 @@ ExtractStreamOutputElements(
+       const microsoft::D3D11_SIGNATURE_PARAMETER *params = nullptr;
+-      auto signature = outputs.Signature(entry.Stream);
++      auto signature = outputs.Signature(0);
+       auto count = signature ? signature->GetParameters(&params) : 0;

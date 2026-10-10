@@ -1,0 +1,10 @@
+# a Direct3D 10 empty declaration keeps a nonzero stride
+diff --git a/src/d3d10/d3d10_device.cpp b/src/d3d10/d3d10_device.cpp
+--- a/src/d3d10/d3d10_device.cpp
++++ b/src/d3d10/d3d10_device.cpp
+@@ -1039,5 +1039,3 @@ MTLD3D10Device::CreateGeometryShaderWithStreamOutput(
+   InitReturnPtr(ppGeometryShader);
+-  if (!NumEntries && OutputStreamStride)
+-    return E_INVALIDARG;
+ 
+   std::vector<D3D11_SO_DECLARATION_ENTRY> entries(NumEntries);

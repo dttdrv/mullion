@@ -1,0 +1,9 @@
+# a non-null Direct3D 11 declaration with no entries is accepted
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -274,3 +274,2 @@
+-    if ((pSODeclaration && !NumEntries) ||
+-        (RasterizedStream >= D3D11_SO_STREAM_COUNT && RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM))
++    if (RasterizedStream >= D3D11_SO_STREAM_COUNT && RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM)
+       return E_INVALIDARG;
