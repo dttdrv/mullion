@@ -1,0 +1,10 @@
+# additional aliases return a count clamped to two
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -935,5 +935,5 @@
+     auto count = MTLD3D12Texture::AddRef();
+     if (count == 1 && !buffers_.referenced_buffers++)
+       buffers_.swapchain->AddRef();
+-    return count;
++    return count > 2 ? 2 : count;
+   }

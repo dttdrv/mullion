@@ -1,0 +1,14 @@
+# held buffers can be retired by resize
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -513,10 +513,4 @@
+   ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT flags) final {
+-    // held buffers cannot be retired (IDXGISwapChain::ResizeBuffers, Remarks).
+-    {
+-      std::lock_guard<dxmt::mutex> lock(buffer_refs_.mutex);
+-      if (buffer_refs_.referenced_buffers)
+-        return DXGI_ERROR_INVALID_CALL;
+-    }
+     // the new buffers first: the swap chain stays as it is when they cannot be made. 0 and DXGI_FORMAT_UNKNOWN keep
+     // what there is (the window's size for a size of 0), and the flags are the swap chain's from now on, except that
+     // tearing is allowed for a swap chain's whole life (IDXGISwapChain::ResizeBuffers)

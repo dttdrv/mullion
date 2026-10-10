@@ -156,7 +156,8 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D1
   ModeSetGuard modeset_guard_;
   dxmt::mutex mutex_;
 
-  std::vector<Com<MTLD3D12Resource>> backbuffers_;
+  D3D12SwapChainBufferRefs buffer_refs_{this};
+  std::vector<Com<MTLD3D12Resource, false>> backbuffers_;
 
   bool
   LayerSupportEDR() {
@@ -510,6 +511,12 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT flags) final {
+    // held buffers cannot be retired (IDXGISwapChain::ResizeBuffers, Remarks).
+    {
+      std::lock_guard<dxmt::mutex> lock(buffer_refs_.mutex);
+      if (buffer_refs_.referenced_buffers)
+        return DXGI_ERROR_INVALID_CALL;
+    }
     // the new buffers first: the swap chain stays as it is when they cannot be made. 0 and DXGI_FORMAT_UNKNOWN keep
     // what there is (the window's size for a size of 0), and the flags are the swap chain's from now on, except that
     // tearing is allowed for a swap chain's whole life (IDXGISwapChain::ResizeBuffers)
@@ -538,7 +545,7 @@ public:
       Com<ID3D12Resource> backbuffer;
       if (HRESULT hr = dxmt::CreateCommittedTexture(
               device_, &heap_props, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES, &backbuffer_desc,
-              D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(&backbuffer)
+              D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(&backbuffer), &buffer_refs_
           );
           FAILED(hr))
         return hr;

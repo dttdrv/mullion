@@ -1,0 +1,12 @@
+# back buffers have no link to the swap chain
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -545,7 +545,7 @@
+       Com<ID3D12Resource> backbuffer;
+       if (HRESULT hr = dxmt::CreateCommittedTexture(
+               device_, &heap_props, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES, &backbuffer_desc,
+-              D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(&backbuffer), &buffer_refs_
++              D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(&backbuffer), nullptr
+           );
+           FAILED(hr))
+         return hr;

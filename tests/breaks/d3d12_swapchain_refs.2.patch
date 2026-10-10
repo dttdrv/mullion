@@ -1,0 +1,12 @@
+# the final buffer release checks the count before decrementing it
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -944,7 +944,7 @@
+     auto swapchain = buffers.swapchain;
+     std::unique_lock<dxmt::mutex> lock(buffers.mutex);
+     auto count = MTLD3D12Texture::Release();
+-    bool last = !count && !--buffers.referenced_buffers;
++    bool last = !count && !buffers.referenced_buffers--;
+     if (last) {
+       lock.unlock();
+       swapchain->Release();

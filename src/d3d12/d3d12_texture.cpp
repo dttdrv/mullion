@@ -922,13 +922,46 @@ public:
   };
 };
 
+class MTLD3D12BackBuffer : public MTLD3D12Texture {
+  D3D12SwapChainBufferRefs &buffers_;
+
+public:
+  MTLD3D12BackBuffer(MTLD3D12Device *pDevice, D3D12SwapChainBufferRefs &buffers) :
+      MTLD3D12Texture(pDevice), buffers_(buffers) {}
+
+  ULONG STDMETHODCALLTYPE
+  AddRef() override {
+    std::lock_guard<dxmt::mutex> lock(buffers_.mutex);
+    auto count = MTLD3D12Texture::AddRef();
+    if (count == 1 && !buffers_.referenced_buffers++)
+      buffers_.swapchain->AddRef();
+    return count;
+  }
+
+  ULONG STDMETHODCALLTYPE
+  Release() override {
+    auto &buffers = buffers_;
+    auto swapchain = buffers.swapchain;
+    std::unique_lock<dxmt::mutex> lock(buffers.mutex);
+    auto count = MTLD3D12Texture::Release();
+    bool last = !count && !--buffers.referenced_buffers;
+    if (last) {
+      lock.unlock();
+      swapchain->Release();
+    }
+    return count;
+  }
+};
+
 HRESULT
 CreateCommittedTexture(
     MTLD3D12Device *pDevice, const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags,
     const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
-    REFIID riid, void **ppResource
+    REFIID riid, void **ppResource, D3D12SwapChainBufferRefs *pBufferRefs
 ) {
-  auto texture = Com(new MTLD3D12Texture(pDevice));
+  auto texture = Com<MTLD3D12Texture>(
+      pBufferRefs ? new MTLD3D12BackBuffer(pDevice, *pBufferRefs) : new MTLD3D12Texture(pDevice)
+  );
   HRESULT hr = texture->Initialize(pHeapProps, HeapFlags, pDesc, InitialState, nullptr, 0);
   if (FAILED(hr))
     return hr;

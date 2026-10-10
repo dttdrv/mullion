@@ -101,6 +101,8 @@ struct CompactedSize;
 
 class MTLD3D12Resource : public ID3D12Resource {
 public:
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
   Rc<Texture> texture;
   Rc<Buffer> buffer;
   // a sampler feedback map's description as its application gave it: `texture` has one R32_UINT texel per mip region
@@ -493,10 +495,16 @@ CreateQueryHeap(MTLD3D12Device *pDevice, const D3D12_QUERY_HEAP_DESC *pDesc, REF
 HRESULT
 CreateClosedCommandList(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandList);
 
+struct D3D12SwapChainBufferRefs {
+  IDXGISwapChain4 *swapchain;
+  uint32_t referenced_buffers = 0;
+  dxmt::mutex mutex;
+};
+
 HRESULT CreateCommittedTexture(
     MTLD3D12Device *pDevice, const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags,
     const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
-    REFIID riid, void **ppResource
+    REFIID riid, void **ppResource, D3D12SwapChainBufferRefs *pBufferRefs = nullptr
 );
 
 HRESULT
