@@ -3655,13 +3655,10 @@ public:
     for (unsigned slot = StartSlot; slot < StartSlot + NumBuffers; slot++) {
       auto pConstantBuffer = ppConstantBuffers[slot - StartSlot];
       if (pConstantBuffer) {
-        // the range of constants the stage sees: when none is given, the buffer's, as far as the most a shader is
-        // given without one (D3D11.3 5.3.4.3.2: a larger buffer "appears to the shader as if it is only 4096 elements")
-        D3D11_BUFFER_DESC desc;
-        pConstantBuffer->GetDesc(&desc);
+        // Windows reports the full default range; encoding clips it to the buffer (D3D11.3 5.3.4.3.2)
         UINT FirstConstant = pFirstConstant ? pFirstConstant[slot - StartSlot] : 0;
         UINT NumConstants = pNumConstants ? pNumConstants[slot - StartSlot]
-                                          : std::min<UINT>(desc.ByteWidth >> 4, D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT);
+                                          : D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT;
         bool replaced = false;
         auto &entry = ShaderStage.ConstantBuffers.bind(slot, {pConstantBuffer}, replaced);
         if (!replaced) {
@@ -3715,6 +3712,12 @@ public:
       } else {
         if (ppConstantBuffers) {
           ppConstantBuffers[i] = nullptr;
+        }
+        if (pFirstConstant) {
+          pFirstConstant[i] = 0;
+        }
+        if (pNumConstants) {
+          pNumConstants[i] = D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT;
         }
       }
     }

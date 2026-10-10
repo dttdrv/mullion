@@ -1,0 +1,14 @@
+# N3: GetImmediateContext3 returns a new deferred context
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index e700ab5..acc9bd3 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -872,7 +872,7 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   GetImmediateContext3(ID3D11DeviceContext3 **ppImmediateContext) override{
+-    context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
++    CreateDeferredContext3(0, ppImmediateContext);
+   }
+ 
+   HRESULT STDMETHODCALLTYPE CreateDeferredContext3(

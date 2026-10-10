@@ -1,0 +1,14 @@
+# R17: FinishCommandList reverses the deferred restore flag
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index fcff913..df16bfe 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -490,7 +490,7 @@ public:
+     *ppCommandList = std::move(ctx_state.current_cmdlist);
+     device->CreateCommandList((ID3D11CommandList **)&ctx_state.current_cmdlist);
+ 
+-    if (RestoreDeferredContextState)
++    if (!RestoreDeferredContextState)
+       RestoreEncodingContextState();
+     else
+       ResetD3D11ContextState();

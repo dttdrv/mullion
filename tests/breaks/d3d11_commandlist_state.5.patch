@@ -1,0 +1,13 @@
+# G3: restored compute state omits its encoded resources
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index e3714e2..7b771c9 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5344,7 +5344,6 @@ public:
+       RestoreEncodingContextStageState<PipelineStage::Geometry>();
+       RestoreEncodingContextStageState<PipelineStage::Hull>();
+       RestoreEncodingContextStageState<PipelineStage::Domain>();
+-      RestoreEncodingContextStageState<PipelineStage::Compute>();
+     }
+ 
+     for (const auto &[slot, entry] : state_.OutputMerger.UAVs) {

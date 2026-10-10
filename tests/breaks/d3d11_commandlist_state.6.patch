@@ -1,0 +1,13 @@
+# R17: nested command lists are not executed
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..c9ee344 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -631,7 +631,6 @@ public:
+ 
+     for (size_t region = 0; region < cmdlist->regions.size(); region++) {
+       if (auto &nested = cmdlist->regions[region].nested) {
+-        Execute(nested.ptr());
+         continue;
+       }
+       bool skips = Skips(cmdlist->regions[region].predicate.ptr(), cmdlist->regions[region].value);

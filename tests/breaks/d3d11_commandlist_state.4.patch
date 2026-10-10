@@ -1,0 +1,14 @@
+# N10: command lists report a nonzero reserved flag
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index e3714e2..648d5f8 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5748,7 +5748,7 @@ public:
+   UINT
+   STDMETHODCALLTYPE
+   GetContextFlags() override {
+-    return context_flag;
++    return context_flag + 1;
+   };
+ 
+ #pragma region DeferredContext-related

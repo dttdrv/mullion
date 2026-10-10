@@ -1,0 +1,13 @@
+# G3: ClearState leaves the application state bound
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index e3714e2..ef63e8b 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -2090,7 +2090,6 @@ public:
+     std::lock_guard<mutex_t> lock(mutex);
+ 
+     ResetEncodingContextState();
+-    ResetD3D11ContextState();
+   }
+ 
+ #pragma region InputAssembler

@@ -1,0 +1,14 @@
+# R17: immediate execution resets instead of restoring the caller
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..c8bcb91 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -667,7 +667,7 @@ public:
+     promote_flush = false;
+     Execute(pCommandList);
+ 
+-    if (RestoreContextState)
++    if (!RestoreContextState)
+       RestoreEncodingContextState();
+     else
+       ResetD3D11ContextState();

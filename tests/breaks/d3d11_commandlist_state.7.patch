@@ -1,0 +1,13 @@
+# G3: encoding resets retain the previous constant buffers
+diff --git a/src/dxmt/dxmt_context.hpp b/src/dxmt/dxmt_context.hpp
+index 05faddf..8769dc1 100644
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -564,7 +564,6 @@ public:
+   void clearState() {
+     vbuf_ = {{}};
+     ibuf_ = {};
+-    cbuf_ = {{}};
+     sampler_ = {{}};
+     resview_ = {{}};
+     om_uav_ = {{}};
