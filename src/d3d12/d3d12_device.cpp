@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <bit>
 #include <map>
+#include <iomanip>
+#include <limits>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
 
@@ -75,6 +77,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   std::atomic<HRESULT> removed_ = S_OK;
   dxmt::mutex pass_names_lock_;
   std::unordered_map<uint64_t, std::string> pass_names_;
+  uint64_t late_pipelines_ = 0;
+  double pipeline_ms_ = 0, longest_pipeline_ms_ = 0;
   dxmt::mutex acceleration_structure_lock_;
   std::map<uint64_t, std::shared_ptr<AccelerationStructure>> acceleration_structures_;
   // compacted sizes are uint64s of shared buffers the GPU writes
@@ -1779,6 +1783,28 @@ public:
     std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
     auto name = pass_names_.extract(id);
     return name ? std::move(name.mapped()) : std::string();
+  }
+
+  void
+  PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
+    auto end = std::chrono::steady_clock::now(), present = first_present.load();
+    if (present == std::chrono::steady_clock::time_point() || end < present)
+      return;
+    double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
+    late_pipelines_++;
+    pipeline_ms_ += ms;
+    longest_pipeline_ms_ = std::max(longest_pipeline_ms_, ms);
+    Logger::info(str::format("D3D12 pipeline made: ", kind, "; ", name, "; ",
+        std::setprecision(std::numeric_limits<double>::max_digits10), ms, " ms"));
+  }
+
+  void
+  ReportPipelineTotals() {
+    std::lock_guard<dxmt::mutex> lock(pass_names_lock_);
+    Logger::info(str::format("D3D12 pipeline totals: ", late_pipelines_, " after first Present; ",
+        std::setprecision(std::numeric_limits<double>::max_digits10), pipeline_ms_, " ms total; ",
+        longest_pipeline_ms_, " ms longest"));
   }
 
   HRESULT

@@ -3333,6 +3333,8 @@ public:
       return false;
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute)
       StartComputePass();
+    if (device_->NamesPasses())
+      device_->NamePass(allocator_->encoder_current->id, state_object_->name);
     auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
     pso.type = WMTComputeCommandSetPSO;
     pso.pso = pipeline;

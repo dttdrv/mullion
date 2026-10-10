@@ -36,7 +36,7 @@ public:
 
   HRESULT
   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
-
+    auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     SM50Shader shader_cs;
     SM50Error sm50_err;
 
@@ -103,6 +103,8 @@ public:
       }
     }
 
+    if (device_->NamesPasses())
+      device_->PipelineMade(name, "compute", start);
     return S_OK;
   }
 

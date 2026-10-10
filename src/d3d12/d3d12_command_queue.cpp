@@ -386,8 +386,10 @@ public:
       watch_changed_.notify_all();
     }
     watch_thread_.join();
-    if (record_totals_)
+    if (record_totals_) {
       ReportGPURecords(record_totals_);
+      device_->ReportPipelineTotals();
+    }
   }
 
   HRESULT
@@ -1094,6 +1096,10 @@ public:
       IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after,
       uint64_t id, uint64_t number
   ) {
+    if (device_->NamesPasses()) {
+      std::chrono::steady_clock::time_point unset;
+      device_->first_present.compare_exchange_strong(unset, std::chrono::steady_clock::now());
+    }
     if (Holding() &&
         Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), hLantecyWaitable, after, id,
               number] { Commit(presenter, backbuffer.ptr(), hLantecyWaitable, after, id, number); }))

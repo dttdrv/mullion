@@ -425,6 +425,7 @@ public:
     std::lock_guard<dxmt::mutex> lock(adjacency_mutex_);
     auto &variant = adjacency_[counting][strip];
     if (!variant && adjacency_inputs_) {
+      auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
       auto &in = *adjacency_inputs_;
       SM50Shader shader_vs;
       MTL_SHADER_REFLECTION reflection;
@@ -433,6 +434,8 @@ public:
             in, shader_vs, {}, {}, strip, counting,
             in.primitive == D3D_PRIMITIVE_LINE ? D3D_PRIMITIVE_LINE_ADJ : D3D_PRIMITIVE_TRIANGLE_ADJ, true
         );
+      if (variant && device_->NamesPasses())
+        device_->PipelineMade(name, "graphics", start);
     }
     return variant;
   }
@@ -645,6 +648,7 @@ public:
   // its mesh stage
   virtual HRESULT
   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, D3D12_SHADER_BYTECODE AS = {}, D3D12_SHADER_BYTECODE MS = {}) {
+    auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     stream_output = pDesc->StreamOutput.NumEntries;
     mesh_shader = MS.pShaderBytecode;
 
@@ -979,6 +983,8 @@ public:
 
     InitializeRasterizerState(pDesc);
 
+    if (device_->NamesPasses())
+      device_->PipelineMade(name, "graphics", start);
     return S_OK;
   }
 

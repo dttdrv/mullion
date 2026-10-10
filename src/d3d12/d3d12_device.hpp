@@ -32,6 +32,7 @@
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -253,6 +254,7 @@ public:
 
 class MTLD3D12StateObject : public ID3D12StateObject {
 public:
+  std::string name;
   // the pipeline that dispatches rays through the state object's shaders, its function table, and the ray flags
   // every TraceRay of it has
   virtual bool
@@ -447,6 +449,10 @@ public:
   virtual bool NamesPasses() = 0;
   virtual void NamePass(uint64_t id, const std::string &pipeline) = 0;
   virtual std::string PassName(uint64_t id) = 0;
+  // shared by every queue and swap chain: the first non-test Present accepted by a queue
+  std::atomic<std::chrono::steady_clock::time_point> first_present{};
+  virtual void PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) = 0;
+  virtual void ReportPipelineTotals() = 0;
 
   virtual HRESULT RegisterResidency(WMT::Allocation allocation) = 0;
 
