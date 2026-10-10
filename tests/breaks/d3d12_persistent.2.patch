@@ -1,0 +1,41 @@
+# a globally coherent buffer uses an ordinary load (DXBC)
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2380,16 +2380,14 @@
+ 
+   if (auto Comp = ComponentFromScalarMask(Mask, Buf->Swizzle); Comp >= 0) {
+     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Comp)));
+-    auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+-                                        : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
++    auto ValueInt = (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     return StoreOperand(load.dst, MaskSwizzle(ValueInt, Mask));
+   }
+ 
+   llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
+   for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle))) {
+     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), DstComp)));
+-    auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+-                                        : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
++    auto ValueInt = (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     ValueVec = ir.CreateInsertElement(ValueVec, ValueInt, DstComp);
+   }
+   StoreOperand(load.dst, MaskSwizzle(ValueVec, Mask, Buf->Swizzle));
+@@ -2418,16 +2416,14 @@
+ 
+   if (auto Comp = ComponentFromScalarMask(Mask, Buf->Swizzle); Comp >= 0) {
+     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Comp)));
+-    auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+-                                        : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
++    auto ValueInt = (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     return StoreOperand(load.dst, MaskSwizzle(ValueInt, Mask));
+   }
+ 
+   llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
+   for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, Buf->Swizzle))) {
+     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), DstComp)));
+-    auto ValueInt = Buf->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ir.getInt32Ty(), Ptr)
+-                                        : (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
++    auto ValueInt = (llvm::Value *)ir.CreateLoad(ir.getInt32Ty(), Ptr, Volatile);
+     ValueVec = ir.CreateInsertElement(ValueVec, ValueInt, DstComp);
+   }
+   StoreOperand(load.dst, MaskSwizzle(ValueVec, Mask, Buf->Swizzle));

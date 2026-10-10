@@ -1,0 +1,12 @@
+# a load past the end reads the first unit of the buffer
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -3004,7 +3004,7 @@
+   }
+   auto ByteLength = DecodeRawBufferByteLength(Buffer.Metadata);
+   auto Dwords = ir.CreateZExtOrTrunc(ir.CreateLShr(ByteLength, 2), Index->getType());
+-  return ir.CreateSelect(ir.CreateICmpULT(Index, Dwords), Addr, llvm::Constant::getNullValue(Addr->getType()));
++  return ir.CreateSelect(ir.CreateICmpULT(Index, Dwords), Addr, ir.CreateConstGEP1_32(ir.getInt32Ty(), Buffer.Pointer, 0));
+ }
+ 
+ llvm::Value *

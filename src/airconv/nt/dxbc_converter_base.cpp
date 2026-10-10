@@ -2996,6 +2996,8 @@ Converter::DomainGeneratePrimitives(
 
 llvm::Value *
 Converter::CreateGEPInt32WithBoundCheck(BufferResourceHandle &Buffer, llvm::Value *Index) {
+  if (!Buffer.StructureStride)
+    Index = ir.CreateAnd(Index, llvm::ConstantInt::get(Index->getType(), UINT32_MAX / sizeof(uint32_t)));
   auto Addr = ir.CreateGEP(ir.getInt32Ty(), Buffer.Pointer, {Index});
   if (!Buffer.Metadata) {
     return Addr;

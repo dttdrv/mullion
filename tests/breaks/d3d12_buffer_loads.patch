@@ -1,0 +1,11 @@
+# a raw component address keeps the bits above the 32-bit byte address
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1716,7 +1716,5 @@
+   auto unit_ptr = [&](BufferResourceHandle &b, Type *unit, Value *index) -> Value * {
+-    if (!b.StructureStride)
+-      index = ir.CreateAnd(index, ir.getInt64(UINT32_MAX / (unit->getPrimitiveSizeInBits() / 8)));
+     auto space = b.Pointer->getType()->getPointerAddressSpace();
+     auto ptr = ir.CreateGEP(unit, ir.CreatePointerCast(b.Pointer, unit->getPointerTo(space)), {index});
+     if (!b.Metadata)
+       return ptr;

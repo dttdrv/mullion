@@ -1715,6 +1715,8 @@ convert_dxil(
   };
   // a buffer's `index`th unit of `unit` type, or null past its end: Metal reads 0 there and drops the write
   auto unit_ptr = [&](BufferResourceHandle &b, Type *unit, Value *index) -> Value * {
+    if (!b.StructureStride)
+      index = ir.CreateAnd(index, ir.getInt64(UINT32_MAX / (unit->getPrimitiveSizeInBits() / 8)));
     auto space = b.Pointer->getType()->getPointerAddressSpace();
     auto ptr = ir.CreateGEP(unit, ir.CreatePointerCast(b.Pointer, unit->getPointerTo(space)), {index});
     if (!b.Metadata)

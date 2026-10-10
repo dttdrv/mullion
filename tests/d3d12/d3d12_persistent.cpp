@@ -12,6 +12,7 @@
 //   syncs to flush data across the entire GPU such that other groups can see writes" (HLSL, RWStructuredBuffer),
 //   and every turn starts with AllMemoryBarrierWithGroupSync: a store of one turn is there for every group's loads
 //   of a later one;
+//   DXBC reserves each child's slot with its own atomic, since it has no wave operations;
 // - GroupMemoryBarrierWithGroupSync ("blocks execution of all threads in a group until all group shared accesses
 //   have been completed and all threads in the group have reached this call") stands between the turn's phases,
 //   inside the loop, and the groupshared batch, node table and done mask (InterlockedOr) pass between them;
@@ -102,6 +103,7 @@ uint load(SHARED buffer, uint at) {
 
 // adds what the wave's lanes have to a counter at once, and gives each lane its place in what the counter was
 uint claim(uint counter, uint has) {
+#if WAVES
   uint place = WavePrefixSum(has), sum = WaveActiveSum(has), was = 0;
   if (WaveIsFirstLane() && sum) {
     InterlockedAdd(AT(state, counter), sum, was);
@@ -110,6 +112,15 @@ uint claim(uint counter, uint has) {
       InterlockedAdd(AT(state, ZEROS), 1);
   }
   return WaveReadLaneFirst(was) + place;
+#else
+  uint was = 0;
+  if (has) {
+    InterlockedAdd(AT(state, counter), has, was);
+    if (counter == PENDING && was + has == 0)
+      InterlockedAdd(AT(state, ZEROS), 1);
+  }
+  return was;
+#endif
 }
 
 [numthreads(GROUP, 1, 1)]
@@ -188,10 +199,14 @@ void cs(uint thread : SV_GroupIndex, uint3 group : SV_GroupID) {
     // queue and counts the children pending, and after a barrier each child is stored at its place
     uint index = 0;
     if (has) {
+#if WAVES
       uint count = WaveActiveCountBits(true), before = 0;
       if (WaveIsFirstLane())
         InterlockedAdd(candidates, count, before);
       index = WaveReadLaneFirst(before) + WavePrefixCountBits(true);
+#else
+      InterlockedAdd(candidates, 1, index);
+#endif
     }
     GroupMemoryBarrierWithGroupSync();
     if (thread == 0) {
@@ -232,7 +247,7 @@ void cs(uint thread : SV_GroupIndex, uint3 group : SV_GroupID) {
       InterlockedAdd(visits[node], 1);
       InterlockedOr(done, 1u << slot);
       if (node * FANOUT + 1 >= NODES) {
-#if ALLOCATE
+#if ALLOCATE && WAVES
         // as Unreal's kernel gives out the places of what a wave found: each lane's count before it, the whole from
         // the last lane that has one, one add by the first
         uint before = WavePrefixSum(1u), was = 0;
@@ -293,10 +308,6 @@ main(int argc, char **argv) {
     printf("skipped: dxcompiler.dll not found\n");
     return 77;
   }
-  if (!compiler.dxc) {
-    printf("skipped: wave operations are DXIL only\n");
-    return 77;
-  }
   enum { Read, Write, Pending, Ticks, Zeros, Ids, Seed, States };
   struct Seen {
     UINT first, last, found, turns, lag, pending, pending_now, unseen, worked, left, batch, again, heavy, half;
@@ -319,24 +330,37 @@ main(int argc, char **argv) {
     }
   numbers.erase("PLACEMENT");
   const UINT group = numbers["GROUP"], fanout = numbers["FANOUT"], node_count = numbers["NODES"], turns = numbers["ITERATIONS"];
-  std::vector<std::string> defines{"READ=" + std::to_string(Read), "WRITE=" + std::to_string(Write), "PENDING=" + std::to_string(Pending),
+  const UINT row = 4096;
+  std::vector<std::string> defines{"WAVES=" + std::to_string(bool(compiler.dxc)), "ROW=" + std::to_string(row),
+                                   "READ=" + std::to_string(Read), "WRITE=" + std::to_string(Write), "PENDING=" + std::to_string(Pending),
                                    "TICKS=" + std::to_string(Ticks), "ZEROS=" + std::to_string(Zeros), "IDS=" + std::to_string(Ids), "SEED=" + std::to_string(Seed)};
   for (auto &[name, value] : numbers)
     defines.push_back(name + "=" + std::to_string(value));
+  std::vector<std::string> shaders;
+  for (UINT placement : placements) {
+    auto placed = defines;
+    placed.push_back("PLACEMENT=" + std::to_string(placement));
+    shaders.push_back(compiler.compile(hlsl, "cs", "cs", placed));
+    if (shaders.back().empty()) {
+      printf("failed: HLSL did not compile\n");
+      return 1;
+    }
+  }
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
-  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1{};
-  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
-  if (!options1.WaveOps) {
-    printf("skipped: no wave operations\n");
-    return 77;
+  if (compiler.dxc) {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1{};
+    CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
+    if (!options1.WaveOps) {
+      printf("skipped: no wave operations\n");
+      return 77;
+    }
   }
   enum { State, Queue, Visits, Saw, Leaves, Buffers };
   // the buffers by their addresses, or, typed ones having none (a root descriptor is a raw or structured buffer:
   // D3D12_ROOT_PARAMETER_TYPE_UAV), all four in a table
-  const UINT typed = numbers["TYPED"], row = 4096;
+  const UINT typed = numbers["TYPED"];
   const bool textured = typed == 2;
-  defines.push_back("ROW=" + std::to_string(row));
   D3D12_ROOT_PARAMETER parameters[Buffers];
   for (UINT i = 0; i < Buffers; i++) {
     parameters[i] = {D3D12_ROOT_PARAMETER_TYPE_UAV};
@@ -373,19 +397,13 @@ main(int argc, char **argv) {
     dispatches.insert(dispatches.end(), numbers["REPEATS"], groups);
   // a leaf has no child inside the tree
   const UINT first_leaf = (node_count + fanout - 2) / fanout, leaf_count = node_count - first_leaf;
-  for (UINT placement : placements)
+  for (size_t variant = 0; variant < placements.size(); variant++)
   for (UINT groups : dispatches) {
+    const UINT placement = placements[variant];
     step("placement %u: %u groups of %u threads through a tree of %u nodes, %u children a node", placement, groups, group,
          node_count, fanout);
-    auto placed = defines;
-    placed.push_back("PLACEMENT=" + std::to_string(placement));
-    auto cs = compiler.compile(hlsl, "cs", "cs", placed);
-    if (cs.empty()) {
-      printf("failed: HLSL did not compile\n");
-      return 1;
-    }
     ComPtr<ID3D12PipelineState> pso;
-    D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc{rs.Get(), bytecode(cs)};
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc{rs.Get(), bytecode(shaders[variant])};
     CHECK(device->CreateComputePipelineState(&pso_desc, IID_PPV_ARGS(&pso)));
     // a batch beyond the tree's last slot is claimed by a group at most once, and never done
     const UINT slots = node_count + (groups + 1) * (group / fanout);

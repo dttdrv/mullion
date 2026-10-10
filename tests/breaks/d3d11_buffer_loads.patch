@@ -1,0 +1,11 @@
+# a raw component address keeps the bits above the 32-bit byte address
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2992,7 +2992,5 @@
+ Converter::CreateGEPInt32WithBoundCheck(BufferResourceHandle &Buffer, llvm::Value *Index) {
+-  if (!Buffer.StructureStride)
+-    Index = ir.CreateAnd(Index, llvm::ConstantInt::get(Index->getType(), UINT32_MAX / sizeof(uint32_t)));
+   auto Addr = ir.CreateGEP(ir.getInt32Ty(), Buffer.Pointer, {Index});
+   if (!Buffer.Metadata) {
+     return Addr;
+   }
