@@ -1,0 +1,12 @@
+# root UAVs ignore stage visibility
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -571,7 +571,7 @@
+       auto &descriptor = Parameter.Descriptor;
+       auto descriptor_index = builder.Size();
+       std::optional<uint32_t> raster_order_group;
+-      if (check_visibility(Parameter.ShaderVisibility))
++      if (true)
+         for (auto &[_, uav] : shader_info->uavMap) {
+           if (uav.range.lower_bound == descriptor.ShaderRegister && uav.range.space == descriptor.RegisterSpace) {
+             assert(uav.resource_type == shader::common::ResourceType::NonApplicable);

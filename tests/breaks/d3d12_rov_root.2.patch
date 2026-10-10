@@ -1,0 +1,12 @@
+# root parameter indices are used as argument field indices
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -569,7 +569,7 @@
+     }
+     case D3D12_ROOT_PARAMETER_TYPE_UAV: {
+       auto &descriptor = Parameter.Descriptor;
+-      auto descriptor_index = builder.Size();
++      auto descriptor_index = i;
+       std::optional<uint32_t> raster_order_group;
+       if (check_visibility(Parameter.ShaderVisibility))
+         for (auto &[_, uav] : shader_info->uavMap) {

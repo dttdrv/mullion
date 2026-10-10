@@ -1,0 +1,30 @@
+# ordered descriptor loads are cast to constant memory
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -61,7 +61,7 @@
+     );
+     auto &B = AIR.builder;
+     auto Pointer = B.CreatePointerCast(
+-        IntPtr, TyBufferDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
++        IntPtr, TyBufferDescriptor->getPointerTo(uint32_t(air::AddressSpace::constant))
+     );
+     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
+     return {
+@@ -86,7 +86,7 @@
+     );
+     auto &B = AIR.builder;
+     auto Pointer = B.CreatePointerCast(
+-        IntPtr, TyBufferDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
++        IntPtr, TyBufferDescriptor->getPointerTo(uint32_t(air::AddressSpace::constant))
+     );
+     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
+     return B.CreateLoad(
+@@ -186,7 +186,7 @@
+     );
+     auto &B = AIR.builder;
+     auto Pointer = B.CreatePointerCast(
+-        IntPtr, TyTextureDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
++        IntPtr, TyTextureDescriptor->getPointerTo(uint32_t(air::AddressSpace::constant))
+     );
+     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
+     return {

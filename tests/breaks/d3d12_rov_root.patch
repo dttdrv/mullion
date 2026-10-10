@@ -1,0 +1,12 @@
+# root UAVs have no raster order group
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -578,7 +578,7 @@
+             auto range_id = uav.range.range_id;
+             binding_map->UAVs[range_id] = {uav, ~0u};
+             binding_map->UAVs[range_id].first.arg_index = descriptor_index;
+-            raster_order_group = uav.rasterizer_order ? std::optional(1) : std::nullopt;
++            raster_order_group = std::nullopt;
+           }
+         }
+       builder.DefineBuffer(

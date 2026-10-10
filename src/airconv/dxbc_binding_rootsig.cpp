@@ -21,6 +21,7 @@
 #include "dxbc_root_signature.hpp"
 #include "shader_common.hpp"
 #include "llvm/IR/DerivedTypes.h"
+#include <algorithm>
 #include <cassert>
 
 namespace dxmt::dxbc {
@@ -59,20 +60,17 @@ public:
                            llvm::Type::getInt64Ty(AIR.getContext()), llvm::Type::getInt64Ty(AIR.getContext())}
     );
     auto &B = AIR.builder;
+    auto Pointer = B.CreatePointerCast(
+        IntPtr, TyBufferDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
+    );
     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
     return {
         B.CreateLoad(
-            HandleType, B.CreateGEP(
-                            TyBufferDescriptor, B.CreatePointerCast(IntPtr, TyBufferDescriptor->getPointerTo(2)),
-                            {IdxDescriptor, AIR.getInt(0) /* pointer */}
-                        )
+            HandleType, B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(0) /* pointer */})
         ),
         B.CreateLoad(
             llvm::Type::getInt64Ty(AIR.getContext()),
-            B.CreateGEP(
-                TyBufferDescriptor, B.CreatePointerCast(IntPtr, TyBufferDescriptor->getPointerTo(2)),
-                {IdxDescriptor, AIR.getInt(1) /* metadata */}
-            )
+            B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(1) /* metadata */})
         )
     };
   }
@@ -87,12 +85,12 @@ public:
                            TyCounter, llvm::Type::getInt64Ty(AIR.getContext())}
     );
     auto &B = AIR.builder;
+    auto Pointer = B.CreatePointerCast(
+        IntPtr, TyBufferDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
+    );
     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
     return B.CreateLoad(
-        TyCounter, B.CreateGEP(
-                       TyBufferDescriptor, B.CreatePointerCast(IntPtr, TyBufferDescriptor->getPointerTo(2)),
-                       {IdxDescriptor, AIR.getInt(2) /* metadata */}
-                   )
+        TyCounter, B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(2) /* metadata */})
     );
   }
 
@@ -187,25 +185,21 @@ public:
                            llvm::Type::getInt64Ty(AIR.getContext()), llvm::Type::getInt64Ty(AIR.getContext())}
     );
     auto &B = AIR.builder;
+    auto Pointer = B.CreatePointerCast(
+        IntPtr, TyTextureDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
+    );
     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
     return {
         B.CreateLoad(
             TyTextureHandle, //
-            B.CreateGEP(
-                TyTextureDescriptor, B.CreatePointerCast(IntPtr, TyTextureDescriptor->getPointerTo(2)),
-                {IdxDescriptor, AIR.getInt(0) /* pointer */}
-            )
+            B.CreateGEP(TyTextureDescriptor, Pointer, {IdxDescriptor, AIR.getInt(0) /* pointer */})
         ),
         B.CreateLoad(
             llvm::Type::getInt64Ty(AIR.getContext()),
-            B.CreateGEP(
-                TyTextureDescriptor, B.CreatePointerCast(IntPtr, TyTextureDescriptor->getPointerTo(2)),
-                {IdxDescriptor, AIR.getInt(1) /* metadata */}
-            )
+            B.CreateGEP(TyTextureDescriptor, Pointer, {IdxDescriptor, AIR.getInt(1) /* metadata */})
         ),
         B.CreateGEP(
-            TyTextureDescriptor, B.CreatePointerCast(IntPtr, TyTextureDescriptor->getPointerTo(2)),
-            {IdxDescriptor, AIR.getInt(2) /* the format range (SM50_SAMPLER_BORDER) */}
+            TyTextureDescriptor, Pointer, {IdxDescriptor, AIR.getInt(2) /* the format range (SM50_SAMPLER_BORDER) */}
         )
     };
   }
@@ -445,12 +439,9 @@ setup_binding_rootsig(
     case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE: {
       auto &table = Parameter.DescriptorTable;
       unsigned descriptor_offset = 0;
-      auto table_index = builder.DefineBuffer(
-          "table" + std::to_string(i), AddressSpace::constant, MemoryAccess::read, msl_int, inc_attribute_index++
-      );
-      if (!check_visibility(Parameter.ShaderVisibility))
-        break;
-      for (unsigned i = 0; i < table.NumDescriptorRanges; i++) {
+      auto table_index = builder.Size();
+      std::optional<uint32_t> raster_order_group;
+      for (unsigned i = 0; check_visibility(Parameter.ShaderVisibility) && i < table.NumDescriptorRanges; i++) {
         auto &range = table.pDescriptorRanges[i];
         auto calculated_descriptor_offset = range.OffsetInDescriptorsFromTableStart == ~0u
                                                 ? descriptor_offset
@@ -481,6 +472,8 @@ setup_binding_rootsig(
                   uav, calculated_descriptor_offset + (uav.range.lower_bound - range.BaseShaderRegister)
               };
               binding_map->UAVs[range_id].first.arg_index = table_index;
+              if (uav.rasterizer_order)
+                raster_order_group = 1;
             }
           }
           break;
@@ -515,6 +508,11 @@ setup_binding_rootsig(
           return {};
         }
       }
+      // ordered descriptor reads precede the UAV accesses that depend on them (MSL 5.2.1.2).
+      builder.DefineBuffer(
+          "table" + std::to_string(i), raster_order_group ? AddressSpace::device : AddressSpace::constant,
+          MemoryAccess::read, msl_int, inc_attribute_index++, raster_order_group
+      );
       break;
     }
     case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS: {
@@ -571,20 +569,22 @@ setup_binding_rootsig(
     }
     case D3D12_ROOT_PARAMETER_TYPE_UAV: {
       auto &descriptor = Parameter.Descriptor;
-      auto descriptor_index = builder.DefineBuffer(
-          "u" + std::to_string(i), AddressSpace::device, MemoryAccess::read_write /* FIXME */, msl_uint,
-          inc_attribute_index++, std::nullopt /* FIXME: */
-      );
-      if (!check_visibility(Parameter.ShaderVisibility))
-        break;
-      for (auto &[_, uav] : shader_info->uavMap) {
-        if (uav.range.lower_bound == descriptor.ShaderRegister && uav.range.space == descriptor.RegisterSpace) {
-          assert(uav.resource_type == shader::common::ResourceType::NonApplicable);
-          auto range_id = uav.range.range_id;
-          binding_map->UAVs[range_id] = {uav, ~0u};
-          binding_map->UAVs[range_id].first.arg_index = descriptor_index;
+      auto descriptor_index = builder.Size();
+      std::optional<uint32_t> raster_order_group;
+      if (check_visibility(Parameter.ShaderVisibility))
+        for (auto &[_, uav] : shader_info->uavMap) {
+          if (uav.range.lower_bound == descriptor.ShaderRegister && uav.range.space == descriptor.RegisterSpace) {
+            assert(uav.resource_type == shader::common::ResourceType::NonApplicable);
+            auto range_id = uav.range.range_id;
+            binding_map->UAVs[range_id] = {uav, ~0u};
+            binding_map->UAVs[range_id].first.arg_index = descriptor_index;
+            raster_order_group = uav.rasterizer_order ? std::optional(1) : std::nullopt;
+          }
         }
-      }
+      builder.DefineBuffer(
+          "u" + std::to_string(i), AddressSpace::device, MemoryAccess::read_write /* FIXME */, msl_uint,
+          inc_attribute_index++, raster_order_group
+      );
       break;
     }
     }
@@ -604,8 +604,12 @@ setup_binding_rootsig(
   // headers' enumeration stops before
   constexpr uint32_t kResourceHeapDirectlyIndexed = 0x400, kSamplerHeapDirectlyIndexed = 0x800;
   if (root_sig.Flags & kResourceHeapDirectlyIndexed) {
+    auto ordered = std::any_of(shader_info->uavMap.begin(), shader_info->uavMap.end(), [&](auto &entry) {
+      return entry.second.range.space == kDescriptorHeapSpace && entry.second.rasterizer_order;
+    });
     auto heap_index = builder.DefineBuffer(
-        "resource_heap", AddressSpace::constant, MemoryAccess::read, msl_int, inc_attribute_index++
+        "resource_heap", ordered ? AddressSpace::device : AddressSpace::constant, MemoryAccess::read, msl_int,
+        inc_attribute_index++, ordered ? std::optional(1) : std::nullopt
     );
     bind_heap(binding_map->SRVs, shader_info->srvMap, heap_index);
     bind_heap(binding_map->UAVs, shader_info->uavMap, heap_index);

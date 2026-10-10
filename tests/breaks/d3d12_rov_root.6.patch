@@ -1,0 +1,12 @@
+# directly indexed heaps have no raster order group
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -609,7 +609,7 @@
+     });
+     auto heap_index = builder.DefineBuffer(
+         "resource_heap", ordered ? AddressSpace::device : AddressSpace::constant, MemoryAccess::read, msl_int,
+-        inc_attribute_index++, ordered ? std::optional(1) : std::nullopt
++        inc_attribute_index++, std::nullopt
+     );
+     bind_heap(binding_map->SRVs, shader_info->srvMap, heap_index);
+     bind_heap(binding_map->UAVs, shader_info->uavMap, heap_index);

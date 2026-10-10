@@ -1,0 +1,12 @@
+# descriptor tables have no raster order group
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -473,7 +473,7 @@
+               };
+               binding_map->UAVs[range_id].first.arg_index = table_index;
+               if (uav.rasterizer_order)
+-                raster_order_group = 1;
++                raster_order_group = std::nullopt;
+             }
+           }
+           break;
