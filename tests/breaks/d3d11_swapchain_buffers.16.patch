@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -841,3 +841,3 @@
+         sync_state = SyncFrame(++presentation_count_),
+-        backbuffer = backbuffers_[0]->texture()
++        backbuffer = backbuffers_.back()->texture()
+       ](ArgumentEncodingContext &ctx) mutable {

@@ -121,6 +121,7 @@ struct D3D11ResourceCommon : ID3D11Resource {
 
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
+  virtual ULONG GetPrivateRefCount() = 0;
   virtual HRESULT STDMETHODCALLTYPE
   CreateShaderResourceView(const D3D11_SHADER_RESOURCE_VIEW_DESC1 *pDesc, ID3D11ShaderResourceView1 **ppView) = 0;
   virtual HRESULT STDMETHODCALLTYPE
@@ -142,6 +143,7 @@ struct D3D11ResourceCommon : ID3D11Resource {
   Rc<Buffer> buffer_{};
   Rc<Texture> texture_{};
   uint32_t bind_flags_{};
+  DXGI_USAGE dxgi_usage_{};
   Rc<KeyedMutex> keyed_mutex_{};
   Rc<Counter> so_filled_{};
 
@@ -361,12 +363,11 @@ public:
     return S_OK;
   }
 
-  // what the resource's bind flags say of its use (IDXGIResource::GetUsage)
   virtual HRESULT GetDXGIUsage(DXGI_USAGE *pUsage) {
     if (!pUsage) {
       return E_INVALIDARG;
     }
-    *pUsage = (desc.BindFlags & D3D11_BIND_RENDER_TARGET ? DXGI_USAGE_RENDER_TARGET_OUTPUT : 0) |
+    *pUsage = this->dxgi_usage_ | (desc.BindFlags & D3D11_BIND_RENDER_TARGET ? DXGI_USAGE_RENDER_TARGET_OUTPUT : 0) |
               (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE ? DXGI_USAGE_SHADER_INPUT : 0) |
               (desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS ? DXGI_USAGE_UNORDERED_ACCESS : 0);
     return S_OK;

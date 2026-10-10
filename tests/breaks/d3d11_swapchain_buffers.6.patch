@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -848,3 +848,3 @@
+     }
+-    if (!(PresentFlags & DXGI_PRESENT_DO_NOT_SEQUENCE)) {
++    if (true) {
+       if (desc_.SwapEffect >= DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)

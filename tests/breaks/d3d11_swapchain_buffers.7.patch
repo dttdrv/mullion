@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -860,3 +860,3 @@
+             textures[i - 1]->rename(Rc<TextureAllocation>(textures[i]->current()), retired_views);
+-          textures.back()->rename(std::move(allocation), retired_views);
++          textures.front()->rename(std::move(allocation), retired_views);
+         });

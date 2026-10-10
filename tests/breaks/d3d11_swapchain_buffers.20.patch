@@ -1,0 +1,6 @@
+--- a/src/dxmt/dxmt_texture.cpp
++++ b/src/dxmt/dxmt_texture.cpp
+@@ -337,2 +337,3 @@
+   newAllocation->version_ = 0;
++  retiredViews.clear();
+   newAllocation->descriptor = this;

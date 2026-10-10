@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -202,3 +202,2 @@
+-    if (desc_.BufferUsage & DXGI_USAGE_RENDER_TARGET_OUTPUT)
+-      backbuffer_desc_.BindFlags |= D3D11_BIND_RENDER_TARGET;
++    backbuffer_desc_.BindFlags |= D3D11_BIND_RENDER_TARGET;
+     if (desc_.BufferUsage & DXGI_USAGE_SHADER_INPUT)

@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -850,3 +850,3 @@
+       if (desc_.SwapEffect >= DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
+-        device_context_->UnbindResource(backbuffers_[0].ptr());
++        device_context_->PrepareFlush();
+       if (backbuffers_.size() > 1) {

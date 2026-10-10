@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cfloat>
 #include <format>
+#include <vector>
 
 /**
 Ref: https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-setmaximumframelatency
@@ -168,9 +169,8 @@ public:
 
     if (pFullscreenDesc) {
       fullscreen_desc_ = *pFullscreenDesc;
-    } else {
-      fullscreen_desc_.Windowed = true;
     }
+    fullscreen_desc_.Windowed = true;
 
     preferred_max_frame_rate =
         Config::getInstance().getOption<int>("d3d11.preferredMaxFrameRate", 0);
@@ -194,21 +194,18 @@ public:
       .Format = desc_.Format,
       .SampleDesc = desc_.SampleDesc,
       .Usage = D3D11_USAGE_DEFAULT,
-      .BindFlags = D3D11_BIND_RENDER_TARGET,
+      .BindFlags = {},
       .CPUAccessFlags = {},
       .MiscFlags = {},
       .TextureLayout = {},
     };
     
+    if (desc_.BufferUsage & DXGI_USAGE_RENDER_TARGET_OUTPUT)
+      backbuffer_desc_.BindFlags |= D3D11_BIND_RENDER_TARGET;
     if (desc_.BufferUsage & DXGI_USAGE_SHADER_INPUT)
       backbuffer_desc_.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
     if (desc_.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS)
       backbuffer_desc_.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
-
-    // FIXME: check HRESULT!
-    ResizeBuffers(0, desc_.Width, desc_.Height, DXGI_FORMAT_UNKNOWN, desc_.Flags);
-    if (!fullscreen_desc_.Windowed)
-      EnterFullscreenMode(nullptr);
   };
 
   ~MTLD3D11SwapChain() {
@@ -259,12 +256,10 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetBuffer(UINT buffer_idx, REFIID riid, void **surface) final {
-    if (buffer_idx == 0) {
-      return backbuffer_->QueryInterface(riid, surface);
-    } else {
-      ERR("Non zero-index buffer is not supported");
-      return DXGI_ERROR_UNSUPPORTED;
-    }
+    std::lock_guard<d3d11_device_mutex> lock(device_->mutex);
+    if (buffer_idx >= backbuffers_.size())
+      return DXGI_ERROR_INVALID_CALL;
+    return backbuffers_[buffer_idx]->QueryInterface(riid, surface);
   };
 
   DXMT_HOTPATCHABLE
@@ -488,67 +483,91 @@ public:
                 UINT flags) final {
     // 0 and DXGI_FORMAT_UNKNOWN keep what there is (the window's size for a size of 0), and the flags are the swap
     // chain's from now on, except that tearing is allowed for a swap chain's whole life (IDXGISwapChain::ResizeBuffers).
-    // a resize that is refused leaves the swap chain as it was. there is one buffer, whatever their number is
+    // a resize that is refused leaves the swap chain as it was
     if ((Format != DXGI_FORMAT_UNKNOWN && ConvertSwapChainFormat(Format) == WMTPixelFormatInvalid) ||
         BufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS)
       return E_INVALIDARG;
     if ((flags ^ desc_.Flags) & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)
       return DXGI_ERROR_INVALID_CALL;
-    wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
-    if (Width)
-      desc_.Width = Width;
-    if (Height)
-      desc_.Height = Height;
-    if (Format != DXGI_FORMAT_UNKNOWN)
-      desc_.Format = Format;
-    if (BufferCount)
-      desc_.BufferCount = BufferCount;
-    desc_.Flags = flags;
-
-    backbuffer_ = nullptr;
-    if (desc_.Width == 0 || desc_.Height == 0) {
-      backbuffer_desc_.Width = 1;
-      backbuffer_desc_.Height = 1;
-    } else {
-      backbuffer_desc_.Width = desc_.Width;
-      backbuffer_desc_.Height = desc_.Height;
+    if (BufferCount == 1 && desc_.SwapEffect >= DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
+      return DXGI_ERROR_INVALID_CALL;
+    std::unique_lock<d3d11_device_mutex> lock(device_->mutex);
+    for (const auto &buffer : backbuffers_)
+      if (buffer->GetPrivateRefCount() > 1)
+        return DXGI_ERROR_INVALID_CALL;
+    if (!backbuffers_.empty()) {
+      // queued commands can release their textures; retained command lists cannot (IDXGISwapChain::ResizeBuffers)
+      device_context_->WaitUntilGPUIdle();
+      for (const auto &buffer : backbuffers_)
+        if (buffer->texture()->refCount() > 1)
+          return DXGI_ERROR_INVALID_CALL;
     }
-    settings_.Resized();
+    auto desc = desc_;
+    auto backbuffer_desc = backbuffer_desc_;
+    wsi::getWindowSize(hWnd, &desc.Width, &desc.Height);
+    if (Width)
+      desc.Width = Width;
+    if (Height)
+      desc.Height = Height;
+    if (Format != DXGI_FORMAT_UNKNOWN)
+      desc.Format = Format;
+    if (BufferCount)
+      desc.BufferCount = BufferCount;
+    desc.Flags = flags;
 
-    ApplyLayerProps();
+    if (desc.Width == 0 || desc.Height == 0) {
+      backbuffer_desc.Width = 1;
+      backbuffer_desc.Height = 1;
+    } else {
+      backbuffer_desc.Width = desc.Width;
+      backbuffer_desc.Height = desc.Height;
+    }
+    backbuffer_desc.Format = desc.Format;
 
-    backbuffer_desc_.Format = desc_.Format;
-
-    backbuffer_ = nullptr;
-    if (FAILED(dxmt::CreateDeviceTexture2D(
-            device_, &backbuffer_desc_, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&backbuffer_)
-        )))
-      return E_FAIL;
-    // CreateDeviceTexture2D returns public reference, change to private one here
-    backbuffer_->AddRefPrivate();
-    backbuffer_->Release();
+    bool sequential =
+        desc.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    std::vector<Com<D3D11ResourceCommon, false>> backbuffers(sequential ? desc.BufferCount : 1);
+    for (UINT i = 0; i < backbuffers.size(); i++) {
+      Com<D3D11ResourceCommon> buffer;
+      HRESULT hr = dxmt::CreateDeviceTexture2D(
+          device_, &backbuffer_desc, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&buffer)
+      );
+      if (FAILED(hr))
+        return hr;
+      buffer->dxgi_usage_ = desc.BufferUsage | DXGI_USAGE_BACK_BUFFER | (i ? DXGI_USAGE_READ_ONLY : 0) |
+                           (sequential ? 0 : DXGI_USAGE_DISCARD_ON_PRESENT);
+      backbuffers[i] = buffer.prvRef();
+    }
 
     if constexpr (EnableMetalFX) {
-      D3D11_TEXTURE2D_DESC1 upscaled_desc_ = backbuffer_desc_;
+      Com<D3D11ResourceCommon> upscaled;
+      D3D11_TEXTURE2D_DESC1 upscaled_desc_ = backbuffer_desc;
       upscaled_desc_.Height *= scale_factor;
       upscaled_desc_.Width *= scale_factor;
-      upscaled_backbuffer_ = nullptr;
-      if (FAILED(dxmt::CreateDeviceTexture2D(
-              device_, &upscaled_desc_, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&upscaled_backbuffer_)
-          )))
-        return E_FAIL;
+      HRESULT hr = dxmt::CreateDeviceTexture2D(
+          device_, &upscaled_desc_, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&upscaled)
+      );
+      if (FAILED(hr))
+        return hr;
 
       WMTFXSpatialScalerInfo info;
-      info.input_height = desc_.Height;
-      info.input_width = desc_.Width;
-      info.output_height = desc_.Height * scale_factor;
-      info.output_width = desc_.Width * scale_factor;
-      info.color_format = backbuffer_->texture()->pixelFormat();
-      info.output_format =upscaled_backbuffer_->texture()->pixelFormat();
-      metalfx_scaler = new SpatialScaler(device_->GetMTLDevice(), info);
-      D3D11_ASSERT(metalfx_scaler && "otherwise metalfx failed to initialize");
+      info.input_height = desc.Height;
+      info.input_width = desc.Width;
+      info.output_height = desc.Height * scale_factor;
+      info.output_width = desc.Width * scale_factor;
+      info.color_format = backbuffers[0]->texture()->pixelFormat();
+      info.output_format = upscaled->texture()->pixelFormat();
+      Rc<SpatialScaler> scaler = new SpatialScaler(device_->GetMTLDevice(), info);
+      D3D11_ASSERT(scaler && "otherwise metalfx failed to initialize");
+      upscaled_backbuffer_ = std::move(upscaled);
+      metalfx_scaler = std::move(scaler);
     }
 
+    desc_ = desc;
+    backbuffer_desc_ = backbuffer_desc;
+    backbuffers_ = std::move(backbuffers);
+    settings_.Resized();
+    ApplyLayerProps();
     return S_OK;
   };
 
@@ -802,7 +821,7 @@ public:
     }
     if constexpr (EnableMetalFX) {
       chunk->emitcc([
-        this, vsync_duration, backbuffer = backbuffer_->texture(),
+        this, vsync_duration, backbuffer = backbuffers_[0]->texture(),
         sync_state = SyncFrame(++presentation_count_),
         upscaled = upscaled_backbuffer_->texture(),
         scaler = this->metalfx_scaler, state = presenter->synchronizeLayerProperties()
@@ -822,12 +841,28 @@ public:
       chunk->emitcc([
         this, vsync_duration, state = presenter->synchronizeLayerProperties(),
         sync_state = SyncFrame(++presentation_count_),
-        backbuffer = backbuffer_->texture()
+        backbuffer = backbuffers_[0]->texture()
       ](ArgumentEncodingContext &ctx) mutable {
         ctx.present(backbuffer, presenter, vsync_duration, state.metadata);
         ReleaseSemaphore(present_semaphore_, 1, nullptr);
         this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
       });
+    }
+    if (!(PresentFlags & DXGI_PRESENT_DO_NOT_SEQUENCE)) {
+      if (desc_.SwapEffect >= DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
+        device_context_->UnbindResource(backbuffers_[0].ptr());
+      if (backbuffers_.size() > 1) {
+        std::vector<Rc<Texture>> textures(backbuffers_.size());
+        for (UINT i = 0; i < textures.size(); i++)
+          textures[i] = backbuffers_[i]->texture();
+        chunk->emitcc([textures = std::move(textures), retired_views = std::vector<TextureViewRef>{}]
+                      (ArgumentEncodingContext &) mutable {
+          Rc<TextureAllocation> allocation = textures[0]->current();
+          for (UINT i = 1; i < textures.size(); i++)
+            textures[i - 1]->rename(Rc<TextureAllocation>(textures[i]->current()), retired_views);
+          textures.back()->rename(std::move(allocation), retired_views);
+        });
+      }
     }
     device_context_->Commit();
 
@@ -1000,7 +1035,6 @@ public:
   };
 
   UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override {
-    // TODO(swapchain): can be non-zero once sequential swapchain is implemented
     return 0;
   }
 
@@ -1048,7 +1082,7 @@ private:
   DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc_;
   D3D11_TEXTURE2D_DESC1 backbuffer_desc_;
   IMTLD3D11DeviceContext* device_context_;
-  Com<D3D11ResourceCommon, false> backbuffer_;
+  std::vector<Com<D3D11ResourceCommon, false>> backbuffers_;
   HANDLE present_semaphore_;
   std::unique_ptr<CpuFence> frame_latency_fence_;
   HWND hWnd;
@@ -1087,24 +1121,44 @@ CreateSwapChain(
     ERR("CreateSwapChain: failed to get IMTLDXGIDevice");
     return E_FAIL;
   }
-  if ((pDesc->SwapEffect != DXGI_SWAP_EFFECT_DISCARD &&
-       pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD) &&
-      pDesc->BufferCount != 1) {
-    WARN("CreateSwapChain: unsupported swap effect ", pDesc->SwapEffect, " with backbuffer size ", pDesc->BufferCount);
+  if (!pDesc->BufferCount || pDesc->BufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS)
+    return DXGI_ERROR_INVALID_CALL;
+  switch (pDesc->SwapEffect) {
+  case DXGI_SWAP_EFFECT_DISCARD:
+  case DXGI_SWAP_EFFECT_SEQUENTIAL:
+    break;
+  case DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL:
+  case DXGI_SWAP_EFFECT_FLIP_DISCARD:
+    // DXGI_SWAP_CHAIN_DESC1 requires at least two buffers and no multisampling for flip effects
+    if (pDesc->BufferCount < 2 || pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality)
+      return DXGI_ERROR_INVALID_CALL;
+    break;
+  default:
+    return DXGI_ERROR_INVALID_CALL;
   }
+  Com<IDXGISwapChain1> swapchain;
   if (env::getEnvVar("DXMT_METALFX_SPATIAL_SWAPCHAIN") == "1") {
     if (pDevice->GetMTLDevice().supportsFXSpatialScaler()) {
-      *ppSwapChain = new MTLD3D11SwapChain<true>(
+      swapchain = Com<IDXGISwapChain1>::transfer(new MTLD3D11SwapChain<true>(
           pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc
-      );
-      return S_OK;
+      ));
     } else {
       WARN("MetalFX spatial scaler is not supported on this device");
     }
   }
-  *ppSwapChain = new MTLD3D11SwapChain<false>(
-      pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc
-  );
+  if (!swapchain)
+    swapchain = Com<IDXGISwapChain1>::transfer(new MTLD3D11SwapChain<false>(
+        pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc
+    ));
+  HRESULT hr = swapchain->ResizeBuffers(0, pDesc->Width, pDesc->Height, DXGI_FORMAT_UNKNOWN, pDesc->Flags);
+  if (FAILED(hr))
+    return hr;
+  if (pFullscreenDesc && !pFullscreenDesc->Windowed) {
+    hr = swapchain->SetFullscreenState(TRUE, nullptr);
+    if (FAILED(hr))
+      return hr;
+  }
+  *ppSwapChain = swapchain.takeOwnership();
   return S_OK;
 };
 

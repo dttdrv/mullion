@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -369,3 +369,3 @@
+     }
+-    *pUsage = this->dxgi_usage_ | (desc.BindFlags & D3D11_BIND_RENDER_TARGET ? DXGI_USAGE_RENDER_TARGET_OUTPUT : 0) |
++    *pUsage = (desc.BindFlags & D3D11_BIND_RENDER_TARGET ? DXGI_USAGE_RENDER_TARGET_OUTPUT : 0) |
+               (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE ? DXGI_USAGE_SHADER_INPUT : 0) |

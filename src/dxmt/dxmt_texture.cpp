@@ -328,6 +328,17 @@ Texture::rename(Rc<TextureAllocation> &&newAllocation) {
   return old;
 }
 
+Rc<TextureAllocation>
+Texture::rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRef> &retiredViews) {
+  // view indices belong to this texture; encoded commands retain the old views until the chunk completes
+  for (auto &view : newAllocation->cached_view_)
+    retiredViews.push_back(std::move(view));
+  newAllocation->cached_view_.clear();
+  newAllocation->version_ = 0;
+  newAllocation->descriptor = this;
+  return rename(std::move(newAllocation));
+}
+
 void Texture::incRef(){
   refcount_.fetch_add(1u, std::memory_order_acquire);
 };

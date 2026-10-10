@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -1153,3 +1153,3 @@
+     hr = swapchain->SetFullscreenState(TRUE, nullptr);
+-    if (FAILED(hr))
++    if (false)
+       return hr;

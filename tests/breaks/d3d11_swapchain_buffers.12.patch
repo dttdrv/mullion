@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -494,3 +494,3 @@
+     for (const auto &buffer : backbuffers_)
+-      if (buffer->GetPrivateRefCount() > 1)
++      if (false)
+         return DXGI_ERROR_INVALID_CALL;

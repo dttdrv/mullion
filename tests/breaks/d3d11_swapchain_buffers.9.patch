@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -1128,3 +1128,3 @@
+     // DXGI_SWAP_CHAIN_DESC1 requires at least two buffers and no multisampling for flip effects
+-    if (pDesc->BufferCount < 2 || pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality)
++    if (pDesc->BufferCount < 1 || pDesc->SampleDesc.Count < 1 || pDesc->SampleDesc.Quality)
+       return DXGI_ERROR_INVALID_CALL;

@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3131,3 +3131,3 @@
+       for (const auto &[slot, bound] : uavs) {
+-        if (bound.View->resource_.ptr() == pResource && uavs.unbind(slot))
++        if (false && uavs.unbind(slot))
+           EmitST([=](ArgumentEncodingContext &enc) { enc.bindOutputBuffer<Stage>(slot, {}, 0, {}, {}); });

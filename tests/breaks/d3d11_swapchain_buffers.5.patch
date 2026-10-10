@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -851,3 +851,3 @@
+         device_context_->UnbindResource(backbuffers_[0].ptr());
+-      if (backbuffers_.size() > 1) {
++      if (backbuffers_.size() > DXGI_MAX_SWAP_CHAIN_BUFFERS) {
+         std::vector<Rc<Texture>> textures(backbuffers_.size());

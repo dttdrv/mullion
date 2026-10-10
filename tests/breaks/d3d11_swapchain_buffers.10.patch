@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -821,3 +821,2 @@
+-    if (!pResource || !(GetResourceCommon(pResource)->bindFlags() & D3D11_BIND_RENDER_TARGET) ||
+-        (GetResourceCommon(pResource)->dxgi_usage_ & DXGI_USAGE_READ_ONLY))
++    if (!pResource || (GetResourceCommon(pResource)->dxgi_usage_ & DXGI_USAGE_READ_ONLY))
+       return E_INVALIDARG;

@@ -1,0 +1,7 @@
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -258,3 +258,3 @@
+     std::lock_guard<d3d11_device_mutex> lock(device_->mutex);
+-    if (buffer_idx >= backbuffers_.size())
++    if (buffer_idx || buffer_idx >= backbuffers_.size())
+       return DXGI_ERROR_INVALID_CALL;

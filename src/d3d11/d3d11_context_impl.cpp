@@ -3133,6 +3133,22 @@ public:
   }
 
   void
+  UnbindResource(ID3D11Resource *pResource) override {
+    std::lock_guard<mutex_t> lock(mutex);
+    for (auto &rtv : state_.OutputMerger.RTVs)
+      if (rtv && rtv->resource_.ptr() == pResource)
+        rtv = nullptr;
+    auto unbind = [&]<PipelineStage Stage>(auto &uavs) {
+      for (const auto &[slot, bound] : uavs) {
+        if (bound.View->resource_.ptr() == pResource && uavs.unbind(slot))
+          EmitST([=](ArgumentEncodingContext &enc) { enc.bindOutputBuffer<Stage>(slot, {}, 0, {}, {}); });
+      }
+    };
+    unbind.template operator()<PipelineStage::Pixel>(state_.OutputMerger.UAVs);
+    unbind.template operator()<PipelineStage::Compute>(state_.ComputeStageUAV.UAVs);
+  }
+
+  void
   STDMETHODCALLTYPE
   OMGetRenderTargetsAndUnorderedAccessViews(
       UINT NumRTVs, ID3D11RenderTargetView **ppRenderTargetViews, ID3D11DepthStencilView **ppDepthStencilView,

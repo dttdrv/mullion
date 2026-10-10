@@ -799,7 +799,8 @@ public:
       ID3D11UnorderedAccessView1 **ppUAView) override {
     InitReturnPtr(ppUAView);
 
-    if (!pResource)
+    if (!pResource || !(GetResourceCommon(pResource)->bindFlags() & D3D11_BIND_UNORDERED_ACCESS) ||
+        (GetResourceCommon(pResource)->dxgi_usage_ & DXGI_USAGE_READ_ONLY))
       return E_INVALIDARG;
 
     if (!ppUAView)
@@ -813,7 +814,8 @@ public:
       ID3D11RenderTargetView1 **ppRTView) override {
     InitReturnPtr(ppRTView);
 
-    if (!pResource)
+    if (!pResource || !(GetResourceCommon(pResource)->bindFlags() & D3D11_BIND_RENDER_TARGET) ||
+        (GetResourceCommon(pResource)->dxgi_usage_ & DXGI_USAGE_READ_ONLY))
       return E_INVALIDARG;
 
     if (!ppRTView)

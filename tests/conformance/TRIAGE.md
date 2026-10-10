@@ -86,11 +86,13 @@ The timeouts were not run again: they ended in GPU timeouts, 'Insufficient Memor
   - `vkd3d-proton` `test_raytracing_collection_handle_invariance` (failed, 2 checks): `test_raytracing_collection_handle_invariance:5198: Test failed: Pointer handles should match.`
   - `vkd3d-proton` `test_raytracing_mismatch_global_rs_link` (crashed, 1 checks): `test_raytracing_mismatch_global_rs_link:3919: Test failed: Failed to query miss handle from COLLECTION.`; crash at `d3d12.exe: test_raytracing_mismatch_global_rs_link at d3d12_raytracing.c:3947:12`
 
-### 6. a Direct3D 10 or 11 flip swap chain has only its buffer 0 ('Non zero-index buffer is not supported')
+### 6. Direct3D 10 and 11 sequential swap chains expose only buffer 0 and omit DXGI usage metadata
 
 - class: missing; 3 tests, 2 of them crash
-- CONFIRMED; where: src/d3d11/d3d11_swapchain.cpp:264
-- Windows: GetBuffer gives every buffer of a flip swap chain, read only past the first
+- CONFIRMED; where: src/d3d11/d3d11_swapchain.cpp:264 (indexed buffers) and src/d3d11/d3d11_resource.hpp (GetDXGIUsage)
+- Windows: SEQUENTIAL and FLIP_SEQUENTIAL expose every buffer, read only past the first. Both test_swapchain_flip
+  functions below use SEQUENTIAL. The GetUsage failure is separate: swap-chain resources include BACK_BUFFER and
+  discard effects also include DISCARD_ON_PRESENT. These are the recorded baseline failures, not post-fix verdicts.
 - tests:
   - `wine-d3d10core` `test_swapchain_flip` (crashed, 3 checks): `d3d10core.c:11163: Test failed: Failed to get buffer, hr 0x887a0004.`; crash at `d3d10core_test.exe: test_swapchain_flip at d3d10core.c:11180:5`
   - `wine-d3d11` `test_swapchain_flip` (crashed, 3 checks): `d3d11.c:16117: Test failed: Got unexpected hr 0x887a0004.`; crash at `d3d11_test.exe: test_swapchain_flip at d3d11.c:16134:5`

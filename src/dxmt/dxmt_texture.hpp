@@ -176,6 +176,7 @@ private:
 class Texture {
 
 public:
+  uint32_t refCount() const { return refcount_.load(); }
   void incRef();
   void decRef();
 
@@ -288,6 +289,7 @@ public:
   TextureViewKey checkViewUseFormat(TextureViewKey key, WMTPixelFormat format);
 
   Rc<TextureAllocation> rename(Rc<TextureAllocation> &&newAllocation);
+  Rc<TextureAllocation> rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRef> &retiredViews);
 
   Texture(const WMTTextureInfo &info, WMT::Device device);
 
