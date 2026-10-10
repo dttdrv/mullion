@@ -1,0 +1,12 @@
+# a clear of an absent stencil plane reaches the color-clear path
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4628,7 +4628,6 @@
+   void
+   ClearDepthStencilView(D3D11DepthStencilView *pDepthStencilView, UINT ClearFlags, FLOAT Depth, UINT8 Stencil) {
+-    ClearFlags &= DepthStencilPlanarFlags(pDepthStencilView->pixelFormat());
+     if (ClearFlags == 0)
+       return;
+     InvalidateCurrentPass();
+     auto &props = pDepthStencilView->description();

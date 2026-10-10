@@ -4638,6 +4638,7 @@ public:
 
   void
   ClearDepthStencilView(D3D11DepthStencilView *pDepthStencilView, UINT ClearFlags, FLOAT Depth, UINT8 Stencil) {
+    ClearFlags &= DepthStencilPlanarFlags(pDepthStencilView->pixelFormat());
     if (ClearFlags == 0)
       return;
     InvalidateCurrentPass();

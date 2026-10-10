@@ -1,0 +1,12 @@
+# a typed D24 staging texture has no linear texel size
+diff --git a/src/dxmt/dxmt_format.cpp b/src/dxmt/dxmt_format.cpp
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -722,7 +722,6 @@
+   case DXGI_FORMAT_D24_UNORM_S8_UINT: {
+     description.Flag = MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER |
+                        MTL_DXGI_FORMAT_EMULATED_LINEAR_DEPTH_STENCIL | MTL_DXGI_FORMAT_EMULATED_D24;
+     description.PixelFormat = WMTPixelFormatDepth32Float_Stencil8;
+-    description.BytesPerTexel = 4;
+     description.PlanarCount = 2;
+     break;
