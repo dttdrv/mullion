@@ -1,0 +1,10 @@
+# a ray shader is required to have complete coverage in each root signature separately
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -677,5 +677,5 @@
+   // ordinary stages need every resource covered; ray shaders share global and local maps (Microsoft Learn,
+   // Creating a Root Signature, "Root Signature in Pipeline State Objects")
+-  if (shader_type != kShaderLibrary &&
++  if (true &&
+       (binding_map->ConstantBuffers.size() != shader_info->cbufferMap.size() ||
+        binding_map->Samplers.size() != shader_info->samplerMap.size() ||

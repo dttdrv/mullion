@@ -1,0 +1,21 @@
+# geometry compiler rejection is returned as E_FAIL
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -510,7 +510,7 @@
+         device_, std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
+           auto result = SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
+           if (result)
+-            status = E_INVALIDARG;
++            status = E_FAIL;
+           return result;
+         }
+     );
+@@ -521,7 +521,7 @@
+         device_, std::array{VS, GS}, args_gs, "gs_main", [&](auto args, auto name, auto bitcode, auto error) {
+           auto result = SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
+           if (result)
+-            status = E_INVALIDARG;
++            status = E_FAIL;
+           return result;
+         }
+     );

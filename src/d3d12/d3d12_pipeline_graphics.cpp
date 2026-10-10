@@ -337,8 +337,11 @@ CompileFunction(
     }
     case SM50_SHADER_ROOT_SIGNATURE:
     case SM50_SHADER_ROOT_SIGNATURE2: {
-      auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
-      bytes(code, length);
+      auto [next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+      UINT size;
+      if (FAILED(microsoft::DXBCGetRootSignature(code, &code, &size)))
+        return {};
+      bytes(code, size);
       hash(samplers);
       break;
     }
@@ -447,7 +450,7 @@ protected:
   // from the others, and only a mesh stage can leave the adjacent vertices out (D3D11.3 8.15)
   struct GeometryInputs {
     std::string vs;                          // bytecode
-    Com<ID3D12RootSignature> root_signature; // none when the bytecode embeds it
+    Com<ID3D12RootSignature> root_signature;
     std::vector<SM50_IA_INPUT_ELEMENT> elements;
     SM50_SHADER_IA_INPUT_LAYOUT_DATA ia_layout;
     std::vector<SM50_STREAM_OUTPUT_ELEMENT2> so_elements;
@@ -464,20 +467,13 @@ protected:
   // by stream output's counting pass and strip
   WMT::Reference<WMT::RenderPipelineState> adjacency_[2][2];
 
-  // every stage binds the pipeline's root signature, or the one its own bytecode embeds
   static SM50_SHADER_COMPILATION_ARGUMENT_DATA *
   RootSignature(
-      SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, ID3D12RootSignature *pRootSignature, D3D12_SHADER_BYTECODE Bytecode,
-      void *next
+      SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, ID3D12RootSignature *pRootSignature, void *next
   ) {
     rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
     rootsig.static_samplers = 0;
-    if (pRootSignature) {
-      rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pRootSignature)->GetBlob(&rootsig.bytecode);
-    } else {
-      rootsig.bytecode = Bytecode.pShaderBytecode;
-      rootsig.bytecode_length = Bytecode.BytecodeLength;
-    }
+    rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pRootSignature)->GetBlob(&rootsig.bytecode);
     rootsig.next = next;
     return (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig;
   }
@@ -489,8 +485,9 @@ protected:
   WMT::Reference<WMT::RenderPipelineState>
   GeometryVariant(
       GeometryInputs &in, sm50_shader_t shader_vs, sm50_shader_t shader_gs, D3D12_SHADER_BYTECODE GS, bool strip,
-      bool counting, uint32_t primitive, bool pass_through
+      bool counting, uint32_t primitive, bool pass_through, HRESULT &status
   ) {
+    status = E_FAIL;
     WMT::Reference<WMT::RenderPipelineState> variant;
     WMT::Reference<WMT::Error> err;
     D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
@@ -511,18 +508,24 @@ protected:
     in.ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
     in.ia_layout.next = &pso_gs;
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_vs, rootsig_gs;
-    auto args_vs = RootSignature(rootsig_vs, in.root_signature.ptr(), VS, &in.ia_layout);
+    auto args_vs = RootSignature(rootsig_vs, in.root_signature.ptr(), &in.ia_layout);
     auto vs_func = CompileFunction(
         device_, std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
-          return SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
+          auto result = SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
+          if (result)
+            status = E_INVALIDARG;
+          return result;
         }
     );
     if (!vs_func)
       return variant;
-    auto args_gs = RootSignature(rootsig_gs, in.root_signature.ptr(), shader_gs ? GS : VS, &pso_gs);
+    auto args_gs = RootSignature(rootsig_gs, in.root_signature.ptr(), &pso_gs);
     auto gs_func = CompileFunction(
         device_, std::array{VS, GS}, args_gs, "gs_main", [&](auto args, auto name, auto bitcode, auto error) {
-          return SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
+          auto result = SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
+          if (result)
+            status = E_INVALIDARG;
+          return result;
         }
     );
     if (!gs_func)
@@ -557,10 +560,11 @@ public:
       auto &in = *adjacency_inputs_;
       SM50Shader shader_vs;
       MTL_SHADER_REFLECTION reflection;
+      HRESULT hr;
       if (SUCCEEDED(InitializeShader({in.vs.data(), in.vs.size()}, &shader_vs, &reflection)))
         variant = GeometryVariant(
             in, shader_vs, {}, {}, strip, counting,
-            in.primitive == D3D_PRIMITIVE_LINE ? D3D_PRIMITIVE_LINE_ADJ : D3D_PRIMITIVE_TRIANGLE_ADJ, true
+            in.primitive == D3D_PRIMITIVE_LINE ? D3D_PRIMITIVE_LINE_ADJ : D3D_PRIMITIVE_TRIANGLE_ADJ, true, hr
         );
       if (variant && device_->NamesPasses())
         device_->PipelineMade(name, "graphics", start);
@@ -811,8 +815,8 @@ public:
     common.simd_width = device_->GetSIMDWidth();
     common.next = nullptr;
 
-    auto root_signature = [&](SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, D3D12_SHADER_BYTECODE Bytecode, void *next) {
-      return RootSignature(rootsig, pDesc->pRootSignature, Bytecode, next);
+    auto root_signature = [&](SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, void *next) {
+      return RootSignature(rootsig, pDesc->pRootSignature, next);
     };
     auto function = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, SM50_SHADER_COMPILATION_ARGUMENT_DATA *args,
                         const char *name, D3D12_SHADER_BYTECODE linked = {}) {
@@ -927,7 +931,7 @@ public:
       }
 
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      if (!(ps_func = function(shader_ps, pDesc->PS, root_signature(rootsig, pDesc->PS, &data_ps), ps_name.c_str())))
+      if (!(ps_func = function(shader_ps, pDesc->PS, root_signature(rootsig, &data_ps), ps_name.c_str())))
         return E_INVALIDARG;
     }
 
@@ -955,7 +959,7 @@ public:
       auto compile = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, void *args, const char *name,
                          D3D12_SHADER_BYTECODE linked = {}) {
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-        return function(shader, code, root_signature(rootsig, code, args), name, linked);
+        return function(shader, code, root_signature(rootsig, args), name, linked);
       };
       // the mesh shader names its outputs as the pixel shader's inputs
       SM50_SHADER_MESH_SHADER_DATA link{&common, SM50_SHADER_MESH_SHADER, pDesc->PS.pShaderBytecode};
@@ -983,15 +987,15 @@ public:
       // D3D12_PRIMITIVE_TOPOLOGY_TYPE's point, line and triangle are D3D10_SB_PRIMITIVE's
       auto variant = [&](bool strip, bool counting = false) {
         return GeometryVariant(
-            *inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through
+            *inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr
         );
       };
       bool strips = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
                               : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
       if (!(pso = variant(false)) || (strips && !(pso_strip = variant(true))))
-        return E_FAIL;
+        return hr;
       if (stream_output && (!(so_count = variant(false, true)) || (strips && !(so_count_strip = variant(true, true)))))
-        return E_FAIL;
+        return hr;
       if (adjacency)
         adjacency_inputs_ = std::move(inputs);
       // without a geometry shader, the vertex shader also rasterizes as usual, unless the mesh stage does
@@ -1001,7 +1005,7 @@ public:
         data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_NONE;
         data_ia_layout.next = &common;
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-        auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main");
+        auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, &data_ia_layout), "vs_main");
         if (!vs_func)
           return E_INVALIDARG;
         info.vertex_function = vs_func.handle;
@@ -1014,7 +1018,7 @@ public:
     } else if (!tessellation) {
       data_ia_layout.next = &common;
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main");
+      auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, &data_ia_layout), "vs_main");
       if (!vs_func)
         return E_INVALIDARG;
       info.vertex_function = vs_func.handle;
@@ -1060,9 +1064,9 @@ public:
                                  geometry ? ref_gs.GeometryShader.InstanceCount : 1, pso_tess.max_mesh_threadgroups
         ).parts;
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
-        root_signature(rootsig_gs, pDesc->GS, &pso_tess);
+        root_signature(rootsig_gs, &pso_tess);
         rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_ds = root_signature(rootsig_ds, pDesc->DS, &rootsig_gs);
+        auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
         auto ds_func = CompileFunction(
             device_, std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
             [&](auto args, auto name, auto bitcode, auto error) {
@@ -1077,9 +1081,9 @@ public:
         data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
         data_ia_layout.next = &pso_tess;
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
-        root_signature(rootsig_vs, pDesc->VS, &data_ia_layout);
+        root_signature(rootsig_vs, &data_ia_layout);
         rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_hs = root_signature(rootsig_hs, pDesc->HS, &rootsig_vs);
+        auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
         auto vshs_func = CompileFunction(
             device_, std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
             [&](auto args, auto name, auto bitcode, auto error) {
@@ -1177,9 +1181,43 @@ CreateGraphicsPipelineState(
   InitReturnPtr(ppPipelineState);
   if (HRESULT hr = CheckCachedPipeline(pDesc->CachedPSO); FAILED(hr))
     return hr;
+  auto desc = *pDesc;
+  Com<ID3D12RootSignature> embedded;
+  if (!desc.pRootSignature) {
+    const void *signature = nullptr;
+    UINT signature_size = 0;
+    // one stage can supply the signature; every embedded signature must match (Microsoft Learn, Creating a Root
+    // Signature, "Root Signature in Pipeline State Objects"; vkd3d-proton test_root_signature_embedded)
+    for (auto code : {desc.VS, desc.HS, desc.DS, desc.GS, desc.PS, AS, MS}) {
+      if (!code.pShaderBytecode)
+        continue;
+      if (!ShaderContainerHolds(code.pShaderBytecode, code.BytecodeLength))
+        return E_INVALIDARG;
+      const void *part;
+      UINT size;
+      if (FAILED(microsoft::DXBCGetRootSignature(code.pShaderBytecode, &part, &size)))
+        continue;
+      if (signature) {
+        if (size != signature_size || memcmp(part, signature, size))
+          return E_INVALIDARG;
+      } else {
+        HRESULT hr = CreateRootSignature(
+            pDevice, 0, code.pShaderBytecode, code.BytecodeLength, __uuidof(ID3D12RootSignature),
+            reinterpret_cast<void **>(&embedded)
+        );
+        if (FAILED(hr))
+          return hr;
+        signature = part;
+        signature_size = size;
+      }
+    }
+    if (!embedded)
+      return E_INVALIDARG;
+    desc.pRootSignature = embedded.ptr();
+  }
   auto pso = Com(new MTLD3D12GraphicsPipelineStateImpl(pDevice));
   pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
-  HRESULT hr = pso->Initialize(pDesc, AS, MS);
+  HRESULT hr = pso->Initialize(&desc, AS, MS);
   if (FAILED(hr))
     return hr;
   return pso->QueryInterface(riid, ppPipelineState);

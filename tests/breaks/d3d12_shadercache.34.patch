@@ -1,0 +1,15 @@
+# the root signature cache key includes the supplying shader body
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -338,9 +338,6 @@
+     case SM50_SHADER_ROOT_SIGNATURE:
+     case SM50_SHADER_ROOT_SIGNATURE2: {
+-      auto [next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+-      UINT size;
+-      if (FAILED(microsoft::DXBCGetRootSignature(code, &code, &size)))
+-        return {};
+-      bytes(code, size);
++      auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
++      bytes(code, length);
+       hash(samplers);
+       break;

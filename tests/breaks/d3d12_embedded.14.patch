@@ -1,0 +1,10 @@
+# mesh or amplification stages dereference uncovered bindings
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3688,6 +3688,4 @@
+                                )
+                              : setup_binding_table2(shader_info, func_signature, module);
+-  if (!binding_map)
+-    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+   setup_tgsm(shader_info, resource_map, types, module);
+

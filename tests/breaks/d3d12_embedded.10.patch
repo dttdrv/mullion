@@ -1,0 +1,10 @@
+# a tessellated vertex stage dereferences uncovered bindings
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -303,6 +303,4 @@
+                                    SM50_BINDING_INDEX_ARGUMENT_TABLE2
+                                );
+-  if (!binding_map)
+-    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+   auto binding_map_hs = rootsig ? setup_binding_rootsig(
+                                       &hull_shader_info, func_signature, module, D3D11_SB_HULL_SHADER,

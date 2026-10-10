@@ -1,0 +1,10 @@
+# a tessellated geometry pipeline dereferences uncovered domain bindings
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -186,6 +186,4 @@
+                               )
+                             : setup_binding_table2(&pVertexStage->shader_info, func_signature, module);
+-  if (pHullStage && !domain_binding)
+-    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+
+   auto gs_output_topology = pShaderInternal->gs_output_topology;

@@ -1,12 +1,10 @@
 # root signature bytes are left out of the key
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -337,7 +337,7 @@
-     case SM50_SHADER_ROOT_SIGNATURE:
-     case SM50_SHADER_ROOT_SIGNATURE2: {
-       auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
--      bytes(code, length);
+@@ -342,5 +342,5 @@
+       if (FAILED(microsoft::DXBCGetRootSignature(code, &code, &size)))
+         return {};
+-      bytes(code, size);
 +      hash(uint64_t(0));
        hash(samplers);
        break;
-     }

@@ -1,0 +1,10 @@
+# a domain stage dereferences uncovered bindings
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -936,6 +936,4 @@
+                                )
+                              : setup_binding_table2(shader_info, func_signature, module);
+-  if (!binding_map)
+-    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+
+   // every primitive a patch generates carries the patch's SV_PrimitiveID to the pixel shader

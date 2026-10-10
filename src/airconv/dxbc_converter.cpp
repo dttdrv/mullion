@@ -432,6 +432,8 @@ llvm::Error convert_dxbc_pixel_shader(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   auto [function, function_metadata] =
     func_signature.CreateFunction(name, context, module, 0, false);
@@ -557,6 +559,8 @@ llvm::Error convert_dxbc_compute_shader(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
   setup_tgsm(shader_info, resource_map, types, module);
 
   auto [function, function_metadata] =
@@ -689,6 +693,8 @@ llvm::Error convert_dxbc_vertex_shader(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   uint32_t rta_idx_out = ~0u;
   if (gs_passthrough && gs_passthrough->Data.RenderTargetArrayIndexReg != 255) {

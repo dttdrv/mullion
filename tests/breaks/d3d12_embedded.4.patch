@@ -1,0 +1,10 @@
+# compute copies an invalid container before validation
+--- a/src/d3d12/d3d12_pipeline_compute.cpp
++++ b/src/d3d12/d3d12_pipeline_compute.cpp
+@@ -133,6 +133,4 @@
+   Com<ID3D12RootSignature> embedded;
+   if (!desc.pRootSignature) {
+-    if (!ShaderContainerHolds(desc.CS.pShaderBytecode, desc.CS.BytecodeLength))
+-      return E_INVALIDARG;
+     HRESULT hr = CreateRootSignature(
+         pDevice, 0, desc.CS.pShaderBytecode, desc.CS.BytecodeLength, __uuidof(ID3D12RootSignature),

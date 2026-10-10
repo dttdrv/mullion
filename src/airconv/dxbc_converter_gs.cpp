@@ -176,6 +176,8 @@ convert_dxbc_geometry_shader(
                                SM50_BINDING_INDEX_ARGUMENT_TABLE2
                            )
                          : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
   auto domain_binding = !pHullStage ? nullptr
                         : rootsig_ds
                             ? setup_binding_rootsig(
@@ -183,6 +185,8 @@ convert_dxbc_geometry_shader(
                                   rootsig_ds->bytecode, rootsig_ds->bytecode_length
                               )
                             : setup_binding_table2(&pVertexStage->shader_info, func_signature, module);
+  if (pHullStage && !domain_binding)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   auto gs_output_topology = pShaderInternal->gs_output_topology;
   int32_t max_vertex_out = pShaderInternal->gs_max_vertex_output;
@@ -1385,6 +1389,8 @@ convert_dxbc_vertex_for_geometry_shader(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
   // (warp_size, 1, 1)

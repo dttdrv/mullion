@@ -1,0 +1,10 @@
+# the desc.DS signature supplier is ignored
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1188,5 +1188,5 @@
+     // one stage can supply the signature; every embedded signature must match (Microsoft Learn, Creating a Root
+     // Signature, "Root Signature in Pipeline State Objects"; vkd3d-proton test_root_signature_embedded)
+-    for (auto code : {desc.VS, desc.HS, desc.DS, desc.GS, desc.PS, AS, MS}) {
++    for (auto code : {desc.VS, desc.HS, desc.GS, desc.PS, AS, MS}) {
+       if (!code.pShaderBytecode)
+         continue;

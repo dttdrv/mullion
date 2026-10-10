@@ -1,0 +1,9 @@
+# a container without RTS0 aborts in an assertions-enabled build
+--- a/libs/DXBCParser/DXBCUtils.cpp
++++ b/libs/DXBCParser/DXBCUtils.cpp
+@@ -209,4 +209,5 @@
+     }
+
++    assert(0);
+     return E_FAIL;
+ }

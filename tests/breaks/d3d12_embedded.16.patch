@@ -1,0 +1,10 @@
+# a valid global ray binding map is rejected
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3806,5 +3806,5 @@
+   };
+   auto global = binding(global_rootsig, false), local = binding(local_rootsig, true);
+-  if ((global_rootsig && !global) || (local_rootsig && !local))
++  if ((global_rootsig && global) || (local_rootsig && !local))
+     return llvm::make_error<UnsupportedFeature>("invalid root signature");
+

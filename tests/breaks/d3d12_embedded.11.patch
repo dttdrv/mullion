@@ -1,0 +1,10 @@
+# a hull stage dereferences uncovered bindings
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -310,6 +310,4 @@
+                                   )
+                                 : setup_binding_table2(&hull_shader_info, func_signature, module);
+-  if (!binding_map_hs)
+-    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+
+   uint32_t threads_per_patch = next_pow2(pHullStage->hull_maximum_threads_per_patch);

@@ -42,12 +42,7 @@ public:
 
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig{};
     rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
-    if (pDesc->pRootSignature) {
-      rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
-    } else {
-      rootsig.bytecode = pDesc->CS.pShaderBytecode;
-      rootsig.bytecode_length = pDesc->CS.BytecodeLength;
-    }
+    rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
     rootsig.next = nullptr;
 
     SM50_SHADER_COMMON_DATA common;
@@ -134,8 +129,21 @@ CreateComputePipelineState(
 ) {
   if (HRESULT hr = CheckCachedPipeline(pDesc->CachedPSO); FAILED(hr))
     return hr;
+  auto desc = *pDesc;
+  Com<ID3D12RootSignature> embedded;
+  if (!desc.pRootSignature) {
+    if (!ShaderContainerHolds(desc.CS.pShaderBytecode, desc.CS.BytecodeLength))
+      return E_INVALIDARG;
+    HRESULT hr = CreateRootSignature(
+        pDevice, 0, desc.CS.pShaderBytecode, desc.CS.BytecodeLength, __uuidof(ID3D12RootSignature),
+        reinterpret_cast<void **>(&embedded)
+    );
+    if (FAILED(hr))
+      return hr == E_FAIL ? E_INVALIDARG : hr;
+    desc.pRootSignature = embedded.ptr();
+  }
   auto pso = Com(new MTLD3D12ComputePipelineStateImpl(pDevice));
-  HRESULT hr = pso->Initialize(pDesc);
+  HRESULT hr = pso->Initialize(&desc);
   if (FAILED(hr))
     return hr;
   return pso->QueryInterface(riid, ppPipelineState);

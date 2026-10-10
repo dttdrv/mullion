@@ -6,6 +6,8 @@
 // input sources to a blending operation with the single RenderTarget at slot 0." (17.6). the reference follows
 // those operations. ordinary stages map registers directly: "a value written to o3 always goes to v3 in the
 // subsequent Stage." (4.4.3.2). the reordered pixel shader therefore reads EXTRA as DATA and DATA as EXTRA.x.
+// two vertex shaders with the same embedded signature and different bodies reuse the same pixel conversion:
+// the supplier's body changes no pixel conversion input (Microsoft Learn, Creating a Root Signature).
 #include "d3d12_test.hpp"
 #include <array>
 #include <fstream>
@@ -22,6 +24,9 @@ Texture2D<float> texels : register(t0);
 SamplerState clamping : register(s0);
 SamplerState wrapping : register(s1);
 struct V { float4 pos : SV_Position; nointerpolation uint data : DATA; nointerpolation uint4 extra : EXTRA; };
+#ifdef ROOT
+[RootSignature(ROOT)]
+#endif
 V vertex(uint id : SV_VertexID, uint data : DATA, uint other : OTHER) {
   V result;
   result.pos = float4(float2(id & 1, id >> 1) * 4 - 1, 0, 1);
@@ -232,7 +237,7 @@ main(int argc, char **argv) {
     printf("skipped: dxcompiler.dll not found\n");
     return 77;
   }
-  std::array<std::string, 2> vs, cs, ms, amplification, gs, hs, ds;
+  std::array<std::string, 2> vs, cs, ms, amplification, gs, hs, ds, embedded_vs;
   for (unsigned i = 0; i < vs.size(); i++) {
     std::vector<std::string> defines = {
         "BIAS=" + std::to_string(i + 1), "MAX_BYTE=" + std::to_string(std::numeric_limits<BYTE>::max()) + ".0",
@@ -244,6 +249,11 @@ main(int argc, char **argv) {
     gs[i] = compiler.compile(hlsl, "geometry", "gs", defines);
     hs[i] = compiler.compile(hlsl, "hull", "hs", defines);
     ds[i] = compiler.compile(hlsl, "domain", "ds", defines);
+    defines.push_back(
+        "ROOT=\"RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | ALLOW_STREAM_OUTPUT), "
+        "RootConstants(num32BitConstants=1, b0), RootConstants(num32BitConstants=1, b1), UAV(u0)\""
+    );
+    embedded_vs[i] = compiler.compile(hlsl, "vertex", "vs", defines);
     if (compiler.dxc) {
       ms[i] = compiler.compile(mesh_hlsl, "mesh", "ms_6_5", defines);
       amplification[i] = compiler.compile(mesh_hlsl, "amplify", "as_6_5", defines);
@@ -276,7 +286,7 @@ main(int argc, char **argv) {
           !stream_vs.empty() && !stream_gs.empty() && !stream_multiple.empty(), "stream output shaders did not compile"
       ))
     return verdict();
-  for (auto codes : {&vs, &cs, &gs, &hs, &ds})
+  for (auto codes : {&vs, &cs, &gs, &hs, &ds, &embedded_vs})
     for (auto &code : *codes)
       if (!expect(!code.empty(), "a graphics or compute shader did not compile"))
         return verdict();
@@ -406,7 +416,7 @@ main(int argc, char **argv) {
     }
 
   for (UINT kind = 0; kind < 6; kind++)
-    for (UINT variant = 0; variant < 23; variant++) {
+    for (UINT variant = 0; variant < 25; variant++) {
       const bool mesh = kind == 3 || kind == 4, tessellation = kind == 2 || kind == 5;
       if (kind == 0 && variant == 22)
         continue;
@@ -416,7 +426,7 @@ main(int argc, char **argv) {
           (mesh && variant != 0 && variant != 2 && variant != 13) || (kind == 5 && variant != 0))
         continue;
       step("graphics kind %u, key variant %u", kind, variant);
-      const UINT root = variant == 1, shader = variant == 2, offset = variant == 3 ? sizeof(UINT) : 0;
+      const UINT root = variant == 1, shader = variant == 2 || variant == 24, offset = variant == 3 ? sizeof(UINT) : 0;
       const UINT samples = variant == 4 ? 4 : 1;
       auto rs = root ? second_root.Get() : first_root.Get();
       D3D12_INPUT_ELEMENT_DESC input{
@@ -432,7 +442,7 @@ main(int argc, char **argv) {
                                           : 0u
       };
       D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{
-          rs, bytecode(points ? vs_points : vs[shader]),
+          variant >= 23 ? nullptr : rs, bytecode(variant >= 23 ? embedded_vs[shader] : points ? vs_points : vs[shader]),
           bytecode(
               variant == 11 || variant == 12 ? dual
               : variant == 13                ? reordered
@@ -500,6 +510,8 @@ main(int argc, char **argv) {
         CHECK(device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&pipeline)));
       }
       if (!strcmp(argv[2], "cold") && store_exists() && kind == 0) {
+        if (variant == 24)
+          expect(conversions - made_before == 1, "a different signature supplier converts only its own stage");
         if (variant == 4)
           expect(conversions == made_before, "sample count changes the Metal pipeline, not the conversion");
         if (variant == 3 || (variant >= 5 && variant <= 13) || variant == 17 || variant == 18 || variant == 19 ||

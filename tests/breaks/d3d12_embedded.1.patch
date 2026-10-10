@@ -1,0 +1,10 @@
+# conflicting embedded signatures are accepted
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1198,5 +1198,5 @@
+         continue;
+       if (signature) {
+-        if (size != signature_size || memcmp(part, signature, size))
++        if (false)
+           return E_INVALIDARG;
+       } else {

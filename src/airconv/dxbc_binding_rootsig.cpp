@@ -366,17 +366,13 @@ setup_binding_rootsig(
   const void *pRawRootSig;
   UINT RawRootSigSize;
   HRESULT hr = microsoft::DXBCGetRootSignature(bytecode, &pRawRootSig, &RawRootSigSize);
-  if (FAILED(hr)) {
-    assert(0 && "invalid root signature blob");
+  if (FAILED(hr))
     return {};
-  }
 
   RootSignatureDeserializer deserializer;
   hr = deserializer.Deserialize(pRawRootSig, RawRootSigSize);
-  if (FAILED(hr)) {
-    assert(0 && "invalid root signature");
+  if (FAILED(hr))
     return {};
-  }
 
   auto &root_sig = deserializer.desc_1_1_.Desc_1_1;
 
@@ -666,9 +662,6 @@ setup_binding_rootsig(
     });
   }
 
-  if (root_sig.NumStaticSamplers == 0)
-    return binding_map;
-
   for (unsigned i = 0; i < root_sig.NumStaticSamplers; i++) {
     auto &State = root_sig.pStaticSamplers[i];
 
@@ -684,6 +677,16 @@ setup_binding_rootsig(
       binding_map->Samplers[range_id].first.arg_index = i;
     }
   }
+
+  // ordinary stages need every resource covered; ray shaders share global and local maps (Microsoft Learn,
+  // Creating a Root Signature, "Root Signature in Pipeline State Objects")
+  if (shader_type != kShaderLibrary &&
+      (binding_map->ConstantBuffers.size() != shader_info->cbufferMap.size() ||
+       binding_map->Samplers.size() != shader_info->samplerMap.size() ||
+       binding_map->SRVs.size() != shader_info->srvMap.size() || binding_map->UAVs.size() != shader_info->uavMap.size()))
+    return {};
+  if (root_sig.NumStaticSamplers == 0)
+    return binding_map;
 
   // a shader record has no static samplers: its shader is told where they are (bind_rootsig_arguments), which
   // stands for an argument after the record

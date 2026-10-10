@@ -3718,6 +3718,8 @@ convert_dxil_mesh_stage(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
   setup_tgsm(shader_info, resource_map, types, module);
 
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, true);

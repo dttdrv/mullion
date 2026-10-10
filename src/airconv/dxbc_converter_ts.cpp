@@ -302,11 +302,15 @@ convert_dxbc_vertex_hull_shader(
                                    &vertex_shader_info, func_signature, module, SM50_BINDING_INDEX_CONSTANT_BUFFER2,
                                    SM50_BINDING_INDEX_ARGUMENT_TABLE2
                                );
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
   auto binding_map_hs = rootsig ? setup_binding_rootsig(
                                       &hull_shader_info, func_signature, module, D3D11_SB_HULL_SHADER,
                                       rootsig->bytecode, rootsig->bytecode_length
                                   )
                                 : setup_binding_table2(&hull_shader_info, func_signature, module);
+  if (!binding_map_hs)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   uint32_t threads_per_patch = next_pow2(pHullStage->hull_maximum_threads_per_patch);
   uint32_t patch_per_group = next_pow2(32 / threads_per_patch);
@@ -931,6 +935,8 @@ convert_dxbc_tesselator_domain_shader(
                                    rootsig->bytecode_length
                                )
                              : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   // every primitive a patch generates carries the patch's SV_PrimitiveID to the pixel shader
   func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
