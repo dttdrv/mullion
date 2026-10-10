@@ -433,7 +433,7 @@ CompileFunction(
 class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12Pageable<MTLD3D12GraphicsPipelineState> {
 protected:
   MTL_SHADER_REFLECTION ref_vs;
-  MTL_SHADER_REFLECTION ref_ps;
+  MTL_SHADER_REFLECTION ref_ps{};
 
   WMT::Reference<WMT::DepthStencilState> dsso;
   WMT::Reference<WMT::DepthStencilState> dsso_depth_readonly;
@@ -604,7 +604,8 @@ public:
       if (rt.pixel_format == WMTPixelFormatRGB9E5Float)
         rt.write_mask = (rt.write_mask & ~WMTColorWriteMaskAlpha) ? WMTColorWriteMaskAll : 0;
 
-      if (renderTarget.BlendEnable) {
+      // blend modes have no effect on undeclared outputs (D3D11.3 16.9.1).
+      if (renderTarget.BlendEnable && (ref_ps.PixelShader.ValidRenderTargets & (1u << i))) {
         if (!any_bit_set(device_->GetMTLPixelFormatCapability(rt.pixel_format) & FormatCapability::Blend)) {
           WARN("CreateGraphicsPipelineState: pixel format ", rt.pixel_format, " is not blendable");
           return E_INVALIDARG;

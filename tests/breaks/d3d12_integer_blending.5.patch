@@ -1,0 +1,12 @@
+# accepted float pipelines lose blending
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -616,7 +616,7 @@
+         }
+         rt.alpha_blend_operation = kBlendOpMap[renderTarget.BlendOpAlpha];
+         rt.rgb_blend_operation = kBlendOpMap[renderTarget.BlendOp];
+-        rt.blending_enabled = renderTarget.BlendEnable;
++        rt.blending_enabled = false;
+         rt.src_alpha_blend_factor = kBlendAlphaFactorMap[renderTarget.SrcBlendAlpha];
+         rt.src_rgb_blend_factor = kBlendFactorMap[renderTarget.SrcBlend];
+         rt.dst_alpha_blend_factor = kBlendAlphaFactorMap[renderTarget.DestBlendAlpha];

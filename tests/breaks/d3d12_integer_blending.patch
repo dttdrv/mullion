@@ -1,0 +1,12 @@
+# undeclared outputs still enable blending
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -605,7 +605,7 @@
+         rt.write_mask = (rt.write_mask & ~WMTColorWriteMaskAlpha) ? WMTColorWriteMaskAll : 0;
+ 
+       // blend modes have no effect on undeclared outputs (D3D11.3 16.9.1).
+-      if (renderTarget.BlendEnable && (ref_ps.PixelShader.ValidRenderTargets & (1u << i))) {
++      if (renderTarget.BlendEnable) {
+         if (!any_bit_set(device_->GetMTLPixelFormatCapability(rt.pixel_format) & FormatCapability::Blend)) {
+           WARN("CreateGraphicsPipelineState: pixel format ", rt.pixel_format, " is not blendable");
+           return E_INVALIDARG;
