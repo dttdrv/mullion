@@ -1,0 +1,11 @@
+# sampler cache keys retain ignored fields
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -716,7 +716,6 @@
+       desc.AddressW != D3D11_TEXTURE_ADDRESS_BORDER)
+     for (auto &component : desc.BorderColor)
+       component = 0.0f;
+-  pSamplerDesc = &desc;
+ 
+   if (!ppSamplerState)
+     return S_FALSE;

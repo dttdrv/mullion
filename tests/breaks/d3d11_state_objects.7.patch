@@ -1,0 +1,12 @@
+# disabled blending retains a non-default source factor
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -850,7 +850,7 @@
+     target.BlendEnable = bool(target.BlendEnable);
+     target.LogicOpEnable = bool(target.LogicOpEnable);
+     if (!target.BlendEnable) {
+-      target.SrcBlend = kDefaultRenderTargetBlendDesc.SrcBlend;
++      target.SrcBlend = D3D11_BLEND_ZERO;
+       target.DestBlend = kDefaultRenderTargetBlendDesc.DestBlend;
+       target.BlendOp = kDefaultRenderTargetBlendDesc.BlendOp;
+       target.SrcBlendAlpha = kDefaultRenderTargetBlendDesc.SrcBlendAlpha;

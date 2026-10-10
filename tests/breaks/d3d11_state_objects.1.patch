@@ -1,0 +1,12 @@
+# disabled stencil retains its input read mask
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -576,7 +576,7 @@
+   desc.DepthWriteMask = desc.DepthEnable ? pDesc->DepthWriteMask : kDefaultDepthStencilDesc.DepthWriteMask;
+   desc.DepthFunc = desc.DepthEnable ? pDesc->DepthFunc : kDefaultDepthStencilDesc.DepthFunc;
+   desc.StencilEnable = bool(pDesc->StencilEnable);
+-  desc.StencilReadMask = desc.StencilEnable ? pDesc->StencilReadMask : kDefaultDepthStencilDesc.StencilReadMask;
++  desc.StencilReadMask = pDesc->StencilReadMask;
+   desc.StencilWriteMask = desc.StencilEnable ? pDesc->StencilWriteMask : kDefaultDepthStencilDesc.StencilWriteMask;
+   desc.FrontFace = desc.StencilEnable ? pDesc->FrontFace : kDefaultDepthStencilDesc.FrontFace;
+   desc.BackFace = desc.StencilEnable ? pDesc->BackFace : kDefaultDepthStencilDesc.BackFace;

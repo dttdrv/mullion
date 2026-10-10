@@ -569,6 +569,19 @@ HRESULT StateObjectCache<D3D11_DEPTH_STENCIL_DESC, IMTLD3D11DepthStencilState>::
   if (!ppDepthStencilState)
     return S_FALSE;
 
+  // ignored fields have the defaults Windows returns (D3D11.3 17.9; Wine's test_create_depthstencil_state)
+  D3D11_DEPTH_STENCIL_DESC desc;
+  memset(&desc, 0, sizeof(desc));
+  desc.DepthEnable = bool(pDesc->DepthEnable);
+  desc.DepthWriteMask = desc.DepthEnable ? pDesc->DepthWriteMask : kDefaultDepthStencilDesc.DepthWriteMask;
+  desc.DepthFunc = desc.DepthEnable ? pDesc->DepthFunc : kDefaultDepthStencilDesc.DepthFunc;
+  desc.StencilEnable = bool(pDesc->StencilEnable);
+  desc.StencilReadMask = desc.StencilEnable ? pDesc->StencilReadMask : kDefaultDepthStencilDesc.StencilReadMask;
+  desc.StencilWriteMask = desc.StencilEnable ? pDesc->StencilWriteMask : kDefaultDepthStencilDesc.StencilWriteMask;
+  desc.FrontFace = desc.StencilEnable ? pDesc->FrontFace : kDefaultDepthStencilDesc.FrontFace;
+  desc.BackFace = desc.StencilEnable ? pDesc->BackFace : kDefaultDepthStencilDesc.BackFace;
+  pDesc = &desc;
+
   if (cache.contains(*pDesc)) {
     cache.at(*pDesc)->QueryInterface(IID_PPV_ARGS(ppDepthStencilState));
     return S_OK;
@@ -693,6 +706,17 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
   D3D11_SAMPLER_DESC desc = *pSamplerDesc;
 
   // FIXME: validation
+
+  // unused sampler fields do not distinguish states (D3D11.3 22.3.34; Wine's test_create_sampler_state)
+  if (!D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc.Filter))
+    desc.MaxAnisotropy = 0;
+  if (!D3D11_DECODE_IS_COMPARISON_FILTER(desc.Filter))
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+  if (desc.AddressU != D3D11_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
+      desc.AddressW != D3D11_TEXTURE_ADDRESS_BORDER)
+    for (auto &component : desc.BorderColor)
+      component = 0.0f;
+  pSamplerDesc = &desc;
 
   if (!ppSamplerState)
     return S_FALSE;
@@ -820,6 +844,24 @@ StateObjectCache<D3D11_BLEND_DESC1, IMTLD3D11BlendState>::CreateStateObject(
       bool(desc_normalized.AlphaToCoverageEnable);
   desc_normalized.IndependentBlendEnable =
       bool(desc_normalized.IndependentBlendEnable);
+  // disabled equations use the defaults, and target 0 supplies non-independent targets (D3D11.3 17.1)
+  for (unsigned i = 0; i < std::size(desc_normalized.RenderTarget); i++) {
+    auto &target = desc_normalized.RenderTarget[i];
+    target.BlendEnable = bool(target.BlendEnable);
+    target.LogicOpEnable = bool(target.LogicOpEnable);
+    if (!target.BlendEnable) {
+      target.SrcBlend = kDefaultRenderTargetBlendDesc.SrcBlend;
+      target.DestBlend = kDefaultRenderTargetBlendDesc.DestBlend;
+      target.BlendOp = kDefaultRenderTargetBlendDesc.BlendOp;
+      target.SrcBlendAlpha = kDefaultRenderTargetBlendDesc.SrcBlendAlpha;
+      target.DestBlendAlpha = kDefaultRenderTargetBlendDesc.DestBlendAlpha;
+      target.BlendOpAlpha = kDefaultRenderTargetBlendDesc.BlendOpAlpha;
+    }
+    if (!target.LogicOpEnable)
+      target.LogicOp = kDefaultRenderTargetBlendDesc.LogicOp;
+    if (i && !desc_normalized.IndependentBlendEnable)
+      target = desc_normalized.RenderTarget[0];
+  }
 
   if (cache.contains(desc_normalized)) {
     cache.at(desc_normalized)->QueryInterface(IID_PPV_ARGS(ppBlendState));

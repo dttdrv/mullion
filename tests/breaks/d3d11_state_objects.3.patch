@@ -1,0 +1,12 @@
+# basic filters retain anisotropy
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -709,7 +709,7 @@
+ 
+   // unused sampler fields do not distinguish states (D3D11.3 22.3.34; Wine's test_create_sampler_state)
+   if (!D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc.Filter))
+-    desc.MaxAnisotropy = 0;
++    desc.MaxAnisotropy = D3D11_MAX_MAXANISOTROPY;
+   if (!D3D11_DECODE_IS_COMPARISON_FILTER(desc.Filter))
+     desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+   if (desc.AddressU != D3D11_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&

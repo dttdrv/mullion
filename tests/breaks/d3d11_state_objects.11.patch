@@ -1,0 +1,12 @@
+# uniform Direct3D 10 blend targets are independent
+--- a/src/d3d10/d3d10_device.cpp
++++ b/src/d3d10/d3d10_device.cpp
+@@ -1094,7 +1094,7 @@
+     return E_INVALIDARG;
+   {
+     d3d11_desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
+-    d3d11_desc.IndependentBlendEnable = FALSE;
++    d3d11_desc.IndependentBlendEnable = TRUE;
+ 
+     for (unsigned i = 0; i < 8; i++) {
+       d3d11_desc.IndependentBlendEnable |=

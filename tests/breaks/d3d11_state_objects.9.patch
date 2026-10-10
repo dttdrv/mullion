@@ -1,0 +1,11 @@
+# blend enable booleans are not canonical
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -847,7 +847,6 @@
+   // disabled equations use the defaults, and target 0 supplies non-independent targets (D3D11.3 17.1)
+   for (unsigned i = 0; i < std::size(desc_normalized.RenderTarget); i++) {
+     auto &target = desc_normalized.RenderTarget[i];
+-    target.BlendEnable = bool(target.BlendEnable);
+     target.LogicOpEnable = bool(target.LogicOpEnable);
+     if (!target.BlendEnable) {
+       target.SrcBlend = kDefaultRenderTargetBlendDesc.SrcBlend;

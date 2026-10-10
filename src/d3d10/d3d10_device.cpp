@@ -1094,9 +1094,12 @@ MTLD3D10Device::CreateBlendState(const D3D10_BLEND_DESC *pBlendStateDesc, ID3D10
     return E_INVALIDARG;
   {
     d3d11_desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
-    d3d11_desc.IndependentBlendEnable = TRUE;
+    d3d11_desc.IndependentBlendEnable = FALSE;
 
     for (unsigned i = 0; i < 8; i++) {
+      d3d11_desc.IndependentBlendEnable |=
+          bool(pBlendStateDesc->BlendEnable[i]) != bool(pBlendStateDesc->BlendEnable[0]) ||
+          pBlendStateDesc->RenderTargetWriteMask[i] != pBlendStateDesc->RenderTargetWriteMask[0];
       d3d11_desc.RenderTarget[i].BlendEnable = pBlendStateDesc->BlendEnable[i];
       d3d11_desc.RenderTarget[i].SrcBlend = D3D11_BLEND(pBlendStateDesc->SrcBlend);
       d3d11_desc.RenderTarget[i].DestBlend = D3D11_BLEND(pBlendStateDesc->DestBlend);

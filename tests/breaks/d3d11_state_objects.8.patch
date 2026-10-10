@@ -1,0 +1,12 @@
+# non-independent targets lose target zero masks
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -860,7 +860,7 @@
+     if (!target.LogicOpEnable)
+       target.LogicOp = kDefaultRenderTargetBlendDesc.LogicOp;
+     if (i && !desc_normalized.IndependentBlendEnable)
+-      target = desc_normalized.RenderTarget[0];
++      target = kDefaultRenderTargetBlendDesc;
+   }
+ 
+   if (cache.contains(desc_normalized)) {

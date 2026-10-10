@@ -1,0 +1,12 @@
+# unused border colors distinguish sampler states
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -715,7 +715,7 @@
+   if (desc.AddressU != D3D11_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
+       desc.AddressW != D3D11_TEXTURE_ADDRESS_BORDER)
+     for (auto &component : desc.BorderColor)
+-      component = 0.0f;
++      component = 1.0f;
+   pSamplerDesc = &desc;
+ 
+   if (!ppSamplerState)

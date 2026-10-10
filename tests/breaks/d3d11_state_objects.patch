@@ -1,0 +1,12 @@
+# disabled depth retains its input write mask
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -573,7 +573,7 @@
+   D3D11_DEPTH_STENCIL_DESC desc;
+   memset(&desc, 0, sizeof(desc));
+   desc.DepthEnable = bool(pDesc->DepthEnable);
+-  desc.DepthWriteMask = desc.DepthEnable ? pDesc->DepthWriteMask : kDefaultDepthStencilDesc.DepthWriteMask;
++  desc.DepthWriteMask = pDesc->DepthWriteMask;
+   desc.DepthFunc = desc.DepthEnable ? pDesc->DepthFunc : kDefaultDepthStencilDesc.DepthFunc;
+   desc.StencilEnable = bool(pDesc->StencilEnable);
+   desc.StencilReadMask = desc.StencilEnable ? pDesc->StencilReadMask : kDefaultDepthStencilDesc.StencilReadMask;

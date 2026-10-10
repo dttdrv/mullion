@@ -1,0 +1,12 @@
+# depth/stencil padding distinguishes equivalent states
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -571,7 +571,7 @@
+ 
+   // ignored fields have the defaults Windows returns (D3D11.3 17.9; Wine's test_create_depthstencil_state)
+   D3D11_DEPTH_STENCIL_DESC desc;
+-  memset(&desc, 0, sizeof(desc));
++  memcpy(&desc, pDesc, sizeof(desc));
+   desc.DepthEnable = bool(pDesc->DepthEnable);
+   desc.DepthWriteMask = desc.DepthEnable ? pDesc->DepthWriteMask : kDefaultDepthStencilDesc.DepthWriteMask;
+   desc.DepthFunc = desc.DepthEnable ? pDesc->DepthFunc : kDefaultDepthStencilDesc.DepthFunc;

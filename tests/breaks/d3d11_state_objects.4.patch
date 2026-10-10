@@ -1,0 +1,12 @@
+# ordinary filters retain comparison functions
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -711,7 +711,7 @@
+   if (!D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc.Filter))
+     desc.MaxAnisotropy = 0;
+   if (!D3D11_DECODE_IS_COMPARISON_FILTER(desc.Filter))
+-    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
++    desc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+   if (desc.AddressU != D3D11_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
+       desc.AddressW != D3D11_TEXTURE_ADDRESS_BORDER)
+     for (auto &component : desc.BorderColor)

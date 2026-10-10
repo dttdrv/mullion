@@ -1,0 +1,12 @@
+# unused logic operations are not canonical
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -858,7 +858,7 @@
+       target.BlendOpAlpha = kDefaultRenderTargetBlendDesc.BlendOpAlpha;
+     }
+     if (!target.LogicOpEnable)
+-      target.LogicOp = kDefaultRenderTargetBlendDesc.LogicOp;
++      target.LogicOp = D3D11_LOGIC_OP_XOR;
+     if (i && !desc_normalized.IndependentBlendEnable)
+       target = desc_normalized.RenderTarget[0];
+   }
