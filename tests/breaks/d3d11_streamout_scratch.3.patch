@@ -1,0 +1,14 @@
+# the GS dispatch marshal zeroes the groups' totals of an indirect stream output draw and not the blocks'
+diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
+index 25d41ae..fd885a6 100644
+--- a/src/dxmt/dxmt_command.metal
++++ b/src/dxmt/dxmt_command.metal
+@@ -598,7 +598,7 @@ struct DXMTGSDispatchMarshal {
+         output.z = 0;
+       } else {
+         device uint* scratch = task.so_scratch_area + so_used / 4;
+-        for (ulong i = 0; i < zeroed / 4; i++)
++        for (ulong i = 0; i < 8 + 4 * groups; i++)
+           scratch[i] = 0;
+         task.so_targets->scratch = task.so_scratch + so_used;
+         task.so_targets->warps = output.x;

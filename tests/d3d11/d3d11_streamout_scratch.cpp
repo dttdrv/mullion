@@ -96,6 +96,11 @@ main() {
   streamed("the small draw before the big one", before.Get(), small);
   streamed("the small draw after the big one", after.Get(), small);
   streamed("the big draw once the area grew", again.Get(), big);
+  // the same draw in a later encoder, over the area the last one left its totals in
+  auto over = target(big);
+  draw(over.Get(), 4 * sizeof(UINT));
+  context->SOSetTargets(0, nullptr, nullptr);
+  streamed("the big draw over the area the last one used", over.Get(), big);
   auto got_first = read(device.Get(), context.Get(), first.Get());
   for (UINT p = 0; p <= big; p++)
     expect("the big draw the area had no room for", got_first[p], sentinel);
