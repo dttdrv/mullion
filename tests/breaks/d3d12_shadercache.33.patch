@@ -1,0 +1,12 @@
+# writers take shared locks and can lose distinct entries to SQLite contention
+--- a/src/winemetal/unix/cache.c
++++ b/src/winemetal/unix/cache.c
+@@ -163,7 +163,7 @@
+ }
+ 
+ - (void)set:(NSData *)key value:(dispatch_data_t)value {
+-  while (flock(_lock_fd, LOCK_EX)) {
++  while (flock(_lock_fd, LOCK_SH)) {
+     if (errno == EINTR)
+       continue;
+     NSLog(@"[CacheWriter] Failed to lock DB: %s", strerror(errno));

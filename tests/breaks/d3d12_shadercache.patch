@@ -1,0 +1,12 @@
+# a stored library is ignored
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -369,7 +369,7 @@
+     WMT::Reference<WMT::DispatchData> data;
+     if (auto reader = cache.getReader()) {
+       enabled = true;
+-      data = reader->get(key);
++      data = {};
+     }
+     if (data) {
+       auto library = device->GetMTLDevice().newLibrary(data, error);

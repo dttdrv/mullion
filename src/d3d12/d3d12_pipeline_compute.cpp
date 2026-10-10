@@ -22,6 +22,7 @@
 #include "d3d12_pageable.hpp"
 #include "d3d12_pipeline.hpp"
 #include "log/log.hpp"
+#include <array>
 
 namespace dxmt {
 
@@ -38,9 +39,8 @@ public:
   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
     auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     SM50Shader shader_cs;
-    SM50Error sm50_err;
 
-    SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
+    SM50_SHADER_ROOT_SIGNATURE_DATA rootsig{};
     rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
     if (pDesc->pRootSignature) {
       rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
@@ -66,27 +66,20 @@ public:
     if (groups_work_together)
       Logger::info(str::format("compute pipeline ", name, ": its threadgroups work together, it is dispatched in parts"));
 
-    SM50ShaderBitcode cs_bitcode;
-
-    if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
-      ERR("Failed to compile cs shader ", name, ": ", SM50GetErrorMessageString(sm50_err));
-      DumpShaders({pDesc->CS});
-      return E_INVALIDARG;
-    }
-
-    SM50_COMPILED_BITCODE cs_bitcode_compiled;
-
-    SM50GetCompiledBitcode(cs_bitcode, &cs_bitcode_compiled);
-
-    auto cs_data = WMT::MakeDispatchData(cs_bitcode_compiled.Data, cs_bitcode_compiled.Size);
-
     auto metal = device_->GetMTLDevice();
-
+    auto args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common;
+    HRESULT status = E_FAIL;
+    auto cs_func = CompileFunction(
+        device_, std::array{pDesc->CS}, args, "cs_main", [&](auto args, auto name, auto bitcode, auto error) {
+          auto result = SM50Compile(shader_cs, args, name, bitcode, error);
+          if (result)
+            status = E_INVALIDARG;
+          return result;
+        }
+    );
+    if (!cs_func)
+      return status;
     WMT::Reference<WMT::Error> err;
-
-    auto cs_lib = metal.newLibrary(cs_data, err);
-
-    auto cs_func = cs_lib.newFunction("cs_main");
 
     // PSO
     {

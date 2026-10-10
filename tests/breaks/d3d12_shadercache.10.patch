@@ -1,0 +1,12 @@
+# sample masks are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -312,7 +312,7 @@
+     }
+     case SM50_SHADER_PSO_PIXEL_SHADER: {
+       auto &[next, type, mask, dual, depth, unorm, formats] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+-      hash(mask, dual, depth, unorm, formats);
++      hash(dual, depth, unorm, formats);
+       break;
+     }
+     case SM50_SHADER_IA_INPUT_LAYOUT: {

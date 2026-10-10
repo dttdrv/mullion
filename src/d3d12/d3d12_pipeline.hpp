@@ -18,11 +18,23 @@
 
 #pragma once
 #include "airconv_public.h"
+#include "Metal.hpp"
 #include "d3d12.h"
 #include "../d3d10/d3d10_blob.hpp"
 #include <cstring>
+#include <functional>
+#include <span>
 
 namespace dxmt {
+
+class MTLD3D12Device;
+
+WMT::Reference<WMT::Function> CompileFunction(
+    MTLD3D12Device *device, std::span<const D3D12_SHADER_BYTECODE> shaders,
+    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
+        &compile
+);
 
 class SM50Shader {
   sm50_shader_t sm50_shader_{};

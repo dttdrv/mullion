@@ -1,0 +1,12 @@
+# the stream output counting pass is left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -343,7 +343,7 @@
+     }
+     case SM50_SHADER_STREAM_OUTPUT: {
+       auto &[next, type, count, elements, strides, rasterized, counting] = *(SM50_SHADER_STREAM_OUTPUT_DATA *)arg;
+-      hash(count, strides, rasterized, counting);
++      hash(count, strides, rasterized);
+       for (uint32_t i = 0; i < count; i++) {
+         auto &[reg, component, stream, slot, offset] = elements[i];
+         hash(reg, component, stream, slot, offset);

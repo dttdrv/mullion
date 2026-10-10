@@ -93,7 +93,8 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 
 @interface CacheWriter () {
   sqlite3 *_db;
-  sqlite3_stmt *_stmt;
+  sqlite3_stmt *_stmt, *_delete_stmt;
+  int _lock_fd;
 }
 @end
 
@@ -101,27 +102,35 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
   if ((self = [super init])) {
+    _lock_fd = -1;
     NSString *dbPath = resolve_cache_dir(path, true);
     if (!dbPath) {
       NSLog(@"[CacheReader] Failed to resolve cache path");
+      [self release];
       return nil;
     }
 
     NSString *lockPath = [dbPath stringByAppendingString:@"-lock"];
-    int fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
-    if (fd < 0) {
+    _lock_fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
+    if (_lock_fd < 0) {
       NSLog(@"[CacheWriter] Failed to open file for locking %@", lockPath);
+      [self release];
       return nil;
     }
-    flock(fd, LOCK_EX);
+    while (flock(_lock_fd, LOCK_EX)) {
+      if (errno == EINTR)
+        continue;
+      NSLog(@"[CacheWriter] Failed to lock DB: %s", strerror(errno));
+      [self release];
+      return nil;
+    }
 
     if (sqlite3_open_v2(
             [dbPath fileSystemRepresentation], &_db, //
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, NULL
         ) != SQLITE_OK) {
       NSLog(@"[CacheWriter] Failed to open DB: %s", sqlite3_errmsg(_db));
-      flock(fd, LOCK_UN);
-      close(fd);
+      [self release];
       return nil;
     }
 
@@ -140,13 +149,14 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
       sqlite3_free(errMsg);
     }
 
-    flock(fd, LOCK_UN);
-    close(fd);
+    flock(_lock_fd, LOCK_UN);
 
     NSString *sqlSet = [NSString stringWithFormat:@"INSERT OR REPLACE INTO %@ (key, value) VALUES (?, ?);", tableName];
-    if (sqlite3_prepare_v2(_db, sqlSet.UTF8String, -1, &_stmt, NULL) != SQLITE_OK) {
-      NSLog(@"[CacheWriter] Failed to prepare INSERT: %s", sqlite3_errmsg(_db));
-      sqlite3_close(_db);
+    NSString *sqlDelete = [NSString stringWithFormat:@"DELETE FROM %@ WHERE key = ?;", tableName];
+    if (sqlite3_prepare_v2(_db, sqlSet.UTF8String, -1, &_stmt, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(_db, sqlDelete.UTF8String, -1, &_delete_stmt, NULL) != SQLITE_OK) {
+      NSLog(@"[CacheWriter] Failed to prepare write: %s", sqlite3_errmsg(_db));
+      [self release];
       return nil;
     }
   }
@@ -154,28 +164,41 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 }
 
 - (void)set:(NSData *)key value:(dispatch_data_t)value {
-  sqlite3_reset(_stmt);
-  sqlite3_clear_bindings(_stmt);
-  sqlite3_bind_blob64(_stmt, 1, key.bytes, key.length, SQLITE_STATIC);
+  while (flock(_lock_fd, LOCK_EX)) {
+    if (errno == EINTR)
+      continue;
+    NSLog(@"[CacheWriter] Failed to lock DB: %s", strerror(errno));
+    return;
+  }
+  sqlite3_stmt *stmt = value ? _stmt : _delete_stmt;
+  sqlite3_reset(stmt);
+  sqlite3_clear_bindings(stmt);
+  sqlite3_bind_blob64(stmt, 1, key.bytes, key.length, SQLITE_STATIC);
 
   const void *bytes = NULL;
   size_t length = 0;
-  dispatch_data_t flat = dispatch_data_create_map(value, &bytes, &length);
-  sqlite3_bind_blob64(_stmt, 2, bytes, length, SQLITE_STATIC);
+  dispatch_data_t flat = value ? dispatch_data_create_map(value, &bytes, &length) : NULL;
+  if (value)
+    sqlite3_bind_blob64(stmt, 2, bytes, length, SQLITE_STATIC);
 
-  if (sqlite3_step(_stmt) != SQLITE_DONE) {
-    NSLog(@"[CacheWriter] Failed to insert: %s", sqlite3_errmsg(_db));
-  }
+  if (sqlite3_step(stmt) != SQLITE_DONE)
+    NSLog(@"[CacheWriter] Failed to write: %s", sqlite3_errmsg(_db));
 
-  dispatch_release(flat);
-  sqlite3_reset(_stmt);
+  if (flat)
+    dispatch_release(flat);
+  sqlite3_reset(stmt);
+  flock(_lock_fd, LOCK_UN);
 }
 
 - (void)dealloc {
   if (_stmt)
     sqlite3_finalize(_stmt);
+  if (_delete_stmt)
+    sqlite3_finalize(_delete_stmt);
   if (_db)
     sqlite3_close(_db);
+  if (_lock_fd >= 0)
+    close(_lock_fd);
   [super dealloc];
 }
 
@@ -193,8 +216,11 @@ _CacheReader_alloc_init(void *obj) {
 int
 _CacheReader_get(void *obj) {
   struct unixcall_cache_get *params = obj;
-  NSData *key =
-      [[NSData alloc] initWithBytesNoCopy:(void *)params->key.ptr length:params->key_length freeWhenDone:false];
+  NSMutableData *key = [[NSMutableData alloc] initWithBytes:&params->key_length length:sizeof(params->key_length)];
+  [key appendBytes:params->key.ptr length:params->key_length];
+  const char *skip = getenv("DXMT_AIRCONV_SKIP");
+  if (skip)
+    [key appendBytes:skip length:strlen(skip)];
   CacheReader *reader = (CacheReader *)params->cache;
   params->ret_data = (obj_handle_t)[reader get:key];
   [key release];
@@ -213,8 +239,12 @@ _CacheWriter_alloc_init(void *obj) {
 int
 _CacheWriter_set(void *obj) {
   struct unixcall_cache_set *params = obj;
-  NSData *key =
-      [[NSData alloc] initWithBytesNoCopy:(void *)params->key.ptr length:params->key_length freeWhenDone:false];
+  // airconv reads the Unix environment, which Windows environment changes do not update
+  NSMutableData *key = [[NSMutableData alloc] initWithBytes:&params->key_length length:sizeof(params->key_length)];
+  [key appendBytes:params->key.ptr length:params->key_length];
+  const char *skip = getenv("DXMT_AIRCONV_SKIP");
+  if (skip)
+    [key appendBytes:skip length:strlen(skip)];
   CacheWriter *writer = (CacheWriter *)params->cache;
   [writer set:key value:(dispatch_data_t)params->value_data];
   [key release];

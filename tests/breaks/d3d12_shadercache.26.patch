@@ -1,0 +1,12 @@
+# mesh pixel shader bytes are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -920,7 +920,7 @@
+       };
+       // the mesh shader names its outputs as the pixel shader's inputs
+       SM50_SHADER_MESH_SHADER_DATA link{&common, SM50_SHADER_MESH_SHADER, pDesc->PS.pShaderBytecode};
+-      WMT::Reference<WMT::Function> as_func, ms_func = compile(shader_ms, MS, &link, "ms_main", pDesc->PS);
++      WMT::Reference<WMT::Function> as_func, ms_func = compile(shader_ms, MS, &link, "ms_main");
+       if (!ms_func || (AS.pShaderBytecode && !(as_func = compile(shader_as, AS, &common, "as_main")))) {
+         DumpShaders({AS, MS});
+         return E_INVALIDARG;

@@ -1,0 +1,21 @@
+# the native converter option is left out of both keys
+--- a/src/winemetal/unix/cache.c
++++ b/src/winemetal/unix/cache.c
+@@ -203,7 +203,7 @@
+   [key appendBytes:params->key.ptr length:params->key_length];
+   const char *skip = getenv("DXMT_AIRCONV_SKIP");
+   if (skip)
+-    [key appendBytes:skip length:strlen(skip)];
++    [key appendBytes:skip length:0];
+   CacheReader *reader = (CacheReader *)params->cache;
+   params->ret_data = (obj_handle_t)[reader get:key];
+   [key release];
+@@ -227,7 +227,7 @@
+   [key appendBytes:params->key.ptr length:params->key_length];
+   const char *skip = getenv("DXMT_AIRCONV_SKIP");
+   if (skip)
+-    [key appendBytes:skip length:strlen(skip)];
++    [key appendBytes:skip length:0];
+   CacheWriter *writer = (CacheWriter *)params->cache;
+   [writer set:key value:(dispatch_data_t)params->value_data];
+   [key release];

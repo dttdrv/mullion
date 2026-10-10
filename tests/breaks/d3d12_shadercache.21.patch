@@ -1,0 +1,12 @@
+# strip topology is left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -326,7 +326,7 @@
+     }
+     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
+       auto &[next, type, strip, cut, index, primitive, pass] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
+-      hash(strip, cut, index, primitive, pass);
++      hash(cut, index, primitive, pass);
+       break;
+     }
+     case SM50_SHADER_PSO_TESSELLATOR: {

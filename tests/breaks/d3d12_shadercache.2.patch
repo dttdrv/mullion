@@ -1,0 +1,12 @@
+# shader bytes are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -300,7 +300,7 @@
+   hash(AIRCONV_VERSION, device->GetMTLDevice().registryID(), uint64_t(shaders.size()));
+   bytes(name, strlen(name));
+   for (auto shader : shaders)
+-    bytes(shader.pShaderBytecode, shader.BytecodeLength);
++    hash(bool(shader.pShaderBytecode));
+   for (auto arg = arguments; arg; arg = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)arg->next) {
+     hash(arg->type);
+     // binding the whole structure makes new members require a key change, without hashing padding or pointers

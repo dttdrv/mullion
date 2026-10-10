@@ -1,0 +1,12 @@
+# tessellation vertex size is left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -331,7 +331,7 @@
+     }
+     case SM50_SHADER_PSO_TESSELLATOR: {
+       auto &[next, type, factor, size, groups, geometry] = *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
+-      hash(factor, size, groups, bool(geometry));
++      hash(factor, groups, bool(geometry));
+       break;
+     }
+     case SM50_SHADER_ROOT_SIGNATURE:

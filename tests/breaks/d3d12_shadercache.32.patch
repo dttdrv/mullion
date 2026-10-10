@@ -1,0 +1,12 @@
+# overlapping requests do not wait for the first conversion
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -402,7 +402,7 @@
+   if (enabled) {
+     {
+       std::unique_lock lock(pending_mutex);
+-      completed.wait(lock, [&] { return !pending.contains(key); });
++      completed.wait(lock, [] { return true; });
+       pending.insert(key);
+       conversion.emplace(key);
+     }

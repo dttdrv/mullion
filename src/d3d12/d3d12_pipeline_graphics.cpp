@@ -21,6 +21,7 @@
 #include "d3d12_pipeline.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_stream_output.hpp"
+#include "dxmt_shader_cache.hpp"
 #include "tessellation_limits.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
@@ -30,6 +31,8 @@
 #include "util_env.hpp"
 #include <span>
 #include <fstream>
+#include <array>
+#include <unordered_set>
 
 namespace dxmt {
 
@@ -280,6 +283,153 @@ MTLD3D12PipelineState::InitializeShader(
   return S_OK;
 }
 
+WMT::Reference<WMT::Function>
+CompileFunction(
+    MTLD3D12Device *device, std::span<const D3D12_SHADER_BYTECODE> shaders,
+    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
+        &compile
+) {
+  Sha1HashState h;
+  auto hash = [&](const auto &...values) { (h.update(values), ...); };
+  auto bytes = [&](const void *data, size_t size) {
+    h.update(uint64_t(size));
+    if (size)
+      h.update(data, size);
+  };
+  bytes("d3d12", strlen("d3d12"));
+  hash(AIRCONV_VERSION, device->GetMTLDevice().registryID(), uint64_t(shaders.size()));
+  bytes(name, strlen(name));
+  for (auto shader : shaders)
+    bytes(shader.pShaderBytecode, shader.BytecodeLength);
+  for (auto arg = arguments; arg; arg = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)arg->next) {
+    hash(arg->type);
+    // binding the whole structure makes new members require a key change, without hashing padding or pointers
+    switch (arg->type) {
+    case SM50_SHADER_COMMON: {
+      auto &[next, type, metal, flags, width] = *(SM50_SHADER_COMMON_DATA *)arg;
+      hash(metal, flags, width);
+      break;
+    }
+    case SM50_SHADER_PSO_PIXEL_SHADER: {
+      auto &[next, type, mask, dual, depth, unorm, formats] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+      hash(mask, dual, depth, unorm, formats);
+      break;
+    }
+    case SM50_SHADER_IA_INPUT_LAYOUT: {
+      auto &[next, type, format, slots, count, elements] = *(SM50_SHADER_IA_INPUT_LAYOUT_DATA *)arg;
+      hash(format, slots, count);
+      for (uint32_t i = 0; i < count; i++) {
+        auto &[reg, slot, offset, attribute, step, rate] = elements[i];
+        hash(reg, slot, offset, attribute, uint32_t(step), uint32_t(rate));
+      }
+      break;
+    }
+    case SM50_SHADER_PSO_GEOMETRY_SHADER: {
+      auto &[next, type, strip, cut, index, primitive, pass] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
+      hash(strip, cut, index, primitive, pass);
+      break;
+    }
+    case SM50_SHADER_PSO_TESSELLATOR: {
+      auto &[next, type, factor, size, groups, geometry] = *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
+      hash(factor, size, groups, bool(geometry));
+      break;
+    }
+    case SM50_SHADER_ROOT_SIGNATURE:
+    case SM50_SHADER_ROOT_SIGNATURE2: {
+      auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+      bytes(code, length);
+      hash(samplers);
+      break;
+    }
+    case SM50_SHADER_STREAM_OUTPUT: {
+      auto &[next, type, count, elements, strides, rasterized, counting] = *(SM50_SHADER_STREAM_OUTPUT_DATA *)arg;
+      hash(count, strides, rasterized, counting);
+      for (uint32_t i = 0; i < count; i++) {
+        auto &[reg, component, stream, slot, offset] = elements[i];
+        hash(reg, component, stream, slot, offset);
+      }
+      break;
+    }
+    case SM50_SHADER_MESH_SHADER: {
+      auto &[next, type, pixel] = *(SM50_SHADER_MESH_SHADER_DATA *)arg;
+      hash(bool(pixel));
+      break;
+    }
+    default:
+      ERR("Unknown shader compilation argument: ", arg->type);
+      return {};
+    }
+  }
+  auto key = h.final();
+  auto &cache = ShaderCache::getInstance(WMTMetalVersion(device->GetMetalVersion()));
+  bool enabled = false;
+  WMT::Error error;
+  auto cached = [&]() -> WMT::Reference<WMT::Function> {
+    WMT::Reference<WMT::DispatchData> data;
+    if (auto reader = cache.getReader()) {
+      enabled = true;
+      data = reader->get(key);
+    }
+    if (data) {
+      auto library = device->GetMTLDevice().newLibrary(data, error);
+      if (auto function = library ? library.newFunction(name) : WMT::Reference<WMT::Function>{})
+        return function;
+      if (auto writer = cache.getWriter())
+        writer->set(key, {});
+    }
+    return {};
+  };
+  if (auto function = cached())
+    return function;
+  static dxmt::mutex pending_mutex;
+  static dxmt::condition_variable completed;
+  static std::unordered_set<Sha1Digest> pending;
+  struct Conversion {
+    Sha1Digest key;
+    Conversion(Sha1Digest key) : key(key) {}
+    ~Conversion() {
+      {
+        std::lock_guard lock(pending_mutex);
+        pending.erase(key);
+      }
+      completed.notify_all();
+    }
+  };
+  std::optional<Conversion> conversion;
+  if (enabled) {
+    {
+      std::unique_lock lock(pending_mutex);
+      completed.wait(lock, [&] { return !pending.contains(key); });
+      pending.insert(key);
+      conversion.emplace(key);
+    }
+    if (auto function = cached())
+      return function;
+  }
+  SM50ShaderBitcode bitcode;
+  SM50Error sm50_error;
+  if (compile(arguments, name, &bitcode, &sm50_error)) {
+    ERR("Failed to compile ", name, ": ", SM50GetErrorMessageString(sm50_error));
+    for (auto shader : shaders)
+      MTLD3D12PipelineState::DumpShaders({shader});
+    return {};
+  }
+  SM50_COMPILED_BITCODE compiled;
+  SM50GetCompiledBitcode(bitcode, &compiled);
+  auto data = WMT::MakeDispatchData(compiled.Data, compiled.Size);
+  error = {};
+  auto library = device->GetMTLDevice().newLibrary(data, error);
+  auto function = library ? library.newFunction(name) : WMT::Reference<WMT::Function>{};
+  if (!function) {
+    ERR("Failed to load ", name, ": ", library ? "no such function" : error.description().getUTF8String());
+    return {};
+  }
+  if (auto writer = cache.getWriter())
+    writer->set(key, data);
+  return function;
+}
+
 class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12Pageable<MTLD3D12GraphicsPipelineState> {
 protected:
   MTL_SHADER_REFLECTION ref_vs;
@@ -321,6 +471,7 @@ protected:
       void *next
   ) {
     rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
+    rootsig.static_samplers = 0;
     if (pRootSignature) {
       rootsig.bytecode_length = static_cast<MTLD3D12RootSignature *>(pRootSignature)->GetBlob(&rootsig.bytecode);
     } else {
@@ -329,29 +480,6 @@ protected:
     }
     rootsig.next = next;
     return (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig;
-  }
-
-  // the Metal function of an airconv compilation, which it frees
-  WMT::Reference<WMT::Function>
-  Function(
-      int status, sm50_bitcode_t bitcode, sm50_error_t sm50_err, const char *name,
-      std::initializer_list<D3D12_SHADER_BYTECODE> Shaders
-  ) {
-    WMT::Reference<WMT::Function> func;
-    WMT::Reference<WMT::Error> err;
-    if (status) {
-      ERR("Failed to compile ", name, ": ", SM50GetErrorMessageString(sm50_err));
-      SM50FreeError(sm50_err);
-      DumpShaders(Shaders);
-      return func;
-    }
-    SM50_COMPILED_BITCODE compiled;
-    SM50GetCompiledBitcode(bitcode, &compiled);
-    auto library = device_->GetMTLDevice().newLibrary(WMT::MakeDispatchData(compiled.Data, compiled.Size), err);
-    if (!library || !(func = library.newFunction(name)))
-      ERR("Failed to load ", name, ": ", library ? "no such function" : err.description().getUTF8String());
-    SM50DestroyBitcode(bitcode);
-    return func;
   }
 
   // a geometry pipeline's Metal pipeline for lists or strips of `primitive` (D3D10_SB_PRIMITIVE): the vertex shader
@@ -383,20 +511,20 @@ protected:
     in.ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
     in.ia_layout.next = &pso_gs;
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_vs, rootsig_gs;
-    sm50_bitcode_t bitcode = nullptr;
-    sm50_error_t sm50_err = nullptr;
-    int status = SM50CompileGeometryPipelineVertex(
-        shader_vs, shader_gs, RootSignature(rootsig_vs, in.root_signature.ptr(), VS, &in.ia_layout), "vsgs_main",
-        &bitcode, &sm50_err
+    auto args_vs = RootSignature(rootsig_vs, in.root_signature.ptr(), VS, &in.ia_layout);
+    auto vs_func = CompileFunction(
+        device_, std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
+          return SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
+        }
     );
-    auto vs_func = Function(status, bitcode, sm50_err, "vsgs_main", {VS, GS});
     if (!vs_func)
       return variant;
-    status = SM50CompileGeometryPipelineGeometry(
-        shader_vs, shader_gs, RootSignature(rootsig_gs, in.root_signature.ptr(), shader_gs ? GS : VS, &pso_gs),
-        "gs_main", &bitcode, &sm50_err
+    auto args_gs = RootSignature(rootsig_gs, in.root_signature.ptr(), shader_gs ? GS : VS, &pso_gs);
+    auto gs_func = CompileFunction(
+        device_, std::array{VS, GS}, args_gs, "gs_main", [&](auto args, auto name, auto bitcode, auto error) {
+          return SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
+        }
     );
-    auto gs_func = Function(status, bitcode, sm50_err, "gs_main", {VS, GS});
     if (!gs_func)
       return variant;
     auto info = in.info;
@@ -685,9 +813,15 @@ public:
     auto root_signature = [&](SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, D3D12_SHADER_BYTECODE Bytecode, void *next) {
       return RootSignature(rootsig, pDesc->pRootSignature, Bytecode, next);
     };
-    // a shader that cannot be made a function of is not a valid one: E_INVALIDARG, as for its container
-    auto function = [&](int status, sm50_bitcode_t bitcode, sm50_error_t sm50_err, const char *name) {
-      return Function(status, bitcode, sm50_err, name, {pDesc->VS, pDesc->HS, pDesc->DS, pDesc->PS});
+    auto function = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, SM50_SHADER_COMPILATION_ARGUMENT_DATA *args,
+                        const char *name, D3D12_SHADER_BYTECODE linked = {}) {
+      auto shaders = std::array{code, linked};
+      return CompileFunction(
+          device_, std::span(shaders).first(linked.pShaderBytecode ? 2 : 1), args, name,
+          [shader](auto args, auto name, auto bitcode, auto error) {
+            return SM50Compile(shader, args, name, bitcode, error);
+          }
+      );
     };
     Name({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS, MS, AS});
 
@@ -792,10 +926,7 @@ public:
       }
 
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      sm50_bitcode_t bitcode = nullptr;
-      sm50_error_t sm50_err = nullptr;
-      int status = SM50Compile(shader_ps, root_signature(rootsig, pDesc->PS, &data_ps), ps_name.c_str(), &bitcode, &sm50_err);
-      if (!(ps_func = function(status, bitcode, sm50_err, ps_name.c_str())))
+      if (!(ps_func = function(shader_ps, pDesc->PS, root_signature(rootsig, pDesc->PS, &data_ps), ps_name.c_str())))
         return E_INVALIDARG;
     }
 
@@ -820,16 +951,14 @@ public:
     };
 
     if (mesh_shader) {
-      auto compile = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, void *args, const char *name) {
+      auto compile = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, void *args, const char *name,
+                         D3D12_SHADER_BYTECODE linked = {}) {
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-        sm50_bitcode_t bitcode = nullptr;
-        sm50_error_t sm50_err = nullptr;
-        int status = SM50Compile(shader, root_signature(rootsig, code, args), name, &bitcode, &sm50_err);
-        return function(status, bitcode, sm50_err, name);
+        return function(shader, code, root_signature(rootsig, code, args), name, linked);
       };
       // the mesh shader names its outputs as the pixel shader's inputs
       SM50_SHADER_MESH_SHADER_DATA link{&common, SM50_SHADER_MESH_SHADER, pDesc->PS.pShaderBytecode};
-      WMT::Reference<WMT::Function> as_func, ms_func = compile(shader_ms, MS, &link, "ms_main");
+      WMT::Reference<WMT::Function> as_func, ms_func = compile(shader_ms, MS, &link, "ms_main", pDesc->PS);
       if (!ms_func || (AS.pShaderBytecode && !(as_func = compile(shader_as, AS, &common, "as_main")))) {
         DumpShaders({AS, MS});
         return E_INVALIDARG;
@@ -871,10 +1000,7 @@ public:
         data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_NONE;
         data_ia_layout.next = &common;
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-        sm50_bitcode_t bitcode = nullptr;
-        sm50_error_t sm50_err = nullptr;
-        int status = SM50Compile(shader_vs, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main", &bitcode, &sm50_err);
-        auto vs_func = function(status, bitcode, sm50_err, "vs_main");
+        auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main");
         if (!vs_func)
           return E_INVALIDARG;
         info.vertex_function = vs_func.handle;
@@ -887,10 +1013,7 @@ public:
     } else if (!tessellation) {
       data_ia_layout.next = &common;
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      sm50_bitcode_t bitcode = nullptr;
-      sm50_error_t sm50_err = nullptr;
-      int status = SM50Compile(shader_vs, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main", &bitcode, &sm50_err);
-      auto vs_func = function(status, bitcode, sm50_err, "vs_main");
+      auto vs_func = function(shader_vs, pDesc->VS, root_signature(rootsig, pDesc->VS, &data_ia_layout), "vs_main");
       if (!vs_func)
         return E_INVALIDARG;
       info.vertex_function = vs_func.handle;
@@ -938,12 +1061,13 @@ public:
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
         root_signature(rootsig_gs, pDesc->GS, &pso_tess);
         rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        sm50_bitcode_t bitcode = nullptr;
-        sm50_error_t sm50_err = nullptr;
-        int status = SM50CompileTessellationPipelineDomain(
-            shader_hs, shader_ds, root_signature(rootsig_ds, pDesc->DS, &rootsig_gs), "ds_main", &bitcode, &sm50_err
+        auto args_ds = root_signature(rootsig_ds, pDesc->DS, &rootsig_gs);
+        auto ds_func = CompileFunction(
+            device_, std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineDomain(shader_hs, shader_ds, args, name, bitcode, error);
+            }
         );
-        auto ds_func = function(status, bitcode, sm50_err, "ds_main");
         if (!ds_func)
           return E_INVALIDARG;
         mesh_info.mesh_function = ds_func.handle;
@@ -954,10 +1078,13 @@ public:
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
         root_signature(rootsig_vs, pDesc->VS, &data_ia_layout);
         rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        status = SM50CompileTessellationPipelineHull(
-            shader_vs, shader_hs, root_signature(rootsig_hs, pDesc->HS, &rootsig_vs), "vshs_main", &bitcode, &sm50_err
+        auto args_hs = root_signature(rootsig_hs, pDesc->HS, &rootsig_vs);
+        auto vshs_func = CompileFunction(
+            device_, std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineHull(shader_vs, shader_hs, args, name, bitcode, error);
+            }
         );
-        auto vshs_func = function(status, bitcode, sm50_err, "vshs_main");
         if (!vshs_func)
           return E_INVALIDARG;
         mesh_info.object_function = vshs_func.handle;

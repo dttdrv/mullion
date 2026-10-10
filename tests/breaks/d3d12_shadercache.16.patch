@@ -1,0 +1,12 @@
+# stream output slots are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -346,7 +346,7 @@
+       hash(count, strides, rasterized, counting);
+       for (uint32_t i = 0; i < count; i++) {
+         auto &[reg, component, stream, slot, offset] = elements[i];
+-        hash(reg, component, stream, slot, offset);
++        hash(reg, component, stream, offset);
+       }
+       break;
+     }

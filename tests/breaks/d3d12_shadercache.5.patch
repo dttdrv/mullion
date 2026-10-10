@@ -1,0 +1,16 @@
+# input slots are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -317,10 +317,10 @@
+     }
+     case SM50_SHADER_IA_INPUT_LAYOUT: {
+       auto &[next, type, format, slots, count, elements] = *(SM50_SHADER_IA_INPUT_LAYOUT_DATA *)arg;
+-      hash(format, slots, count);
++      hash(format, count);
+       for (uint32_t i = 0; i < count; i++) {
+         auto &[reg, slot, offset, attribute, step, rate] = elements[i];
+-        hash(reg, slot, offset, attribute, uint32_t(step), uint32_t(rate));
++        hash(reg, offset, attribute, uint32_t(step), uint32_t(rate));
+       }
+       break;
+     }

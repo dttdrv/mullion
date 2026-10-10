@@ -1,0 +1,12 @@
+# input registers are left out of the key
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -320,7 +320,7 @@
+       hash(format, slots, count);
+       for (uint32_t i = 0; i < count; i++) {
+         auto &[reg, slot, offset, attribute, step, rate] = elements[i];
+-        hash(reg, slot, offset, attribute, uint32_t(step), uint32_t(rate));
++        hash(slot, offset, attribute, uint32_t(step), uint32_t(rate));
+       }
+       break;
+     }

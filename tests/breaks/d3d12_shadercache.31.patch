@@ -1,0 +1,15 @@
+# a rejected entry is not converted again
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -382,8 +382,9 @@
+     }
+     return {};
+   };
+-  if (auto function = cached())
+-    return function;
++  auto stored = cached();
++  if (stored || error)
++    return stored;
+   static dxmt::mutex pending_mutex;
+   static dxmt::condition_variable completed;
+   static std::unordered_set<Sha1Digest> pending;
