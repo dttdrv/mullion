@@ -1,0 +1,11 @@
+# changed scissor rectangles leave the encoded scissor stale
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3334,7 +3334,6 @@ public:
+     IMTLD3D11RasterizerState *current_rs =
+         state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state;
+     if (current_rs->IsScissorEnabled()) {
+-      dirty_state.set(DirtyState::Scissors);
+       // otherwise no need to update scissor because it's either already dirty
+       // or duplicates viewports
+     }

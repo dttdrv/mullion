@@ -1,0 +1,12 @@
+# direct draws ignore their start vertex
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -1284,7 +1284,7 @@ public:
+       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw>();
+       cmd.type = WMTRenderCommandDraw;
+       cmd.primitive_type = Primitive;
+-      cmd.vertex_start = StartVertexLocation;
++      cmd.vertex_start = 0;
+       cmd.vertex_count = VertexCount;
+       cmd.base_instance = 0;
+       cmd.instance_count = 1;

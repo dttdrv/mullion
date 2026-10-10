@@ -3,7 +3,7 @@ d3d11_test_deps = [cpp.find_library('d3d11'), cpp.find_library('dxgi'), cpp.find
 
 # the sources a test has beside its own
 d3d11_test_sources = { 'tessellator': files('../reference/reference.cpp') }
-foreach name : ['streamout', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices']
+foreach name : ['state_transitions', 'streamout', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices']
   # without the shader cache, so a test meets the shaders this build makes
   test('d3d11_' + name,
        executable('d3d11_' + name, ['d3d11_' + name + '.cpp'] + d3d11_test_sources.get(name, []), dependencies : d3d11_test_deps),

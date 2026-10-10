@@ -1,0 +1,11 @@
+# resource uploads ignore dirty SRVs in the high mask word
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3498,6 +3498,6 @@ public:
+     bool dirty_cbuffer = ShaderStage.ConstantBuffers.any_dirty_masked(reflection->ConstantBufferSlotMask);
+     bool dirty_sampler = ShaderStage.Samplers.any_dirty_masked(reflection->SamplerSlotMask);
+-    bool dirty_srv = ShaderStage.SRVs.any_dirty_masked(reflection->SRVSlotMaskHi, reflection->SRVSlotMaskLo);
++    bool dirty_srv = ShaderStage.SRVs.any_dirty_masked(0, reflection->SRVSlotMaskLo);
+     bool uav_bound = UAVBindingSet.any_bound_masked(reflection->UAVSlotMask);
+     if (!dirty_cbuffer && !dirty_sampler && !dirty_srv && !uav_bound)
+       return;

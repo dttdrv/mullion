@@ -1,0 +1,10 @@
+# same-pointer vertex buffer offsets never reach the encoding context
+--- a/src/dxmt/dxmt_context.hpp
++++ b/src/dxmt/dxmt_context.hpp
+@@ -545,6 +545,5 @@ public:
+   void
+   bindVertexBufferOffset(unsigned slot, unsigned offset, unsigned stride) {
+     auto &entry = vbuf_[slot];
+-    entry.offset = offset;
+     entry.stride = stride;
+   }

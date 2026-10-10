@@ -1,0 +1,12 @@
+# same-pointer constant buffer count changes are discarded
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3665,7 +3665,7 @@ public:
+         bool replaced = false;
+         auto &entry = ShaderStage.ConstantBuffers.bind(slot, {pConstantBuffer}, replaced);
+         if (!replaced) {
+-          if (FirstConstant != entry.FirstConstant || NumConstants != entry.NumConstants) {
++          if (FirstConstant != entry.FirstConstant) {
+             ShaderStage.ConstantBuffers.set_dirty(slot);
+             entry.FirstConstant = FirstConstant;
+             entry.NumConstants = NumConstants;

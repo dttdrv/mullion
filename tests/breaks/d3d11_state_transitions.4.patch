@@ -1,0 +1,12 @@
+# rebinding the same compute UAV ignores its new initial counter
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -2698,7 +2698,7 @@ public:
+       if (pUAV) {
+         bool replaced = false;
+         auto &entry = UAVs.bind(Slot, {pUAV}, replaced);
+-        if (InitialCount != ~0u) {
++        if (replaced && InitialCount != ~0u) {
+           UpdateUAVCounter(pUAV, InitialCount);
+         }
+         if (!replaced)
