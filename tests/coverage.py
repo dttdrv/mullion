@@ -49,7 +49,7 @@ def setup(like, out):
     made = configparser.ConfigParser()
     made.read(like / "meson-private" / "cmd_line.txt")
     source = json.loads((like / "meson-info" / "meson-info.json").read_text())["directories"]["source"]
-    options = {**made["options"], "enable_tests": "false", "c_args": FLAG, "cpp_args": FLAG,
+    options = {**made["options"], "enable_tests": "false", "debug": "true", "c_args": FLAG, "cpp_args": FLAG,
                "c_link_args": str(hook), "cpp_link_args": str(hook)}
     files = [f"--{kind.replace('_', '-')}={path}" for kind in ("cross_file", "native_file")
              for path in json.loads(made["properties"].get(kind, "[]").replace("'", '"'))]
