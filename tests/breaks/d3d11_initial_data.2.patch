@@ -1,0 +1,12 @@
+# rejected initial data leaves the output pointer untouched
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -82,5 +82,7 @@
+                ID3D11Buffer **ppBuffer) override {
++    if (pInitialData && !pInitialData->pSysMem)
++      return E_INVALIDARG;
+     InitReturnPtr(ppBuffer);
+ 
+     if (!pDesc || (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)) ||
+         (pInitialData && !pInitialData->pSysMem))

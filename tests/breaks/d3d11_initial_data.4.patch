@@ -1,0 +1,14 @@
+# require equal pitches for buffer initial data
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -86,6 +86,9 @@
+         (pInitialData && !pInitialData->pSysMem))
+       return E_INVALIDARG;
+ 
++    if (pInitialData && pInitialData->SysMemPitch != pInitialData->SysMemSlicePitch)
++      return E_INVALIDARG;
++
+     try {
+       switch (pDesc->Usage) {
+       case D3D11_USAGE_DEFAULT:

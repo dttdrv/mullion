@@ -1,0 +1,13 @@
+# reject valid null-output calls for staging buffers
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -93,7 +93,7 @@
+       case D3D11_USAGE_DYNAMIC:
+         return ppBuffer ? dxmt::CreateBuffer(this, pDesc, pInitialData, ppBuffer) : S_FALSE;
+       case D3D11_USAGE_STAGING:
+-        return ppBuffer ? CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer) : S_FALSE;
++        return ppBuffer ? CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer) : E_INVALIDARG;
+       default:
+         DXMT_UNREACHABLE
+       }

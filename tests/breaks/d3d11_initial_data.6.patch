@@ -1,0 +1,15 @@
+# repeat the first 255 initial bytes in a staging buffer
+diff --git a/src/d3d11/d3d11_resource_staging.cpp b/src/d3d11/d3d11_resource_staging.cpp
+--- a/src/d3d11/d3d11_resource_staging.cpp
++++ b/src/d3d11/d3d11_resource_staging.cpp
+@@ -46,7 +46,9 @@
+   auto byte_width = pDesc->ByteWidth;
+   auto buffer = new StagingResource(metal, byte_width, byte_width, byte_width);
+   if (pInitialData) {
+-    memcpy(buffer->mappedImmediateMemory(), pInitialData->pSysMem, byte_width);
++    auto bytes = static_cast<uint8_t *>(buffer->mappedImmediateMemory());
++    for (uint32_t i = 0; i < byte_width; i++)
++      bytes[i] = static_cast<const uint8_t *>(pInitialData->pSysMem)[i % UINT8_MAX];
+   }
+   *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new StagingBuffer(pDesc, pDevice, buffer)));
+   return S_OK;

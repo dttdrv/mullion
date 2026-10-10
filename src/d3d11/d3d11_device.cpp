@@ -91,9 +91,9 @@ public:
       case D3D11_USAGE_DEFAULT:
       case D3D11_USAGE_IMMUTABLE:
       case D3D11_USAGE_DYNAMIC:
-        return dxmt::CreateBuffer(this, pDesc, pInitialData, ppBuffer);
+        return ppBuffer ? dxmt::CreateBuffer(this, pDesc, pInitialData, ppBuffer) : S_FALSE;
       case D3D11_USAGE_STAGING:
-        return CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer);
+        return ppBuffer ? CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer) : S_FALSE;
       default:
         DXMT_UNREACHABLE
       }

@@ -1,0 +1,16 @@
+# repeat the first 255 initial bytes in a device buffer
+diff --git a/src/d3d11/d3d11_buffer.cpp b/src/d3d11/d3d11_buffer.cpp
+--- a/src/d3d11/d3d11_buffer.cpp
++++ b/src/d3d11/d3d11_buffer.cpp
+@@ -105,7 +105,10 @@
+     auto allocation = buffer_->allocate(flags);
+     auto &initializer = device->GetDXMTDevice().queue().initializer;
+     if (pInitialData) {
+-      allocation->updateContents(0, pInitialData->pSysMem, pDesc->ByteWidth);
++      std::vector<uint8_t> repeated(pDesc->ByteWidth);
++      for (size_t i = 0; i < repeated.size(); i++)
++        repeated[i] = static_cast<const uint8_t *>(pInitialData->pSysMem)[i % UINT8_MAX];
++      allocation->updateContents(0, repeated.data(), pDesc->ByteWidth);
+     } else if (flags.test(BufferAllocationFlag::GpuPrivate)) {
+       initializer.initWithZero(allocation.ptr(), 0, buffer_->length());
+     }

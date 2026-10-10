@@ -1,0 +1,12 @@
+# null initial memory reaches the upload
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -85,6 +85,5 @@
+-    if (!pDesc || (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)) ||
+-        (pInitialData && !pInitialData->pSysMem))
++    if (!pDesc || (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)))
+       return E_INVALIDARG;
+ 
+     try {
+       switch (pDesc->Usage) {
