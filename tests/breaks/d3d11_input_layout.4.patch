@@ -1,0 +1,16 @@
+# accept different classifications in the same slot
+diff --git a/src/d3d11/d3d11_input_layout.cpp b/src/d3d11/d3d11_input_layout.cpp
+--- a/src/d3d11/d3d11_input_layout.cpp
++++ b/src/d3d11/d3d11_input_layout.cpp
+@@ -48,11 +48,6 @@
+       ERR("CreateInputLayout: not an ordinary or packed format: ", desc.Format);
+       return E_INVALIDARG;
+     }
+-    // a slot's elements step alike (the same test)
+-    if (std::any_of(pInputElementDescs, &desc, [&](auto &other) {
+-          return other.InputSlot == desc.InputSlot && other.InputSlotClass != desc.InputSlotClass;
+-        }))
+-      return E_INVALIDARG;
+     auto aligned_byte_offset = desc.AlignedByteOffset == D3D11_APPEND_ALIGNED_ELEMENT
+                                    ? align(append_offset[desc.InputSlot], std::min(4u, metal_format.BytesPerTexel))
+                                    : desc.AlignedByteOffset;

@@ -1,0 +1,13 @@
+# treat every input register as covered
+diff --git a/src/d3d11/d3d11_input_layout.cpp b/src/d3d11/d3d11_input_layout.cpp
+--- a/src/d3d11/d3d11_input_layout.cpp
++++ b/src/d3d11/d3d11_input_layout.cpp
+@@ -19,7 +19,7 @@
+ 
+   using namespace microsoft;
+   uint16_t append_offset[32] = {0};
+-  uint32_t register_mask = 0;
++  uint32_t register_mask = ~uint32_t(0);
+ 
+   CSignatureParser parser;
+   HRESULT hr =

@@ -1,0 +1,10 @@
+# reject zero elements even when the signature is empty
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -222,4 +222,4 @@
+-    if (!pInputElementDescs)
++    if (!pInputElementDescs || !NumElements)
+       return E_INVALIDARG;
+     if (!pShaderBytecodeWithInputSignature)
+       return E_INVALIDARG;

@@ -1,0 +1,15 @@
+# classify missing inputs by signature metadata
+diff --git a/src/d3d11/d3d11_input_layout.cpp b/src/d3d11/d3d11_input_layout.cpp
+--- a/src/d3d11/d3d11_input_layout.cpp
++++ b/src/d3d11/d3d11_input_layout.cpp
+@@ -84,9 +84,7 @@
+   }
+   for (UINT i = 0; i < num_parameters; i++) {
+     auto &inputSig = pParameters[i];
+-    // the input assembler makes these two itself. every other input needs an element, whatever stage the signature
+-    // is of (Wine's test_create_input_layout has it from Windows)
+-    if (!strcasecmp(inputSig.SemanticName, "SV_VertexID") || !strcasecmp(inputSig.SemanticName, "SV_InstanceID"))
++    if (inputSig.SystemValue != D3D10_SB_NAME_UNDEFINED)
+       continue;
+     if (!(register_mask & (1 << inputSig.Register))) {
+       WARN("CreateInputLayout: Vertex shader expects ", inputSig.SemanticName,
