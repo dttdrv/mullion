@@ -1,0 +1,8 @@
+# an out-of-bounds scalar returns all ones instead of zero
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2465,3 +2465,3 @@
+         auto value = ir.CreatePHI(ty, 2);
+-        value->addIncoming(Constant::getNullValue(ty), from);
++        value->addIncoming(Constant::getAllOnesValue(ty), from);
+         value->addIncoming(ret, then->getParent());

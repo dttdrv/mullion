@@ -1,0 +1,8 @@
+# a high unsigned offset becomes a negative displacement before the buffer
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2447,3 +2447,3 @@
+       auto &buffer = *handles[a(1)].cbuffer;
+-      auto offset = ir.CreateZExt(a(2), ir.getInt64Ty());
++      auto offset = ir.CreateSExt(a(2), ir.getInt64Ty());
+       auto from = ir.GetInsertBlock();

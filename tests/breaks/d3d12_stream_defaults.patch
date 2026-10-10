@@ -1,0 +1,7 @@
+# an omitted topology has no default
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1152,3 +1152,2 @@
+       desc_graphics.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
+-      desc_graphics.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+     }

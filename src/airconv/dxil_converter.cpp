@@ -33,6 +33,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LowerAtomic.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include <format>
 #include <map>
 #include <set>
@@ -95,6 +96,7 @@ enum Op : uint32_t {
   Dot3 = 55,
   Dot4 = 56,
   CreateHandle = 57,
+  CBufferLoad = 58,
   CBufferLoadLegacy = 59,
   Sample = 60,
   SampleBias = 61,
@@ -2440,6 +2442,33 @@ convert_dxil(
           break;
         }
       });
+      break;
+    }
+    case CBufferLoad: {
+      // DXIL.rst CBufferLoad aligns the offset; DXR shader records can put root constants after one DWORD
+      auto &buffer = *handles[a(1)].cbuffer;
+      auto offset = ir.CreateZExt(a(2), ir.getInt64Ty());
+      auto from = ir.GetInsertBlock();
+      llvm::Instruction *then = nullptr;
+      if (buffer.Metadata) {
+        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+        ir.SetInsertPoint(then = SplitBlockAndInsertIfThen(ir.CreateICmpULE(end, buffer.Metadata), call, false));
+      }
+      auto space = buffer.Pointer->getType()->getPointerAddressSpace();
+      auto pointer = ir.CreateGEP(
+          ir.getInt8Ty(), ir.CreatePointerCast(buffer.Pointer, ir.getInt8Ty()->getPointerTo(space)), offset
+      );
+      ret = ir.CreateAlignedLoad(
+          ty, ir.CreatePointerCast(pointer, ty->getPointerTo(space)),
+          std::min(Align(constant(a(3))), getKnownAlignment(buffer.Pointer, ctx.module.getDataLayout()))
+      );
+      if (then) {
+        ir.SetInsertPoint(call);
+        auto value = ir.CreatePHI(ty, 2);
+        value->addIncoming(Constant::getNullValue(ty), from);
+        value->addIncoming(ret, then->getParent());
+        ret = value;
+      }
       break;
     }
     case CBufferLoadLegacy: {

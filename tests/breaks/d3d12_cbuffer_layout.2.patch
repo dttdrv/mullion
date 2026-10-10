@@ -1,0 +1,8 @@
+# the scalar ending exactly at the view end reads zero
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2452,3 +2452,3 @@
+         auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+-        ir.SetInsertPoint(then = SplitBlockAndInsertIfThen(ir.CreateICmpULE(end, buffer.Metadata), call, false));
++        ir.SetInsertPoint(then = SplitBlockAndInsertIfThen(ir.CreateICmpULT(end, buffer.Metadata), call, false));
+       }

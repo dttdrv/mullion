@@ -1150,6 +1150,7 @@ public:
       desc_graphics.SampleDesc.Count = 1;
       desc_graphics.SampleDesc.Quality = 0;
       desc_graphics.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
+      desc_graphics.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     }
 
     uint32_t defined_type = 0;

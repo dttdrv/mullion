@@ -1,0 +1,8 @@
+# local root constants have qword padding instead of DWORD packing
+--- a/src/airconv/dxbc_binding_rootsig.cpp
++++ b/src/airconv/dxbc_binding_rootsig.cpp
+@@ -634,3 +634,3 @@
+       if (constants != constants_fields.end() && constants->first == i) {
+-        fields.insert(fields.end(), constants->second, llvm::Type::getInt32Ty(module.getContext()));
++        fields.insert(fields.end(), (constants->second + 1) / 2, llvm::Type::getInt64Ty(module.getContext()));
+         i += (constants->second + 1) / 2;
