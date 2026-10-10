@@ -1,0 +1,8 @@
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -1538,4 +1538,3 @@
+   // integer formats have shader loads, not shader samples (D3D11.3 19.1.4)
+-  if (metal_format.PixelFormat && !IsIntegerFormat(metal_format.PixelFormat) &&
+-      !(metal_format.Flag & MTL_DXGI_FORMAT_STENCIL_PLANER))
++  if (metal_format.PixelFormat)
+     Support1 |= D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;

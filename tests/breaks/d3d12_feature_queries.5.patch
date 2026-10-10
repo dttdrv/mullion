@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -612,7 +612,7 @@
+       }
+       if (IsSamplerFeedback(out->Format)) {
+         out->Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_MIP;
+-        out->Support2 = D3D12_FORMAT_SUPPORT2_SAMPLER_FEEDBACK;
++        out->Support2 = D3D12_FORMAT_SUPPORT2_NONE;
+         return S_OK;
+       }
+       // D3D12_FORMAT_SUPPORT1 and 2 share D3D11's bit values

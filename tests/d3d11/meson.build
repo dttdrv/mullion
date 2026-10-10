@@ -3,7 +3,7 @@ d3d11_test_deps = [cpp.find_library('d3d11'), cpp.find_library('dxgi'), cpp.find
 
 # the sources a test has beside its own
 d3d11_test_sources = { 'tessellator': files('../reference/reference.cpp') }
-foreach name : ['shared_resource', 'device_interfaces', 'shader_levels', 'buffer_loads', 'swapchain_buffers', 'initial_data', 'input_layout', 'streamout_declarations', 'copy_region', 'staging_depth', 'profile', 'queries', 'state_objects', 'shared_fence', 'staging_order', 'commandlist_state', 'map_contract', 'state_transitions', 'occlusion_many', 'streamout', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices', 'dynamic_generations']
+foreach name : ['feature_queries', 'shared_resource', 'device_interfaces', 'shader_levels', 'buffer_loads', 'swapchain_buffers', 'initial_data', 'input_layout', 'streamout_declarations', 'copy_region', 'staging_depth', 'profile', 'queries', 'state_objects', 'shared_fence', 'staging_order', 'commandlist_state', 'map_contract', 'state_transitions', 'occlusion_many', 'streamout', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices', 'dynamic_generations']
   # without the shader cache, so a test meets the shaders this build makes
   test('d3d11_' + name,
        executable('d3d11_' + name, ['d3d11_' + name + '.cpp'] + d3d11_test_sources.get(name, []), dependencies : d3d11_test_deps),

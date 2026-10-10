@@ -1,0 +1,7 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -337,3 +337,4 @@
++      out->Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+       out->NumQualityLevels = 0;
+       if (!out->SampleCount || out->SampleCount > D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT)
+         return E_FAIL;

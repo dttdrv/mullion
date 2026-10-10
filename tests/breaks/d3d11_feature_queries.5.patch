@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -704,7 +704,7 @@
+       return E_INVALIDARG;
+     *pNumQualityLevels = 0;
+     if (!SampleCount || SampleCount > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT)
+-      return E_FAIL;
++      return S_OK;
+     // a positive answer says the format and count can be created (ID3D11Device::CheckMultisampleQualityLevels),
+     // which is what CheckFormatSupport says of the format and Metal of the count; Metal has one quality. no tiled
+     // resource is multisampled

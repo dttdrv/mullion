@@ -1,0 +1,7 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -389,3 +389,3 @@
+       MTLQueryDXGIFormat(metal, out->Format, format_desc);
+-      auto planes = IsSamplerFeedback(out->Format) ? 1 : format_desc.PlanarCount;
++      auto planes = format_desc.PixelFormat ? format_desc.PlanarCount : 0;
+       if (!planes)

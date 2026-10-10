@@ -1,0 +1,15 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -700,8 +700,10 @@
+       return E_INVALIDARG;
+     MTL_DXGI_FORMAT_DESC desc;
+     auto hr = MTLQueryDXGIFormat(GetMTLDevice(), Format, desc);
+-    if (!desc.PlanarCount)
+-      return E_INVALIDARG;
++    if (!desc.PlanarCount) {
++      *pNumQualityLevels = 0;
++      return E_INVALIDARG;
++    }
+     *pNumQualityLevels = 0;
+     if (!SampleCount || SampleCount > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT)
+       return E_FAIL;

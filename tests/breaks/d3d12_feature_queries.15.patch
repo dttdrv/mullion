@@ -1,0 +1,7 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -543,3 +543,3 @@
+       *out = {FALSE, FALSE, D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
+-              mesh.MeshShaderTier ? mesh_limit : 0u};
++              mesh.MeshShaderTier ? 0u : 0u};
+       return S_OK;

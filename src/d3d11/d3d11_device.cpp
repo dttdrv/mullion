@@ -479,6 +479,15 @@ public:
     auto hr = MTLQueryDXGIFormatSupport(
         GetMTLDevice(), Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
     );
+    // format queries describe the requested feature level (D3D11.3 19.1.4), not everything Metal can do
+    if (feature_level_ < D3D_FEATURE_LEVEL_10_0) {
+      support1 &= ~(D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_COMPARISON);
+      // Microsoft Learn, format support for feature level 9.3: these formats disallow display scan-out
+      if (Format == DXGI_FORMAT_R16G16B16A16_FLOAT || Format == DXGI_FORMAT_R10G10B10A2_UNORM)
+        support1 &= ~D3D11_FORMAT_SUPPORT_DISPLAY;
+    }
+    if (feature_level_ < D3D_FEATURE_LEVEL_10_1)
+      support1 &= ~(D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_SHADER_GATHER_COMPARISON);
     if (pFormatSupport && SUCCEEDED(hr))
       *pFormatSupport = support1;
     return hr;
@@ -725,17 +734,18 @@ public:
   CheckMultisampleQualityLevels1(DXGI_FORMAT Format, UINT SampleCount, UINT Flags, UINT *pNumQualityLevels) override {
     if (!pNumQualityLevels)
       return E_INVALIDARG;
-    *pNumQualityLevels = 0;
     MTL_DXGI_FORMAT_DESC desc;
-    if (FAILED(MTLQueryDXGIFormat(GetMTLDevice(), Format, desc)) ||
-        desc.PixelFormat == WMTPixelFormatInvalid) {
+    auto hr = MTLQueryDXGIFormat(GetMTLDevice(), Format, desc);
+    if (!desc.PlanarCount)
       return E_INVALIDARG;
-    }
+    *pNumQualityLevels = 0;
+    if (!SampleCount || SampleCount > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT)
+      return E_FAIL;
     // a positive answer says the format and count can be created (ID3D11Device::CheckMultisampleQualityLevels),
     // which is what CheckFormatSupport says of the format and Metal of the count; Metal has one quality. no tiled
     // resource is multisampled
     bool multisample = any_bit_set(GetMTLPixelFormatCapability(desc.PixelFormat) & FormatCapability::MSAA);
-    if (!Flags && SampleCount && (SampleCount == 1 || multisample) &&
+    if (SUCCEEDED(hr) && !Flags && (SampleCount == 1 || multisample) &&
         GetMTLDevice().supportsTextureSampleCount(SampleCount))
       *pNumQualityLevels = 1;
     return S_OK;

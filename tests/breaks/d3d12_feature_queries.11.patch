@@ -1,0 +1,7 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -542,3 +542,3 @@
+       constexpr UINT mesh_limit = std::numeric_limits<UINT16>::max();
+-      *out = {FALSE, FALSE, D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
++      *out = {FALSE, FALSE, 0,
+               mesh.MeshShaderTier ? mesh_limit : 0u};

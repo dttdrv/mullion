@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -343,7 +343,7 @@
+       if (!format_desc.PlanarCount && !IsSamplerFeedback(out->Format))
+         return E_INVALIDARG;
+       bool multisample = any_bit_set(GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::MSAA);
+-      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
++      if (out->SampleCount == 0 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+         out->NumQualityLevels = 1;
+       return S_OK;
+     }

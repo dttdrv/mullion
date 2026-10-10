@@ -1,0 +1,11 @@
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -1488,7 +1488,7 @@
+     WMT::Device device, uint32_t Format, const std::function<FormatCapability(WMTPixelFormat)> &GetMTLPixelFormatCapability,
+     uint32_t &Support1, uint32_t &Support2
+ ) {
+-  Support1 = Support2 = 0;
++  Support1 = Support2 = ~0u;
+   if (Format == DXGI_FORMAT_UNKNOWN) {
+     Support1 = D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+     Support2 = D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |

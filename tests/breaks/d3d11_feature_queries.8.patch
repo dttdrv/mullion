@@ -1,0 +1,11 @@
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -483,7 +483,7 @@
+       support1 &= ~(D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_COMPARISON);
+       // Microsoft Learn, format support for feature level 9.3: these formats disallow display scan-out
+       if (Format == DXGI_FORMAT_R16G16B16A16_FLOAT || Format == DXGI_FORMAT_R10G10B10A2_UNORM)
+-        support1 &= ~D3D11_FORMAT_SUPPORT_DISPLAY;
++        support1 |= D3D11_FORMAT_SUPPORT_DISPLAY;
+     }
+     if (feature_level_ < D3D_FEATURE_LEVEL_10_1)
+       support1 &= ~(D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_SHADER_GATHER_COMPARISON);

@@ -1,0 +1,8 @@
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -1502,4 +1502,4 @@
+   MTL_DXGI_FORMAT_DESC metal_format;
+   if (FAILED(MTLQueryDXGIFormat(device, Format, metal_format))) {
+-    return E_FAIL;
++    return E_INVALIDARG;
+   }

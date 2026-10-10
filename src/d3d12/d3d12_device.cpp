@@ -40,6 +40,45 @@
 
 namespace dxmt {
 
+// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+// declarations missing from the toolchain, from DirectX-Headers/include/directx/d3d12.idl
+namespace sdk {
+constexpr auto D3D_ROOT_SIGNATURE_VERSION_1_2 = (D3D_ROOT_SIGNATURE_VERSION)3;
+constexpr auto D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ_COMPUTE_QUEUE_ACCESSIBLE = (D3D12_BARRIER_LAYOUT)31;
+constexpr UINT D3D12_FEATURE_PREDICATION = 50;
+constexpr UINT D3D12_FEATURE_HARDWARE_COPY = 52;
+constexpr UINT D3D12_FEATURE_APPLICATION_SPECIFIC_DRIVER_STATE = 56;
+constexpr UINT D3D12_FEATURE_BYTECODE_BYPASS_HASH_SUPPORTED = 57;
+constexpr UINT D3D12_FEATURE_SHADER_CACHE_ABI_SUPPORT = 61;
+constexpr UINT D3D12_FEATURE_BARRIER_LAYOUT = 64;
+constexpr UINT D3D12_FEATURE_D3D12_OPTIONS22 = 65;
+
+struct D3D12_FEATURE_DATA_APPLICATION_SPECIFIC_DRIVER_STATE { BOOL Supported; };
+struct D3D12_FEATURE_DATA_BYTECODE_BYPASS_HASH_SUPPORTED { BOOL Supported; };
+struct D3D12_FEATURE_DATA_D3D12_OPTIONS22 {
+  BOOL ShaderExecutionReorderingActuallyReorders;
+  BOOL CreateByteOffsetViewsSupported;
+  UINT Max1DDispatchSize;
+  UINT Max1DDispatchMeshSize;
+};
+union D3D12_VERSION_NUMBER {
+  UINT64 Version;
+  UINT16 VersionParts[4];
+};
+struct D3D12_FEATURE_DATA_SHADERCACHE_ABI_SUPPORT {
+  WCHAR szAdapterFamily[128];
+  UINT64 MinimumABISupportVersion;
+  UINT64 MaximumABISupportVersion;
+  D3D12_VERSION_NUMBER CompilerVersion;
+  D3D12_VERSION_NUMBER ApplicationProfileVersion;
+};
+struct D3D12_FEATURE_DATA_BARRIER_LAYOUT {
+  D3D12_COMMAND_LIST_TYPE CommandListType;
+  D3D12_BARRIER_LAYOUT Layout;
+  BOOL Supported;
+};
+} // namespace sdk
+
 const GUID kD3D12DeviceDownlevelUUID = {0x74eaee3f, 0x2f4b, 0x476d, {0x82, 0xba, 0x2b, 0x85, 0xcb, 0x49, 0xe3, 0x10}};
 
 HRESULT PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3D12_RESOURCE_DESC &Desc);
@@ -306,7 +345,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureData, UINT DataSize) {
     auto metal = GetMTLDevice();
-    switch (Feature) {
+    switch (UINT(Feature)) {
     case D3D12_FEATURE_ARCHITECTURE: {
       if (DataSize != sizeof(D3D12_FEATURE_DATA_ARCHITECTURE))
         return E_INVALIDARG;
@@ -335,27 +374,17 @@ public:
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS *>(pFeatureData);
 
-      if (out->SampleCount == 0) {
-        out->Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
-        out->NumQualityLevels = 0;
+      out->NumQualityLevels = 0;
+      if (!out->SampleCount || out->SampleCount > D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT)
         return E_FAIL;
-      }
-
-      if (out->Format == DXGI_FORMAT_UNKNOWN) {
-        out->NumQualityLevels = out->SampleCount == 0 ? 1 : 0;
-        return S_OK;
-      }
 
       MTL_DXGI_FORMAT_DESC format_desc;
-      HRESULT hr = MTLQueryDXGIFormat(metal, out->Format, format_desc);
-      if (SUCCEEDED(hr) && out->SampleCount) {
-        out->Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
-        out->NumQualityLevels = metal.supportsTextureSampleCount(out->SampleCount) ? 1 : 0;
-      } else {
-        out->Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
-        out->NumQualityLevels = 0;
-        return E_FAIL;
-      }
+      MTLQueryDXGIFormat(metal, out->Format, format_desc);
+      if (!format_desc.PlanarCount && !IsSamplerFeedback(out->Format))
+        return E_INVALIDARG;
+      bool multisample = any_bit_set(GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::MSAA);
+      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+        out->NumQualityLevels = 1;
       return S_OK;
     }
     case D3D12_FEATURE_ROOT_SIGNATURE: {
@@ -363,7 +392,8 @@ public:
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_ROOT_SIGNATURE *>(pFeatureData);
       /* the highest version both know: newer ones (1.2) come down to 1.1, as the runtime answers */
-      if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1)
+      if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1 ||
+          out->HighestVersion > sdk::D3D_ROOT_SIGNATURE_VERSION_1_2)
         return E_INVALIDARG;
       out->HighestVersion = std::min(out->HighestVersion, D3D_ROOT_SIGNATURE_VERSION_1_1);
       return S_OK;
@@ -395,16 +425,13 @@ public:
        if (DataSize != sizeof(D3D12_FEATURE_DATA_FORMAT_INFO))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_FORMAT_INFO *>(pFeatureData);
-      if (out->Format == DXGI_FORMAT_UNKNOWN) {
-        out->PlaneCount = 1;
-        return S_OK;
-      }
       MTL_DXGI_FORMAT_DESC format_desc;
-      HRESULT hr = MTLQueryDXGIFormat(metal, out->Format, format_desc);
-      if (FAILED(hr))
-        return E_FAIL;
+      MTLQueryDXGIFormat(metal, out->Format, format_desc);
+      auto planes = IsSamplerFeedback(out->Format) ? 1 : format_desc.PlanarCount;
+      if (!planes)
+        return E_INVALIDARG;
 
-      out->PlaneCount = format_desc.PlanarCount;
+      out->PlaneCount = planes;
       return S_OK;
     }
     case D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT: {
@@ -535,10 +562,103 @@ public:
                           D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE;
       return S_OK;
     }
+    case sdk::D3D12_FEATURE_PREDICATION:
+    case sdk::D3D12_FEATURE_HARDWARE_COPY:
+      // these reserved queries return E_NOTIMPL on Windows (vkd3d-proton, test_misc_agility_sdk_feature_checks)
+      return E_NOTIMPL;
+    case sdk::D3D12_FEATURE_APPLICATION_SPECIFIC_DRIVER_STATE:
+      return NotSupported<sdk::D3D12_FEATURE_DATA_APPLICATION_SPECIFIC_DRIVER_STATE>(pFeatureData, DataSize);
+    case sdk::D3D12_FEATURE_BYTECODE_BYPASS_HASH_SUPPORTED:
+      return NotSupported<sdk::D3D12_FEATURE_DATA_BYTECODE_BYPASS_HASH_SUPPORTED>(pFeatureData, DataSize);
+    case sdk::D3D12_FEATURE_SHADER_CACHE_ABI_SUPPORT:
+      // no shader-cache ABI is a failure, not an unknown query (vkd3d-proton, test_misc_agility_sdk_feature_checks)
+      return DataSize == sizeof(sdk::D3D12_FEATURE_DATA_SHADERCACHE_ABI_SUPPORT) ? E_FAIL : E_INVALIDARG;
+    case sdk::D3D12_FEATURE_D3D12_OPTIONS22: {
+      if (DataSize != sizeof(sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS22))
+        return E_INVALIDARG;
+      D3D12_FEATURE_DATA_D3D12_OPTIONS7 mesh;
+      CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &mesh, sizeof(mesh));
+      auto *out = reinterpret_cast<sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS22 *>(pFeatureData);
+      // DirectX-Specs, Mesh Shader, DispatchMesh API: each count must be less than 64k
+      constexpr UINT mesh_limit = std::numeric_limits<UINT16>::max();
+      *out = {FALSE, FALSE, D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
+              mesh.MeshShaderTier ? mesh_limit : 0u};
+      return S_OK;
+    }
+    case sdk::D3D12_FEATURE_BARRIER_LAYOUT: {
+      if (DataSize != sizeof(sdk::D3D12_FEATURE_DATA_BARRIER_LAYOUT))
+        return E_INVALIDARG;
+      auto *out = reinterpret_cast<sdk::D3D12_FEATURE_DATA_BARRIER_LAYOUT *>(pFeatureData);
+      // queue compatibility is defined by DirectX-Specs, Enhanced Barriers, Command Queue Layout Compatibility
+      switch (out->Layout) {
+      case D3D12_BARRIER_LAYOUT_RENDER_TARGET:
+      case D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:
+      case D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ:
+      case D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE:
+      case D3D12_BARRIER_LAYOUT_RESOLVE_DEST:
+      case D3D12_BARRIER_LAYOUT_SHADING_RATE_SOURCE:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_UNORDERED_ACCESS:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_SHADER_RESOURCE:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COPY_SOURCE:
+      case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COPY_DEST:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_DIRECT;
+        break;
+      case D3D12_BARRIER_LAYOUT_GENERIC_READ:
+      case D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS:
+      case D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:
+      case D3D12_BARRIER_LAYOUT_COPY_SOURCE:
+      case D3D12_BARRIER_LAYOUT_COPY_DEST:
+      case sdk::D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ_COMPUTE_QUEUE_ACCESSIBLE:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_DIRECT ||
+                         out->CommandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        break;
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COMMON:
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_GENERIC_READ:
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_UNORDERED_ACCESS:
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_SHADER_RESOURCE:
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_SOURCE:
+      case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_DEST:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        break;
+      case D3D12_BARRIER_LAYOUT_VIDEO_DECODE_READ:
+      case D3D12_BARRIER_LAYOUT_VIDEO_DECODE_WRITE:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE;
+        break;
+      case D3D12_BARRIER_LAYOUT_VIDEO_PROCESS_READ:
+      case D3D12_BARRIER_LAYOUT_VIDEO_PROCESS_WRITE:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS;
+        break;
+      case D3D12_BARRIER_LAYOUT_VIDEO_ENCODE_READ:
+      case D3D12_BARRIER_LAYOUT_VIDEO_ENCODE_WRITE:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE;
+        break;
+      case D3D12_BARRIER_LAYOUT_VIDEO_QUEUE_COMMON:
+        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE ||
+                         out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS ||
+                         out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE;
+        break;
+      default:
+        out->Supported = TRUE;
+        break;
+      }
+      return S_OK;
+    }
     case D3D12_FEATURE_FORMAT_SUPPORT: {
       if (DataSize != sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_FORMAT_SUPPORT *>(pFeatureData);
+      if (out->Format == DXGI_FORMAT_UNKNOWN) {
+        out->Support1 = D3D12_FORMAT_SUPPORT1_BUFFER;
+        out->Support2 = D3D12_FORMAT_SUPPORT2_NONE;
+        return S_OK;
+      }
+      if (IsSamplerFeedback(out->Format)) {
+        out->Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_MIP;
+        out->Support2 = D3D12_FORMAT_SUPPORT2_SAMPLER_FEEDBACK;
+        return S_OK;
+      }
       // D3D12_FORMAT_SUPPORT1 and 2 share D3D11's bit values
       return MTLQueryDXGIFormatSupport(
           GetMTLDevice(), out->Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); },

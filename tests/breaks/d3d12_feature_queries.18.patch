@@ -1,0 +1,12 @@
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -31,8 +31,8 @@
+ constexpr FormatCapability NONAPPLE_INT_FORMAT_CAP =
+     FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | FormatCapability::Sparse;
+
+ constexpr FormatCapability APPLE_INT_FORMAT_CAP_32 =
+-    APPLE_INT_FORMAT_CAP | FormatCapability::Atomic;
++    FormatCapability::Write | FormatCapability::Color | FormatCapability::Sparse | FormatCapability::Atomic;
+
+ void
+ FormatCapabilityInspector::Inspect(WMT::Device device) {

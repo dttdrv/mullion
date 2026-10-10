@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -576,7 +576,7 @@
+       case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_SHADER_RESOURCE:
+       case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_SOURCE:
+       case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_DEST:
+-        out->Supported = out->CommandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE;
++        out->Supported = TRUE;
+         break;
+       case D3D12_BARRIER_LAYOUT_VIDEO_DECODE_READ:
+       case D3D12_BARRIER_LAYOUT_VIDEO_DECODE_WRITE:

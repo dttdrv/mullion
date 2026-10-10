@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -596,7 +596,7 @@
+                          out->CommandListType == D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE;
+         break;
+       default:
+-        out->Supported = TRUE;
++        out->Supported = FALSE;
+         break;
+       }
+       return S_OK;

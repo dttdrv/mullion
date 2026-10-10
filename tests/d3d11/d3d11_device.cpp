@@ -58,7 +58,7 @@ main() {
     UINT levels = ~0u;
     expect(device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 4, nullptr) == E_INVALIDARG,
            "quality levels are written to no pointer");
-    expect(SUCCEEDED(device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 0, &levels)) && levels == 0,
+    expect(device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 0, &levels) == E_FAIL && levels == 0,
            "no samples have quality levels");
     ComPtr<ID3D11Device2> device2;
     if (SUCCEEDED(device.As(&device2))) {

@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -531,7 +531,7 @@
+       return NotSupported<sdk::D3D12_FEATURE_DATA_BYTECODE_BYPASS_HASH_SUPPORTED>(pFeatureData, DataSize);
+     case sdk::D3D12_FEATURE_SHADER_CACHE_ABI_SUPPORT:
+       // no shader-cache ABI is a failure, not an unknown query (vkd3d-proton, test_misc_agility_sdk_feature_checks)
+-      return DataSize == sizeof(sdk::D3D12_FEATURE_DATA_SHADERCACHE_ABI_SUPPORT) ? E_FAIL : E_INVALIDARG;
++      return DataSize == sizeof(sdk::D3D12_FEATURE_DATA_SHADERCACHE_ABI_SUPPORT) ? E_INVALIDARG : E_INVALIDARG;
+     case sdk::D3D12_FEATURE_D3D12_OPTIONS22: {
+       if (DataSize != sizeof(sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS22))
+         return E_INVALIDARG;

@@ -32,7 +32,7 @@ constexpr FormatCapability NONAPPLE_INT_FORMAT_CAP =
     FormatCapability::Write | FormatCapability::Color | FormatCapability::MSAA | FormatCapability::Sparse;
 
 constexpr FormatCapability APPLE_INT_FORMAT_CAP_32 =
-    FormatCapability::Write | FormatCapability::Color | FormatCapability::Sparse | FormatCapability::Atomic;
+    APPLE_INT_FORMAT_CAP | FormatCapability::Atomic;
 
 void
 FormatCapabilityInspector::Inspect(WMT::Device device) {
@@ -847,6 +847,7 @@ MTLQueryDXGIFormat(WMT::Device device, uint32_t format, MTL_DXGI_FORMAT_DESC &de
     break;
   }
   case DXGI_FORMAT_R1_UNORM: {
+    description.PlanarCount = 0;
     return E_FAIL;
   }
   case DXGI_FORMAT_R9G9B9E5_SHAREDEXP: {
@@ -1046,24 +1047,31 @@ MTLQueryDXGIFormat(WMT::Device device, uint32_t format, MTL_DXGI_FORMAT_DESC &de
   case DXGI_FORMAT_AYUV:
   case DXGI_FORMAT_Y410:
   case DXGI_FORMAT_Y416:
-  case DXGI_FORMAT_NV12:
-  case DXGI_FORMAT_P010:
-  case DXGI_FORMAT_P016:
   case DXGI_FORMAT_420_OPAQUE:
   case DXGI_FORMAT_YUY2:
   case DXGI_FORMAT_Y210:
   case DXGI_FORMAT_Y216:
-  case DXGI_FORMAT_NV11:
   case DXGI_FORMAT_AI44:
   case DXGI_FORMAT_IA44:
   case DXGI_FORMAT_P8:
   case DXGI_FORMAT_A8P8:
+  case DXGI_FORMAT_UNKNOWN:
+    return E_FAIL;
+  // layout metadata exists even without Metal storage (DirectX-Headers, GetPlaneCount)
+  case DXGI_FORMAT_NV12:
+  case DXGI_FORMAT_P010:
+  case DXGI_FORMAT_P016:
+  case DXGI_FORMAT_NV11:
   case DXGI_FORMAT_P208:
+    description.PlanarCount = 2;
+    return E_FAIL;
   case DXGI_FORMAT_V208:
   case DXGI_FORMAT_V408:
+    description.PlanarCount = 3;
+    return E_FAIL;
   case DXGI_FORMAT_FORCE_UINT:
-  case DXGI_FORMAT_UNKNOWN:
   default:
+    description.PlanarCount = 0;
     return E_FAIL;
   }
 
@@ -1480,6 +1488,7 @@ MTLQueryDXGIFormatSupport(
     WMT::Device device, uint32_t Format, const std::function<FormatCapability(WMTPixelFormat)> &GetMTLPixelFormatCapability,
     uint32_t &Support1, uint32_t &Support2
 ) {
+  Support1 = Support2 = 0;
   if (Format == DXGI_FORMAT_UNKNOWN) {
     Support1 = D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
     Support2 = D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |
@@ -1492,14 +1501,11 @@ MTLQueryDXGIFormatSupport(
 
   MTL_DXGI_FORMAT_DESC metal_format;
   if (FAILED(MTLQueryDXGIFormat(device, Format, metal_format))) {
-    return E_INVALIDARG;
+    return E_FAIL;
   }
 
-  Support1 = 0;
-
   if (metal_format.PixelFormat) {
-    // All graphics and compute kernels can read or sample a texture with any pixel format.
-    Support1 |= D3D11_FORMAT_SUPPORT_SHADER_LOAD | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE |
+    Support1 |= D3D11_FORMAT_SUPPORT_SHADER_LOAD |
                         D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD |
                         D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
 
@@ -1528,6 +1534,11 @@ MTLQueryDXGIFormatSupport(
   }
 
   auto Capability = GetMTLPixelFormatCapability(metal_format.PixelFormat);
+
+  // integer formats have shader loads, not shader samples (D3D11.3 19.1.4)
+  if (metal_format.PixelFormat && !IsIntegerFormat(metal_format.PixelFormat) &&
+      !(metal_format.Flag & MTL_DXGI_FORMAT_STENCIL_PLANER))
+    Support1 |= D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
 
   if (any_bit_set(Capability & FormatCapability::Color)) {
     Support1 |= D3D11_FORMAT_SUPPORT_RENDER_TARGET;
@@ -1567,8 +1578,6 @@ MTLQueryDXGIFormatSupport(
       Format == DXGI_FORMAT_R32G32B32A32_SINT)
     Support1 |= D3D11_FORMAT_SUPPORT_SO_BUFFER;
 
-
-  Support2 = 0;
 
   if (any_bit_set(Capability & FormatCapability::TextureBufferRead)) {
     Support2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD;

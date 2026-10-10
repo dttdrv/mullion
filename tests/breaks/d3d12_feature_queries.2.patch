@@ -1,0 +1,8 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -393,4 +393,4 @@
+-      out->PlaneCount = planes;
++      out->PlaneCount = 1;
+       return S_OK;
+     }
+     case D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT: {

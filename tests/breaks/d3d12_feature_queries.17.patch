@@ -1,0 +1,8 @@
+--- a/src/dxmt/dxmt_format.cpp
++++ b/src/dxmt/dxmt_format.cpp
+@@ -1507,4 +1507,4 @@
+   if (metal_format.PixelFormat) {
+-    Support1 |= D3D11_FORMAT_SUPPORT_SHADER_LOAD |
++    Support1 |=
+                         D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD |
+                         D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;

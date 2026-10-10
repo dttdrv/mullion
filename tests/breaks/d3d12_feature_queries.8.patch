@@ -1,0 +1,11 @@
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -524,7 +524,7 @@
+     case sdk::D3D12_FEATURE_PREDICATION:
+     case sdk::D3D12_FEATURE_HARDWARE_COPY:
+       // these reserved queries return E_NOTIMPL on Windows (vkd3d-proton, test_misc_agility_sdk_feature_checks)
+-      return E_NOTIMPL;
++      return E_INVALIDARG;
+     case sdk::D3D12_FEATURE_APPLICATION_SPECIFIC_DRIVER_STATE:
+       return NotSupported<sdk::D3D12_FEATURE_DATA_APPLICATION_SPECIFIC_DRIVER_STATE>(pFeatureData, DataSize);
+     case sdk::D3D12_FEATURE_BYTECODE_BYPASS_HASH_SUPPORTED:
