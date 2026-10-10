@@ -261,7 +261,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   // the stage a container's code is of, which each Create call takes its own of (Wine's test_stream_output has a
   // geometry shader made of vertex bytecode refused on Windows)
-  static std::optional<microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE>
+  std::optional<microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE>
   Stage(const void *pBytecode, uint32_t BytecodeLength) {
     using namespace microsoft;
     CDXBCParser parser;
@@ -274,7 +274,23 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
       code = parser.FindNextMatchingBlob(DXBC_GenericShader);
     if (code == DXBC_BLOB_NOT_FOUND)
       return {};
-    return DECODE_D3D10_SB_TOKENIZED_PROGRAM_TYPE(*(const uint32_t *)parser.GetBlob(code));
+    auto token = *(const uint32_t *)parser.GetBlob(code);
+    auto stage = DECODE_D3D10_SB_TOKENIZED_PROGRAM_TYPE(token);
+    auto major = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MAJOR_VERSION(token);
+    auto minor = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MINOR_VERSION(token);
+    // Microsoft Learn, Specifying Compiler Targets: SM4.0/4.1/5.0 require FL10.0/10.1/11.0; FL9 uses level_9 code
+    if (major < 4 || major > 5 || minor > (major == 4 ? 1u : 0u) ||
+        (major < 5 && (stage == D3D11_SB_HULL_SHADER || stage == D3D11_SB_DOMAIN_SHADER)))
+      return {};
+    auto minimum = major == 5 ? D3D_FEATURE_LEVEL_11_0
+                   : minor    ? D3D_FEATURE_LEVEL_10_1
+                   : (stage == D3D10_SB_VERTEX_SHADER || stage == D3D10_SB_PIXEL_SHADER) &&
+                           parser.FindNextMatchingBlob(DXBC_FeatureLevel9Shader) != DXBC_BLOB_NOT_FOUND
+                       ? D3D_FEATURE_LEVEL_9_1
+                       : D3D_FEATURE_LEVEL_10_0;
+    if (device->GetFeatureLevel() < minimum)
+      return {};
+    return stage;
   }
 
   virtual HRESULT AddVertexShader(const void *pBytecode,
@@ -406,7 +422,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     MTL_STREAM_OUTPUT_DESC desc{};
     // the bytecode is the geometry shader, or the stage whose output goes out without one
     auto stage = Stage(pShaderBytecode, BytecodeLength);
-    if (!stage)
+    if (!stage || device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
       return E_INVALIDARG;
     if (*stage == D3D10_SB_GEOMETRY_SHADER && !(desc.GeometryShader = CreateShader(pShaderBytecode, BytecodeLength)))
       return E_INVALIDARG;

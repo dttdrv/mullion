@@ -22,6 +22,7 @@ typedef enum DXBCFourCC
     DXBC_GenericShader              = DXBC_FOURCC('S','H','D','R'),
     // same as SHDR, but this will fail on D3D10.x runtimes and not on D3D11+.
     DXBC_GenericShaderEx            = DXBC_FOURCC('S','H','E','X'),
+    DXBC_FeatureLevel9Shader        = DXBC_FOURCC('A','o','n','9'),
     DXBC_InputSignature             = DXBC_FOURCC('I','S','G','N'),
     DXBC_InputSignature11_1         = DXBC_FOURCC('I','S','G','1'),
     DXBC_PatchConstantSignature     = DXBC_FOURCC('P','C','S','G'),

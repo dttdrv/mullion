@@ -1,0 +1,12 @@
+# stream output accepts a level 9 vertex shader on a level 9 device
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -421,7 +421,7 @@
+     // the bytecode is the geometry shader, or the stage whose output goes out without one
+     auto stage = Stage(pShaderBytecode, BytecodeLength);
+-    if (!stage || device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
++    if (!stage)
+       return E_INVALIDARG;
+     if (*stage == D3D10_SB_GEOMETRY_SHADER && !(desc.GeometryShader = CreateShader(pShaderBytecode, BytecodeLength)))
+       return E_INVALIDARG;
+     if (HRESULT hr = ExtractStreamOutputElements(

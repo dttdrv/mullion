@@ -1,0 +1,12 @@
+# feature levels below a shader's minimum are accepted
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -287,7 +287,7 @@
+                            parser.FindNextMatchingBlob(DXBC_FeatureLevel9Shader) != DXBC_BLOB_NOT_FOUND
+                        ? D3D_FEATURE_LEVEL_9_1
+                        : D3D_FEATURE_LEVEL_10_0;
+-    if (device->GetFeatureLevel() < minimum)
++    if (device->GetFeatureLevel() < D3D_FEATURE_LEVEL_9_1)
+       return {};
+     return stage;
+   }

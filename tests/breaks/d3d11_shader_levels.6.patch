@@ -1,0 +1,12 @@
+# an undefined DXBC major version above SM5 is accepted
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -279,7 +279,7 @@
+     auto major = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MAJOR_VERSION(token);
+     auto minor = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MINOR_VERSION(token);
+     // Microsoft Learn, Specifying Compiler Targets: SM4.0/4.1/5.0 require FL10.0/10.1/11.0; FL9 uses level_9 code
+-    if (major < 4 || major > 5 || minor > (major == 4 ? 1u : 0u) ||
++    if (major < 4 || major > 6 || minor > (major == 4 ? 1u : 0u) ||
+         (major < 5 && (stage == D3D11_SB_HULL_SHADER || stage == D3D11_SB_DOMAIN_SHADER)))
+       return {};
+     auto minimum = major == 5 ? D3D_FEATURE_LEVEL_11_0
