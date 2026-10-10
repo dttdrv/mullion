@@ -82,7 +82,8 @@ main(int argc, char **argv) {
   CHECK(other_context.As(&other4));
   step("a shared texture still opens as a texture, and cannot open as a fence");
   D3D11_TEXTURE2D_DESC texture_desc{1, 1, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
-                                  D3D11_BIND_SHADER_RESOURCE, 0, D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
+                                  D3D11_BIND_SHADER_RESOURCE, 0,
+                                  D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
   ComPtr<ID3D11Texture2D> texture, imported;
   ComPtr<IDXGIResource1> resource;
   CHECK(device->CreateTexture2D(&texture_desc, nullptr, &texture));

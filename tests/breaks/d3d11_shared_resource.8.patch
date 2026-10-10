@@ -1,0 +1,9 @@
+# an imported legacy texture loses its global sharing identity
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -519,3 +519,3 @@
+   Com<DeviceTexture<tag>> device_texture =
+-      new DeviceTexture<tag>(&finalDesc, std::move(texture), hResource, hGlobalShare, std::move(keyed_mutex), pDevice);
++      new DeviceTexture<tag>(&finalDesc, std::move(texture), hResource, 0, std::move(keyed_mutex), pDevice);
+   hResource = 0;

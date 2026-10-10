@@ -123,12 +123,8 @@ KeyedMutex::import(WMT::Device device, D3DKMT_HANDLE global_kmt) {
 
 HRESULT
 KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t milliseconds) {
-  /**
-   * doc: If the owning device attempted to create another keyed mutex on the same shared resource, AcquireSync returns
-   * E_FAIL.
-   */
   if (owned_.load(std::memory_order_acquire))
-    return E_FAIL;
+    return DXGI_ERROR_INVALID_CALL;
 
   LARGE_INTEGER timeout = {};
   D3DKMT_ACQUIREKEYEDMUTEX acquire = {};
@@ -156,11 +152,8 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
 
 HRESULT
 KeyedMutex::release(KeyedMutexRelease &&func_release, uint64_t key) {
-  /**
-   * doc: If the device attempted to release a keyed mutex that is not valid or owned by the device, ReleaseSync returns
-   * E_FAIL. */
   if (!owned_.load(std::memory_order_acquire))
-    return E_FAIL;
+    return DXGI_ERROR_INVALID_CALL;
 
   func_release(fence_value_ + 1);
 

@@ -1,0 +1,11 @@
+# shared RGBA8 is accepted below feature level 10_0
+diff --git a/src/d3d11/d3d11_resource_helper.cpp b/src/d3d11/d3d11_resource_helper.cpp
+--- a/src/d3d11/d3d11_resource_helper.cpp
++++ b/src/d3d11/d3d11_resource_helper.cpp
+@@ -319,5 +319,4 @@
+   if ((MiscFlags & shared_flag) == shared_flag ||
+       ((MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE) && !(MiscFlags & shared_flag)) ||
+-      ((MiscFlags & shared_flag) && pDevice->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0 &&
+-       (Format == DXGI_FORMAT_R8G8B8A8_UNORM || Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)))
++      false)
+     return E_INVALIDARG;

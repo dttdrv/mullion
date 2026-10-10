@@ -1,0 +1,10 @@
+# NTHANDLE alone is accepted without a sharing mode
+diff --git a/src/d3d11/d3d11_resource_helper.cpp b/src/d3d11/d3d11_resource_helper.cpp
+--- a/src/d3d11/d3d11_resource_helper.cpp
++++ b/src/d3d11/d3d11_resource_helper.cpp
+@@ -318,5 +318,4 @@
+   // 10Level9 ID3D11Device::CreateTexture2D excludes shared RGBA8 textures below feature level 10_0.
+   if ((MiscFlags & shared_flag) == shared_flag ||
+-      ((MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE) && !(MiscFlags & shared_flag)) ||
+       ((MiscFlags & shared_flag) && pDevice->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0 &&
+        (Format == DXGI_FORMAT_R8G8B8A8_UNORM || Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)))

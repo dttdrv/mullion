@@ -1,0 +1,11 @@
+# unowned release returns the wrong HRESULT
+diff --git a/src/dxmt/dxmt_keyed_mutex.cpp b/src/dxmt/dxmt_keyed_mutex.cpp
+--- a/src/dxmt/dxmt_keyed_mutex.cpp
++++ b/src/dxmt/dxmt_keyed_mutex.cpp
+@@ -154,5 +154,5 @@
+ KeyedMutex::release(KeyedMutexRelease &&func_release, uint64_t key) {
+   if (!owned_.load(std::memory_order_acquire))
+-    return DXGI_ERROR_INVALID_CALL;
++    return E_FAIL;
+
+   func_release(fence_value_ + 1);

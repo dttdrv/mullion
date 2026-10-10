@@ -1,0 +1,14 @@
+# acquire and release symmetrically truncate the key to UINT
+diff --git a/src/dxmt/dxmt_keyed_mutex.cpp b/src/dxmt/dxmt_keyed_mutex.cpp
+--- a/src/dxmt/dxmt_keyed_mutex.cpp
++++ b/src/dxmt/dxmt_keyed_mutex.cpp
+@@ -131,3 +131,3 @@
+   acquire.hKeyedMutex = local_kmt_;
+-  acquire.Key = key;
++  acquire.Key = static_cast<UINT>(key);
+   acquire.pTimeout = &timeout;
+@@ -161,3 +161,3 @@
+   release.hKeyedMutex = local_kmt_;
+-  release.Key = key;
++  release.Key = static_cast<UINT>(key);
+   release.FenceValue = fence_value_ + 1;

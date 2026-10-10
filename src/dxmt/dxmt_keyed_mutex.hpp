@@ -47,7 +47,7 @@ public:
     return global_kmt_;
   }
 
-  WMT::SharedEvent
+  WMT::Reference<WMT::SharedEvent>
   sharedEvent() const {
     return event_;
   }

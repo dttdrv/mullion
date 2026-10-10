@@ -1,0 +1,10 @@
+# a legacy resource asks Wine for an NT handle and returns E_FAIL
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -308,4 +308,4 @@
+       override {
+     InitReturnPtr(pNTHandle);
+-    if (!local_kmt_ || !(this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE))
++    if (!local_kmt_)
+       return E_INVALIDARG;

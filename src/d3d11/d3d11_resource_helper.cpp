@@ -315,7 +315,11 @@ CreateMTLTextureDescriptorInternal(
   }
 
   auto shared_flag = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-  if ((MiscFlags & shared_flag) == shared_flag) // check mutually exclusive flags
+  // 10Level9 ID3D11Device::CreateTexture2D excludes shared RGBA8 textures below feature level 10_0.
+  if ((MiscFlags & shared_flag) == shared_flag ||
+      ((MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE) && !(MiscFlags & shared_flag)) ||
+      ((MiscFlags & shared_flag) && pDevice->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0 &&
+       (Format == DXGI_FORMAT_R8G8B8A8_UNORM || Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)))
     return E_INVALIDARG;
 
   if (BindFlags & D3D11_BIND_DEPTH_STENCIL) {

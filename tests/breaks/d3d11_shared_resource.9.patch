@@ -1,0 +1,10 @@
+# an imported texture releases its opened allocation before its last resource
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -519,4 +519,3 @@
+   Com<DeviceTexture<tag>> device_texture =
+-      new DeviceTexture<tag>(&finalDesc, std::move(texture), hResource, hGlobalShare, std::move(keyed_mutex), pDevice);
+-  hResource = 0;
++      new DeviceTexture<tag>(&finalDesc, std::move(texture), 0, hGlobalShare, std::move(keyed_mutex), pDevice);
+   return device_texture->QueryInterface(riid, ppTexture);
