@@ -115,11 +115,23 @@ struct IndirectRenderCommandData {
 // the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were
 constexpr unsigned kMostWords = 6;
 
+struct GPURecording;
+struct GPUListRecords;
+struct GPURecordChecks;
+struct GPURecordTotals;
+std::shared_ptr<GPURecordTotals> CreateGPURecordTotals();
+void SnapshotGPURecords(
+    const GPUListRecords *List, EncoderData *Pass, const std::string &Label, std::shared_ptr<GPURecordChecks> &Checks
+);
+void CompareGPURecords(const std::shared_ptr<GPURecordChecks> &Checks, const std::shared_ptr<GPURecordTotals> &Totals);
+void ReportGPURecords(const std::shared_ptr<GPURecordTotals> &Totals);
+
 class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllocator> {
   friend class MTLD3D12GraphicsCommandListImpl;
   friend struct SimpleCommandContext<MTLD3D12CommandAllocatorImpl>;
 
   D3D12_COMMAND_LIST_TYPE type_;
+  GPURecording *records_ = nullptr;
 
   // where in an arena the lists record next, in the last of the runs the allocator holds of it
   struct Cursor {
@@ -163,20 +175,10 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
 public:
   MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type);
 
-  ~MTLD3D12CommandAllocatorImpl() {
-    ReleaseRuns();
-  }
+  ~MTLD3D12CommandAllocatorImpl();
 
   // gives what the lists recorded into back to the device
-  void
-  ReleaseRuns() {
-    for (auto [arena, cursor] : {std::pair{&device_->recording.commands, &cpu_cursor_},
-                                 std::pair{&device_->recording.arguments, &gpu_cursor_}}) {
-      for (auto &run : cursor->runs)
-        arena->Release(run);
-      *cursor = {};
-    }
-  }
+  void ReleaseRuns();
 
   HRESULT
   Initialize();
@@ -330,6 +332,13 @@ public:
     storage->next.set(nullptr);
     return *storage;
   }
+
+  void RecordGPUHeap(
+      const void *Bytes, size_t Length, const char *Kind, size_t WrittenOffset = 0, size_t WrittenLength = 0,
+      EncoderData *Pass = nullptr
+  );
+  void ExcludeGPUWrite(const void *Bytes, size_t Offset, size_t Length);
+  const GPUListRecords *GPURecordsFor(EncoderData *Root);
 
   std::tuple<void *, size_t>
   AllocateGPUHeap(size_t Length, size_t Alignment) {

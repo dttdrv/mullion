@@ -168,8 +168,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   std::atomic_uint64_t inflight_cmdbuf_count_ = 0;
   std::atomic_uint64_t inflight_cmdbuf_stop_ = 0;
 
+  std::shared_ptr<GPURecordTotals> record_totals_;
+  std::shared_ptr<GPURecordChecks> own_checks_;
+
   struct InflightCommandBuffer {
     WMT::Reference<WMT::CommandBuffer> cmdbuf{};
+    std::shared_ptr<GPURecordChecks> records{};
     HANDLE semaphore{};
     std::function<void()> completed{};
     // the timestamp queries the command buffer samples: the device's counter sample buffer it holds until it
@@ -256,6 +260,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         inflight.cmdbuf.waitUntilCompleted();
       Watched(0);
       Trace("command buffer ", internal_seq, " completed");
+      if (record_totals_)
+        CompareGPURecords(inflight.records, record_totals_);
       if (inflight.cmdbuf.status() == WMTCommandBufferStatusError) {
         // the first says why; Metal fails what follows a fault of the process's too
         if (SUCCEEDED(device_->GetDeviceRemovedReason())) {
@@ -380,10 +386,14 @@ public:
       watch_changed_.notify_all();
     }
     watch_thread_.join();
+    if (record_totals_)
+      ReportGPURecords(record_totals_);
   }
 
   HRESULT
   Initialize(const D3D12_COMMAND_QUEUE_DESC *pDesc) {
+    if (device_->NamesPasses())
+      record_totals_ = CreateGPURecordTotals();
     // TODO: validate and normalize
     desc_ = *pDesc;
     desc_.NodeMask = 1; // typically 1 GPU only
@@ -566,8 +576,13 @@ public:
     WMT::CommandBuffer cmdbuf = scope.inflight->cmdbuf;
     // ends the command buffer and waits for it: what the work so far leaves in memory is then there
     auto settle = [&] {
+      std::shared_ptr<GPURecordChecks> checks;
+      if (record_totals_)
+        checks = scope.inflight->records;
       auto ended = scope.End();
       ended.waitUntilCompleted();
+      if (record_totals_)
+        CompareGPURecords(checks, record_totals_);
       scope.Start();
       cmdbuf = scope.inflight->cmdbuf;
     };
@@ -584,11 +599,16 @@ public:
     // how deep in the queue's own list the passes are
     unsigned own = 0;
     // a list's passes, and those of the list the queue records on
-    auto encode = [&](auto &encode, EncoderData *current) -> void {
+    auto encode = [&](auto &encode, EncoderData *current, MTLD3D12CommandAllocator *allocator) -> void {
+      auto records = record_totals_
+                         ? static_cast<MTLD3D12CommandAllocatorImpl *>(allocator)->GPURecordsFor(current) : nullptr;
       // records commands on the queue's list, which is free once what it recorded before has run, as are that
       // recording's buffers, and encodes them here
       auto record = [&](auto &&commands) {
         if (own_list_) {
+          // the queue's waits completed its last recording; the completion thread may not have compared it
+          if (record_totals_)
+            CompareGPURecords(own_checks_, record_totals_);
           own_allocator_->Reset();
           own_list_->Reset(own_allocator_.ptr(), nullptr);
         } else if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&own_allocator_))) ||
@@ -604,7 +624,9 @@ public:
           return;
         list->Close();
         own++;
-        encode(encode, list->entry);
+        encode(encode, list->entry, static_cast<MTLD3D12CommandAllocator *>(own_allocator_.ptr()));
+        if (record_totals_)
+          own_checks_ = scope.inflight->records;
         own--;
       };
       const uint32_t *decided = nullptr;
@@ -615,6 +637,8 @@ public:
           settle();
           Trace("pass ", current->id, " of kind ", uint32_t(current->type), " starts");
         }
+        if (record_totals_ && current->type != EncoderType::Render && current->type != EncoderType::Compute)
+          SnapshotGPURecords(records, current, "unlabelled", scope.inflight->records);
         scope.inflight->encoders[size_t(current->type)]++;
         switch (current->type) {
         case EncoderType::Null:
@@ -717,6 +741,7 @@ public:
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           if (device_->NamesPasses()) {
             auto label = "render " + device_->PassName(current->id);
+            SnapshotGPURecords(records, current, label, scope.inflight->records);
             encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
             for (auto most = data->most; most; most = most->next)
               scope.inflight->most.emplace_back(label, most);
@@ -781,8 +806,11 @@ public:
         case EncoderType::Compute: {
           auto data = static_cast<ComputeEncoderData *>(current);
           auto encoder = cmdbuf.computeCommandEncoder(false);
-          if (device_->NamesPasses())
-            encoder.setLabel(WMT::String::string(("compute " + device_->PassName(current->id)).c_str(), WMTUTF8StringEncoding));
+          if (device_->NamesPasses()) {
+            auto label = "compute " + device_->PassName(current->id);
+            SnapshotGPURecords(records, current, label, scope.inflight->records);
+            encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+          }
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -921,8 +949,8 @@ public:
         }
       }
     };
-    for (auto entry : recorded)
-      encode(encode, entry);
+    for (size_t i = 0; i < recorded.size(); i++)
+      encode(encode, recorded[i], keeps.allocators[i].ptr());
   };
 
   // the build that gives back the structure serialized at `Source` (CopyRaytracingAccelerationStructure,

@@ -245,12 +245,17 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   };
   std::vector<PredicatedWord> predicated_;
   uint32_t *predication_region_ = nullptr;
+  EncoderData *predication_pass_ = nullptr;
 
   void
   EndPredication() {
     if (!predication_region_)
       return;
     auto [mapped, offset] = allocator_->AllocateGPUHeap(predicated_.size() * sizeof(PredicatedWord), 4);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(
+          mapped, predicated_.size() * sizeof(PredicatedWord), "predicate words", 0, 0, predication_pass_
+      );
     if (mapped)
       memcpy(mapped, predicated_.data(), predicated_.size() * sizeof(PredicatedWord));
     predication_region_[0] = predicated_.size();
@@ -291,6 +296,8 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     if (!predication_region_)
       return {};
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(args), 16);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(mapped, sizeof(args), "predicated arguments", count * sizeof(uint32_t), sizeof(uint32_t));
     memcpy(mapped, &args, sizeof(args));
     predicated_.push_back({uint32_t(offset / 4 + count), reinterpret_cast<const uint32_t *>(&args)[count], 0});
     return offset;
@@ -303,7 +310,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   PredicateIndirect(Data *data) {
     if (!predication_region_)
       return;
+    if (allocator_->records_)
+      allocator_->ExcludeGPUWrite(data, offsetof(Data, max_count_buffer), sizeof(data->max_count_buffer));
     auto [zero, zero_offset] = allocator_->AllocateGPUHeap(sizeof(uint32_t), sizeof(uint32_t));
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(zero, sizeof(uint32_t), "predicate zero");
     *static_cast<uint32_t *>(zero) = 0;
     uint64_t skipped = allocator_->gpu_heap_buffer_address_ + zero_offset;
     auto word = uint32_t((reinterpret_cast<char *>(&data->max_count_buffer) - (char *)allocator_->gpu_heap_) / 4);
@@ -317,12 +328,14 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     if (occlusion_sums_.empty())
       return;
     StartComputePass();
-    auto upload = [&](const void *data, size_t length) {
+    auto upload = [&](const void *data, size_t length, const char *kind) {
       auto [mapped, offset] = allocator_->AllocateGPUHeap(length, 16);
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, length, kind);
       memcpy(mapped, data, length);
       return offset;
     };
-    auto slots = upload(visibility_slots_.data(), visibility_slots_.size() * sizeof(uint64_t));
+    auto slots = upload(visibility_slots_.data(), visibility_slots_.size() * sizeof(uint64_t), "occlusion slots");
     for (auto &window : allocator_->visibility_) {
       auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_useresource>();
       cmd.type = WMTComputeCommandUseResource;
@@ -340,7 +353,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       cmd_setpso.pso = device_->occlusion_sum;
       cmd_setpso.threadgroup_size = {1, 1, 1};
       const std::pair<obj_handle_t, uint64_t> buffers[] = {
-          {allocator_->gpu_heap_buffer_, upload(sums.data(), sums.size() * sizeof(OcclusionSum))},
+          {allocator_->gpu_heap_buffer_, upload(sums.data(), sums.size() * sizeof(OcclusionSum), "occlusion sums")},
           {allocator_->gpu_heap_buffer_, slots},
           {first->first->results, 0},
       };
@@ -507,7 +520,7 @@ public:
   };
 
   std::tuple<uint64_t, uint64_t>
-  PopulateVertexBufferTable(uint32_t Count) {
+  PopulateVertexBufferTable(uint32_t Count, bool Written = false) {
     auto slot_mask = pso_graphics_ ? pso_graphics_->slot_mask : 0;
     if (!slot_mask)
       return {0, 0};
@@ -520,6 +533,8 @@ public:
     auto stride = align(sizeof(VERTEX_BUFFER_ENTRY) * max_slot, 16);
 
     auto [mapped, offset] = allocator_->AllocateGPUHeap(stride * Count, 16);
+    if (allocator_->records_ && !Written)
+      allocator_->RecordGPUHeap(mapped, stride * Count, "vertex buffer table");
 
     for (unsigned i = 0; i < Count; i++) {
       VERTEX_BUFFER_ENTRY *entries = (VERTEX_BUFFER_ENTRY *)(reinterpret_cast<char *>(mapped) + i * stride);
@@ -801,6 +816,9 @@ public:
       return;
     TessellationInputs inputs{View, ControlPoints};
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(inputs) + sizeof(Args), 16);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Mapped, sizeof(inputs) + sizeof(Args), "tessellation inputs", sizeof(inputs),
+                                predication_region_ ? sizeof(uint32_t) : 0);
     memcpy(Mapped, &inputs, sizeof(inputs));
     memcpy(reinterpret_cast<char *>(Mapped) + sizeof(inputs), &Args, sizeof(Args));
     // the object stage counts patches from the arguments' first word, so a skipped draw has none
@@ -875,6 +893,9 @@ public:
     if (!increment)
       return;
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(View) + sizeof(Args), 16);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Mapped, sizeof(View) + sizeof(Args), "geometry inputs", sizeof(View),
+                                predication_region_ ? sizeof(uint32_t) : 0);
     memcpy(Mapped, &View, sizeof(View));
     memcpy(reinterpret_cast<char *>(Mapped) + sizeof(View), &Args, sizeof(Args));
     // the object stage reads the vertex count from the arguments' first word, so a skipped draw has none
@@ -914,6 +935,8 @@ public:
     targets.warps = warps;
     targets.instances = Args.InstanceCount;
     auto [Targets, TargetsOffset] = allocator_->AllocateGPUHeap(sizeof(targets), 16);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Targets, sizeof(targets), "stream output targets");
     memcpy(Targets, &targets, sizeof(targets));
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, TargetsOffset, SM50_BINDING_INDEX_STREAM_OUTPUT0);
     EncodeBuffer(WMTRenderCommandSetMeshBuffer, TargetsOffset, SM50_BINDING_INDEX_STREAM_OUTPUT0);
@@ -1065,6 +1088,8 @@ public:
       draw(index_buffer, index_offset, start, inside);
       if (auto outside = count - inside) {
         auto [zeros, offset] = allocator_->AllocateGPUHeap(outside * index_size, index_size);
+        if (allocator_->records_)
+          allocator_->RecordGPUHeap(zeros, outside * index_size, "zero indices");
         if (!zeros)
           return;
         memset(zeros, 0, outside * index_size);
@@ -1075,8 +1100,12 @@ public:
   };
 
   uint64_t
-  EncodeRootArgument(MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64], UINT Count = 1) {
+  EncodeRootArgument(
+      MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64], UINT Count = 1, bool Written = false
+  ) {
     auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t) * pRootSig->UploadQwords * Count, 64);
+    if (allocator_->records_ && !Written)
+      allocator_->RecordGPUHeap(Ptr, sizeof(uint64_t) * pRootSig->UploadQwords * Count, "root argument table");
     for (unsigned i = 0; i < Count; i++)
       memcpy(
           reinterpret_cast<uint64_t *>(Ptr) + i * pRootSig->UploadQwords, pStaging,
@@ -1089,6 +1118,8 @@ public:
   EncodeStaticSamplers(MTLD3D12RootSignature *pRootSig) {
     auto static_sampler_encode_size = sizeof(uint64_t) * pRootSig->NumStaticSamplers * 4;
     auto [Ptr, Offset] = allocator_->AllocateGPUHeap(static_sampler_encode_size, 64);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Ptr, static_sampler_encode_size, "static samplers");
     memcpy(Ptr, pRootSig->EncodedStaticSamplers, static_sampler_encode_size);
     return Offset;
   }
@@ -2323,6 +2354,10 @@ public:
       return;
     StartComputePass();
     auto [mapped, offset] = allocator_->AllocateGPUHeap(4 * sizeof(uint32_t), 4);
+    if (allocator_->records_) {
+      allocator_->RecordGPUHeap(mapped, 4 * sizeof(uint32_t), "predicate header", 3 * sizeof(uint32_t), sizeof(uint32_t));
+      predication_pass_ = allocator_->encoder_current;
+    }
     predication_region_ = static_cast<uint32_t *>(mapped);
     predication_region_[0] = predication_region_[1] = predication_region_[3] = 0;
     predication_region_[2] = Op == D3D12_PREDICATION_OP_EQUAL_ZERO;
@@ -2397,7 +2432,7 @@ public:
       uint64_t root_arguments = 0;
 
       if (sig->UpdateRootArguments) {
-        root_arguments = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount);
+        root_arguments = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount, true);
         cmd->rootsig_qwords = root_arguments;
         cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
         cmd->rootsig_qwords_stride = rootsig_compute_->UploadQwords;
@@ -2464,6 +2499,8 @@ public:
     if (tessellation && !dispatch_mesh) {
       // for indexed draws the bound view, or an empty one when the commands set their own; an empty view otherwise
       auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(TessellationInputs), 16);
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(Mapped, sizeof(TessellationInputs), "tessellation inputs");
       *reinterpret_cast<TessellationInputs *>(Mapped) = {
           sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? D3D12_INDEX_BUFFER_VIEW{}
           : sig->UpdateIndexBuffer                                        ? IndexedView({})
@@ -2477,12 +2514,14 @@ public:
       std::tie(cmd->geometry_threads, cmd->geometry_increment) = get_gs_vertex_count(topology_, pso_graphics_->vertex_registers);
     if (!encode_binding)
       return;
-    cmd->rootsig_qwords = EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_, MaxCommandCount);
+    cmd->rootsig_qwords = EncodeRootArgument(
+        rootsig_graphics_.ptr(), rootarg_graphics_staging_, MaxCommandCount, sig->UpdateRootArguments
+    );
     cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
     cmd->rootsig_qwords_stride = rootsig_graphics_->UploadQwords;
     cmd->static_samplers = EncodeStaticSamplers(rootsig_graphics_.ptr());
     cmd->static_samplers += allocator_->gpu_heap_buffer_address_;
-    auto [VBOffset, VBStride] = PopulateVertexBufferTable(MaxCommandCount);
+    auto [VBOffset, VBStride] = PopulateVertexBufferTable(MaxCommandCount, sig->UpdateVertexBuffers);
     cmd->vertex_buffer = allocator_->gpu_heap_buffer_address_ + VBOffset;
     cmd->vertex_argbuf_stride = VBStride;
     ResetIndirectState(sig, rootarg_graphics_staging_);
@@ -2755,6 +2794,8 @@ public:
     if (!allocation || !PreBlit())
       return;
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(Length, sizeof(uint64_t));
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Mapped, Length, "immediate data");
     memcpy(Mapped, Data, Length);
     auto &cmd = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
     cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
@@ -3042,6 +3083,10 @@ public:
     uint64_t scratch_offset = 0;
     auto scratch = device_->LookupBufferByVA(pDesc->ScratchAccelerationStructureData, &scratch_offset);
     PreAccelerationStructure();
+    if (allocator_->records_ && top)
+      allocator_->RecordGPUHeap(
+          ptr_add(allocator_->gpu_heap_, count_offset), sizeof(inputs.NumDescs), "instance count"
+      );
     Fills(structure.get(), kept.get(), nullptr);
     auto &build = allocator_->EncodeAccelerationStructureCommand<wmtcmd_accelerationstructure_build>();
     build.type = WMTAccelerationStructureCommandBuild;
@@ -3270,6 +3315,8 @@ public:
     if (!BeginRays(dispatch.pipeline_flags))
       return;
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(dispatch), alignof(SM50_RAY_DISPATCH));
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(mapped, sizeof(dispatch), "ray dispatch");
     memcpy(mapped, &dispatch, sizeof(dispatch));
     BindRays(offset);
     auto &threads = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();

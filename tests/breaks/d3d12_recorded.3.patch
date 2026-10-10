@@ -1,0 +1,35 @@
+# the CPU overwrites an encoded root argument table after GPU completion
+diff --git a/src/d3d12/d3d12_command_allocator.cpp b/src/d3d12/d3d12_command_allocator.cpp
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -39,6 +39,7 @@
+ };
+ struct GPURecordTotals {
+   dxmt::mutex mutex;
++  bool faulted = false;
+   std::map<std::string, std::pair<uint64_t, uint64_t>> kinds;
+ };
+
+@@ -68,6 +69,22 @@
+   std::lock_guard<dxmt::mutex> lock(Totals->mutex);
+   if (std::exchange(Checks->checked, true))
+     return;
++  if (!Totals->faulted) {
++    for (auto &snapshot : Checks->snapshots) {
++      if (strcmp(snapshot.record.kind, "root argument table"))
++        continue;
++      Totals->faulted = true;
++      const size_t offset = 0;
++      uint32_t encoded;
++      memcpy(&encoded, snapshot.bytes.data(), sizeof(encoded));
++      const uint32_t value = 2;
++      memcpy(const_cast<char *>(snapshot.record.bytes) + offset, &value, sizeof(value));
++      Logger::info(str::format("D3D12 recording test fault: root argument table; pass ", snapshot.pass, " ", snapshot.label,
++          "; word ", offset / sizeof(uint32_t), " encoded ", encoded, " current ", value,
++          "; 1 of ", Checks->snapshots.size(), " records differ"));
++      break;
++    }
++  }
+   size_t changed = 0, first = 0, word = 0;
+   uint32_t encoded = 0, current = 0;
+   for (size_t i = 0; i < Checks->snapshots.size(); i++) {

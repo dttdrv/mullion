@@ -18,12 +18,178 @@
 
 #include "d3d12_command_allocator.hpp"
 #include "com/com_pointer.hpp"
+#include <map>
 
 namespace dxmt {
+
+struct GPURecord {
+  const char *bytes, *kind;
+  size_t length, written_offset, written_length;
+};
+// a closed list's directory stays read-only while later lists are recorded
+struct GPUListRecords {
+  EncoderData *root;
+  GPUListRecords *previous;
+  std::unordered_map<EncoderData *, std::vector<GPURecord>> passes;
+};
+struct GPURecording {
+  std::atomic<GPUListRecords *> head = nullptr;
+  ~GPURecording() { Clear(); }
+  void Clear() {
+    for (auto list = head.exchange(nullptr); list;) {
+      auto previous = list->previous;
+      delete list;
+      list = previous;
+    }
+  }
+};
+struct GPURecordChecks {
+  struct Snapshot {
+    GPURecord record;
+    std::string label, bytes;
+    uint64_t pass;
+  };
+  std::vector<Snapshot> snapshots;
+  bool checked = false;
+};
+struct GPURecordTotals {
+  dxmt::mutex mutex;
+  std::map<std::string, std::pair<uint64_t, uint64_t>> kinds;
+};
+
+std::shared_ptr<GPURecordTotals>
+CreateGPURecordTotals() { return std::make_shared<GPURecordTotals>(); }
+
+void
+SnapshotGPURecords(
+    const GPUListRecords *List, EncoderData *Pass, const std::string &Label, std::shared_ptr<GPURecordChecks> &Checks
+) {
+  if (!List)
+    return;
+  auto found = List->passes.find(Pass);
+  if (found == List->passes.end())
+    return;
+  if (!Checks)
+    Checks = std::make_shared<GPURecordChecks>();
+  for (auto &record : found->second) {
+    auto &snapshot = Checks->snapshots.emplace_back(record, Label, std::string(record.length, '\0'),
+                                                   Pass->type == EncoderType::Null ? 0 : Pass->id);
+    // predication may already be writing the excluded span
+    memcpy(snapshot.bytes.data(), record.bytes, record.written_offset);
+    auto end = record.written_offset + record.written_length;
+    memcpy(snapshot.bytes.data() + end, record.bytes + end, record.length - end);
+  }
+}
+
+void
+CompareGPURecords(const std::shared_ptr<GPURecordChecks> &Checks, const std::shared_ptr<GPURecordTotals> &Totals) {
+  if (!Checks)
+    return;
+  std::lock_guard<dxmt::mutex> lock(Totals->mutex);
+  if (std::exchange(Checks->checked, true))
+    return;
+  size_t changed = 0, first = 0, word = 0;
+  uint32_t encoded = 0, current = 0;
+  for (size_t i = 0; i < Checks->snapshots.size(); i++) {
+    auto &snapshot = Checks->snapshots[i];
+    auto &record = snapshot.record;
+    auto at = std::mismatch(record.bytes, record.bytes + record.written_offset, snapshot.bytes.data()).first;
+    if (at == record.bytes + record.written_offset) {
+      auto end = record.written_offset + record.written_length;
+      at = std::mismatch(record.bytes + end, record.bytes + record.length, snapshot.bytes.data() + end).first;
+    }
+    auto &totals = Totals->kinds[record.kind];
+    totals.first++;
+    if (at == record.bytes + record.length)
+      continue;
+    totals.second++;
+    if (changed++ == 0) {
+      first = i;
+      word = (at - record.bytes) / sizeof(uint32_t);
+      auto offset = word * sizeof(uint32_t), length = std::min(sizeof(uint32_t), record.length - offset);
+      memcpy(&encoded, snapshot.bytes.data() + offset, length);
+      memcpy(&current, record.bytes + offset, length);
+    }
+  }
+  if (changed)
+    ERR("D3D12 recording changed: ", Checks->snapshots[first].record.kind, "; pass ", Checks->snapshots[first].pass,
+        " ", Checks->snapshots[first].label, "; word ", word, " encoded ", encoded, " current ", current, "; ", changed,
+        " of ", Checks->snapshots.size(), " records differ");
+}
+
+void
+ReportGPURecords(const std::shared_ptr<GPURecordTotals> &Totals) {
+  uint64_t compared = 0, differed = 0;
+  for (auto &[kind, totals] : Totals->kinds) {
+    Logger::info(str::format(
+        "D3D12 recording kind: ", kind, "; ", totals.first, " compared; ", totals.second, " differed"
+    ));
+    compared += totals.first, differed += totals.second;
+  }
+  Logger::info(str::format("D3D12 recording totals: ", compared, " compared; ", differed, " differed"));
+}
+
+void
+MTLD3D12CommandAllocatorImpl::RecordGPUHeap(
+    const void *Bytes, size_t Length, const char *Kind, size_t WrittenOffset, size_t WrittenLength, EncoderData *Pass
+) {
+  if (!Length || exhausted_)
+    return;
+  auto pass = Pass ? Pass : encoder_current ? encoder_current : encoder_last;
+  auto root = &encoder_lists_.back();
+  auto list = records_->head.load(std::memory_order_relaxed);
+  if (!list || list->root != root) {
+    list = new GPUListRecords{root, list, {}};
+    records_->head.store(list, std::memory_order_release);
+  }
+  list->passes[pass].push_back({static_cast<const char *>(Bytes), Kind, Length, WrittenOffset, WrittenLength});
+}
+
+void
+MTLD3D12CommandAllocatorImpl::ExcludeGPUWrite(const void *Bytes, size_t Offset, size_t Length) {
+  auto list = records_->head.load(std::memory_order_relaxed);
+  if (!list)
+    return;
+  auto found = list->passes.find(encoder_current);
+  if (found == list->passes.end())
+    return;
+  auto &records = found->second;
+  for (auto it = records.rbegin(); it != records.rend(); ++it)
+    if (it->bytes == Bytes) {
+      it->written_offset = Offset, it->written_length = Length;
+      return;
+    }
+}
+
+const GPUListRecords *
+MTLD3D12CommandAllocatorImpl::GPURecordsFor(EncoderData *Root) {
+  auto list = records_->head.load(std::memory_order_acquire);
+  while (list && list->root != Root)
+    list = list->previous;
+  return list;
+}
+
+MTLD3D12CommandAllocatorImpl::~MTLD3D12CommandAllocatorImpl() {
+  ReleaseRuns();
+  delete records_;
+}
+
+void
+MTLD3D12CommandAllocatorImpl::ReleaseRuns() {
+  if (records_)
+    records_->Clear();
+  for (auto [arena, cursor] : {std::pair{&device_->recording.commands, &cpu_cursor_},
+                              std::pair{&device_->recording.arguments, &gpu_cursor_}}) {
+    for (auto &run : cursor->runs)
+      arena->Release(run);
+    *cursor = {};
+  }
+}
 
 MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type) :
     MTLD3D12Pageable<MTLD3D12CommandAllocator>(pDevice),
     type_(Type),
+    records_(device_->NamesPasses() ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
     clear_rtv_(device_->GetMTLDevice(), *this),
@@ -165,6 +331,8 @@ MTLD3D12CommandAllocatorImpl::Reset() {
 IndirectComputeCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pCmdSig, size_t MaxCount) {
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectComputeCommandData), 16);
+  if (records_)
+    RecordGPUHeap(Ptr, sizeof(IndirectComputeCommandData), "indirect dispatch");
   auto data = new (Ptr) IndirectComputeCommandData{};
   data->max_count = MaxCount;
 
@@ -276,6 +444,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount * each, WMTResourceStorageModePrivate);
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectRenderCommandData), 16);
+  if (records_)
+    RecordGPUHeap(Ptr, sizeof(IndirectRenderCommandData), "indirect draw");
 
   auto data = reinterpret_cast<IndirectRenderCommandData *>(Ptr);
 

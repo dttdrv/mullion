@@ -1,0 +1,59 @@
+# a GPU blit overwrites an encoded indirect draw after rendering, leaving its commands and addresses intact
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -170,6 +170,7 @@
+
+   std::shared_ptr<GPURecordTotals> record_totals_;
+   std::shared_ptr<GPURecordChecks> own_checks_;
++  bool record_fault_written_ = false;
+
+   struct InflightCommandBuffer {
+     WMT::Reference<WMT::CommandBuffer> cmdbuf{};
+@@ -757,6 +758,24 @@
+           encoder.encodeCommands(&data->cmd_head);
+           encoder.updateFence(fence_, WMTRenderStageFragment);
+           encoder.endEncoding();
++          if (!record_fault_written_ && data->most) {
++            record_fault_written_ = true;
++            wmtcmd_blit_fillbuffer fill{};
++            fill.type = WMTBlitCommandFillBuffer;
++            fill.buffer = device_->recording.buffer;
++            fill.offset = reinterpret_cast<const char *>(data->most->call) -
++                          static_cast<const char *>(device_->recording.arguments.base) +
++                          offsetof(IndirectRenderCommandData, zero_count);
++            fill.length = sizeof(IndirectRenderCommandData::zero_count);
++            auto overwrite = cmdbuf.blitCommandEncoder();
++            overwrite.waitForFence(fence_);
++            wmtcmd_blit_nop head{};
++            head.type = WMTBlitCommandNop;
++            head.next.set(&fill);
++            overwrite.encodeCommands(&head);
++            overwrite.updateFence(fence_);
++            overwrite.endEncoding();
++          }
+           break;
+         }
+         case EncoderType::Blit: {
+diff --git a/src/d3d12/d3d12_command_allocator.cpp b/src/d3d12/d3d12_command_allocator.cpp
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -68,6 +68,18 @@
+   std::lock_guard<dxmt::mutex> lock(Totals->mutex);
+   if (std::exchange(Checks->checked, true))
+     return;
++  for (auto &snapshot : Checks->snapshots) {
++    if (strcmp(snapshot.record.kind, "indirect draw"))
++      continue;
++    const size_t offset = offsetof(IndirectRenderCommandData, zero_count);
++    uint32_t encoded, value;
++    memcpy(&encoded, snapshot.bytes.data() + offset, sizeof(encoded));
++    memcpy(&value, snapshot.record.bytes + offset, sizeof(value));
++    if (encoded && value == 0)
++      Logger::info(str::format("D3D12 recording test fault: indirect draw; pass ", snapshot.pass, " ", snapshot.label,
++          "; word ", offset / sizeof(uint32_t), " encoded ", encoded, " current ", value,
++          "; 1 of ", Checks->snapshots.size(), " records differ"));
++  }
+   size_t changed = 0, first = 0, word = 0;
+   uint32_t encoded = 0, current = 0;
+   for (size_t i = 0; i < Checks->snapshots.size(); i++) {
