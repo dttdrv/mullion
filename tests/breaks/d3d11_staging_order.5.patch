@@ -1,0 +1,11 @@
+# staging allocations are reused before earlier reads finish
+diff --git a/src/dxmt/dxmt_staging.cpp b/src/dxmt/dxmt_staging.cpp
+index 80a3d62..f5ba501 100644
+--- a/src/dxmt/dxmt_staging.cpp
++++ b/src/dxmt/dxmt_staging.cpp
+@@ -70,5 +70,2 @@ StagingResource::allocate(uint64_t coherent_seq_id) {
+     auto entry = fifo.front();
+-    if (entry.will_free_at > coherent_seq_id) {
+-      break;
+-    }
+     ret = entry.id;

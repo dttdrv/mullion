@@ -15,9 +15,10 @@ public:
 
   ~MTLD3D11FenceImpl() {
     if (local_kmt) {
-      D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy = {};
-      destroy.hSyncObject = local_kmt;
-      D3DKMTDestroySynchronizationObject(&destroy);
+      D3DKMT_DESTROYALLOCATION destroy = {};
+      destroy.hDevice = this->m_parent->GetLocalD3DKMT();
+      destroy.hResource = local_kmt;
+      D3DKMTDestroyAllocation(&destroy);
     }
   };
 
@@ -45,24 +46,25 @@ public:
   CreateSharedHandle(const SECURITY_ATTRIBUTES *pAttributes, DWORD Access,
                      const WCHAR *Name, HANDLE *pHandle) final {
     InitReturnPtr(pHandle);
-    if (!local_kmt)
-      return E_INVALIDARG;
+    if (!pHandle || !local_kmt || Access != GENERIC_ALL)
+      return DXGI_ERROR_INVALID_CALL;
 
     OBJECT_ATTRIBUTES attr = {};
     attr.Length = sizeof(attr);
-    attr.SecurityDescriptor = const_cast<SECURITY_ATTRIBUTES*>(pAttributes);
+    attr.SecurityDescriptor = pAttributes ? pAttributes->lpSecurityDescriptor : nullptr;
 
-    WCHAR buffer[MAX_PATH];
+    std::wstring buffer;
     UNICODE_STRING name_str;
     if (Name) {
-      DWORD session, len, name_len = wcslen(Name);
+      if (wcslen(Name) > MAX_PATH)
+        return DXGI_ERROR_INVALID_CALL;
+      DWORD session;
 
       ProcessIdToSessionId(GetCurrentProcessId(), &session);
-      len = swprintf(buffer, ARRAYSIZE(buffer), L"\\Sessions\\%u\\BaseNamedObjects\\", session);
-      memcpy(buffer + len, Name, (name_len + 1) * sizeof(WCHAR));
-      name_str.MaximumLength = name_str.Length = (len + name_len) * sizeof(WCHAR);
+      buffer = L"\\Sessions\\" + std::to_wstring(session) + L"\\BaseNamedObjects\\" + Name;
+      name_str.MaximumLength = name_str.Length = buffer.size() * sizeof(WCHAR);
       name_str.MaximumLength += sizeof(WCHAR);
-      name_str.Buffer = buffer;
+      name_str.Buffer = buffer.data();
 
       attr.ObjectName = &name_str;
       attr.Attributes = OBJ_CASE_INSENSITIVE;
@@ -90,26 +92,19 @@ public:
 
 HRESULT
 CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags, REFIID riid, void **ppFence) {
+  InitReturnPtr(ppFence);
   bool shared = !!(Flags & (D3D11_FENCE_FLAG_SHARED | D3D11_FENCE_FLAG_SHARED_CROSS_ADAPTER));
   auto event = pDevice->GetMTLDevice().newSharedEvent();
-  D3DKMT_HANDLE local_kmt = 0;
+  if (!event)
+    return E_OUTOFMEMORY;
+  event.signalValue(InitialValue);
+  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), 0));
   if (shared) {
     if (!(pDevice->GetLocalD3DKMT() & 0xc0000000)) {
       ERR("D3D11Fence: Invalid device handle");
       return E_FAIL;
     }
-    D3DKMT_CREATESYNCHRONIZATIONOBJECT2 create = {};
-    create.hDevice = pDevice->GetLocalD3DKMT();
-    create.Info.Type = D3DDDI_FENCE;
-    create.Info.Flags.Shared = 1;
-    create.Info.Flags.NtSecuritySharing = 1;
-    if (D3DKMTCreateSynchronizationObject2(&create)) {
-      ERR("D3D11Fence: Failed to create D3DKMT handle");
-      return E_FAIL;
-    }
-    local_kmt = create.hSyncObject;
-
-    mach_port_t mach_port = event.createMachPort();
+    mach_port_t mach_port = fence->event.createMachPort();
     if (!mach_port) {
       ERR("D3D11Fence: Failed to create mach port for shared fence");
       return E_FAIL;
@@ -120,18 +115,28 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
       ERR("D3D11Fence: Failed to register mach port for shared fence");
       return E_FAIL;
     }
-    D3DKMT_ESCAPE escape = {};
-    escape.Type = D3DKMT_ESCAPE_UPDATE_RESOURCE_WINE;
-    escape.pPrivateDriverData = mach_port_name;
-    escape.PrivateDriverDataSize = sizeof(mach_port_name);
-    escape.hContext = local_kmt;
-    if (!D3DKMTEscape(&escape)) {
-      ERR("D3D11Fence: Failed to escape mach port for shared fence");
+    // Wine's resource objects retain runtime data with the NT handle; synchronization objects do not
+    D3DKMT_CREATEALLOCATION create = {};
+    create.hDevice = pDevice->GetLocalD3DKMT();
+    create.pPrivateRuntimeData = mach_port_name;
+    create.PrivateRuntimeDataSize = sizeof(mach_port_name);
+    create.Flags.StandardAllocation = create.Flags.ExistingSysMem = 1;
+    create.Flags.CreateResource = create.Flags.CreateShared = create.Flags.NtSecuritySharing = 1;
+    D3DDDI_ALLOCATIONINFO2 allocation = {};
+    allocation.pSystemMem = mach_port_name;
+    create.pAllocationInfo2 = &allocation;
+    create.NumAllocations = 1;
+    D3DKMT_CREATESTANDARDALLOCATION standard = {};
+    standard.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
+    create.pStandardAllocation = &standard;
+    if (D3DKMTCreateAllocation2(&create)) {
+      ERR("D3D11Fence: Failed to create D3DKMT handle");
       return E_FAIL;
     }
+    fence->local_kmt = create.hResource;
   }
-  event.signalValue(InitialValue);
-  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), local_kmt));
+  if (!ppFence)
+    return S_FALSE;
   return fence->QueryInterface(riid, ppFence);
 }
 
@@ -145,10 +150,7 @@ OpenSharedFence(MTLD3D11Device *pDevice, HANDLE hResource,
     return E_INVALIDARG;
   }
 
-  if (ppFence == nullptr)
-    return S_FALSE;
-
-  char mach_port_name[54];
+  char mach_port_name[54] = {};
 
   D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
   query.hDevice = pDevice->GetLocalD3DKMT();
@@ -166,25 +168,36 @@ OpenSharedFence(MTLD3D11Device *pDevice, HANDLE hResource,
     return E_INVALIDARG;
   }
 
-  D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 open = {};
+  D3DKMT_OPENRESOURCEFROMNTHANDLE open = {};
+  D3DDDI_OPENALLOCATIONINFO2 allocation = {};
+  char driver_data;
   open.hDevice = pDevice->GetLocalD3DKMT();
   open.hNtHandle = hResource;
+  open.NumAllocations = 1;
+  open.pOpenAllocationInfo2 = &allocation;
+  open.pPrivateRuntimeData = mach_port_name;
+  open.PrivateRuntimeDataSize = sizeof(mach_port_name);
+  open.pTotalPrivateDriverDataBuffer = &driver_data;
 
-  if (D3DKMTOpenSyncObjectFromNtHandle2(&open)) {
+  if (D3DKMTOpenResourceFromNtHandle(&open)) {
     WARN(str::format("OpenSharedFence: Failed to open resource: ", hResource));
     return E_INVALIDARG;
   }
 
+  auto fence = Com(new MTLD3D11FenceImpl(pDevice, {}, open.hResource));
+  if (open.PrivateRuntimeDataSize != sizeof(mach_port_name) || mach_port_name[sizeof(mach_port_name) - 1])
+    return E_INVALIDARG;
   mach_port_t mach_port;
   if (!WMTBootstrapLookUp(mach_port_name, &mach_port)) {
-    ERR("ImportSharedTexture: Failed to look up mach port");
+    ERR("OpenSharedFence: Failed to look up mach port");
     return E_INVALIDARG;
   }
 
-  auto fence = Com(new MTLD3D11FenceImpl(
-      pDevice,
-      pDevice->GetMTLDevice().newSharedEventWithMachPort(mach_port),
-      open.hSyncObject));
+  fence->event = pDevice->GetMTLDevice().newSharedEventWithMachPort(mach_port);
+  if (!fence->event)
+    return E_INVALIDARG;
+  if (!ppFence)
+    return S_FALSE;
   return fence->QueryInterface(riid, ppFence);
 }
 

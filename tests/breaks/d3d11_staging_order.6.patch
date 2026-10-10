@@ -1,0 +1,9 @@
+# deferred copies lose their staging source tracking
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index fcff913..81f94c4 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -71,3 +71,2 @@ template <>
+ void DeferredContextBase::UseCopySource(Rc<StagingResource> &staging) {
+-  ctx_state.current_cmdlist->read_staging_resources.push_back(staging);
+ }

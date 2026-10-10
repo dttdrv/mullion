@@ -1,0 +1,10 @@
+# sharing accepts an invalid access mask
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index b481320..5cf6b1b 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -48,3 +48,3 @@ public:
+     InitReturnPtr(pHandle);
+-    if (!pHandle || !local_kmt || Access != GENERIC_ALL)
++    if (!pHandle || !local_kmt)
+       return DXGI_ERROR_INVALID_CALL;

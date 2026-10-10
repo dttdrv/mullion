@@ -1,0 +1,10 @@
+# sharing reads the SECURITY_ATTRIBUTES structure as a security descriptor
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index b481320..c037905 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -53,3 +53,3 @@ public:
+     attr.Length = sizeof(attr);
+-    attr.SecurityDescriptor = pAttributes ? pAttributes->lpSecurityDescriptor : nullptr;
++    attr.SecurityDescriptor = const_cast<SECURITY_ATTRIBUTES *>(pAttributes);
+

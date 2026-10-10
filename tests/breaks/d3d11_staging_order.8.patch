@@ -1,0 +1,9 @@
+# the CPU staging name advances but queued copies keep the first GPU name
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..4ae9bb3 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -255,2 +255,2 @@ public:
+-            auto _ = staging->buffer()->rename(staging->allocation(next_name));
++            auto _ = staging->buffer()->rename(staging->allocation(0));
+           });

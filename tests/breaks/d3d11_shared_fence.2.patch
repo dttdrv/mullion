@@ -1,0 +1,9 @@
+# the shared fence loses its initial 64-bit value
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index b481320..c0f7e9f 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -99,3 +99,2 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
+     return E_OUTOFMEMORY;
+-  event.signalValue(InitialValue);
+   auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), 0));

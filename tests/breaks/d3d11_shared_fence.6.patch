@@ -1,0 +1,9 @@
+# fence completion reports success without setting the application event
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index b481320..33d8970 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -87,3 +87,2 @@ public:
+     auto shared_event_listener = this->m_parent->GetDXMTDevice().queue().GetSharedEventListener();
+-    MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value);
+     return S_OK;

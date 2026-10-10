@@ -1,0 +1,9 @@
+# CPU writes ignore pending GPU writes
+diff --git a/src/dxmt/dxmt_staging.cpp b/src/dxmt/dxmt_staging.cpp
+index 80a3d62..5c74afd 100644
+--- a/src/dxmt/dxmt_staging.cpp
++++ b/src/dxmt/dxmt_staging.cpp
+@@ -34,3 +34,2 @@ StagingResource::useCopyDestination(uint64_t seq_id) {
+   // coherent write-after-write
+-  gpu_occupied_until_finished_seq_id = std::max(seq_id, gpu_occupied_until_finished_seq_id);
+ }

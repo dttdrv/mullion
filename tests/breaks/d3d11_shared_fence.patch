@@ -1,0 +1,10 @@
+# the shared handle loses the Metal event name
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index b481320..2e85da7 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -121,3 +121,3 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
+     create.pPrivateRuntimeData = mach_port_name;
+-    create.PrivateRuntimeDataSize = sizeof(mach_port_name);
++    create.PrivateRuntimeDataSize = 0;
+     create.Flags.StandardAllocation = create.Flags.ExistingSysMem = 1;

@@ -1,0 +1,9 @@
+# DO_NOT_WAIT is discarded for staging maps
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..3dc0bf2 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -241,2 +241,2 @@ public:
+-      if (ignore_map_flag_no_wait_)
++      if (true)
+         MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;

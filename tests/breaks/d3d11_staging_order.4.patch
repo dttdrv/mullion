@@ -1,0 +1,9 @@
+# renaming staging memory loses the bytes the CPU does not overwrite
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 70db252..78f0355 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -251,3 +251,2 @@ public:
+           // can't guarantee a full overwrite
+-          std::memcpy(staging->mappedMemory(next_name), staging->mappedImmediateMemory(), staging->length);
+           staging->updateImmediateName(current_seq_id, next_name);

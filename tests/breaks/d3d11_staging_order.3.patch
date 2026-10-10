@@ -1,0 +1,9 @@
+# buffer uploads do not register their pending staging read
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index e3714e2..3354f10 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4060,3 +4060,2 @@ public:
+         SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+-        UseCopySource(staging_src);
+         EmitOP([dst_ = dst->buffer(), src_ = std::move(staging_src), DstX, SrcBox](ArgumentEncodingContext &enc) {
