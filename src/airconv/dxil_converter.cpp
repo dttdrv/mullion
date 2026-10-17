@@ -2326,21 +2326,38 @@ convert_dxil(
           [&](Value *x, Value *y) { return fp ? ir.CreateFAdd(x, y) : ir.CreateAdd(x, y); },
           [&](Value *x, Value *y) { return fp ? ir.CreateFMul(x, y) : ir.CreateMul(x, y); },
           [&](Value *x, Value *y) {
-            return ir.CreateSelect(is_signed ? ir.CreateICmpSLT(x, y) : ir.CreateICmpULT(x, y), x, y);
+            return ir.CreateSelect(
+                fp ? ir.CreateFCmpOLT(x, y) : is_signed ? ir.CreateICmpSLT(x, y) : ir.CreateICmpULT(x, y), x, y
+            );
           },
           [&](Value *x, Value *y) {
-            return ir.CreateSelect(is_signed ? ir.CreateICmpSGT(x, y) : ir.CreateICmpUGT(x, y), x, y);
+            return ir.CreateSelect(
+                fp ? ir.CreateFCmpOGT(x, y) : is_signed ? ir.CreateICmpSGT(x, y) : ir.CreateICmpUGT(x, y), x, y
+            );
           },
       };
+      // the value that leaves the other operand as it is: made for this kind only, since an integer one does not
+      // exist for a float type
       auto width = vty->getPrimitiveSizeInBits();
-      Value *identity[] = {
-          Constant::getNullValue(vty),
-          fp ? ConstantFP::get(vty, 1.0) : ConstantInt::get(vty, 1),
-          is_signed ? ConstantInt::get(vty, APInt::getSignedMaxValue(width))
-                    : ConstantInt::get(vty, APInt::getMaxValue(width)),
-          is_signed ? ConstantInt::get(vty, APInt::getSignedMinValue(width)) : Constant::getNullValue(vty),
-      };
-      ret = reduce(names[kind], a(1), sign, op == WavePrefixOp, combine[kind], identity[kind]);
+      Value *identity = nullptr;
+      switch (kind) {
+      case 0:
+        identity = Constant::getNullValue(vty);
+        break;
+      case 1:
+        identity = fp ? ConstantFP::get(vty, 1.0) : ConstantInt::get(vty, 1);
+        break;
+      case 2:
+        identity = fp          ? ConstantFP::getInfinity(vty)
+                   : is_signed ? ConstantInt::get(vty, APInt::getSignedMaxValue(width))
+                               : ConstantInt::get(vty, APInt::getMaxValue(width));
+        break;
+      default:
+        identity = fp          ? ConstantFP::getInfinity(vty, true)
+                   : is_signed ? ConstantInt::get(vty, APInt::getSignedMinValue(width))
+                               : Constant::getNullValue(vty);
+      }
+      ret = reduce(names[kind], a(1), sign, op == WavePrefixOp, combine[kind], identity);
       break;
     }
     case WaveActiveBit: {
