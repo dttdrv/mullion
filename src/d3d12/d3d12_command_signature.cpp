@@ -254,8 +254,8 @@ public:
         return;
       const char *of[] = {"instance_count", count, start, base, "start_instance_location"};
       for (unsigned word = 0; word < std::size(of); word++)
-        source << "command_data.most[" << word << "] = max(command_data.most[" << word << "], uint(arg." << args << "."
-               << of[word] << "));\n";
+        source << "atomic_fetch_max_explicit(reinterpret_cast<device atomic_uint *>(command_data.most) + " << word
+               << ", uint(arg." << args << "." << of[word] << "), memory_order_relaxed);\n";
       source << "command_data.most[" << std::size(of) << "] = count;\n";
     };
     CommandType = side_effect;
@@ -264,11 +264,13 @@ public:
     source << "[[kernel]] void resolve_indirect_commands([[thread_position_in_grid]] uint x, constant "
            << (is_compute ? "dxmt_compute_command_data" : "dxmt_render_command_data")
            << " &command_data [[buffer(30)]]) {\n";
-    source << "if (x !=0 ) return;\n";
+    // each thread resolves one command
+    source << "ulong i = x;\n";
+    source << "if (i >= command_data.max_count) return;\n";
 
     source << "uint count = command_data.max_count_buffer ? "
               "command_data.max_count_buffer[0] : command_data.max_count;\n";
-    source << "for (ulong i = 0; i < command_data.max_count; i++) {\n";
+    source << "{\n";
     source << "device d3d12_arguments& arg = reinterpret_cast<device d3d12_arguments *>("
               "command_data.argument_buffer + i * "
            << pDesc->ByteStride << ")[0];\n";
@@ -289,7 +291,7 @@ public:
       if (indexed)
         source << "if (command_data.zeros) rest.reset();\n";
     }
-    source << "if (i >= count) continue;\n";
+    source << "if (i >= count) return;\n";
     source << "device ulong * rootsig_qwords = command_data.rootsig_qwords + "
               "(i * command_data.rootsig_qwords_stride);\n";
     if (!is_compute)

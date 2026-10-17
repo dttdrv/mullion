@@ -335,6 +335,9 @@ MTLD3D12CommandAllocatorImpl::Reset() {
   return Initialize();
 };
 
+// threads per threadgroup of a signature's resolver, which runs one thread per command
+constexpr size_t kResolverThreadgroupSize = 64;
+
 // runs the signature's resolver over the commands; the caller fills in what it reads
 IndirectComputeCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pCmdSig, size_t MaxCount) {
@@ -347,7 +350,7 @@ MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pC
   auto &cmd_setpso_res = EncodeComputeCommand<wmtcmd_compute_setpso>();
   cmd_setpso_res.type = WMTComputeCommandSetPSO;
   cmd_setpso_res.pso = pCmdSig->compute_resolver;
-  cmd_setpso_res.threadgroup_size = {1, 1, 1};
+  cmd_setpso_res.threadgroup_size = {kResolverThreadgroupSize, 1, 1};
 
   auto &cmd_argbuf_res = EncodeComputeCommand<wmtcmd_compute_setbuffer>();
   cmd_argbuf_res.type = WMTComputeCommandSetBuffer;
@@ -356,8 +359,8 @@ MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pC
   cmd_argbuf_res.index = 30;
 
   auto &cmd_dispatch_res = EncodeComputeCommand<wmtcmd_compute_dispatch>();
-  cmd_dispatch_res.type = WMTComputeCommandDispatch;
-  cmd_dispatch_res.size = {1, 1, 1};
+  cmd_dispatch_res.type = WMTComputeCommandDispatchThreads;
+  cmd_dispatch_res.size = {std::max<size_t>(MaxCount, 1), 1, 1};
   OrderDispatches();
   return data;
 }
@@ -511,7 +514,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   auto &cmd_setpso_res = EncodeBeforeRender<wmtcmd_compute_setpso>();
   cmd_setpso_res.type = WMTComputeCommandSetPSO;
   cmd_setpso_res.pso = pCmdSig->render_resolver;
-  cmd_setpso_res.threadgroup_size = {1, 1, 1};
+  cmd_setpso_res.threadgroup_size = {kResolverThreadgroupSize, 1, 1};
 
   auto &cmd_argbuf_res = EncodeBeforeRender<wmtcmd_compute_setbuffer>();
   cmd_argbuf_res.type = WMTComputeCommandSetBuffer;
@@ -527,8 +530,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   }
 
   auto &cmd_dispatch_res = EncodeBeforeRender<wmtcmd_compute_dispatch>();
-  cmd_dispatch_res.type = WMTComputeCommandDispatch;
-  cmd_dispatch_res.size = {1, 1, 1};
+  cmd_dispatch_res.type = WMTComputeCommandDispatchThreads;
+  cmd_dispatch_res.size = {std::max<size_t>(MaxCount, 1), 1, 1};
 
   if (draws)
     return data;
