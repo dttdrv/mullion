@@ -85,6 +85,23 @@ inline TextureKind lowering_texture_1d_to_2d(TextureKind kind) {
   return kind;
 };
 
+// a bindless D3D12 view of a 1D or 2D texture is a 1-layer 2D array, read as one by every declaration: a shader may
+// declare an array for a view that is not one (D3D11.3 22.3.12), and a handle of another type than its view's reads
+// the wrong layer and mip on Apple7
+inline TextureKind lowering_texture_to_array(TextureKind kind) {
+  switch (kind) {
+  case TextureKind::texture_1d:
+  case TextureKind::texture_1d_array:
+  case TextureKind::texture_2d:
+    return TextureKind::texture_2d_array;
+  case TextureKind::depth_2d:
+    return TextureKind::depth_2d_array;
+  default:
+    break;
+  }
+  return kind;
+};
+
 enum class Interpolation {
   center_perspective,
   center_no_perspective,

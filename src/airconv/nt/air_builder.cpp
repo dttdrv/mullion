@@ -133,7 +133,7 @@ AIRBuilder::CreateAtomicRMW(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   Tys.push_back(getTexelType(Texture));
@@ -241,7 +241,7 @@ AIRBuilder::CreateAtomicCmpXchg(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   AllocaInst *Alloca = builder.CreateAlloca(TyTexel, 0u);
@@ -374,7 +374,7 @@ AIRBuilder::CreateSampleCommon(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   switch (Texture.kind) {
@@ -478,7 +478,7 @@ AIRBuilder::CreateSampleCmpCommon(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   Tys.push_back(getFloatTy());
@@ -566,7 +566,7 @@ AIRBuilder::CreateSampleGrad(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   Tys.push_back(getTextureSampleCoordType(Texture));
@@ -703,7 +703,7 @@ AIRBuilder::CreateRead(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   if (TexInfo.is_ms) {
@@ -772,7 +772,7 @@ AIRBuilder::CreateWrite(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   Tys.push_back(getTexelType(Texture));
@@ -846,7 +846,7 @@ AIRBuilder::CreateGather(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   switch (Texture.kind) {
@@ -934,7 +934,7 @@ AIRBuilder::CreateGatherCompare(
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
 
   Tys.push_back(getFloatTy());
@@ -2062,7 +2062,7 @@ AIRBuilder::CreateAtomicMinMax64(
   auto &TexInfo = TextureInfo[Texture.kind];
   SmallVector<Value *> Ops{Handle, Pos};
   if (TexInfo.is_array)
-    Ops.push_back(ArrayIndex);
+    Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   Ops.push_back(builder.CreateInsertElement(
       Constant::getNullValue(FixedVectorType::get(builder.getInt64Ty(), 4)), Val, (uint64_t)0
   ));

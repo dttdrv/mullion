@@ -498,7 +498,7 @@ public:
 
     switch (ViewDesc.ViewDimension) {
     case D3D12_SRV_DIMENSION_TEXTURE1D: {
-      view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+      view_descriptor.type = WMTTextureType2DArray; // as every declaration reads it (lowering_texture_to_array)
       view_descriptor.firstMiplevel = ViewDesc.Texture1D.MostDetailedMip;
       if (ViewDesc.Texture1D.MipLevels == ~0u)
         view_descriptor.miplevelCount = desc_.MipLevels - ViewDesc.Texture1D.MostDetailedMip;
@@ -527,7 +527,7 @@ public:
       break;
     }
     case D3D12_SRV_DIMENSION_TEXTURE2D: {
-      view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+      view_descriptor.type = WMTTextureType2DArray; // as every declaration reads it (lowering_texture_to_array)
       view_descriptor.firstMiplevel = ViewDesc.Texture2D.MostDetailedMip;
       if (ViewDesc.Texture2D.MipLevels == ~0u)
         view_descriptor.miplevelCount = desc_.MipLevels - ViewDesc.Texture2D.MostDetailedMip;
@@ -674,7 +674,7 @@ public:
 
     switch (ViewDesc.ViewDimension) {
     case D3D12_UAV_DIMENSION_TEXTURE1D: {
-      view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+      view_descriptor.type = WMTTextureType2DArray; // as every declaration reads it (lowering_texture_to_array)
       view_descriptor.firstMiplevel = ViewDesc.Texture1D.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = 0;
@@ -683,7 +683,7 @@ public:
       break;
     }
     case D3D12_UAV_DIMENSION_TEXTURE2D: {
-      view_descriptor.type = WMTTextureType2D; // FIXME: lowering to 2d array
+      view_descriptor.type = WMTTextureType2DArray; // as every declaration reads it (lowering_texture_to_array)
       view_descriptor.firstMiplevel = ViewDesc.Texture2D.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = 0;

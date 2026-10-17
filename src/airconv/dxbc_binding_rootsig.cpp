@@ -220,7 +220,7 @@ public:
     if (DescriptorOffset == ~0u)
       return {}; // root descriptor can only be a buffer
     auto ResourceKindLogical = air::to_air_resource_type(SRV.resource_type, SRV.compared);
-    auto ResourceKind = air::lowering_texture_1d_to_2d(ResourceKindLogical);
+    auto ResourceKind = air::lowering_texture_to_array(ResourceKindLogical);
     auto SampleType = std::visit(
         patterns{
             [](air::MSLInt) { return Texture::sample_int; }, [](air::MSLUint) { return Texture::sample_uint; },
@@ -251,7 +251,7 @@ public:
     if (DescriptorOffset == ~0u)
       return {}; // root descriptor can only be a buffer
     auto ResourceKindLogical = air::to_air_resource_type(UAV.resource_type);
-    auto ResourceKind = air::lowering_texture_1d_to_2d(ResourceKindLogical);
+    auto ResourceKind = air::lowering_texture_to_array(ResourceKindLogical);
     auto SampleType = std::visit(
         patterns{
             [](air::MSLInt) { return Texture::sample_int; }, [](air::MSLUint) { return Texture::sample_uint; },
