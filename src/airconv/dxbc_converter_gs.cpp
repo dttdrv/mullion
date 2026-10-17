@@ -1438,6 +1438,17 @@ convert_dxbc_vertex_for_geometry_shader(
       .arg_name = "draw_arguments",
       .raster_order_group = {}
   });
+  auto origin_type = llvm::StructType::get(context, {types._int, types._int});
+  uint32_t draw_origin_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+      .buffer_size = {},
+      .location_index = SM50_BINDING_INDEX_DRAW_ORIGIN,
+      .array_size = 0,
+      .memory_access = air::MemoryAccess::read,
+      .address_space = air::AddressSpace::constant,
+      .type = air::MSLWhateverStruct{"draw_origin", origin_type},
+      .arg_name = "draw_origin",
+      .raster_order_group = {}
+  });
 
   uint32_t index_buffer_idx = ~0u;
   if (is_indexed_draw) {
@@ -1483,9 +1494,15 @@ convert_dxbc_vertex_for_geometry_shader(
   auto thread_position_in_group = function->getArg(thread_id_idx);
   auto warp_vertex_id = builder.CreateExtractElement(thread_position_in_group, (uint32_t)0);
 
+  // a draw in parts gives each its first object threadgroup and instance
   auto threadgroup_position_in_grid = function->getArg(tg_id_idx);
-  auto warp_id = builder.CreateExtractElement(threadgroup_position_in_grid, (uint32_t)0);
-  auto instance_id = builder.CreateExtractElement(threadgroup_position_in_grid, (uint32_t)1);
+  auto draw_origin = builder.CreateLoad(origin_type, function->getArg(draw_origin_idx));
+  auto warp_id = builder.CreateAdd(
+      builder.CreateExtractElement(threadgroup_position_in_grid, (uint32_t)0), builder.CreateExtractValue(draw_origin, 0)
+  );
+  auto instance_id = builder.CreateAdd(
+      builder.CreateExtractElement(threadgroup_position_in_grid, (uint32_t)1), builder.CreateExtractValue(draw_origin, 1)
+  );
 
   auto draw_arguments = builder.CreateLoad(
     is_indexed_draw ? types._dxmt_draw_indexed_arguments

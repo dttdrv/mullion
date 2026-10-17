@@ -103,11 +103,13 @@ struct dxmt_render_command_data {
   uint tessellation_parts;
   uint geometry_threads;
   uint geometry_increment;
+  uint geometry_max_warps;
   packed_uint3 object_threads;
   packed_uint3 mesh_threads;
   uint vertex_slots;
   uint index_buffer_size;
   device uint * most;
+  device atomic_uint * omitted;
   device dxmt_indirect_mesh_draw * draws;
   device ushort * zeros;
   uint zero_count;
@@ -245,6 +247,13 @@ public:
              << " - 1) / command_data.geometry_increment + 1, arg." << args << ".instance_count, 1) : "
              << "uint3((patches + per_group - 1) / per_group, arg." << args
              << ".instance_count, patches ? command_data.tessellation_parts : 0);\n";
+      // a geometry command over the mesh threadgroups a draw may start draws nothing
+      source << "ulong object_groups = ulong(draw.threadgroups.x) * draw.threadgroups.y;\n";
+      source << "if (command_data.geometry_threads && object_groups > command_data.geometry_max_warps) {\n";
+      source << "atomic_fetch_max_explicit(command_data.omitted, uint(min(object_groups, ulong(UINT_MAX))), "
+                "memory_order_relaxed);\n";
+      source << "draw.threadgroups = uint3(0);\n";
+      source << "}\n";
       source << "} else\n";
     };
     // MULLION_D3D12_GPU_ERRORS: the largest numbers the commands ask for, which the report of a failed command buffer

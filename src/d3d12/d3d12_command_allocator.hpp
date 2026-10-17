@@ -95,6 +95,9 @@ struct IndirectRenderCommandData {
   // zero for other pipelines. the object stage reads the index buffer view as under tessellation
   uint32_t geometry_threads;
   uint32_t geometry_increment;
+  // the most object threadgroups a command of a geometry pipeline may have (get_gs_max_object_threadgroups); a
+  // command with more draws nothing
+  uint32_t geometry_max_warps;
   // a mesh shader pipeline: its amplification and mesh shaders' threadgroup sizes, zero for other pipelines
   uint32_t object_threads[3];
   uint32_t mesh_threads[3];
@@ -104,6 +107,9 @@ struct IndirectRenderCommandData {
   uint32_t index_buffer_size;
   // MULLION_D3D12_GPU_ERRORS: where the resolver keeps the largest numbers its commands ask for (kMostWords words)
   uint64_t most;
+  // where the resolver leaves the most object threadgroups of a geometry command it left out
+  // (MTLD3D12Device::GetOmittedDraws)
+  uint64_t omitted;
   // the commands' IndirectMeshDraws, where the resolver writes those instead of commands; zero otherwise
   uint64_t draws;
   // indexed commands of ordinary pipelines are two commands each: the indices the view has, then, for the indices

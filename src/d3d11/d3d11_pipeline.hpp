@@ -41,6 +41,9 @@ struct MTL_COMPILED_GRAPHICS_PIPELINE {
   // with stream output: the pass that counts before PipelineState writes, and the geometry shader's instances
   WMT::RenderPipelineState StreamOutputCount;
   uint32_t GeometryInstances;
+  // the mesh threadgroups an object threadgroup starts for each primitive: the geometry shader's instances, 1 when
+  // the mesh stage only passes primitives on, 0 when it starts none (stream output alone)
+  uint32_t MeshInstances;
 };
 
 struct MTL_COMPILED_COMPUTE_PIPELINE {

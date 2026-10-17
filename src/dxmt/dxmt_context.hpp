@@ -140,6 +140,10 @@ struct GSDispatchArgumentsMarshal {
   WMT::Buffer dispatch_arguments_buffer;
   uint64_t dispatch_arguments_va;
   uint32_t vertex_count_per_warp;
+  // the Metal draws the draw is encoded as, and where each one's first object threadgroup and instance go, in the
+  // dispatch arguments' buffer
+  uint32_t parts;
+  uint64_t origins_va;
   // an indirect draw's stream output: its targets, whose scratch the marshal gives it, and its invocations per object
   // threadgroup (see DXMTGSDispatchMarshal)
   WMT::Buffer so_targets_buffer;
@@ -239,6 +243,8 @@ struct RenderEncoderData : EncoderData {
   // the bound geometry pipeline's stream output counting pass and geometry instances, and the last draw's targets
   WMT::RenderPipelineState so_count_pso = {};
   uint32_t so_geometry_instances = 1;
+  // the bound geometry pipeline's mesh threadgroups per object threadgroup and primitive (MeshInstances)
+  uint32_t geometry_mesh_instances = 0;
   WMT::Buffer so_targets = {};
   // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
   WMT::Buffer so_scratch = {};
@@ -686,16 +692,20 @@ public:
   encodeGSDispatchArgumentsMarshal(
       WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t vertex_count_per_warp,
       WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups,
-      uint64_t so_targets_va = 0, uint32_t so_invocations = 0
+      uint32_t parts, uint64_t origins_va, uint64_t so_targets_va = 0, uint32_t so_invocations = 0
   ) {
     assert(encoder_current->type == EncoderType::Render);
+    reportOmittedIndirectDraws();
     auto data = static_cast<RenderEncoderData *>(encoder_current);
     data->gs_arg_marshal_tasks.push_back(
         {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
-         dispatch_args_resource_id + write_offset, vertex_count_per_warp,
+         dispatch_args_resource_id + write_offset, vertex_count_per_warp, parts, origins_va,
          so_targets_va ? data->so_targets : WMT::Buffer{}, so_targets_va, so_invocations}
     );
   }
+
+  // warns of the indirect geometry draws the GS dispatch marshal has left out since the last call
+  void reportOmittedIndirectDraws();
 
   void
   encodeDrawAutoArgumentsMarshal(DrawAutoArgumentsMarshal &&task) {
@@ -954,7 +964,8 @@ private:
   std::array<StreamOutputBinding, kStreamOutputSlots> so_;
   Rc<Buffer> so_statistics_;
   // the scratch area render encoders' indirect draws with stream output share, one encoder after another, and the most
-  // one needed that it did not have, which the GS dispatch marshal leaves for a later encoder to grow it by
+  // one needed that it did not have, which the GS dispatch marshal leaves for a later encoder to grow it by. the
+  // marshal leaves in the next word the most object threadgroups of an indirect geometry draw it left out
   Rc<Buffer> so_scratch_;
   uint64_t so_scratch_budget_;
   WMT::Reference<WMT::Buffer> so_scratch_overflow_;

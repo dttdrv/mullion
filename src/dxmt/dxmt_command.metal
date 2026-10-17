@@ -556,7 +556,8 @@ struct DXMTStreamOutputTargets {
 
 struct DXMTGSDispatchMarshal {
   constant uint2& draw_arguments; // (vertex|index_count, instance_count)
-  device DXMTDispatchArguments& dispatch_arguments_out;
+  // one per part the draw is encoded as (parts), each with the first object threadgroup and instance of its part
+  device DXMTDispatchArguments* dispatch_arguments_out;
   ulong max_object_threadgroups;
   uint vertex_count_per_warp;
   uint end_of_command;
@@ -569,6 +570,10 @@ struct DXMTGSDispatchMarshal {
   ulong so_scratch_size;
   device ulong* so_overflow;
   uint so_invocations;
+  // where to leave the most object threadgroups of a draw left out for having more than it may
+  device ulong* omitted;
+  device uint2* origins_out;
+  uint parts;
 };
 
 [[vertex]] void gs_draw_arguments_marshal(
@@ -579,18 +584,29 @@ struct DXMTGSDispatchMarshal {
   for(;;) {
     constant DXMTGSDispatchMarshal& task = tasks[index];
 
-    device DXMTDispatchArguments& output = task.dispatch_arguments_out;
-
     uint x = task.draw_arguments.x / task.vertex_count_per_warp + (task.draw_arguments.x % task.vertex_count_per_warp != 0);
-    if (x == 0 || task.draw_arguments.y == 0 || (ulong)x * task.draw_arguments.y > task.max_object_threadgroups) {
-      output.x = 0;
-      output.y = 0;
-      output.z = 0;
-    } else {
-      output.x = x;
-      output.y = task.draw_arguments.y;
-      output.z = 1;
+    uint y = task.draw_arguments.y;
+    ulong object_groups = (ulong)x * y;
+    // parts of at most max_object_threadgroups, as draw_geometry_parts makes them: whole instances at a time where one
+    // fits, otherwise parts of one instance. a draw with more parts than were encoded is left out
+    ulong cap = max(task.max_object_threadgroups, 1ul);
+    uint width = x <= cap ? x : (uint)cap;
+    uint height = x <= cap ? (uint)min(cap / max(x, 1u), (ulong)max(y, 1u)) : 1;
+    ulong columns = width ? (x + width - 1) / width : 0, rows = (y + height - 1) / height;
+    bool runs = x && y && columns * rows <= task.parts;
+    if (x && y && !runs)
+      *task.omitted = max(*task.omitted, object_groups);
+    for (uint part = 0; part < task.parts; part++) {
+      device DXMTDispatchArguments& out = task.dispatch_arguments_out[part];
+      uint2 origin = runs && part < columns * rows ? uint2(part % columns * width, part / columns * height) : uint2(0);
+      bool used = runs && part < columns * rows;
+      out.x = used ? min(width, x - origin.x) : 0;
+      out.y = used ? min(height, y - origin.y) : 0;
+      out.z = used ? 1 : 0;
+      task.origins_out[part] = origin;
     }
+    // the whole draw's grid, which stream output's scratch and targets describe
+    uint2 output = runs ? uint2(x, y) : uint2(0);
 
     // stream output's scratch area (SM50_STREAM_OUTPUT_TARGETS, SM50StreamOutputScratch): the filled sizes, then per
     // stream a total per object threadgroup and per block of 1 << 10 of them, and a count per invocation. the counts
@@ -601,9 +617,11 @@ struct DXMTGSDispatchMarshal {
       ulong need = (zeroed + 16 * groups * task.so_invocations + 15) & ~15ul;
       if (so_used + need > task.so_scratch_size) {
         *task.so_overflow = max(*task.so_overflow, so_used + need);
-        output.x = 0;
-        output.y = 0;
-        output.z = 0;
+        for (uint part = 0; part < task.parts; part++) {
+          task.dispatch_arguments_out[part].x = 0;
+          task.dispatch_arguments_out[part].y = 0;
+          task.dispatch_arguments_out[part].z = 0;
+        }
       } else {
         device uint* scratch = task.so_scratch_area + so_used / 4;
         for (ulong i = 0; i < zeroed / 4; i++)

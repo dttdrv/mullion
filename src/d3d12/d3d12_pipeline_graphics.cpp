@@ -979,6 +979,7 @@ public:
       return hr;
     if (pDesc->GS.pShaderBytecode && FAILED(hr = InitializeShader(pDesc->GS, &shader_gs, &ref_gs)))
       return hr;
+    gs_instances = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.InstanceCount : 1;
     // the stage before stream output and the rasterizer: the geometry shader, or the vertex shader
     auto last_stage = pDesc->GS.pShaderBytecode ? pDesc->GS : pDesc->VS;
     std::vector<SM50_STREAM_OUTPUT_ELEMENT2> so_elements;
@@ -998,7 +999,6 @@ public:
                                       ? ~0u
                                       : pDesc->StreamOutput.RasterizedStream;
       so_data.next = &common;
-      gs_instances = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.InstanceCount : 1;
     }
     // a vertex shader's cull distances discard whole primitives (D3D11.3 15.4.2), which Metal can only by primitive:
     // the mesh stage passes the vertex shader's primitives on, less those
@@ -1006,6 +1006,7 @@ public:
     bool plain = !mesh_shader && !tessellation && !pDesc->GS.pShaderBytecode;
     bool pass_through = plain && ref_vs.CullDistances;
     geometry_shader |= pass_through;
+    mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     bool mesh = tessellation || geometry_shader || mesh_shader;

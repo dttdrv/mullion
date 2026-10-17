@@ -1546,6 +1546,8 @@ struct wmtcmd_render_dxmt_geometry_draw {
   uint32_t warp_count;
   uint32_t instance_count;
   uint32_t vertex_per_warp;
+  // the most object threadgroups one Metal draw may have: more are drawn in parts (0: one draw)
+  uint32_t max_object_threadgroups;
 };
 
 struct wmtcmd_render_dxmt_geometry_draw_indexed {
@@ -1558,6 +1560,8 @@ struct wmtcmd_render_dxmt_geometry_draw_indexed {
   uint32_t warp_count;
   uint32_t instance_count;
   uint32_t vertex_per_warp;
+  // the most object threadgroups one Metal draw may have: more are drawn in parts (0: one draw)
+  uint32_t max_object_threadgroups;
 };
 
 struct wmtcmd_render_dxmt_geometry_draw_indirect {
@@ -1570,6 +1574,10 @@ struct wmtcmd_render_dxmt_geometry_draw_indirect {
   obj_handle_t dispatch_args_buffer;
   uint64_t dispatch_args_offset;
   uint32_t vertex_per_warp;
+  // the Metal draws it is encoded as, each with its grid at dispatch_args_offset + 12 x its index and its first
+  // object threadgroup and instance at origins_offset + 8 x its index in dispatch_args_buffer
+  uint32_t parts;
+  uint64_t origins_offset;
 };
 
 struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect {
@@ -1584,6 +1592,10 @@ struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect {
   obj_handle_t dispatch_args_buffer;
   uint64_t dispatch_args_offset;
   uint32_t vertex_per_warp;
+  // the Metal draws it is encoded as, each with its grid at dispatch_args_offset + 12 x its index and its first
+  // object threadgroup and instance at origins_offset + 8 x its index in dispatch_args_buffer
+  uint32_t parts;
+  uint64_t origins_offset;
 };
 
 struct wmtcmd_render_fence_op {

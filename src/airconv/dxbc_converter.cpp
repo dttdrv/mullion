@@ -1325,8 +1325,7 @@ AIRCONV_API int SM50Initialize(
         );
       }
       pRefl->GeometryShader.Primitive = sm50_shader->gs_input_primitive;
-      pRefl->GeometryShader.InstanceCount = sm50_shader->gs_instance_count;
-    }
+      pRefl->GeometryShader.InstanceCount = sm50_shader->gs_instance_count;    }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader = {sm50_shader->pso_valid_output_reg_mask, sm50_shader->ps_has_coverage_output, 0, 0};
       for (auto &out : sm50_shader->output_signature) {
