@@ -869,6 +869,54 @@ struct VisibilitySlot {
   results[sum.query] = sum.binary ? ulong(total != 0) : total;
 }
 
+// a pipeline statistics query's result (D3D12_QUERY_DATA_PIPELINE_STATISTICS or ..._STATISTICS1, `size` counts): the
+// counts known when its work was recorded, plus the samples its pass segments with a pixel shader passed (PSInvocations)
+// and the threads of its indirect dispatches (CSInvocations)
+struct PipelineStatisticsSum {
+  ulong counts[14];
+  uint query;
+  uint size;
+  uint first_slot;
+  uint slot_count;
+  uint first_dispatch;
+  uint dispatch_count;
+};
+
+// an ExecuteIndirect of dispatches: where its first command's D3D12_DISPATCH_ARGUMENTS are, its count buffer (null for
+// none), the signature's stride, MaxCommandCount and the threads of a threadgroup
+struct IndirectDispatchCount {
+  device const uint *arguments;
+  device const uint *count;
+  uint stride;
+  uint max_count;
+  ulong threads;
+};
+
+[[kernel]] void sum_pipeline_statistics(
+    constant PipelineStatisticsSum *sums [[buffer(0)]],
+    constant VisibilitySlot *slots [[buffer(1)]],
+    constant uint *slot_shades [[buffer(2)]],
+    constant IndirectDispatchCount *dispatches [[buffer(3)]],
+    device ulong *results [[buffer(4)]],
+    uint i [[thread_position_in_grid]]
+) {
+  constant PipelineStatisticsSum &sum = sums[i];
+  device ulong *result = results + sum.query * sum.size;
+  for (uint k = 0; k < sum.size; k++)
+    result[k] = sum.counts[k];
+  for (uint k = sum.first_slot; k < sum.first_slot + sum.slot_count; k++)
+    if (slot_shades[k])
+      result[7] += *slots[k].count;
+  for (uint k = sum.first_dispatch; k < sum.first_dispatch + sum.dispatch_count; k++) {
+    IndirectDispatchCount dispatch = dispatches[k];
+    uint commands = dispatch.count ? min(*dispatch.count, dispatch.max_count) : dispatch.max_count;
+    for (uint c = 0; c < commands; c++) {
+      device const uint *groups = dispatch.arguments + c * (dispatch.stride / 4);
+      result[10] += ulong(groups[0]) * groups[1] * groups[2] * dispatch.threads;
+    }
+  }
+}
+
 // a predication region (SetPredication): each entry's GPU heap dword gets the value it was recorded with, or when the
 // predicate skips the region's work, the one that runs none of it; `skips` says which, for the work the CPU leaves out
 struct PredicatedWord {

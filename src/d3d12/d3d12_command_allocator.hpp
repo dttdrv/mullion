@@ -159,6 +159,7 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
 
   small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
   uint64_t visibility_address_ = 0;
+  char *visibility_memory_ = nullptr;
   size_t visibility_used_ = kVisibilityWindow;
   // the acceleration structures the lists' commands name, some of them replaced at their addresses since
   std::vector<std::shared_ptr<AccelerationStructure>> acceleration_structures_;
@@ -405,11 +406,11 @@ public:
   // and far ones it does not write (measured on an Apple10 GPU; Apple documents the offset's limit alone, "Maximum
   // visibility query offset" in the Metal feature set tables). so occlusion queries count in windows of that many
   // slots, each a buffer, and a pass counts in one window: the window's buffer, the next slot's GPU address, and
-  // its offset in the window. without a window the list fails when it is closed
+  // its offset in the window, and where the CPU reads the slot. without a window the list fails when it is closed
   static constexpr size_t kVisibilitySegments = 4096;
   static constexpr size_t kVisibilityWindow = (1 + kVisibilitySegments) * sizeof(uint64_t);
   std::vector<WMT::Reference<WMT::Buffer>> visibility_;
-  std::tuple<WMT::Buffer, uint64_t, size_t>
+  std::tuple<WMT::Buffer, uint64_t, size_t, const uint64_t *>
   VisibilitySlot() {
     if (visibility_used_ == kVisibilityWindow) {
       WMTBufferInfo info;
@@ -419,11 +420,14 @@ public:
       visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
       exhausted_ |= !visibility_.back();
       visibility_address_ = info.gpu_address;
+      visibility_memory_ = static_cast<char *>(info.memory.ptr);
       // offset 0 is the one counting is turned off at, and a pass takes an offset once
       visibility_used_ = sizeof(uint64_t);
     }
     auto used = std::exchange(visibility_used_, visibility_used_ + sizeof(uint64_t));
-    return {visibility_.back(), visibility_address_ + used, used};
+    return {
+        visibility_.back(), visibility_address_ + used, used, reinterpret_cast<const uint64_t *>(visibility_memory_ + used)
+    };
   }
 
   std::tuple<WMT::Buffer, uint64_t>

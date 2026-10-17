@@ -139,6 +139,7 @@ public:
       auto &arg = pDesc->pArgumentDescs[i];
       switch (arg.Type) {
       case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: {
+        DispatchOffset = bytes;
         bytes += sizeof(D3D12_DISPATCH_ARGUMENTS);
         side_effect = arg.Type;
         source << "packed_uint3 dispatch;\n";
@@ -222,6 +223,7 @@ public:
     if (~side_effect == 0 || (ib_index != ~0u && side_effect != D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED) ||
         pDesc->ByteStride % sizeof(UINT) || pDesc->ByteStride < bytes || UpdateRootArguments != !!pRootSignature)
       return E_INVALIDARG;
+    ByteStride = pDesc->ByteStride;
     // ray dispatches are no commands of an indirect command buffer: the resolver leaves an IndirectRays for each,
     // which ExecuteIndirect dispatches the pipeline's kernel with
     bool rays = side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
