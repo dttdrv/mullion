@@ -1131,6 +1131,26 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       auto gpu_buffer_ = data->allocated_argbuf;
       auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(render_pass_info, samples)
                                           : cmdbuf.renderCommandEncoder(render_pass_info);
+      // the pass named by its place, size and draws, which a failed command buffer's report lists its encoders by
+      if (diag::errors || diag::trace_encoders) {
+        unsigned draws = 0, geometry = 0, tessellation = 0;
+        for (auto cmd = reinterpret_cast<const wmtcmd_base *>(&data->cmd_head); cmd;
+             cmd = reinterpret_cast<const wmtcmd_base *>(cmd->next.ptr)) {
+          geometry += cmd->type >= WMTRenderCommandDXMTGeometryDraw && cmd->type <= WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
+          tessellation += cmd->type >= WMTRenderCommandDXMTTessellationMeshDraw &&
+                          cmd->type <= WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect;
+          draws += cmd->type >= WMTRenderCommandDraw && cmd->type <= WMTRenderCommandDrawMeshThreadgroupsIndirect;
+        }
+        auto label = str::format(
+            "render ", seqId, ".", encoder_count - encoder_index, ": ", data->render_target_width, "x",
+            data->render_target_height, ", ", draws + geometry + tessellation, " draws (", geometry, " geometry, ",
+            tessellation, " tessellation)"
+        );
+        if (diag::errors)
+          encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+        if (diag::trace_encoders)
+          Logger::info("encoder " + label);
+      }
       data->fence_wait.forEach(
           data->fence_wait_vertex, // if a fence is waited pre-raster, no need to wait again at fragment
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },

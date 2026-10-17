@@ -50,6 +50,8 @@ struct TimestampSamples {
 
 inline const bool profile = env::getEnvVar("MULLION_DIAG") == "profile";
 inline const bool errors = !env::getEnvVar("MULLION_D3D12_GPU_ERRORS").empty();
+// MULLION_TRACE_ENCODERS: every D3D11 render pass is logged with its size and draws as it is encoded
+inline const bool trace_encoders = !env::getEnvVar("MULLION_TRACE_ENCODERS").empty();
 
 inline uint64_t
 Nanoseconds(uint64_t ticks) {
