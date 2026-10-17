@@ -337,6 +337,9 @@ public:
   UINT UpdateRootArguments : 1;
   UINT UpdateVertexBuffers : 1;
   UINT UpdateIndexBuffer   : 1;
+  // the bytes between commands, and where in a command its D3D12_DISPATCH_ARGUMENTS are
+  UINT ByteStride = 0;
+  UINT DispatchOffset = 0;
   // what D3D12 resets after ExecuteIndirect: the root argument dwords the signature sets (constants become 0, root
   // views NULL), as (offset, count), and the vertex buffer slots it binds (NULL); the index buffer when it binds one
   std::vector<std::pair<uint32_t, uint32_t>> ResetRootDwords;
@@ -352,10 +355,12 @@ public:
 
 class MTLD3D12QueryHeap : public ID3D12QueryHeap {
 public:
-  // occlusion results, one 64-bit value per query, or stream output statistics (two)
+  // occlusion results, one 64-bit value per query, stream output statistics (two) or pipeline statistics
   WMT::Reference<WMT::Buffer> results;
   uint64_t results_address = 0;
   uint32_t result_size = sizeof(uint64_t);
+  // a pipeline statistics heap's results as the CPU reads them; null for other heaps
+  const void *statistics_memory = nullptr;
   // a timestamp heap's queries: the clock each sampled, which the queue reads from its counter sample buffers when
   // the command buffer completes. Metal has few of those at once, and few samples in one
   std::vector<uint64_t> timestamps;
@@ -411,6 +416,8 @@ public:
   // a mesh shader pipeline: its amplification shader's threadgroup size (ones without one) and its mesh shader's
   bool mesh_shader = false;
   uint32_t object_threads[3] = {1, 1, 1}, mesh_threads[3] = {1, 1, 1};
+  // whether it has a pixel shader, which PSInvocations count
+  bool pixel_shader = false;
   uint32_t slot_mask = 0;
   uint32_t rtv_mask = 0, dsv_mask = 0;
   enum WMTTriangleFillMode fill_mode;
@@ -529,6 +536,8 @@ public:
 
   // sums occlusion queries' visibility counts into their heaps (sum_occlusion)
   WMT::Reference<WMT::ComputePipelineState> occlusion_sum;
+  // writes pipeline statistics queries' results into their heaps (sum_pipeline_statistics)
+  WMT::Reference<WMT::ComputePipelineState> pipeline_statistics_sum;
   // applies a predication region to its draws' and dispatches' arguments (predicate)
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)

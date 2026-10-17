@@ -920,6 +920,7 @@ public:
     auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     stream_output = pDesc->StreamOutput.NumEntries;
     mesh_shader = MS.pShaderBytecode;
+    pixel_shader = pDesc->PS.pShaderBytecode;
 
     bool tessellation = pDesc->HS.pShaderBytecode;
     // stream output runs through the geometry pipeline, with or without a geometry shader; after a tessellator the

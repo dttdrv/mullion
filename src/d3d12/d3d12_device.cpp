@@ -162,11 +162,14 @@ public:
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
 
     occlusion_sum = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("sum_occlusion"), err);
+    pipeline_statistics_sum = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("sum_pipeline_statistics"), err
+    );
     predicate = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("predicate"), err);
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
-    if (!occlusion_sum || !predicate || !acceleration_structure_instances) {
+    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
     }

@@ -263,7 +263,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     // completes, and where each sample taken is with the queries it is for
     WMT::Reference<WMT::CounterSampleBuffer> samples{};
     std::vector<std::pair<uint64_t, std::vector<std::pair<Com<MTLD3D12QueryHeap>, uint32_t>>>> sampled{};
-    // the resolves of timestamps into readback buffers, which the CPU does when the command buffer completes
+    // the resolves of timestamps and pipeline statistics into readback buffers, which the CPU does when the command
+    // buffer completes
     struct Resolve {
       Com<MTLD3D12QueryHeap> heap;
       uint32_t first, count;
@@ -271,6 +272,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       void *to;
       // how many of the command buffer's samples were taken before it: it reads its queries as they were then
       size_t after;
+      const StatisticsCount *statistics;
+      uint32_t statistics_count;
     };
     std::vector<Resolve> resolves{};
     // the allocators of the lists the command buffer is the last of
@@ -438,6 +441,18 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       };
       for (auto &resolve : inflight.resolves) {
         sample(resolve.after);
+        if (resolve.heap->timestamps.empty()) {
+          auto size = resolve.heap->result_size;
+          memcpy(resolve.to, static_cast<const char *>(resolve.heap->statistics_memory) + resolve.first * size,
+                 resolve.count * size);
+          for (auto &sum : std::span(resolve.statistics, resolve.statistics_count)) {
+            auto result = reinterpret_cast<uint64_t *>(static_cast<char *>(resolve.to) + (sum.query - resolve.first) * size);
+            memcpy(result, sum.counts, size);
+            for (auto slot : std::span(sum.slots, sum.slot_count))
+              result[7] += *slot;
+          }
+          continue;
+        }
         memcpy(resolve.to, &resolve.heap->timestamps[resolve.first], resolve.count * sizeof(uint64_t));
       }
       sample(inflight.sampled.size());
@@ -1064,7 +1079,8 @@ public:
           if (data->readback) {
             scope.inflight->resolves.push_back({data->heap, data->start, data->count, data->readback,
                                                 static_cast<char *>(data->memory) + data->dst_offset,
-                                                scope.inflight->sampled.size()});
+                                                scope.inflight->sampled.size(), data->statistics,
+                                                data->statistics_count});
             break;
           }
           // the command buffer ends here; when it has completed and the CPU has read the samples, the next one

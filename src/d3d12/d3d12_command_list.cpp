@@ -213,6 +213,68 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   std::vector<uint64_t> visibility_slots_;
   std::vector<std::pair<MTLD3D12QueryHeap *, OcclusionSum>> occlusion_sums_;
 
+  // pipeline statistics queries: the running ones and the ended ones the next resolve writes, each with its visibility
+  // slots and indirect dispatches; and for each visibility slot, where the CPU reads it and whether its draws had a
+  // pixel shader, since PSInvocations counts the samples of those alone
+  struct StatisticsSum {
+    uint64_t counts[14];
+    uint32_t query, size, first_slot, slot_count, first_dispatch, dispatch_count;
+  };
+  struct IndirectDispatchCount {
+    uint64_t arguments, count;
+    uint32_t stride, max_count;
+    uint64_t threads;
+  };
+  std::vector<std::pair<MTLD3D12QueryHeap *, StatisticsSum>> active_statistics_, statistics_sums_;
+  std::vector<IndirectDispatchCount> indirect_dispatches_;
+  std::vector<const uint64_t *> visibility_counts_;
+  std::vector<uint32_t> visibility_shades_;
+
+  // the primitives `vertices` vertices of the current topology make
+  uint64_t
+  Primitives(uint64_t vertices) {
+    auto at_least = [&](uint64_t first) { return vertices >= first ? vertices - first + 1 : 0; };
+    switch (topology_) {
+    case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+      return vertices;
+    case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+      return vertices / 2;
+    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+      return at_least(2);
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+      return vertices / 3;
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+      return at_least(3);
+    case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
+      return vertices / 4;
+    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ:
+      return at_least(4);
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
+      return vertices / 6;
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ:
+      return vertices >= 6 ? (vertices - 4) / 2 : 0;
+    default:
+      if (topology_ < D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST)
+        return 0;
+      return vertices / (topology_ - D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST + 1);
+    }
+  }
+
+  // adds a draw's input assembler, vertex shader and clipper counts to the running pipeline statistics queries. strip
+  // cuts and what geometry shaders and tessellation make are left out: the clipper counts the input's primitives
+  void
+  CountDraw(uint64_t vertices, uint64_t instances) {
+    uint64_t primitives = Primitives(vertices) * instances;
+    vertices *= instances;
+    for (auto &[_, sum] : active_statistics_) {
+      sum.counts[0] += vertices;
+      sum.counts[1] += primitives;
+      sum.counts[2] += vertices;
+      sum.counts[5] += primitives;
+      sum.counts[6] += primitives;
+    }
+  }
+
   // a render pass counts samples in a new slot whenever the running queries change: Metal accumulates a slot within
   // a pass, and starts it over in the next
   void
@@ -226,13 +288,15 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     cmd.type = WMTRenderCommandSetVisibilityMode;
     cmd.mode = WMTVisibilityResultModeDisabled;
     cmd.offset = 0;
-    if (active_queries_.empty())
+    if (active_queries_.empty() && active_statistics_.empty())
       return;
-    auto [window, address, offset] = allocator_->VisibilitySlot();
+    auto [window, address, offset, count] = allocator_->VisibilitySlot();
     // a pass counts in one window: when that is full the pass ends, and the next pass counts in the next window
     if (render->visibility_buffer && render->visibility_buffer != window.handle)
       return allocator_->InvalidateCurrentPass();
     visibility_slots_.push_back(address);
+    visibility_counts_.push_back(count);
+    visibility_shades_.push_back(pso_graphics_ && pso_graphics_->pixel_shader);
     render->visibility_buffer = window;
     cmd.mode = WMTVisibilityResultModeCounting;
     cmd.offset = offset;
@@ -374,6 +438,65 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     allocator_->InvalidateCurrentPass();
   }
 
+  // the ended pipeline statistics queries' results, once the passes they counted in are over
+  void
+  SumStatistics() {
+    if (statistics_sums_.empty())
+      return;
+    StartComputePass();
+    // an empty list still gets a buffer to bind
+    auto upload = [&](const void *data, size_t length, const char *kind) {
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(std::max<size_t>(length, 16), 16);
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, std::max<size_t>(length, 16), kind);
+      if (length)
+        memcpy(mapped, data, length);
+      return offset;
+    };
+    auto slots = upload(visibility_slots_.data(), visibility_slots_.size() * sizeof(uint64_t), "statistics slots");
+    auto shades = upload(visibility_shades_.data(), visibility_shades_.size() * sizeof(uint32_t), "statistics shades");
+    auto dispatches = upload(
+        indirect_dispatches_.data(), indirect_dispatches_.size() * sizeof(IndirectDispatchCount), "statistics dispatches"
+    );
+    for (auto &window : allocator_->visibility_) {
+      auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_useresource>();
+      cmd.type = WMTComputeCommandUseResource;
+      cmd.usage = WMTResourceUsageRead;
+      cmd.resource = window;
+    }
+    std::stable_sort(statistics_sums_.begin(), statistics_sums_.end(), [](auto &x, auto &y) { return x.first < y.first; });
+    for (auto first = statistics_sums_.begin(); first != statistics_sums_.end();) {
+      auto last = std::find_if(first, statistics_sums_.end(), [&](auto &x) { return x.first != first->first; });
+      std::vector<StatisticsSum> sums;
+      for (auto it = first; it != last; ++it)
+        sums.push_back(it->second);
+      auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+      cmd_setpso.type = WMTComputeCommandSetPSO;
+      cmd_setpso.pso = device_->pipeline_statistics_sum;
+      cmd_setpso.threadgroup_size = {1, 1, 1};
+      const std::pair<obj_handle_t, uint64_t> buffers[] = {
+          {allocator_->gpu_heap_buffer_, upload(sums.data(), sums.size() * sizeof(StatisticsSum), "statistics sums")},
+          {allocator_->gpu_heap_buffer_, slots},
+          {allocator_->gpu_heap_buffer_, shades},
+          {allocator_->gpu_heap_buffer_, dispatches},
+          {first->first->results, 0},
+      };
+      for (uint8_t i = 0; i < std::size(buffers); i++) {
+        auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        cmd.type = WMTComputeCommandSetBuffer;
+        cmd.buffer = buffers[i].first;
+        cmd.offset = buffers[i].second;
+        cmd.index = i;
+      }
+      auto &cmd_dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+      cmd_dispatch.type = WMTComputeCommandDispatch;
+      cmd_dispatch.size = {(uint32_t)sums.size(), 1, 1};
+      first = last;
+    }
+    statistics_sums_.clear();
+    allocator_->InvalidateCurrentPass();
+  }
+
 public:
   MTLD3D12GraphicsCommandListImpl(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type) :
       MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList>(pDevice),
@@ -452,6 +575,11 @@ public:
     active_queries_.clear();
     visibility_slots_.clear();
     occlusion_sums_.clear();
+    active_statistics_.clear();
+    statistics_sums_.clear();
+    indirect_dispatches_.clear();
+    visibility_counts_.clear();
+    visibility_shades_.clear();
     predicated_.clear();
     predication_region_ = nullptr;
     left_for_later_ = false;
@@ -665,7 +793,7 @@ public:
       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef, DirtyState::DepthBounds);
       depth_bounds_set_ = false;
       dirty_state_.set(DirtyState::GraphicsPipelineState);
-      if (!active_queries_.empty())
+      if (!active_queries_.empty() || !active_statistics_.empty())
         CountVisibility();
     }
 
@@ -1022,6 +1150,7 @@ public:
     DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(VertexCountPerInstance, InstanceCount);
     if (pso_graphics_->threads_per_patch) {
       EncodeTessellationDraw(
           D3D12_DRAW_ARGUMENTS{VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation},
@@ -1074,6 +1203,7 @@ public:
     DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(IndexCountPerInstance, InstanceCount);
     if (pso_graphics_->threads_per_patch) {
       EncodeTessellationDraw(
           D3D12_DRAW_INDEXED_ARGUMENTS{
@@ -1238,6 +1368,9 @@ public:
       return;
     if (!PreDispatch())
       return;
+    auto &group = pso_compute_->threadgroup_size;
+    for (auto &[_, sum] : active_statistics_)
+      sum.counts[10] += uint64_t(X) * Y * Z * group.width * group.height * group.depth;
 
     if (auto offset = Predicated(D3D12_DISPATCH_ARGUMENTS{X, Y, Z}, 0)) {
       auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
@@ -1846,6 +1979,10 @@ public:
       allocator_->InvalidateCurrentPass();
     pso_graphics_ = graphics_pso;
     pso_compute_ = nullptr;
+    // PSInvocations leaves out the samples of draws without a pixel shader, so those count in slots of their own
+    if (!active_statistics_.empty() && !visibility_shades_.empty() &&
+        visibility_shades_.back() != graphics_pso->pixel_shader)
+      CountVisibility();
     dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::ComputePipelineState, DirtyState::VertexBuffer);
     dirty_state_.set(DirtyState::DepthBounds);
   };
@@ -2404,6 +2541,18 @@ public:
 
   void STDMETHODCALLTYPE
   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    // pipeline statistics count from here, in a visibility slot of their own
+    if (Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS || Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS1) {
+      auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
+      StatisticsSum sum{};
+      sum.query = Index;
+      sum.size = heap->result_size / sizeof(uint64_t);
+      sum.first_slot = visibility_slots_.size();
+      sum.first_dispatch = indirect_dispatches_.size();
+      active_statistics_.push_back({heap, sum});
+      CountVisibility();
+      return;
+    }
     // stream output statistics start at zero, and the stream's draws add to them
     if (Type >= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0 && Type <= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3) {
       auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
@@ -2430,6 +2579,24 @@ public:
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
     if (Type >= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0 && Type <= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3) {
       so_statistics_[Type - D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0] = 0;
+      return;
+    }
+    if (Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS || Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS1) {
+      auto query = std::find_if(active_statistics_.begin(), active_statistics_.end(), [&](auto &q) {
+        return q.first == heap && q.second.query == Index;
+      });
+      if (query == active_statistics_.end()) {
+        ERR("EndQuery: query type ", Type, " at ", Index, " was not begun");
+        return;
+      }
+      auto sum = query->second;
+      sum.slot_count = visibility_slots_.size() - sum.first_slot;
+      sum.dispatch_count = indirect_dispatches_.size() - sum.first_dispatch;
+      // sums run together at the next resolve, so a query ended again before one keeps only its latest result
+      std::erase_if(statistics_sums_, [&](auto &s) { return s.first == heap && s.second.query == Index; });
+      statistics_sums_.push_back({heap, sum});
+      active_statistics_.erase(query);
+      CountVisibility();
       return;
     }
     if (Type == D3D12_QUERY_TYPE_TIMESTAMP) {
@@ -2476,14 +2643,24 @@ public:
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
     auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
     SumOcclusion();
-    if (!heap->timestamps.empty()) {
+    D3D12_HEAP_PROPERTIES placed{};
+    pDstBuffer->GetHeapProperties(&placed, nullptr);
+    bool readback = placed.Type == D3D12_HEAP_TYPE_READBACK;
+    // pipeline statistics into a readback buffer are written by the CPU too, unless they count indirect dispatches,
+    // whose arguments the GPU may write later in the command buffer. those the CPU writes are not written to the heap
+    auto resolved = [&](auto &sum) { return sum.first == heap && sum.second.query - StartIndex < QueryCount; };
+    bool statistics = heap->statistics_memory && readback && std::none_of(
+        statistics_sums_.begin(), statistics_sums_.end(), [&](auto &sum) { return resolved(sum) && sum.second.dispatch_count; }
+    );
+    if (!statistics)
+      SumStatistics();
+    // timestamps are written by the CPU as the command buffer completes
+    if (!heap->timestamps.empty() || statistics) {
       allocator_->InvalidateCurrentPass();
       auto resolve = allocator_->AllocatePass<ResolveTimestampsData>();
       resolve->type = EncoderType::ResolveTimestamps;
       resolve->heap = heap;
-      D3D12_HEAP_PROPERTIES placed{};
-      pDstBuffer->GetHeapProperties(&placed, nullptr);
-      if (placed.Type == D3D12_HEAP_TYPE_READBACK) {
+      if (readback) {
         resolve->readback = pDstBuffer;
         resolve->memory = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->mappedMemory(0);
       }
@@ -2491,6 +2668,29 @@ public:
       resolve->count = QueryCount;
       resolve->dst = dst;
       resolve->dst_offset = AlignedDstBufferOffset;
+      if (statistics) {
+        auto ended = std::count_if(statistics_sums_.begin(), statistics_sums_.end(), resolved);
+        auto counts = allocator_->AllocateCommandData<StatisticsCount>(std::max<size_t>(ended, 1));
+        uint32_t n = 0;
+        for (auto &entry : statistics_sums_) {
+          if (!resolved(entry))
+            continue;
+          auto &sum = entry.second;
+          auto slots = allocator_->AllocateCommandData<const uint64_t *>(std::max<size_t>(sum.slot_count, 1));
+          uint32_t shaded = 0;
+          for (uint32_t k = sum.first_slot; k < sum.first_slot + sum.slot_count; k++)
+            if (visibility_shades_[k])
+              slots[shaded++] = visibility_counts_[k];
+          auto &count = counts[n++];
+          memcpy(count.counts, sum.counts, sizeof(sum.counts));
+          count.query = sum.query;
+          count.slots = slots;
+          count.slot_count = shaded;
+        }
+        resolve->statistics = counts;
+        resolve->statistics_count = n;
+        std::erase_if(statistics_sums_, resolved);
+      }
       allocator_->InvalidateCurrentPass();
       return;
     }
@@ -2582,6 +2782,13 @@ public:
         if (!PreDispatch(sig->UpdateRootArguments))
           return;
         cmd = allocator_->EncodeIndirectComputeCommand(sig, pso_compute_.ptr(), MaxCommandCount);
+        if (!active_statistics_.empty()) {
+          auto &group = pso_compute_->threadgroup_size;
+          indirect_dispatches_.push_back(
+              {ArgBufferAddress + sig->DispatchOffset, CountBufferAddress, sig->ByteStride, MaxCommandCount,
+               uint64_t(group.width) * group.height * group.depth}
+          );
+        }
       }
       cmd->max_count_buffer = CountBufferAddress;
       PredicateIndirect(cmd);

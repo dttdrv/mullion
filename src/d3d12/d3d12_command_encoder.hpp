@@ -173,6 +173,15 @@ struct LaterEncoderData : EncoderData {
 
 // timestamp queries' samples, copied to a buffer: Metal makes them readable only once their command buffer completes.
 // a readback heap's buffer is one the GPU never reads, so the CPU writes it then, through `readback` at its memory
+// a pipeline statistics query a readback resolve has the CPU write: the counts known when its work was recorded, and
+// the visibility counts of its pass segments with a pixel shader (PSInvocations)
+struct StatisticsCount {
+  uint64_t counts[14];
+  uint32_t query;
+  const uint64_t *const *slots;
+  uint32_t slot_count;
+};
+
 struct ResolveTimestampsData : EncoderData {
   MTLD3D12QueryHeap *heap;
   ID3D12Resource *readback = nullptr;
@@ -181,6 +190,9 @@ struct ResolveTimestampsData : EncoderData {
   uint32_t count;
   WMT::Buffer dst;
   uint64_t dst_offset;
+  // a pipeline statistics heap's queries the list ended; the others are copied from the heap
+  const StatisticsCount *statistics = nullptr;
+  uint32_t statistics_count = 0;
 };
 
 }; // namespace dxmt
