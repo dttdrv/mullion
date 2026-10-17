@@ -111,6 +111,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   WMT::Reference<WMT::Buffer> atomic_locks_;
   uint64_t atomic_locks_address_ = 0;
   uint32_t *atomic_locks_given_up_ = nullptr;
+  uint32_t *omitted_draws_ = nullptr;
+  uint64_t omitted_draws_address_ = 0;
   WMTSparsePageSize sparse_page_size_ = {};
 
   Com<IMTLDXGIAdapter> adapter_;
@@ -142,9 +144,15 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   FormatCapabilityInspector format_inspector_;
 
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {}
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
+    mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
+  }
 
-  ~MTLD3D12DeviceImpl() {}
+  ~MTLD3D12DeviceImpl() {
+    // what the last command buffers left out has had no later commit to report it
+    if (omitted_draws_)
+      CheckAtomicLocks();
+  }
 
   HRESULT
   Initialize() {
@@ -182,9 +190,10 @@ public:
     // is word 0, and after them the flag of an atomic that gave up waiting
     // before them, where every shader finds it, the header of the structure of nothing
     // (SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE)
+    // after the flag, the most object threadgroups of a geometry command ExecuteIndirect's resolver left out
     auto locks = std::bit_ceil(total_lanes_);
     WMTBufferInfo locks_info{
-        sizeof(AccelerationStructureHeader) + sizeof(uint32_t) * (locks + 2), WMTResourceStorageModeShared
+        sizeof(AccelerationStructureHeader) + sizeof(uint32_t) * (locks + 3), WMTResourceStorageModeShared
     };
     atomic_locks_ = GetMTLDevice().newBuffer(locks_info);
     if (!atomic_locks_) {
@@ -195,9 +204,11 @@ public:
     *nothing = {};
     auto words = reinterpret_cast<uint32_t *>(nothing + 1);
     words[0] = locks - 1;
-    std::fill_n(words + 1, locks + 1, 0u);
+    std::fill_n(words + 1, locks + 2, 0u);
     atomic_locks_given_up_ = words + locks + 1;
+    omitted_draws_ = words + locks + 2;
     atomic_locks_address_ = locks_info.gpu_address + sizeof(AccelerationStructureHeader);
+    omitted_draws_address_ = atomic_locks_address_ + sizeof(uint32_t) * (locks + 2);
     RegisterResidency(atomic_locks_);
 
     // the structure of nothing has no instances: their count is the zero its header has for their address, and the
@@ -236,6 +247,13 @@ public:
   CheckAtomicLocks() {
     if (__atomic_exchange_n(atomic_locks_given_up_, 0u, __ATOMIC_RELAXED))
       ERR("A 64-bit atomic gave up waiting for its lock, and its result is wrong: a lock holder did not run again");
+    if (uint32_t omitted = __atomic_exchange_n(omitted_draws_, 0u, __ATOMIC_RELAXED))
+      WARN("Omitted indirect mesh draw (GS) because of too many object threadgroups (", omitted, ")");
+  }
+
+  uint64_t
+  GetOmittedDraws() {
+    return omitted_draws_address_;
   }
 
   uint32_t

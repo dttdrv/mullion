@@ -936,6 +936,15 @@ public:
     // not one primitive fits an object threadgroup's payload
     if (!increment)
       return;
+    uint32_t warps = (Count - 1) / increment + 1;
+    auto parts = geometry_draw_parts(
+        warps, Args.InstanceCount,
+        get_gs_max_object_threadgroups(
+            topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull, device_->mesh_bytes_per_draw
+        )
+    );
+    if (!parts)
+      return;
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(View) + sizeof(Args), 16);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(Mapped, sizeof(View) + sizeof(Args), "geometry inputs", sizeof(View),
@@ -947,7 +956,6 @@ public:
       predicated_.push_back({uint32_t((Offset + sizeof(View)) / 4), reinterpret_cast<const uint32_t *>(&Args)[0], 0});
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, SM50_BINDING_INDEX_INDEX_BUFFER);
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset + sizeof(View), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
-    uint32_t warps = (Count - 1) / increment + 1;
     auto draw = [&] {
       auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_dxmt_geometry_draw>();
       cmd.type = WMTRenderCommandDXMTGeometryDraw;
@@ -955,6 +963,7 @@ public:
       cmd.warp_count = warps;
       cmd.instance_count = Args.InstanceCount;
       cmd.vertex_per_warp = vertex_per_warp;
+      cmd.max_object_threadgroups = *parts;
     };
     if (!pso_graphics_->stream_output)
       return draw();
@@ -2667,8 +2676,16 @@ public:
       cmd->index_buffer_view = allocator_->gpu_heap_buffer_address_ + Offset;
       cmd->control_points = cp_count;
     }
-    if (geometry)
+    if (geometry) {
       std::tie(cmd->geometry_threads, cmd->geometry_increment) = get_gs_vertex_count(topology_, pso_graphics_->vertex_registers);
+      cmd->geometry_max_warps = std::min<uint64_t>(
+          get_gs_max_object_threadgroups(
+              topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull,
+              device_->mesh_bytes_per_draw
+          ),
+          UINT32_MAX
+      );
+    }
     if (!encode_binding)
       return;
     cmd->rootsig_qwords = EncodeRootArgument(
@@ -2700,6 +2717,12 @@ public:
     } else if (cmd->threads_per_patch) {
       object = {cmd->threads_per_patch, 32 / cmd->threads_per_patch, 1};
       mesh = {32, 1, 1};
+    }
+    // a geometry draw's object stage adds its origin (SM50_BINDING_INDEX_DRAW_ORIGIN), none here
+    if (!dispatch_mesh && !cmd->threads_per_patch) {
+      auto [origin, origin_offset] = allocator_->AllocateGPUHeap(2 * sizeof(uint32_t), 8);
+      memset(origin, 0, 2 * sizeof(uint32_t));
+      EncodeBuffer(WMTRenderCommandSetObjectBuffer, origin_offset, SM50_BINDING_INDEX_DRAW_ORIGIN);
     }
     for (UINT i = 0; i < MaxCommandCount; i++) {
       auto at = cmd->draws - heap + i * sizeof(IndirectMeshDraw);

@@ -69,7 +69,8 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   // the scratch area is made at the first indirect draw with stream output, this size until a draw needs more
   so_scratch_budget_ = kStagingBlockSize;
   so_scratch_overflow_host_ = (uint64_t *)wsi::aligned_malloc(DXMT_PAGE_SIZE, DXMT_PAGE_SIZE);
-  *so_scratch_overflow_host_ = 0;
+  so_scratch_overflow_host_[0] = 0;
+  so_scratch_overflow_host_[1] = 0;
   WMTBufferInfo overflow_info{};
   overflow_info.length = DXMT_PAGE_SIZE;
   overflow_info.memory.set(so_scratch_overflow_host_);
@@ -84,9 +85,18 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
 };
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
+  reportOmittedIndirectDraws();
   wsi::aligned_free(dummy_cbuffer_host_);
   wsi::aligned_free(so_scratch_overflow_host_);
 };
+
+void
+ArgumentEncodingContext::reportOmittedIndirectDraws() {
+  if (uint64_t omitted = so_scratch_overflow_host_[1]) {
+    so_scratch_overflow_host_[1] = 0;
+    WARN("Omitted indirect mesh draw (GS) because of too many object threadgroups (", omitted, ")");
+  }
+}
 
 template void ArgumentEncodingContext::encodeVertexBuffers<PipelineKind::Ordinary>(uint32_t slot_mask, uint64_t argument_buffer_offset);
 template void ArgumentEncodingContext::encodeVertexBuffers<PipelineKind::Tessellation>(uint32_t slot_mask, uint64_t argument_buffer_offset);
@@ -1195,15 +1205,15 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           uint64_t so_scratch_size;
           uint64_t so_overflow;
           uint32_t so_invocations;
+          uint64_t omitted;
         };
         auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
             queue_.AllocateArgumentBuffer(seq_id_, sizeof(GS_MARSHAL_TASK) * task_count);
         auto tasks_data = (GS_MARSHAL_TASK *)mapped_task_data;
         // indirect draws with stream output share the encoder's scratch area (encodeStreamOutputTargets)
-        if (data->so_scratch) {
+        if (data->so_scratch)
           encoder.useResource(data->so_scratch, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
-          encoder.useResource(so_scratch_overflow_, WMTResourceUsageWrite, WMTRenderStageVertex);
-        }
+        encoder.useResource(so_scratch_overflow_, WMTResourceUsageWrite, WMTRenderStageVertex);
         for (unsigned i = 0; i<task_count; i++) {
           auto & task = data->gs_arg_marshal_tasks[i];
           tasks_data[i].draw_args = task.draw_arguments_va;
@@ -1217,6 +1227,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           tasks_data[i].so_scratch_size = data->so_scratch_size;
           tasks_data[i].so_overflow = so_scratch_overflow_va_;
           tasks_data[i].so_invocations = task.so_invocations;
+          tasks_data[i].omitted = so_scratch_overflow_va_ + sizeof(uint64_t);
           encoder.useResource(task.draw_arguments, WMTResourceUsageRead, WMTRenderStageVertex);
           encoder.useResource(task.dispatch_arguments_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
           if (task.so_targets_va)

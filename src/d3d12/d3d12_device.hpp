@@ -29,6 +29,7 @@
 #include "dxmt_diag.hpp"
 #include "dxmt_fence.hpp"
 #include "dxmt_format.hpp"
+#include "dxmt_info.hpp"
 #include "dxmt_presenter.hpp"
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
@@ -397,11 +398,15 @@ public:
   WMT::Reference<WMT::RenderPipelineState> pso_strip;
   // the vertex shader's output registers, which size a geometry pipeline's object threadgroups (get_gs_vertex_count)
   uint32_t vertex_registers = 0;
-  // with stream output, the pipelines of its counting pass, as `pso` and `pso_strip`, and the geometry shader's
-  // instances (airconv_public.h, SM50_STREAM_OUTPUT_TARGETS)
+  // with stream output, the pipelines of its counting pass, as `pso` and `pso_strip` (airconv_public.h,
+  // SM50_STREAM_OUTPUT_TARGETS)
   bool stream_output = false;
   WMT::Reference<WMT::RenderPipelineState> so_count, so_count_strip;
+  // the geometry shader's instances, 1 without one
   uint32_t gs_instances = 1;
+  // the mesh threadgroups an object threadgroup starts for each primitive: the geometry shader's instances, 1 when
+  // the mesh stage only passes primitives on, 0 when it starts none (stream output alone)
+  uint32_t mesh_instances = 0;
   // stream output without a geometry shader streams from the object stage, and rasterizes with this ordinary pipeline
   WMT::Reference<WMT::RenderPipelineState> so_raster;
   // a pipeline without a geometry shader, whose topologies with adjacency run as geometry pipelines that pass the
@@ -449,6 +454,8 @@ public:
 
   // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
   std::atomic<uint32_t> max_mesh_threadgroups{0};
+  // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
+  uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them, through one buffer
   struct {
     RecordingArena commands, arguments;
@@ -471,7 +478,11 @@ public:
 
   // the GPU address of the lock words of 64-bit atomics, which every root signature carries (AtomicLocksQword)
   virtual uint64_t GetAtomicLocks() = 0;
-  // reports, once per occurrence, a 64-bit atomic that gave up waiting for its lock (dxil_converter.cpp)
+  // the GPU address of the word where ExecuteIndirect's resolver leaves the most object threadgroups of a geometry
+  // command it left out, which CheckAtomicLocks reports
+  virtual uint64_t GetOmittedDraws() = 0;
+  // reports, once per occurrence, a 64-bit atomic that gave up waiting for its lock (dxil_converter.cpp), and the
+  // geometry commands ExecuteIndirect's resolver left out (GetOmittedDraws)
   virtual void CheckAtomicLocks() = 0;
 
   virtual D3D_FEATURE_LEVEL GetFeatureLevel() = 0;

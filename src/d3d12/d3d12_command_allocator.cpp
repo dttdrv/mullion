@@ -480,6 +480,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     data->vertex_slots = pPSO->slot_mask;
     data->geometry_threads = 0;
     data->geometry_increment = 0;
+    data->geometry_max_warps = 0;
     for (unsigned i = 0; i < 3; i++) {
       data->object_threads[i] = pPSO->mesh_shader ? pPSO->object_threads[i] : 0;
       data->mesh_threads[i] = pPSO->mesh_shader ? pPSO->mesh_threads[i] : 0;
@@ -496,6 +497,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     data->draws = gpu_heap_buffer_address_ + at;
   }
 
+  data->omitted = device_->GetOmittedDraws();
   data->most = 0;
   if (diag::errors) {
     auto [words, offset] = AllocateGPUHeap(kMostWords * sizeof(uint32_t), sizeof(uint32_t));

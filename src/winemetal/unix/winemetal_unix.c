@@ -949,6 +949,30 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* a geometry draw's `warps` x `instances` object threadgroups, in Metal draws of at most `max` of them (0: one draw),
+ * each told its first object threadgroup and instance (SM50_BINDING_INDEX_DRAW_ORIGIN) */
+static void
+draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max) {
+  uint32_t origin[2] = {0, 0};
+  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(1, 1, 1);
+  if (!max || (uint64_t)warps * instances <= max) {
+    [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+    [encoder drawMeshThreadgroups:MTLSizeMake(warps, instances, 1)
+        threadsPerObjectThreadgroup:object
+          threadsPerMeshThreadgroup:mesh];
+    return;
+  }
+  /* whole instances at a time where one fits, otherwise parts of one instance */
+  uint32_t width = warps <= max ? warps : max, height = warps <= max ? max / warps : 1;
+  for (origin[1] = 0; origin[1] < instances; origin[1] += height)
+    for (origin[0] = 0; origin[0] < warps; origin[0] += width) {
+      [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+      [encoder drawMeshThreadgroups:MTLSizeMake(MIN(width, warps - origin[0]), MIN(height, instances - origin[1]), 1)
+          threadsPerObjectThreadgroup:object
+            threadsPerMeshThreadgroup:mesh];
+    }
+}
+
 static NTSTATUS
 _MTLRenderCommandEncoder_encodeCommands(void *obj) {
   struct unixcall_generic_obj_cmd_noret *params = obj;
@@ -1171,9 +1195,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     case WMTRenderCommandDXMTGeometryDraw: {
       struct wmtcmd_render_dxmt_geometry_draw *body = (struct wmtcmd_render_dxmt_geometry_draw *)next;
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
-      [encoder drawMeshThreadgroups:MTLSizeMake(body->warp_count, body->instance_count, 1)
-          threadsPerObjectThreadgroup:MTLSizeMake(body->vertex_per_warp, 1, 1)
-            threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
+      draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
+                          body->max_object_threadgroups);
       break;
     }
     case WMTRenderCommandDXMTGeometryDrawIndexed: {
@@ -1182,13 +1205,14 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                         offset:body->index_buffer_offset
                        atIndex:SM50_BINDING_INDEX_INDEX_BUFFER];
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
-      [encoder drawMeshThreadgroups:MTLSizeMake(body->warp_count, body->instance_count, 1)
-          threadsPerObjectThreadgroup:MTLSizeMake(body->vertex_per_warp, 1, 1)
-            threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
+      draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
+                          body->max_object_threadgroups);
       break;
     }
     case WMTRenderCommandDXMTGeometryDrawIndirect: {
       struct wmtcmd_render_dxmt_geometry_draw_indirect *body = (struct wmtcmd_render_dxmt_geometry_draw_indirect *)next;
+      static const uint32_t origin[2] = {0, 0};
+      [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
       [encoder setObjectBuffer:(id<MTLBuffer>)body->indirect_args_buffer
                         offset:body->indirect_args_offset
                        atIndex:SM50_BINDING_INDEX_INDIRECT_ARGUMENTS];
@@ -1204,6 +1228,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     case WMTRenderCommandDXMTGeometryDrawIndexedIndirect: {
       struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect *body =
           (struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect *)next;
+      static const uint32_t origin[2] = {0, 0};
+      [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
       [encoder setObjectBuffer:(id<MTLBuffer>)body->index_buffer
                         offset:body->index_buffer_offset
                        atIndex:SM50_BINDING_INDEX_INDEX_BUFFER];

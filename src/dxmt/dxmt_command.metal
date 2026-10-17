@@ -569,6 +569,8 @@ struct DXMTGSDispatchMarshal {
   ulong so_scratch_size;
   device ulong* so_overflow;
   uint so_invocations;
+  // where to leave the most object threadgroups of a draw left out for having more than it may
+  device ulong* omitted;
 };
 
 [[vertex]] void gs_draw_arguments_marshal(
@@ -582,7 +584,10 @@ struct DXMTGSDispatchMarshal {
     device DXMTDispatchArguments& output = task.dispatch_arguments_out;
 
     uint x = task.draw_arguments.x / task.vertex_count_per_warp + (task.draw_arguments.x % task.vertex_count_per_warp != 0);
-    if (x == 0 || task.draw_arguments.y == 0 || (ulong)x * task.draw_arguments.y > task.max_object_threadgroups) {
+    ulong object_groups = (ulong)x * task.draw_arguments.y;
+    if (object_groups > task.max_object_threadgroups)
+      *task.omitted = max(*task.omitted, object_groups);
+    if (x == 0 || task.draw_arguments.y == 0 || object_groups > task.max_object_threadgroups) {
       output.x = 0;
       output.y = 0;
       output.z = 0;

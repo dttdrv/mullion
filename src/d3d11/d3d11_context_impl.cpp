@@ -37,6 +37,7 @@
 #include "dxmt_buffer.hpp"
 #include "dxmt_context.hpp"
 #include "dxmt_format.hpp"
+#include "dxmt_info.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
 #include "dxmt_staging.hpp"
 #include "d3d11_resource.hpp"
@@ -1587,6 +1588,7 @@ public:
   ) {
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
+    auto mesh_budget = mesh_bytes_per_draw_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
     EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
@@ -1601,10 +1603,15 @@ public:
         return;
       auto warp_count = (VertexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
 
-      if (warp_count * InstanceCount > max_object_threadgroups) {
-        WARN("Omitted mesh draw (GS) because of too many object threadgroups(", warp_count, "x", InstanceCount, ")");
+      auto parts = geometry_draw_parts(
+          warp_count, InstanceCount,
+          get_gs_max_object_threadgroups(
+              topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
+              mesh_budget
+          )
+      );
+      if (!parts)
         return;
-      }
 
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
@@ -1615,6 +1622,7 @@ public:
         cmd.instance_count = InstanceCount;
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
+        cmd.max_object_threadgroups = *parts;
       };
       auto encoder = enc.currentRenderEncoder();
       if (encoder->so_count_pso)
@@ -1632,6 +1640,7 @@ public:
     auto IndexBuffer = MeshIndexBuffer();
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
+    auto mesh_budget = mesh_bytes_per_draw_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
     EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
       DXMT_DRAW_INDEXED_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_INDEXED_ARGUMENTS>(draw_arguments_offset);
@@ -1648,10 +1657,15 @@ public:
         return;
       auto warp_count = (IndexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
 
-      if (warp_count * InstanceCount > max_object_threadgroups) {
-        WARN("Omitted mesh draw (GS) because of too many object threadgroups(", warp_count, "x", InstanceCount, ")");
+      auto parts = geometry_draw_parts(
+          warp_count, InstanceCount,
+          get_gs_max_object_threadgroups(
+              topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
+              mesh_budget
+          )
+      );
+      if (!parts)
         return;
-      }
 
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
@@ -1662,6 +1676,7 @@ public:
         cmd.instance_count = InstanceCount;
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
+        cmd.max_object_threadgroups = *parts;
         cmd.index_buffer = index_buffer;
         cmd.index_buffer_offset = index_buffer_offset;
       };
@@ -1764,6 +1779,7 @@ public:
     ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs
   ) {
     auto max_object_threadgroups = max_object_threadgroups_;
+    auto mesh_budget = mesh_bytes_per_draw_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
       EmitOP([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
@@ -1799,8 +1815,12 @@ public:
           draw();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups, targets,
-          invocations
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset,
+          get_gs_max_object_threadgroups(
+              topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups,
+              mesh_budget
+          ),
+          targets, invocations
         );
       });
     }
@@ -1812,6 +1832,7 @@ public:
   ) {
     auto IndexBuffer = MeshIndexBuffer();
     auto max_object_threadgroups = max_object_threadgroups_;
+    auto mesh_budget = mesh_bytes_per_draw_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
 
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
@@ -1851,8 +1872,12 @@ public:
           draw();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups, targets,
-          invocations
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset,
+          get_gs_max_object_threadgroups(
+              topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups,
+              mesh_budget
+          ),
+          targets, invocations
         );
       });
     }
@@ -1955,6 +1980,7 @@ public:
     if (status == DrawCallStatus::Invalid)
       return;
     auto max_object_threadgroups = max_object_threadgroups_;
+    auto mesh_budget = mesh_bytes_per_draw_;
     auto vertex_registers = GetManagedShader<PipelineStage::Vertex>()->reflection().NumOutputElement;
     auto ordinary = [Primitive](ArgumentEncodingContext &enc) {
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw_indirect>();
@@ -1992,7 +2018,11 @@ public:
         task.vertex_count_per_warp = vertex_increment_per_warp;
         enc.encodeGSDispatchArgumentsMarshal(
             arguments.gpu_buffer, arguments.gpu_address, arguments.offset, vertex_increment_per_warp,
-            dispatch.gpu_buffer, dispatch.gpu_address, dispatch.offset, max_object_threadgroups
+            dispatch.gpu_buffer, dispatch.gpu_address, dispatch.offset,
+            get_gs_max_object_threadgroups(
+                topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups,
+              mesh_budget
+            )
         );
         auto draw = [&] {
           auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
@@ -5214,6 +5244,7 @@ public:
       pso->GetPipeline(&GraphicsPipeline); // may block
       render_encoder->so_count_pso = GraphicsPipeline.StreamOutputCount;
       render_encoder->so_geometry_instances = GraphicsPipeline.GeometryInstances;
+      render_encoder->geometry_mesh_instances = GraphicsPipeline.MeshInstances;
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
@@ -5590,6 +5621,7 @@ protected:
   D3D11UserDefinedAnnotation annotation_;
   MTLD3D11ContextExt<ContextInternalState> ext_;
   uint64_t max_object_threadgroups_;
+  uint64_t mesh_bytes_per_draw_;
 
 public:
   MTLD3D11DeviceContextImplBase(MTLD3D11Device *pDevice, ContextInternalState &ctx_state, ContextInternalState::device_mutex_t &mutex) :
@@ -5611,6 +5643,7 @@ public:
     default_depth_stencil_state->Release();
 
     max_object_threadgroups_ = m_parent->GetDXMTDevice().maxObjectThreadgroups();
+    mesh_bytes_per_draw_ = MeshBytesPerDraw(m_parent->GetDXMTDevice().device());
   }
 };
 
