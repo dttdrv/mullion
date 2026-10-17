@@ -944,7 +944,7 @@ public:
     WMT::Reference<WMT::Error> err;
 
     SM50_SHADER_COMMON_DATA common;
-    common.flags = {};
+    common.flags = device_->GetShaderFlags();
     common.type = SM50_SHADER_COMMON;
     common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();

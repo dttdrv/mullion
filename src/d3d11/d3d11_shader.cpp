@@ -2,6 +2,7 @@
 #include "Metal.hpp"
 #include "airconv_public.h"
 #include "config/config.hpp"
+#include "dxmt_info.hpp"
 #include "d3d11_input_layout.hpp"
 #include "sha1/sha1_util.hpp"
 #include <mutex>
@@ -9,11 +10,11 @@
 namespace dxmt {
 
 SM50_SHADER_FLAG
-getGlobalShaderFlag() {
+getGlobalShaderFlag(MTLD3D11Device *pDevice) {
   static SM50_SHADER_FLAG shader_flag;
   static std::once_flag get_shader_flag_once;
-  std::call_once(get_shader_flag_once, []() {
-    shader_flag = {};
+  std::call_once(get_shader_flag_once, [=]() {
+    shader_flag = GPUShaderFlags(pDevice->GetDXMTDevice().device());
     if (Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", false))
       shader_flag |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
     if (Config::getInstance().getOption<bool>("d3d11.defuseFma", false))
@@ -31,7 +32,7 @@ public:
         shader_(shader), variant_digest_(variant_digest) {
     sm50_common.type = SM50_SHADER_COMMON;
     sm50_common.metal_version = (SM50_SHADER_METAL_VERSION)pDevice->GetDXMTDevice().metalVersion();
-    sm50_common.flags = getGlobalShaderFlag();
+    sm50_common.flags = getGlobalShaderFlag(pDevice);
     sm50_common.simd_width = 0; // DXBC has no wave operations
     sm50_common.next = nullptr;
   }
@@ -122,7 +123,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantVertex variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   h.update(variant.gs_passthrough);
   h.update(variant.rasterization_disabled);
   if (variant.input_layout_handle)
@@ -168,7 +169,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantPixel variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   h.update(variant.sample_mask);
   h.update(variant.unorm_output_reg_mask);
   h.update(variant.dual_source_blending);
@@ -207,7 +208,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantDefault) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   auto variant_digest = h.final();
   std::string func_name = "cs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
@@ -230,7 +231,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantTessellationVertexHull variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   h.update(variant.vertex_shader_handle->sha1());
   h.update(variant.index_buffer_format);
   h.update(variant.max_potential_tess_factor);
@@ -286,7 +287,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantTessellationDomain variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   h.update(variant.hull_shader_handle->sha1());
   h.update(variant.rasterization_disabled);
   h.update(variant.max_potential_tess_factor);
@@ -356,7 +357,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantGeometryVertex variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   if (variant.geometry_shader_handle)
     h.update(variant.geometry_shader_handle->sha1());
   h.update(variant.index_buffer_format);
@@ -411,7 +412,7 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantGeometry variant) {
   Sha1HashState h;
-  h.update(getGlobalShaderFlag());
+  h.update(getGlobalShaderFlag(pDevice));
   h.update(variant.vertex_shader_handle->sha1());
   h.update(variant.strip_topology);
   hash_stream_output(h, variant.stream_output);

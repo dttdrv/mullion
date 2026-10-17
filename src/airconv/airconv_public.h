@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 38
+#define AIRCONV_VERSION 39
 
 #ifdef __cplusplus
 #include <string>
@@ -364,6 +364,8 @@ struct SM50_SAMPLER_BORDER {
 enum SM50_SHADER_FLAG {
   SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO = 1 << 0,
   SM50_SHADER_FLAG_DEFUSE_FMA = 1 << 1,
+  /* the device has no 64-bit atomics (before Apple8): its 64-bit minimum and maximum take locks as the others do */
+  SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64 = 1 << 2,
 };
 
 struct SM50_SHADER_COMMON_DATA {
