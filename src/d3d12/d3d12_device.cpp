@@ -244,10 +244,10 @@ public:
   }
 
   uint64_t
-  ThreadsAtOnce() {
+  ThreadsAtOnce(uint32_t scale) {
     // MULLION_D3D12_THREADS_AT_ONCE gives the number, for a test or to tell what a part's size does
     static const uint64_t given = strtoull(env::getEnvVar("MULLION_D3D12_THREADS_AT_ONCE").c_str(), nullptr, 10);
-    return given ? given : total_lanes_;
+    return given ? given : total_lanes_ * scale;
   }
 
   SM50_SHADER_METAL_VERSION

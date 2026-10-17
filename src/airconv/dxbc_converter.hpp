@@ -474,6 +474,9 @@ public:
   // dispatch comes in parts (MTL_SHADER_REFLECTION::GroupsWorkTogether), each part's groups numbered from the
   // stage-in grid's origin
   bool groups_work_together = false;
+  // a shader with 64-bit atomics on resources, whose locks wait for the threadgroups that hold them: where the GPU
+  // emulates them all, its dispatch comes in parts too (MTL_SHADER_REFLECTION::DeviceAtomics64)
+  bool device_atomics64 = false;
   bool reads_dispatch_position = false;
   uint32_t input_control_point_count = ~0u;
   uint32_t output_control_point_count = ~0u;

@@ -1203,11 +1203,12 @@ handle_signature_gs(
   }
 };
 
-// a compute shader whose dispatch may come in parts (groups_work_together) and that reads where its thread or group
-// is in the dispatch: each part's groups are numbered from the stage-in grid's origin, which is in groups
+// a compute shader whose dispatch may come in parts (groups_work_together, device_atomics64) and that reads where its
+// thread or group is in the dispatch: each part's groups are numbered from the stage-in grid's origin, which is in
+// groups
 void declare_dispatch_origin(SM50ShaderInternal *sm50_shader) {
-  if (sm50_shader->shader_type != microsoft::D3D11_SB_COMPUTE_SHADER || !sm50_shader->groups_work_together ||
-      !sm50_shader->reads_dispatch_position)
+  if (sm50_shader->shader_type != microsoft::D3D11_SB_COMPUTE_SHADER ||
+      !(sm50_shader->groups_work_together || sm50_shader->device_atomics64) || !sm50_shader->reads_dispatch_position)
     return;
   auto index = sm50_shader->func_signature.DefineInput(InputStageInGridOrigin{});
   sm50_shader->signature_handlers.push_back([=](SignatureContext &ctx) {

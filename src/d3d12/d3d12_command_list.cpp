@@ -1246,7 +1246,7 @@ public:
       cmd.indirect_args_offset = *offset;
       return;
     }
-    if (auto at_once = pso_compute_->groups_work_together ? device_->ThreadsAtOnce() : 0) {
+    if (auto at_once = pso_compute_->groups_work_together ? device_->ThreadsAtOnce(pso_compute_->part_scale) : 0) {
       auto &group = pso_compute_->threadgroup_size;
       DispatchParts({}, {X, Y, Z}, std::max<uint64_t>(at_once / (group.width * group.height * group.depth), 1));
       Isolate(X, Y, Z);

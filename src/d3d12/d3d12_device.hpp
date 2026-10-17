@@ -29,6 +29,7 @@
 #include "dxmt_diag.hpp"
 #include "dxmt_fence.hpp"
 #include "dxmt_format.hpp"
+#include "dxmt_info.hpp"
 #include "dxmt_presenter.hpp"
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
@@ -433,8 +434,10 @@ class MTLD3D12ComputePipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::ComputePipelineState> pso;
   WMTSize threadgroup_size;
-  // see MTL_SHADER_REFLECTION::GroupsWorkTogether
+  // see MTL_SHADER_REFLECTION::GroupsWorkTogether and DeviceAtomics64
   bool groups_work_together = false;
+  // how many times the threads a GPU runs at once go in one part (MTLD3D12Device::ThreadsAtOnce)
+  uint32_t part_scale = 1;
 };
 
 // timestamp queries sample the GPU's clock into counter sample buffers. Metal makes few of them, with few samples
@@ -464,10 +467,15 @@ public:
   // later GPU errors must not replace the original removal reason (ID3D12Device::GetDeviceRemovedReason)
   virtual void LoseDevice(HRESULT Reason = DXGI_ERROR_DEVICE_HUNG) = 0;
   // how many threads of a compute shader go to the GPU at once when its threadgroups wait for one another: the
-  // lanes it runs at once (the estimate behind TotalLaneCount)
-  virtual uint64_t ThreadsAtOnce() = 0;
+  // lanes it runs at once (the estimate behind TotalLaneCount), `scale` times
+  virtual uint64_t ThreadsAtOnce(uint32_t scale) = 0;
   // the Metal language version the device's shaders are converted for (ShaderMetalVersion)
   virtual SM50_SHADER_METAL_VERSION GetMetalVersion() = 0;
+  // the shader compiler's flags for what this GPU lacks (GPUShaderFlags)
+  SM50_SHADER_FLAG
+  GetShaderFlags() {
+    return GPUShaderFlags(GetMTLDevice());
+  }
 
   // the GPU address of the lock words of 64-bit atomics, which every root signature carries (AtomicLocksQword)
   virtual uint64_t GetAtomicLocks() = 0;

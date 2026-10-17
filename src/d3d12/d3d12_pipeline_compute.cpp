@@ -48,7 +48,7 @@ public:
     rootsig.next = nullptr;
 
     SM50_SHADER_COMMON_DATA common;
-    common.flags = {};
+    common.flags = device_->GetShaderFlags();
     common.type = SM50_SHADER_COMMON;
     common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();
@@ -59,7 +59,12 @@ public:
       return hr;
 
     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
-    groups_work_together = ref_cs.GroupsWorkTogether;
+    groups_work_together = ref_cs.GroupsWorkTogether ||
+                           (ref_cs.DeviceAtomics64 && (device_->GetShaderFlags() & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64));
+    // a group holding an emulated 64-bit atomic's lock only needs to stay resident: its parts are 8 times what runs
+    // at once
+    if (!ref_cs.GroupsWorkTogether && groups_work_together)
+      part_scale = 8;
     if (groups_work_together)
       Logger::info(str::format("compute pipeline ", name, ": its threadgroups work together, it is dispatched in parts"));
 

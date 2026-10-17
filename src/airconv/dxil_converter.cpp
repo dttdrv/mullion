@@ -1056,7 +1056,8 @@ read_dxil(
     auto [opcode, type, row, name, id, interpolation, phase] = key;
     declare(opcode, type, row, mask, name, interpolation, phase);
   }
-  // groupshared 64-bit atomics hash their locks with the threadgroup's position (`locked`)
+  // groupshared 64-bit atomics hash their locks with the threadgroup's position (`locked`); those on resources share
+  // their locks among threadgroups
   for (auto &F : M)
     for (auto &BB : F)
       for (auto &I : BB)
@@ -1064,6 +1065,9 @@ read_dxil(
           used_ops.insert(GroupId);
         else if (auto cx = dyn_cast<AtomicCmpXchgInst>(&I); cx && cx->getCompareOperand()->getType()->isIntegerTy(64))
           used_ops.insert(GroupId);
+        else if (auto call = dyn_cast<CallInst>(&I); call && is_dx_op(call) && call->getType()->isIntegerTy(64) &&
+                 (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange))
+          shader->device_atomics64 = true;
   // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory
   auto coherent = [&](Value *handle) {
     auto made = dyn_cast<CallInst>(handle);
@@ -2023,11 +2027,17 @@ convert_dxil(
       auto half = [=, &ir](unsigned i) {
         return ir.CreateConstGEP1_32(i32, ir.CreateBitCast(ptr, i32->getPointerTo(ptr->getType()->getPointerAddressSpace())), i);
       };
+      // without 64-bit atomics (Apple7), the GPU's compiler fails on a word built from two atomic loads, and reads
+      // each half with an atomic OR of 0 instead
+      auto read_half = [=, &ir, &air](unsigned i) -> Value * {
+        if (air.HasAtomicMinMax64())
+          return air.CreateDeviceCoherentLoad(i32, half(i));
+        return air.CreateAtomicRMW(AtomicRMWInst::Or, half(i), ir.getInt32(0));
+      };
       return {key, llvm::air::MemFlags::Device,
-              [=, &ir, &air] {
+              [=, &ir] {
                 return ir.CreateOr(
-                    ir.CreateZExt(air.CreateDeviceCoherentLoad(i32, half(0)), i64),
-                    ir.CreateShl(ir.CreateZExt(air.CreateDeviceCoherentLoad(i32, half(1)), i64), 32)
+                    ir.CreateZExt(read_half(0), i64), ir.CreateShl(ir.CreateZExt(read_half(1), i64), 32)
                 );
               },
               [=, &ir, &air](Value *v) {
@@ -2164,7 +2174,7 @@ convert_dxil(
     auto extreme = atomic_op(constant(arg(call, 2)));
     return extreme == AtomicRMWInst::UMax || extreme == AtomicRMWInst::UMin;
   };
-  bool native_extremes = std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
+  bool native_extremes = air.HasAtomicMinMax64() && std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
     return !call->getType()->isIntegerTy(64) || (opcode(call) != AtomicBinOp && opcode(call) != AtomicCompareExchange) ||
            native_extreme(call);
   });
@@ -3834,6 +3844,7 @@ convert_dxil_mesh_stage(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -3954,6 +3965,7 @@ convert_dxil_ray_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );

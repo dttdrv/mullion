@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 38
+#define AIRCONV_VERSION 39
 
 #ifdef __cplusplus
 #include <string>
@@ -141,6 +141,9 @@ struct MTL_SHADER_REFLECTION {
   /* a compute shader whose threadgroups wait for one another (a loop reads globally coherent memory): its dispatch
      may be made in parts, each with the stage-in region's origin at the part's first group */
   uint32_t GroupsWorkTogether;
+  /* a compute shader with 64-bit atomics on resources, whose emulation's locks wait for the threadgroups that hold
+     them: on a GPU without native 64-bit min and max its dispatch is made in parts as GroupsWorkTogether's */
+  uint32_t DeviceAtomics64;
 };
 
 #if defined(__LP64__) || defined(_WIN64)
@@ -364,6 +367,8 @@ struct SM50_SAMPLER_BORDER {
 enum SM50_SHADER_FLAG {
   SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO = 1 << 0,
   SM50_SHADER_FLAG_DEFUSE_FMA = 1 << 1,
+  /* the device has no 64-bit atomics (before Apple8): its 64-bit minimum and maximum take locks as the others do */
+  SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64 = 1 << 2,
 };
 
 struct SM50_SHADER_COMMON_DATA {

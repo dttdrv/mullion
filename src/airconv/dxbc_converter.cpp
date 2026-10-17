@@ -446,6 +446,7 @@ llvm::Error convert_dxbc_pixel_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -574,6 +575,7 @@ llvm::Error convert_dxbc_compute_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -719,6 +721,7 @@ llvm::Error convert_dxbc_vertex_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -1270,6 +1273,7 @@ AIRCONV_API int SM50Initialize(
       pRefl->ThreadgroupSize[2] = sm50_shader->threadgroup_size[2];
     }
     pRefl->GroupsWorkTogether = sm50_shader->groups_work_together;
+    pRefl->DeviceAtomics64 = sm50_shader->device_atomics64;
     if (sm50_shader->shader_type == microsoft::D3D11_SB_HULL_SHADER) {
       auto threads_per_patch = next_pow2(sm50_shader->hull_maximum_threads_per_patch);
       if (threads_per_patch > 32) {

@@ -1,6 +1,7 @@
 #include "dxmt_info.hpp"
 #include "config/config.hpp"
 #include <algorithm>
+#include "util_env.hpp"
 #include "util_string.hpp"
 #include <version.h>
 
@@ -51,6 +52,17 @@ ShaderMetalVersion(WMT::Device device) {
   if (macos_major_version < 15 || !device.supportsFamily(WMTGPUFamilyApple7))
     version = std::min(WMTMetal310, version);
   return version;
+}
+
+SM50_SHADER_FLAG
+GPUShaderFlags(WMT::Device device) {
+  auto given = env::getEnvVar("MULLION_SHADER_FLAGS");
+  if (!given.empty())
+    return SM50_SHADER_FLAG(std::strtoul(given.c_str(), nullptr, 0));
+  uint32_t flags = 0;
+  if (!device.supportsFamily(WMTGPUFamilyApple8))
+    flags |= SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64;
+  return SM50_SHADER_FLAG(flags);
 }
 
 } // namespace dxmt
