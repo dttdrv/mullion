@@ -108,6 +108,9 @@ class AIRBuilderOptions {
 public:
   bool sampleNaNToZero = false;
   bool defuseFma = false;
+  bool noAtomicMinMax64 = false;
+  // the sine and cosine of a half are computed as floats (SM50_SHADER_FLAG_WIDE_HALF_SINCOS)
+  bool wideHalfSinCos = false;
 };
 
 struct TextureOperationInfo {
@@ -293,6 +296,9 @@ public:
   // while set, what the shader would write to resources is not built, and its atomics leave memory as they find it:
   // a stream output draw's first pass runs the shader for its counts alone
   bool DiscardWrites = false;
+  // whether the device has Metal's 64-bit atomic minimum and maximum (CreateAtomicMinMax64)
+  bool HasAtomicMinMax64() const { return !options.noAtomicMinMax64; }
+  bool WideHalfSinCos() const { return options.wideHalfSinCos; }
 
   /* Pull-based Interpolation */
 

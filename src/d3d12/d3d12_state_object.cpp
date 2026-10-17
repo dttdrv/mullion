@@ -333,7 +333,7 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     if (pGlobal)
       arguments = &(global = blob(pGlobal, SM50_SHADER_ROOT_SIGNATURE, arguments));
     SM50_SHADER_COMMON_DATA common{arguments, SM50_SHADER_COMMON, device_->GetMetalVersion()};
-    common.flags = {};
+    common.flags = device_->GetShaderFlags();
     common.simd_width = device_->GetSIMDWidth();
 
     SM50ShaderBitcode bitcode;

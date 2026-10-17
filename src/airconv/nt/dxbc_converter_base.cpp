@@ -1027,7 +1027,13 @@ llvm::Value *
 Converter::SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value) {
   // Metal's fast sine and cosine are both 0 from 2^23 radians on and of an infinity, where D3D's are in [-1, 1] and
   // NaN (D3D11.3 22.10.20), and a tangent made of them is 0 / 0. the precise ones are right for every value
-  return air.CreateFPUnOp(Op, Value, false);
+  auto Type = Value->getType();
+  if (!Type->getScalarType()->isHalfTy() || !air.WideHalfSinCos())
+    return air.CreateFPUnOp(Op, Value, false);
+  // a half one is computed as a float and rounded, as precise as D3D asks
+  auto Wide = Type->isVectorTy() ? llvm::VectorType::get(ir.getFloatTy(), llvm::cast<llvm::VectorType>(Type)->getElementCount())
+                                 : ir.getFloatTy();
+  return ir.CreateFPTrunc(air.CreateFPUnOp(Op, ir.CreateFPExt(Value, Wide), false), Type);
 }
 
 void
