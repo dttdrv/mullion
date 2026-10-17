@@ -3223,8 +3223,10 @@ convert_dxil(
     case Log:
       ret = fp_unary(llvm::air::AIRBuilder::log2, a(1));
       break;
+    // the fraction of an infinity is NaN (D3D11.3 22.10.10), which Metal's fract is not: x - x adds 0 to a finite
+    // fraction and NaN to an infinity's
     case Frc:
-      ret = fp_unary(llvm::air::AIRBuilder::fract, a(1));
+      ret = ir.CreateFAdd(fp_unary(llvm::air::AIRBuilder::fract, a(1)), ir.CreateFSub(a(1), a(1)));
       break;
     case Sqrt:
       ret = fp_unary(llvm::air::AIRBuilder::sqrt, a(1));

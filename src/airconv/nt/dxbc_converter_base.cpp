@@ -913,8 +913,10 @@ Converter::operator()(const InstFloatUnaryOp &unary) {
   case FloatUnaryOp::Sqrt:
     Value = air.CreateFPUnOp(AIRBuilder::sqrt, Value);
     break;
+  // the fraction of an infinity is NaN (D3D11.3 22.10.10), which Metal's fract is not: x - x adds 0 to a finite
+  // fraction and NaN to an infinity's
   case FloatUnaryOp::Fraction:
-    Value = air.CreateFPUnOp(AIRBuilder::fract, Value);
+    Value = ir.CreateFAdd(air.CreateFPUnOp(AIRBuilder::fract, Value), ir.CreateFSub(Value, Value));
     break;
   case FloatUnaryOp::RoundNearestEven:
     Value = air.CreateFPUnOp(AIRBuilder::rint, Value);
