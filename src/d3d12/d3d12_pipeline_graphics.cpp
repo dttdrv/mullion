@@ -809,7 +809,10 @@ public:
 
     // a description left at zero has one sample (Unreal Engine 5's pipelines; vkd3d-proton draws them so)
     info.raster_sample_count = std::max(pDesc->SampleDesc.Count, 1u);
-    info.support_indirect_command_buffers = true;
+    // Metal refuses a mesh pipeline that asks for indirect command buffers on GPUs before Apple9, where mesh draws
+    // never go in them (d3d12_command_allocator.cpp)
+    info.support_indirect_command_buffers = std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo> ||
+                                            device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
 
     info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput;
 
