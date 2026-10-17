@@ -279,9 +279,11 @@ public:
     case D3D11_QUERY_EVENT:
       break;
     case D3D11_QUERY_OCCLUSION:
-    case D3D11_QUERY_OCCLUSION_PREDICATE: {
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_PIPELINE_STATISTICS: {
       if (static_cast<MTLD3D11Query *>(pAsync)->state_ == QueryState::Building)
         End(pAsync);
+      static_cast<MTLD3D11OcclusionQuery *>(pAsync)->begun = pipeline_counts_;
       auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin();
       VisibilityQueryBoundary(active_visibility_queries_++ != 0);
       EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
@@ -301,10 +303,6 @@ public:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3: {
       static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
       SnapshotStreamOutputStatistics(static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Snapshots(), 0);
-      break;
-    }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
-      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Building;
       break;
     }
     default:
@@ -351,10 +349,13 @@ public:
       break;
     }
     case D3D11_QUERY_OCCLUSION:
-    case D3D11_QUERY_OCCLUSION_PREDICATE: {
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_PIPELINE_STATISTICS: {
       if (static_cast<MTLD3D11Query *>(pAsync)->state_ != QueryState::Building)
         Begin(pAsync);
-      auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->End();
+      auto occlusion = static_cast<MTLD3D11OcclusionQuery *>(pAsync);
+      occlusion->counts = PipelineCountsSince(occlusion->begun);
+      auto query = occlusion->End();
       VisibilityQueryBoundary(active_visibility_queries_-- != 0);
       EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
         enc.endVisibilityResultQuery(std::move(query));
@@ -385,10 +386,6 @@ public:
       });
       promote_flush = true;
       ctx_state.has_dirty_op_since_last_event = false;
-      break;
-    }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
-      static_cast<MTLD3D11Query *>(pAsync)->state_ = QueryState::Issued;
       break;
     }
     default:
@@ -467,10 +464,9 @@ public:
       break;
     }
     case D3D11_QUERY_PIPELINE_STATISTICS: {
-      if (pData) {
-        (*static_cast<D3D11_QUERY_DATA_PIPELINE_STATISTICS *>(pData)) = {};
-      }
-      return S_OK;
+      D3D11_QUERY_DATA_PIPELINE_STATISTICS null_data;
+      hr = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->GetData(pData ? pData : &null_data);
+      break;
     }
     case D3D11_QUERY_SO_STATISTICS:
     case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
@@ -562,6 +558,8 @@ public:
       (*query_list)[i] = new VisibilityResultQuery();
       cmdlist->issued_visibility_query[i].first->DoDeferredQuery((*query_list)[i].ptr());
     }
+    for (const auto &[query, counts] : cmdlist->ended_pipeline_statistics)
+      query->counts = counts;
 
     for (const auto &query : cmdlist->issued_event_query) {
       End(query.ptr());

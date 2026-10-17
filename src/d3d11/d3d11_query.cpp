@@ -11,7 +11,9 @@ class OcclusionQuery : public MTLD3DQueryBase<MTLD3D11OcclusionQuery> {
 
   virtual UINT STDMETHODCALLTYPE
   GetDataSize() override {
-    return desc_.Query == D3D11_QUERY_OCCLUSION_PREDICATE ? sizeof(BOOL) : sizeof(UINT64);
+    return desc_.Query == D3D11_QUERY_OCCLUSION_PREDICATE    ? sizeof(BOOL)
+           : desc_.Query == D3D11_QUERY_PIPELINE_STATISTICS ? sizeof(D3D11_QUERY_DATA_PIPELINE_STATISTICS)
+                                                             : sizeof(UINT64);
   };
 
   virtual HRESULT
@@ -19,6 +21,11 @@ class OcclusionQuery : public MTLD3DQueryBase<MTLD3D11OcclusionQuery> {
     if (state_ == QueryState::Signaled || query_->getValue(&accumulated_value_)) {
       if (desc_.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
         *((BOOL *)data) = accumulated_value_ != 0;
+      } else if (desc_.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
+        // samples drawn, not shader runs: a draw without a pixel shader counts too, and MSAA counts each sample
+        auto statistics = static_cast<D3D11_QUERY_DATA_PIPELINE_STATISTICS *>(data);
+        *statistics = counts;
+        statistics->PSInvocations = accumulated_value_;
       } else {
         *((uint64_t *)data) = accumulated_value_;
       }

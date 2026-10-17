@@ -116,6 +116,36 @@ to_metal_primitive_type(D3D11_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType& primiti
   return true;
 }
 
+// the primitives `vertices` vertices of `topo` make
+inline uint64_t
+topology_primitives(D3D11_PRIMITIVE_TOPOLOGY topo, uint64_t vertices) {
+  auto at_least = [&](uint64_t first) { return vertices >= first ? vertices - first + 1 : 0; };
+  switch (topo) {
+  case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+    return vertices;
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+    return vertices / 2;
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+    return at_least(2);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+    return vertices / 3;
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+    return at_least(3);
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
+    return vertices / 4;
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ:
+    return at_least(4);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
+    return vertices / 6;
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ:
+    return vertices >= 6 ? (vertices - 4) / 2 : 0;
+  default:
+    if (topo < D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST)
+      return 0;
+    return vertices / (topo - D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST + 1);
+  }
+}
+
 inline WMTPrimitiveTopologyClass
 to_metal_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY topo) {
   switch (topo) {
@@ -1311,6 +1341,7 @@ public:
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(VertexCount, 1);
     if (status == DrawCallStatus::Geometry) {
       GeometryDraw(VertexCount, 1, StartVertexLocation, 0);
       if (!StreamOutputRasterizes<false>())
@@ -1349,6 +1380,7 @@ public:
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(IndexCount, 1);
     if (status == DrawCallStatus::Geometry) {
       GeometryDrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0);
       if (!StreamOutputRasterizes<true>())
@@ -1397,6 +1429,7 @@ public:
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(VertexCountPerInstance, InstanceCount);
     if (status == DrawCallStatus::Geometry) {
       GeometryDraw(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
       if (!StreamOutputRasterizes<false>())
@@ -1441,6 +1474,7 @@ public:
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
+    CountDraw(IndexCountPerInstance, InstanceCount);
     if (status == DrawCallStatus::Geometry) {
       GeometryDrawIndexed(
           IndexCountPerInstance, StartIndexLocation, BaseVertexLocation, InstanceCount, StartInstanceLocation
@@ -4649,6 +4683,33 @@ public:
 
   bool promote_flush = false;
   unsigned active_visibility_queries_ = 0;
+  // the pipeline statistics of every draw so far, but the pixel shader's, which queries count on the GPU
+  D3D11_QUERY_DATA_PIPELINE_STATISTICS pipeline_counts_{};
+
+  // adds a draw's input assembler, vertex shader and clipper counts to pipeline_counts_. indirect draws and what
+  // geometry shaders and tessellation make are left out: the clipper counts the input's primitives
+  void
+  CountDraw(uint64_t vertices, uint64_t instances) {
+    uint64_t primitives = topology_primitives(state_.InputAssembler.Topology, vertices) * instances;
+    vertices *= instances;
+    pipeline_counts_.IAVertices += vertices;
+    pipeline_counts_.IAPrimitives += primitives;
+    pipeline_counts_.VSInvocations += vertices;
+    pipeline_counts_.CInvocations += primitives;
+    pipeline_counts_.CPrimitives += primitives;
+  }
+
+  // pipeline_counts_ since `begun`
+  D3D11_QUERY_DATA_PIPELINE_STATISTICS
+  PipelineCountsSince(const D3D11_QUERY_DATA_PIPELINE_STATISTICS &begun) {
+    constexpr size_t kCounts = sizeof(D3D11_QUERY_DATA_PIPELINE_STATISTICS) / sizeof(UINT64);
+    D3D11_QUERY_DATA_PIPELINE_STATISTICS since;
+    auto now = reinterpret_cast<const UINT64 *>(&pipeline_counts_), then = reinterpret_cast<const UINT64 *>(&begun);
+    auto out = reinterpret_cast<UINT64 *>(&since);
+    for (size_t i = 0; i < kCounts; i++)
+      out[i] = now[i] - then[i];
+    return since;
+  }
   uint64_t visibility_result_segments_ = 0;
   // what the pass has of WMT::kPassRectangles
   uint32_t pass_scissors_ = 0, pass_viewports_ = 0;
@@ -5887,6 +5948,7 @@ public:
     read_staging_resources.clear();
     written_staging_resources.clear();
     issued_visibility_query.clear();
+    ended_pipeline_statistics.clear();
     issued_event_query.clear();
     regions.clear();
     regions.emplace_back();
@@ -5970,7 +6032,11 @@ public:
   std::vector<used_dynamic_lineartexture> used_dynamic_lineartextures;
   std::vector<Rc<StagingResource>> read_staging_resources;
   std::vector<Rc<StagingResource>> written_staging_resources;
-  std::vector<std::pair<Com<MTLD3D11OcclusionQuery>, bool>> issued_visibility_query;
+  // private references: a list queued on the immediate context does not keep the device alive
+  std::vector<std::pair<Com<MTLD3D11OcclusionQuery, false>, bool>> issued_visibility_query;
+  // the pipeline statistics queries the list ends, with their counts, which the immediate context gives them
+  std::vector<std::pair<Com<MTLD3D11OcclusionQuery, false>, D3D11_QUERY_DATA_PIPELINE_STATISTICS>>
+      ended_pipeline_statistics;
   std::vector<Com<MTLD3D11EventQuery>> issued_event_query;
 
   // a list is regions of one predication each: the immediate context decides each as it executes the list, so a

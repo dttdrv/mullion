@@ -268,11 +268,13 @@ public:
     case D3D11_QUERY_EVENT:
       break;
     case D3D11_QUERY_OCCLUSION:
-    case D3D11_QUERY_OCCLUSION_PREDICATE: {
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_PIPELINE_STATISTICS: {
       auto building_query = ctx_state.building_visibility_queries.find(pAsync);
       if (building_query != ctx_state.building_visibility_queries.end()) {
         End(pAsync);
       }
+      static_cast<MTLD3D11OcclusionQuery *>(pAsync)->begun = pipeline_counts_;
       VisibilityQueryBoundary(true);
       auto query_id = ctx_state.current_cmdlist->issued_visibility_query.size();
       ctx_state.current_cmdlist->issued_visibility_query.emplace_back(
@@ -301,8 +303,7 @@ public:
       SnapshotStreamOutputStatistics(static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Snapshots(), 0);
       break;
     }
-    case D3D11_QUERY_TIMESTAMP_DISJOINT:
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
+    case D3D11_QUERY_TIMESTAMP_DISJOINT: {
       // ignore
       break;
     }
@@ -337,11 +338,16 @@ public:
       break;
     }
     case D3D11_QUERY_OCCLUSION:
-    case D3D11_QUERY_OCCLUSION_PREDICATE: {
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_PIPELINE_STATISTICS: {
       auto building_query = ctx_state.building_visibility_queries.find(pAsync);
       if (building_query == ctx_state.building_visibility_queries.end()) {
         Begin(pAsync);
         building_query = ctx_state.building_visibility_queries.find(pAsync);
+      }
+      if (desc.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
+        auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync);
+        ctx_state.current_cmdlist->ended_pipeline_statistics.emplace_back(query, PipelineCountsSince(query->begun));
       }
       promote_flush = true;
       auto query_id = building_query->second.second;
@@ -378,10 +384,6 @@ public:
       SnapshotStreamOutputStatistics(query->Snapshots(), 1);
       ctx_state.current_cmdlist->regions.back().ended_stream_output_queries.push_back(query);
       promote_flush = true;
-      break;
-    }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
-      // ignore
       break;
     }
     default:

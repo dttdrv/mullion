@@ -117,17 +117,6 @@ protected:
   MTLD3D10Query d3d10_;
 };
 
-template <typename DataType>
-class MTLD3D11DummyQuery : public MTLD3DQueryBase<MTLD3D11Query> {
-public:
-  MTLD3D11DummyQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *desc)
-      : MTLD3DQueryBase<MTLD3D11Query>(pDevice, desc) {}
-
-  virtual UINT STDMETHODCALLTYPE GetDataSize() override {
-    return sizeof(DataType);
-  };
-};
-
 enum class EventState {
   Pending,
   Signaled,
@@ -176,8 +165,13 @@ private:
   uint64_t should_be_signaled_at = 0;
 };
 
+// also the PIPELINE_STATISTICS query: its pixel shader count is the samples its range drew, and the rest the context
+// counts on the CPU
 class MTLD3D11OcclusionQuery : public MTLD3D11Query {
 public:
+  // the context's counts as the range began, and the range's counts
+  D3D11_QUERY_DATA_PIPELINE_STATISTICS begun{}, counts{};
+
   virtual HRESULT GetData(void *data) = 0;
   virtual VisibilityResultQuery *Begin() = 0;
   virtual VisibilityResultQuery *End() = 0;

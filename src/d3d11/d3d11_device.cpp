@@ -1283,15 +1283,12 @@ public:
       return S_OK;
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE:
+    case D3D11_QUERY_PIPELINE_STATISTICS:
       return CreateOcclusionQuery(this, pQueryDesc, ppQuery);
     case D3D11_QUERY_TIMESTAMP:
       return CreateTimestampQuery(this, pQueryDesc, ppQuery);
     case D3D11_QUERY_TIMESTAMP_DISJOINT: {
       *ppQuery = ref(new MTLD3D11EventQueryImpl<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(this, pQueryDesc));
-      return S_OK;
-    }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
-      *ppQuery = ref(new MTLD3D11DummyQuery<D3D11_QUERY_DATA_PIPELINE_STATISTICS>(this, pQueryDesc));
       return S_OK;
     }
     case D3D11_QUERY_SO_STATISTICS:
