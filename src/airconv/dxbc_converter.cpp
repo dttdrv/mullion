@@ -446,6 +446,7 @@ llvm::Error convert_dxbc_pixel_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -486,6 +487,7 @@ llvm::Error convert_dxbc_pixel_shader(
       .shader_type = pShaderInternal->shader_type,
       .metal_version = metal_version,
       .simd_width = sm50_common ? sm50_common->simd_width : 0,
+      .coherent_group_sync = pShaderInternal->groups_work_together && (shader_flags & SM50_SHADER_FLAG_COHERENT_GROUP_SYNC),
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -574,6 +576,7 @@ llvm::Error convert_dxbc_compute_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -597,6 +600,7 @@ llvm::Error convert_dxbc_compute_shader(
       .shader_type = pShaderInternal->shader_type,
       .metal_version = metal_version,
       .simd_width = sm50_common ? sm50_common->simd_width : 0,
+      .coherent_group_sync = pShaderInternal->groups_work_together && (shader_flags & SM50_SHADER_FLAG_COHERENT_GROUP_SYNC),
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -719,6 +723,7 @@ llvm::Error convert_dxbc_vertex_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -770,6 +775,7 @@ llvm::Error convert_dxbc_vertex_shader(
       .shader_type = pShaderInternal->shader_type,
       .metal_version = metal_version,
       .simd_width = sm50_common ? sm50_common->simd_width : 0,
+      .coherent_group_sync = pShaderInternal->groups_work_together && (shader_flags & SM50_SHADER_FLAG_COHERENT_GROUP_SYNC),
   };
 
   if (auto err = prologue.build(ctx).takeError()) {

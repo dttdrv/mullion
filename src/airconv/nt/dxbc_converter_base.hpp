@@ -254,13 +254,17 @@ public:
   operator()(const InstSync &sync) {
     using namespace llvm::air;
     MemFlags mem_flag = sync.tgsm_memory_barrier ? MemFlags::Threadgroup : MemFlags::None;
-    if (sync.uav_boundary != InstSync::UAVBoundary::none) {
+    // HLSL's globallycoherent: "memory barriers and syncs flush data across the entire GPU", which a threadgroup
+    // barrier does not do on Apple7
+    auto uav_boundary =
+        sync.tgsm_execution_barrier && CoherentGroupSync() ? InstSync::UAVBoundary::global : sync.uav_boundary;
+    if (uav_boundary != InstSync::UAVBoundary::none) {
       mem_flag |= MemFlags::Device | MemFlags::Texture;
       if (SupportsNonExecutionBarrier())
         air.CreateAtomicFence(
             mem_flag,
             // scopes are an enumeration: the device's contains the threadgroup's
-            sync.uav_boundary == InstSync::UAVBoundary::global ? ThreadScope::Device : ThreadScope::Threadgroup
+            uav_boundary == InstSync::UAVBoundary::global ? ThreadScope::Device : ThreadScope::Threadgroup
         );
       if (sync.tgsm_execution_barrier)
         air.CreateBarrier(SupportsNonExecutionBarrier() ? MemFlags::None : mem_flag);
@@ -681,6 +685,8 @@ public:
 
   bool SupportsMemoryCoherency() const;
   bool SupportsNonExecutionBarrier() const;
+  // whether the shader's group syncs also make globallycoherent memory visible to the whole GPU
+  bool CoherentGroupSync() const;
 
 private:
   llvm::air::AIRBuilder &air;

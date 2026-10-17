@@ -255,6 +255,9 @@ struct context {
   microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE shader_type;
   SM50_SHADER_METAL_VERSION metal_version;
   uint32_t simd_width = 0; // the device's SIMD-group width, which vertex functions have no input for; 0 when unknown
+  // the shader's groups work together through globallycoherent memory, which each group sync makes visible GPU-wide
+  // (SM50_SHADER_FLAG_COHERENT_GROUP_SYNC)
+  bool coherent_group_sync = false;
 };
 
 template <typename S> IRValue make_irvalue(S &&fs) {
