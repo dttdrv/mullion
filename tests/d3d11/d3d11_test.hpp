@@ -20,7 +20,7 @@ using Microsoft::WRL::ComPtr;
     return 1;                                                                                                          \
   }
 
-// `stage` is "vs", "gs" or "ps"; `defines` ("NAME=VALUE") pass test constants into the HLSL, so both sides use one value
+// `stage` is "vs", "gs" or "ps" for its 5.0 profile, or a whole profile such as "gs_4_0"; `defines` ("NAME=VALUE") pass test constants into the HLSL, so both sides use one value
 template <size_t N>
 ComPtr<ID3DBlob>
 compile(const char (&hlsl)[N], const char *entry, const char *stage, const std::vector<std::string> &defines = {}) {
@@ -34,7 +34,7 @@ compile(const char (&hlsl)[N], const char *entry, const char *stage, const std::
     macros.push_back({names[i].c_str(), values[i].c_str()});
   macros.push_back({});
   ComPtr<ID3DBlob> code, errors;
-  auto profile = std::string(stage) + "_5_0";
+  auto profile = strchr(stage, '_') ? std::string(stage) : std::string(stage) + "_5_0";
   if (FAILED(D3DCompile(hlsl, N - 1, nullptr, macros.data(), nullptr, entry, profile.c_str(), 0, 0, &code, &errors)) &&
       errors)
     printf("%s: %.*s\n", entry, (int)errors->GetBufferSize(), (const char *)errors->GetBufferPointer());
