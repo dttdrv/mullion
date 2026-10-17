@@ -936,6 +936,15 @@ public:
     // not one primitive fits an object threadgroup's payload
     if (!increment)
       return;
+    uint32_t warps = (Count - 1) / increment + 1;
+    if (uint64_t(warps) * Args.InstanceCount >
+        get_gs_max_object_threadgroups(
+            topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull,
+            device_->mesh_bytes_per_draw
+        )) {
+      WARN("Omitted mesh draw (GS) because of too many object threadgroups (", warps, "x", Args.InstanceCount, ")");
+      return;
+    }
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(View) + sizeof(Args), 16);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(Mapped, sizeof(View) + sizeof(Args), "geometry inputs", sizeof(View),
@@ -947,7 +956,6 @@ public:
       predicated_.push_back({uint32_t((Offset + sizeof(View)) / 4), reinterpret_cast<const uint32_t *>(&Args)[0], 0});
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, SM50_BINDING_INDEX_INDEX_BUFFER);
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset + sizeof(View), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
-    uint32_t warps = (Count - 1) / increment + 1;
     auto draw = [&] {
       auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_dxmt_geometry_draw>();
       cmd.type = WMTRenderCommandDXMTGeometryDraw;
@@ -2667,8 +2675,16 @@ public:
       cmd->index_buffer_view = allocator_->gpu_heap_buffer_address_ + Offset;
       cmd->control_points = cp_count;
     }
-    if (geometry)
+    if (geometry) {
       std::tie(cmd->geometry_threads, cmd->geometry_increment) = get_gs_vertex_count(topology_, pso_graphics_->vertex_registers);
+      cmd->geometry_max_warps = std::min<uint64_t>(
+          get_gs_max_object_threadgroups(
+              topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull,
+              device_->mesh_bytes_per_draw
+          ),
+          UINT32_MAX
+      );
+    }
     if (!encode_binding)
       return;
     cmd->rootsig_qwords = EncodeRootArgument(

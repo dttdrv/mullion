@@ -53,6 +53,7 @@ public:
     );
     auto owner = pDesc->GeometryShader ? pDesc->GeometryShader : pDesc->VertexShader;
     GeometryInstances = pDesc->GeometryShader ? pDesc->GeometryShader->reflection().GeometryShader.InstanceCount : 1;
+    MeshInstances = pDesc->GeometryShader ? GeometryInstances : pDesc->PassThrough;
     RasterizationEnabled = RasterizationEnabled && (pDesc->GeometryShader || pDesc->PassThrough);
     for (bool counting : {false, true}) {
       if (counting && !pDesc->SOLayout)
@@ -79,7 +80,7 @@ public:
 
   void GetPipeline(MTL_COMPILED_GRAPHICS_PIPELINE *pPipeline) final {
     ready_.wait(false, std::memory_order_acquire);
-    *pPipeline = {state_mesh_[0], state_mesh_[1], GeometryInstances};
+    *pPipeline = {state_mesh_[0], state_mesh_[1], GeometryInstances, MeshInstances};
   }
 
   ThreadpoolWork *RunThreadpoolWork() {
@@ -187,6 +188,7 @@ private:
   bool RasterizationEnabled;
   UINT SampleCount;
   uint32_t GeometryInstances;
+  uint32_t MeshInstances;
 
   CompiledShader *VertexShader[2] = {};
   CompiledShader *PixelShader;
