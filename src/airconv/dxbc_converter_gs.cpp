@@ -262,6 +262,7 @@ convert_dxbc_geometry_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
@@ -326,10 +327,12 @@ convert_dxbc_geometry_shader(
     if (culls)
       builder.CreateStore(zero_const, before = builder.CreateAlloca(types._int));
   // the vertex being emitted completes the primitive `vertices` - 1 back in its strip, once the strip has that many:
-  // it is culled when one distance has all its vertices behind
-  auto cull_primitive = [&](llvm::Value *written, llvm::Value *first_primitive, uint32_t vertices) {
+  // it is culled when one distance has all its vertices behind. with SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES a line is
+  // never marked culled, and this returns whether it is for its caller to collapse it; otherwise it returns null
+  bool collapse_lines = shader_flags & SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES;
+  auto cull_primitive = [&](llvm::Value *written, llvm::Value *first_primitive, uint32_t vertices) -> llvm::Value * {
     if (!culls)
-      return;
+      return nullptr;
     llvm::Value *mine = zero_const;
     for (auto distance : llvm::enumerate(pShaderInternal->cull_distance_scalars)) {
       auto value = builder.CreateLoad(
@@ -352,10 +355,12 @@ convert_dxbc_geometry_shader(
     builder.CreateStore(mine, behind[0]);
     // before that the write goes to a primitive the strip does not have yet, and is written again when it has
     auto complete = builder.CreateICmpUGE(written, builder.getInt32(vertices - 1));
+    auto culled = builder.CreateAnd(complete, builder.CreateICmpNE(all, zero_const));
     air.CreateSetMeshPrimitiveCulled(
         builder.CreateAdd(first_primitive, builder.CreateSelect(complete, builder.CreateSub(written, builder.getInt32(vertices - 1)), written)),
-        builder.CreateAnd(complete, builder.CreateICmpNE(all, zero_const))
+        vertices == 2 && collapse_lines ? builder.getFalse() : culled
     );
+    return collapse_lines ? culled : nullptr;
   };
 
   // what the rasterized stream's emit and cut make of the mesh
@@ -430,7 +435,20 @@ convert_dxbc_geometry_shader(
         co_yield h(gs_out_ctx);
       }
       emit_clip_distances(current_vertex_with_offset);
-      cull_primitive(current_write_vertex, current_primitive_count, 2);
+      // a culled line ends where it starts, which draws nothing. before the strip has a line the write goes to this
+      // vertex's own line, which is written again below
+      if (auto culled = cull_primitive(current_write_vertex, current_primitive_count, 2)) {
+        auto complete = builder.CreateICmpUGE(current_write_vertex, one_const);
+        auto line = builder.CreateSelect(complete, builder.CreateSub(current_primitive_idx, one_const), current_primitive_idx);
+        air.CreateSetMeshIndex(
+            builder.CreateAdd(builder.CreateMul(line, builder.getInt32(2)), one_const),
+            builder.CreateSelect(
+                complete,
+                builder.CreateSelect(culled, builder.CreateSub(current_vertex_with_offset, one_const), current_vertex_with_offset),
+                builder.CreateAdd(current_vertex_with_offset, one_const)
+            )
+        );
+      }
 
       auto double_primitive_idx = builder.CreateMul(current_primitive_idx, builder.getInt32(2));
       air.CreateSetMeshIndex(
@@ -1468,6 +1486,7 @@ convert_dxbc_vertex_for_geometry_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
       },
       builder, nulldbg
   );
