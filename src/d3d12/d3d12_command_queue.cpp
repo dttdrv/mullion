@@ -528,7 +528,9 @@ public:
   ~MTLD3D12CommandQueueImpl() {
     if (held_thread_.joinable()) {
       {
-        std::lock_guard<dxmt::mutex> lock(held_mutex_);
+        std::unique_lock<dxmt::mutex> lock(held_mutex_);
+        // the lists given before are committed, unless the queue waits for a fence
+        held_changed_.wait(lock, [&] { return held_.empty() || gate_->closed; });
         held_stop_ = true;
         held_changed_.notify_all();
         // a wait the queue will never see the end of
@@ -759,8 +761,8 @@ public:
       if (profile_)
         diag::Write(diag::Line("span", "execute", recorded.size(), GetCurrentThreadId(), began, diag::Now() - began));
     };
-    if (!Hold(work))
-      work();
+    // the queue's thread encodes the lists, so the application's thread goes on recording
+    Hold(work, true);
     Trace("ExecuteCommandLists returns");
   }
 
@@ -1293,6 +1295,7 @@ public:
         if (held_stop_)
           return;
         gate_ = gate;
+        held_changed_.notify_all();
       }
       // a Signal follows the last command buffer: an empty one is behind the gate for one with no work before it
       if (gate->closed)
