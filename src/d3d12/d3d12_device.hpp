@@ -59,6 +59,16 @@ ID3D12DeviceConfiguration1 : public ID3D12DeviceConfiguration {
 __CRT_UUID_DECL(ID3D12DeviceConfiguration1, 0xed342442, 0x6343, 0x4e16, 0xbb, 0x82, 0xa3, 0xa5, 0x77, 0x87, 0x4e, 0x56)
 #endif
 
+#ifndef __ID3D12GraphicsCommandList8_INTERFACE_DEFINED__
+#define __ID3D12GraphicsCommandList8_INTERFACE_DEFINED__
+/** ID3D12GraphicsCommandList8 as the D3D12 headers declare it: ID3D12GraphicsCommandList7 plus per-face stencil references. */
+MIDL_INTERFACE("ee936ef9-599d-4d28-938e-23c4ad05ce51")
+ID3D12GraphicsCommandList8 : public ID3D12GraphicsCommandList7 {
+  virtual void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) = 0;
+};
+__CRT_UUID_DECL(ID3D12GraphicsCommandList8, 0xee936ef9, 0x599d, 0x4d28, 0x93, 0x8e, 0x23, 0xc4, 0xad, 0x05, 0xce, 0x51)
+#endif
+
 namespace dxmt {
 
 bool ExperimentalShaderModelsEnabled();
@@ -85,7 +95,7 @@ constexpr uint64_t kGPUTimestampFrequency = 1'000'000'000;
 
 class MTLD3D12CommandAllocator;
 
-class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList7 {
+class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList8 {
 public:
   EncoderData *entry;
   size_t encoder_count;

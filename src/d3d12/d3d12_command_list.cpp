@@ -473,7 +473,7 @@ public:
         riid == __uuidof(ID3D12GraphicsCommandList1) || riid == __uuidof(ID3D12GraphicsCommandList2) ||
         riid == __uuidof(ID3D12GraphicsCommandList3) || riid == __uuidof(ID3D12GraphicsCommandList4) ||
         riid == __uuidof(ID3D12GraphicsCommandList5) || riid == __uuidof(ID3D12GraphicsCommandList6) ||
-        riid == __uuidof(ID3D12GraphicsCommandList7)) {
+        riid == __uuidof(ID3D12GraphicsCommandList7) || riid == __uuidof(ID3D12GraphicsCommandList8)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -1807,6 +1807,12 @@ public:
     stencil_ref_ = (UINT8)StencilRef;
     dirty_state_.set(DirtyState::StencilRef);
   };
+
+  // both faces take the front reference: OPTIONS14 reports no independent front and back references
+  void STDMETHODCALLTYPE
+  OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) {
+    OMSetStencilRef(FrontStencilRef);
+  }
 
   void STDMETHODCALLTYPE
   SetPipelineState(ID3D12PipelineState *pPSO) {
