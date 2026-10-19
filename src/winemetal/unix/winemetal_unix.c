@@ -3102,8 +3102,11 @@ _MTLDevice_supportsPlacementSparse(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   params->ret = 0;
-  if (@available(macOS 26.4, *))
-    params->ret = [device supportsPlacementSparse];
+  // asks for the method rather than naming it: an SDK older than macOS 26.4 does not declare it, and a build against
+  // one still returns what the system's Metal answers (as WMTWindow asks a window for `hwnd`)
+  SEL selector = NSSelectorFromString(@"supportsPlacementSparse");
+  if (@available(macOS 26.4, *), [device respondsToSelector:selector])
+    params->ret = ((BOOL (*)(id, SEL))objc_msgSend)(device, selector);
   return STATUS_SUCCESS;
 }
 
