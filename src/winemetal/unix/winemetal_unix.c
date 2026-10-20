@@ -3328,8 +3328,12 @@ _MTLDevice_supportsPlacementSparse(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   params->ret = 0;
-  if (@available(macOS 26.4, *))
-    params->ret = [device supportsPlacementSparse];
+  // supportsPlacementSparse came with macOS 26.4 and so is declared by no earlier SDK, though every
+  // system that has it answers. ask for the selector the way MullionPlace asks a WINDOW for its hwnd
+  if (@available(macOS 26.4, *)) {
+    if ([device respondsToSelector:@selector(supportsPlacementSparse)])
+      params->ret = ((BOOL (*)(id, SEL))objc_msgSend)(device, @selector(supportsPlacementSparse));
+  }
   return STATUS_SUCCESS;
 }
 
