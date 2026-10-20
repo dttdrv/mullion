@@ -54,7 +54,7 @@ struct SharedTextureData {
   } desc;
 };
 
-static constexpr char shared_texture_tag[16] = "DXMT_texture";
+static constexpr char shared_texture_tag[16] = "MULLION_texture";
 
 struct TextureShare;
 
@@ -69,7 +69,7 @@ static std::unordered_map<uint64_t, TextureShare *> share_registry;
 // device" - every live resource keeps the share's mapping open, and the name dies with the last of them
 static void
 ShareMappingName(uint64_t id, char (&out)[64]) {
-  snprintf(out, 64, "DXMT_shared_texture_%016llx", (unsigned long long)id);
+  snprintf(out, 64, "MULLION_shared_texture_%016llx", (unsigned long long)id);
 }
 
 static uint64_t

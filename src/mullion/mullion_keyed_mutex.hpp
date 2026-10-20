@@ -35,7 +35,7 @@ using KeyedMutexRelease = std::function<void(uint64_t)>;
 // of IDXGIKeyedMutex: "the initial key is zero and subsequent keys are those released" (Microsoft Learn,
 // IDXGIKeyedMutex::AcquireSync), and "a keyed mutex does not support recursive calls to the AcquireSync method"
 struct SharedMutexState {
-  char tag[16];
+  char tag[20];
   volatile LONG64 owner;     // the owning instance's token, 0 when the mutex is free
   volatile LONG abandoned;   // set when the owner is destroyed while owning, and never cleared
   uint64_t current_key;      // the key the last release released with

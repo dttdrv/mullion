@@ -14,7 +14,7 @@ struct SharedFenceData {
   char mach_port_name[54];
 };
 
-static constexpr char shared_fence_tag[16] = "DXMT_fence";
+static constexpr char shared_fence_tag[16] = "MULLION_fence";
 
 class MTLD3D11FenceImpl : public MTLD3D11DeviceChild<MTLD3D11Fence> {
 public:

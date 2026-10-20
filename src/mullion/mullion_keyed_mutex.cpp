@@ -28,7 +28,7 @@
 
 namespace mullion {
 
-static constexpr char shared_mutex_tag[16] = "DXMT_keyedmutex";
+static constexpr char shared_mutex_tag[20] = "MULLION_keyedmutex";
 
 void
 KeyedMutex::incRef() {
