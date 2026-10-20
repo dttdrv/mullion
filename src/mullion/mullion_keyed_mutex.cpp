@@ -20,7 +20,15 @@
 #include "log/log.hpp"
 #include <random>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include "util_win32_compat.h"
+#endif
+
 namespace mullion {
+
+static constexpr char shared_mutex_tag[16] = "DXMT_keyedmutex";
 
 void
 KeyedMutex::incRef() {
@@ -35,16 +43,15 @@ KeyedMutex::decRef() {
 
 #ifdef _WIN32
 
-KeyedMutex::~KeyedMutex() {
-  if (local_kmt_) {
-    D3DKMT_DESTROYKEYEDMUTEX destroy = {};
-    destroy.hKeyedMutex = local_kmt_;
-    D3DKMTDestroyKeyedMutex(&destroy);
-    local_kmt_ = {};
-  }
-  global_kmt_ = {};
-};
+// one token per instance: a process part and a counter part, so only the very instance that acquired the mutex is
+// its owner (recursion is rejected, and only the owner can release), and a destroyed owner is recognized as dead
+static uint64_t
+makeOwnerToken() {
+  static std::atomic<uint32_t> next = {0u};
+  return (uint64_t(GetCurrentProcessId()) << 32) | next.fetch_add(1u, std::memory_order_relaxed) + 1u;
+}
 
+// external: mullion_fence.cpp's shareEvent names its own mach port with it too, as it did before
 void
 makeUniqueName(char (&out)[54]) {
   std::random_device rd;
@@ -60,114 +67,149 @@ makeUniqueName(char (&out)[54]) {
   );
 }
 
+KeyedMutex::~KeyedMutex() {
+  if (state_) {
+    // "destroying the owner abandons its acquired mutex" (tests/d3d11/d3d11_shared_resource.cpp): an abandoned
+    // mutex reports WAIT_ABANDONED to every later acquire and never grants ownership again
+    if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) == static_cast<LONG64>(token_))
+      InterlockedExchange(&state_->abandoned, 1);
+    UnmapViewOfFile(state_);
+    state_ = nullptr;
+  }
+  if (mapping_) {
+    CloseHandle(mapping_);
+    mapping_ = nullptr;
+  }
+};
+
 Rc<KeyedMutex>
 KeyedMutex::create(WMT::Device device) {
-  D3DKMT_CREATEKEYEDMUTEX2 create = {};
-  create.Flags.NtSecuritySharing = false;
-  create.InitialValue = 0;
-
   auto event = device.newSharedEvent();
+  if (!event) {
+    ERR("KeyedMutex: Failed to create shared event.");
+    return {};
+  }
 
   mach_port_t mach_port = event.createMachPort();
   if (!mach_port) {
     ERR("KeyedMutex: Failed to create mach port.");
     return {};
   }
-  char mach_port_name[54];
-  makeUniqueName(mach_port_name);
-  if (!WMTBootstrapRegister(mach_port_name, mach_port)) {
+  char name[54];
+  makeUniqueName(name);
+  if (!WMTBootstrapRegister(name, mach_port)) {
     ERR("KeyedMutex: Failed to register mach port.");
     return {};
   }
-  create.pPrivateRuntimeData = mach_port_name;
-  create.PrivateRuntimeDataSize = sizeof(mach_port_name);
 
-  if (D3DKMTCreateKeyedMutex2(&create)) {
-    ERR("KeyedMutex: Failed to create keyed mutex.");
+  HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedMutexState), name);
+  if (!mapping) {
+    ERR("KeyedMutex: Failed to create shared state: ", GetLastError());
     return {};
   }
+  auto state = static_cast<SharedMutexState *>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMutexState)));
+  if (!state) {
+    ERR("KeyedMutex: Failed to map shared state: ", GetLastError());
+    CloseHandle(mapping);
+    return {};
+  }
+  memset(state, 0, sizeof(*state));
+  memcpy(state->tag, shared_mutex_tag, sizeof(shared_mutex_tag));
 
   auto ret = Rc(new KeyedMutex());
-  ret->global_kmt_ = create.hSharedHandle;
-  ret->local_kmt_ = create.hKeyedMutex;
+  memcpy(ret->name_, name, sizeof(name));
+  ret->mapping_ = mapping;
+  ret->state_ = state;
+  ret->token_ = makeOwnerToken();
   ret->event_ = std::move(event);
 
   return ret;
 }
 
 Rc<KeyedMutex>
-KeyedMutex::import(WMT::Device device, D3DKMT_HANDLE global_kmt) {
-  char mach_port_name[54];
-  D3DKMT_OPENKEYEDMUTEX2 open = {};
-  open.hSharedHandle = global_kmt;
-  open.pPrivateRuntimeData = mach_port_name;
-  open.PrivateRuntimeDataSize = sizeof(mach_port_name);
-
-  if (D3DKMTOpenKeyedMutex2(&open)) {
-    ERR("KeyedMutex: Failed to open keyed mutex.");
+KeyedMutex::import(WMT::Device device, const char *name) {
+  HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
+  if (!mapping) {
+    ERR("KeyedMutex: Failed to open shared state: ", GetLastError());
+    return {};
+  }
+  auto state = static_cast<SharedMutexState *>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMutexState)));
+  if (!state) {
+    ERR("KeyedMutex: Failed to map shared state: ", GetLastError());
+    CloseHandle(mapping);
+    return {};
+  }
+  if (memcmp(state->tag, shared_mutex_tag, sizeof(shared_mutex_tag))) {
+    WARN("KeyedMutex: object is not a shared keyed mutex");
+    UnmapViewOfFile(state);
+    CloseHandle(mapping);
     return {};
   }
 
-  mach_port_t mach_port;
-  if (!WMTBootstrapLookUp(mach_port_name, &mach_port)) {
+  mach_port_t mach_port = 0;
+  if (!WMTBootstrapLookUp(name, &mach_port)) {
     ERR("KeyedMutex: Failed to lookup mach port.");
+    UnmapViewOfFile(state);
+    CloseHandle(mapping);
+    return {};
+  }
+  auto event = device.newSharedEventWithMachPort(mach_port);
+  if (!event) {
+    UnmapViewOfFile(state);
+    CloseHandle(mapping);
     return {};
   }
 
   auto ret = Rc(new KeyedMutex());
-  ret->global_kmt_ = global_kmt;
-  ret->local_kmt_ = open.hKeyedMutex;
-  ret->event_ = device.newSharedEventWithMachPort(mach_port);
+  snprintf(ret->name_, sizeof(ret->name_), "%s", name);
+  ret->mapping_ = mapping;
+  ret->state_ = state;
+  ret->token_ = makeOwnerToken();
+  ret->event_ = std::move(event);
   return ret;
 }
 
 HRESULT
 KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t milliseconds) {
-  if (owned_.load(std::memory_order_acquire))
-    return DXGI_ERROR_INVALID_CALL;
-
-  LARGE_INTEGER timeout = {};
-  D3DKMT_ACQUIREKEYEDMUTEX acquire = {};
-  acquire.hKeyedMutex = local_kmt_;
-  acquire.Key = key;
-  acquire.pTimeout = &timeout;
-  timeout.QuadPart = milliseconds * -10000;
-
-  NTSTATUS status = D3DKMTAcquireKeyedMutex(&acquire);
-  if (status == STATUS_TIMEOUT)
-    return WAIT_TIMEOUT;
-  if (status == STATUS_ABANDONED_WAIT_0)
-    return WAIT_ABANDONED;
-  if (status) {
-    WARN("KeyedMutex: Failed to acquire keyed mutex.");
+  if (!state_)
     return E_FAIL;
+  uint64_t deadline = GetTickCount64() + milliseconds;
+  for (;;) {
+    LONG64 owner = InterlockedCompareExchange64(&state_->owner, 0, 0);
+    if (owner == static_cast<LONG64>(token_))
+      return DXGI_ERROR_INVALID_CALL;
+    // WAIT_ABANDONED is sticky and grants no ownership: "abandoned mutex released without ownership"
+    if (InterlockedCompareExchange(&state_->abandoned, 0, 0))
+      return WAIT_ABANDONED;
+    if (!owner) {
+      if (InterlockedCompareExchange64(&state_->owner, static_cast<LONG64>(token_), 0))
+        continue;
+      // "the initial key is zero and subsequent keys are those released"
+      if (state_->current_key != key) {
+        InterlockedExchange64(&state_->owner, 0);
+        return WAIT_TIMEOUT;
+      }
+      // wait for every earlier release's queued work before this instance's queued work runs
+      func_acquire(state_->fence_value);
+      return S_OK;
+    }
+    if (GetTickCount64() >= deadline)
+      return WAIT_TIMEOUT;
+    Sleep(1);
   }
-
-  func_acquire(acquire.FenceValue);
-
-  fence_value_ = acquire.FenceValue;
-  owned_.store(true, std::memory_order_release);
-  return S_OK;
 }
 
 HRESULT
 KeyedMutex::release(KeyedMutexRelease &&func_release, uint64_t key) {
-  if (!owned_.load(std::memory_order_acquire))
-    return DXGI_ERROR_INVALID_CALL;
-
-  func_release(fence_value_ + 1);
-
-  D3DKMT_RELEASEKEYEDMUTEX release = {};
-  release.hKeyedMutex = local_kmt_;
-  release.Key = key;
-  release.FenceValue = fence_value_ + 1;
-
-  if (D3DKMTReleaseKeyedMutex(&release)) {
-    WARN("KeyedMutex: Failed to release keyed mutex.");
+  if (!state_)
     return E_FAIL;
-  }
-
-  owned_.store(false, std::memory_order_release);
+  if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) != static_cast<LONG64>(token_))
+    return DXGI_ERROR_INVALID_CALL;
+  // "the key may be any UINT64": release publishes the key the next acquire must bring
+  state_->current_key = key;
+  uint64_t fence = ++state_->fence_value;
+  InterlockedExchange64(&state_->owner, 0);
+  func_release(fence);
   return S_OK;
 }
 
@@ -181,7 +223,7 @@ KeyedMutex::create(WMT::Device device) {
 }
 
 Rc<KeyedMutex>
-KeyedMutex::import(WMT::Device device, D3DKMT_HANDLE global_kmt) {
+KeyedMutex::import(WMT::Device device, const char *name) {
   return {};
 }
 
