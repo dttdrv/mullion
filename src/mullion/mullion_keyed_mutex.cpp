@@ -184,15 +184,17 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
       if (InterlockedCompareExchange64(&state_->owner, static_cast<LONG64>(token_), 0))
         continue;
       // "the initial key is zero and subsequent keys are those released"
-      if (state_->current_key != key) {
-        InterlockedExchange64(&state_->owner, 0);
-        return WAIT_TIMEOUT;
+      if (state_->current_key == key) {
+        // wait for every earlier release's queued work before this instance's queued work runs
+        func_acquire(state_->fence_value);
+        return S_OK;
       }
-      // wait for every earlier release's queued work before this instance's queued work runs
-      func_acquire(state_->fence_value);
-      return S_OK;
+      // a key nobody released yet waits for the release that publishes it: "If the mutex is not released within
+      // the time-out interval, the method returns", so an acquirer that arrives before its turn finds the key
+      // when the other side releases it, and a wrong key with no timeout still fails at once
+      InterlockedExchange64(&state_->owner, 0);
     }
-    if (GetTickCount64() >= deadline)
+    if (!milliseconds || GetTickCount64() >= deadline)
       return WAIT_TIMEOUT;
     Sleep(1);
   }

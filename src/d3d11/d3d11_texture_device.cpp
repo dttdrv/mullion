@@ -29,6 +29,7 @@
 
 #include <limits>
 #include <mutex>
+#include <random>
 #include <unordered_map>
 
 namespace mullion {
@@ -42,6 +43,7 @@ namespace mullion {
 // "<name>.uv", and a keyed mutex carries its own name (tests/d3d11/d3d11_shared_resource.cpp)
 struct SharedTextureData {
   char tag[16];
+  uint64_t share_id;
   char mach_port_name[54];
   char mutex_name[54];
   D3D11_RESOURCE_DIMENSION dimension;
@@ -58,11 +60,29 @@ struct TextureShare;
 
 static std::mutex share_registry_mutex;
 static std::unordered_map<uint64_t, TextureShare *> share_registry;
-static std::atomic<uint64_t> next_share_id = {1u};
 
-// the live shared textures of this process, which is what a legacy handle resolves to. a legacy handle is a plain
-// identity value and not a kernel handle (CloseHandle and DuplicateHandle must fail with ERROR_INVALID_HANDLE),
-// and it dies with the last texture of its share: "released sharing chain retained its handle" must fail
+// the share's own mapping is named after its id, so a marshalled legacy handle resolves in any process of the
+// session: "You can also marshal this handle to another process to share a resource with a device in another
+// process" (Microsoft Learn, IDXGIResource::GetSharedHandle). the name also gives the handle the lifetime that
+// page spells out: "If no resource objects exist on any devices that refer to this resource, the handle is no
+// longer valid. To extend the lifetime of the handle and video memory, you must open the shared resource on a
+// device" - every live resource keeps the share's mapping open, and the name dies with the last of them
+static void
+ShareMappingName(uint64_t id, char (&out)[64]) {
+  snprintf(out, 64, "DXMT_shared_texture_%016llx", (unsigned long long)id);
+}
+
+static uint64_t
+MakeShareId() {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dis;
+  // the marker bit names a legacy handle and is never part of an id
+  return dis(gen) & ~(uint64_t(1) << 62);
+}
+
+// the live shared textures of this process. a legacy handle is a plain identity value and not a kernel handle
+// (CloseHandle and DuplicateHandle must fail with ERROR_INVALID_HANDLE)
 struct TextureShare {
   void incRef() {
     refcount.fetch_add(1u, std::memory_order_acquire);
@@ -72,18 +92,20 @@ struct TextureShare {
     if (refcount.fetch_sub(1u, std::memory_order_release) == 1u) {
       {
         std::lock_guard<std::mutex> lock(share_registry_mutex);
-        share_registry.erase(id);
+        share_registry.erase(data.share_id);
       }
+      if (named_mapping)
+        CloseHandle(named_mapping);
       delete this;
     }
   }
 
   HANDLE legacyHandle() const {
-    return reinterpret_cast<HANDLE>(id | (uintptr_t(1) << 62));
+    return reinterpret_cast<HANDLE>(data.share_id | (uintptr_t(1) << 62));
   }
 
   SharedTextureData data;
-  uint64_t id = 0;
+  HANDLE named_mapping = nullptr;
   std::atomic<uint32_t> refcount = {0u};
 };
 
@@ -92,25 +114,20 @@ IsLegacySharedHandle(HANDLE hResource) {
   return reinterpret_cast<uintptr_t>(hResource) & (uintptr_t(1) << 62);
 }
 
-static Rc<TextureShare>
-LookupShareById(uint64_t id) {
-  std::lock_guard<std::mutex> lock(share_registry_mutex);
-  auto it = share_registry.find(id);
-  return it == share_registry.end() ? Rc<TextureShare>() : Rc<TextureShare>(it->second);
-}
-
-// one share is one entry per process however its handle arrives: a handle from another process joins by the
-// bootstrap name, which is unique per share
+// one share is one entry per process however its handle arrives; the entry keeps the share's mapping open while
+// any resource of the share lives here
 static Rc<TextureShare>
 JoinShare(const SharedTextureData &data) {
   std::lock_guard<std::mutex> lock(share_registry_mutex);
-  for (auto &entry : share_registry)
-    if (!memcmp(entry.second->data.mach_port_name, data.mach_port_name, sizeof(data.mach_port_name)))
-      return Rc<TextureShare>(entry.second);
+  auto it = share_registry.find(data.share_id);
+  if (it != share_registry.end())
+    return Rc<TextureShare>(it->second);
   auto share = Rc<TextureShare>(new TextureShare());
   share->data = data;
-  share->id = next_share_id.fetch_add(1u, std::memory_order_relaxed);
-  share_registry.emplace(share->id, share.ptr());
+  char mapping_name[64];
+  ShareMappingName(data.share_id, mapping_name);
+  share->named_mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mapping_name);
+  share_registry.emplace(data.share_id, share.ptr());
   return share;
 }
 
@@ -413,25 +430,15 @@ public:
     if (pName && wcslen(pName) > MAX_PATH)
       return DXGI_ERROR_INVALID_CALL;
 
-    // the handle is a file mapping carrying the share's identity (the carrier pattern of d3d11_fence.cpp);
-    // Access is not gated: the tests pass DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE and
-    // GENERIC_ALL alike
-    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, const_cast<SECURITY_ATTRIBUTES *>(Attributes),
-                                        PAGE_READWRITE, 0, sizeof(SharedTextureData), nullptr);
-    if (!mapping) {
+    // the handle is a handle to the share's own mapping, which carries its identity: "The duplicate handle
+    // refers to the same object as the original handle" (Microsoft Learn, DuplicateHandle). Access is not
+    // gated: the tests pass DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE and GENERIC_ALL alike
+    BOOL inherit = Attributes ? Attributes->bInheritHandle : FALSE;
+    if (!DuplicateHandle(GetCurrentProcess(), share_->named_mapping, GetCurrentProcess(), pNTHandle, 0, inherit,
+                         DUPLICATE_SAME_ACCESS)) {
       ERR("DeviceTexture: Failed to create shared handle: ", GetLastError());
       return E_FAIL;
     }
-    void *view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedTextureData));
-    if (!view) {
-      ERR("DeviceTexture: Failed to write shared handle: ", GetLastError());
-      CloseHandle(mapping);
-      return E_FAIL;
-    }
-    memcpy(view, &share_->data, sizeof(SharedTextureData));
-    UnmapViewOfFile(view);
-
-    *pNTHandle = mapping;
     return S_OK;
   }
 
@@ -528,8 +535,14 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     HRESULT hr = initialize(std::move(allocation));
     if (FAILED(hr))
       return hr;
+    // a shared allocation is observed from other devices and processes, which cannot order against this queue:
+    // the initial contents must land in it before any handle to the share exists, so the initializer's batched
+    // uploads are flushed and waited for here
+    if (auto seq = initializer.flushToWait())
+      initializer.wait(seq);
     Rc<TextureShare> share(new TextureShare());
     memcpy(share->data.tag, shared_texture_tag, sizeof(shared_texture_tag));
+    share->data.share_id = MakeShareId();
     MakeUniqueSharedName(share->data.mach_port_name);
     share->data.dimension = tag::dimension;
     memcpy(&share->data.desc, pDesc, sizeof(typename tag::DESC1));
@@ -551,9 +564,28 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     }
 
     {
+      char mapping_name[64];
+      ShareMappingName(share->data.share_id, mapping_name);
+      share->named_mapping =
+          CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedTextureData), mapping_name);
+      if (!share->named_mapping) {
+        ERR("DeviceTexture: Failed to create the share's mapping: ", GetLastError());
+        return E_FAIL;
+      }
+      if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        ERR("DeviceTexture: Shared texture id collision");
+        return E_FAIL;
+      }
+      void *view = MapViewOfFile(share->named_mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedTextureData));
+      if (!view) {
+        ERR("DeviceTexture: Failed to write the share's mapping: ", GetLastError());
+        return E_FAIL;
+      }
+      memcpy(view, &share->data, sizeof(SharedTextureData));
+      UnmapViewOfFile(view);
+
       std::lock_guard<std::mutex> lock(share_registry_mutex);
-      share->id = next_share_id.fetch_add(1u, std::memory_order_relaxed);
-      share_registry.emplace(share->id, share.ptr());
+      share_registry.emplace(share->data.share_id, share.ptr());
     }
 
     *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
@@ -674,12 +706,33 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (ppTexture == nullptr)
     return S_FALSE;
 
-  auto share = LookupShareById(reinterpret_cast<uintptr_t>(hResource) & ~(uintptr_t(1) << 62));
-  if (!share) {
-    // "released sharing chain retained its handle": a chain with no resource left cannot reopen
-    WARN("ImportSharedTexture: Unknown shared handle");
+  // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
+  // made it, for as long as any device anywhere still holds a resource of the share
+  char mapping_name[64];
+  ShareMappingName(reinterpret_cast<uintptr_t>(hResource) & ~(uintptr_t(1) << 62), mapping_name);
+  HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, mapping_name);
+  if (!mapping) {
+    // "released sharing chain retained its handle": no resource of the share exists anywhere any more
+    WARN("ImportSharedTexture: shared handle is no longer valid");
     return E_INVALIDARG;
   }
+  SharedTextureData data = {};
+  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData));
+  if (!view) {
+    WARN("ImportSharedTexture: shared handle is unreadable: ", GetLastError());
+    CloseHandle(mapping);
+    return E_INVALIDARG;
+  }
+  memcpy(&data, view, sizeof(data));
+  UnmapViewOfFile(view);
+  CloseHandle(mapping);
+  if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
+      data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.mutex_name[sizeof(data.mutex_name) - 1]) {
+    WARN("ImportSharedTexture: handle is not a shared texture");
+    return E_INVALIDARG;
+  }
+
+  auto share = JoinShare(data);
 
   switch (share->data.dimension) {
   case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
