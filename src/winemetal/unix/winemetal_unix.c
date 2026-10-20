@@ -3698,8 +3698,17 @@ _MTLDevice_newLibraryWithSource(void *obj) {
   NSString *source =
       [[NSString alloc] initWithBytes:params->source.ptr length:params->length encoding:NSASCIIStringEncoding];
   NSError *err = NULL;
-  params->ret_library = (obj_handle_t)[device newLibraryWithSource:source options:nil error:&err];
+  // the newest standard the system compiles with, because the mesh attribute "requires Metal language standard
+  // metal3.0 or higher" (Apple's compiler, on MTLLanguageVersion3_0: Metal 3, macOS 13). earlier systems keep the
+  // default standard and refuse such a source with the compiler's own error, never an assertion.
+  MTLCompileOptions *options = nil;
+  if (@available(macOS 13, *)) {
+    options = [[MTLCompileOptions alloc] init];
+    options.languageVersion = MTLLanguageVersion3_0;
+  }
+  params->ret_library = (obj_handle_t)[device newLibraryWithSource:source options:options error:&err];
   params->ret_error = (obj_handle_t)[err retain];
+  [options release];
   [source release];
   return STATUS_SUCCESS;
 }
