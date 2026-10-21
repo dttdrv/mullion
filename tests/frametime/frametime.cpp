@@ -141,7 +141,6 @@ d3d11(HWND hwnd, UINT frames, UINT warmup, UINT draws) {
   context->IASetInputLayout(nullptr);
   context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
   const float clear[4] = {0.05f, 0.05f, 0.08f, 1};
-  context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
   const D3D11_VIEWPORT viewport{0, 0, float(Width), float(Height), 0, 1};
   context->RSSetViewports(1, &viewport);
 
@@ -160,6 +159,14 @@ d3d11(HWND hwnd, UINT frames, UINT warmup, UINT draws) {
     FrameArgs args{{float(frame % 256) / 255.0f, 0.25f, 0.5f, 1}};
     memcpy(mapped.pData, &args, sizeof(args));
     context->Unmap(constants.Get(), 0);
+    // a flip-model chain's back buffer turns over at Present: the frame binds the one it draws into
+    ComPtr<ID3D11Texture2D> back;
+    if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&back))) ||
+        FAILED(device->CreateRenderTargetView(back.Get(), nullptr, &target))) {
+      printf("failed: render target\n");
+      return 1;
+    }
+    context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     context->ClearRenderTargetView(target.Get(), clear);
     // an application's frame: draws that change pipeline state, and constants that change under them
     for (UINT draw = 0; draw < draws; draw++) {
