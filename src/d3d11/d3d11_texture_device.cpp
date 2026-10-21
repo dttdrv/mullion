@@ -107,11 +107,47 @@ struct TextureShare {
   SharedTextureData data;
   HANDLE named_mapping = nullptr;
   std::atomic<uint32_t> refcount = {0u};
+  // the device whose initializer still owes this share its initial contents, and null once they have landed.
+  // its queue is the only one that can order against the upload, so whoever first makes the share visible from
+  // this process pays the wait (PublishShare). every resource that keeps a share alive keeps its device alive
+  // with it, so the device outlives the debt
+  MTLD3D11Device *unpublished_device = nullptr;
 };
 
 static bool
 IsLegacySharedHandle(HANDLE hResource) {
   return reinterpret_cast<uintptr_t>(hResource) & (uintptr_t(1) << 62);
+}
+
+// a share's initial contents are written by its creator's upload queue, which another device or process cannot
+// order against (that is what a keyed mutex is for): they must have landed before the share is visible anywhere.
+// creation records the debt and pays nothing, so a texture nobody shares never stalls its creator; the first
+// handle made from the share, or an import that reaches it, pays it
+static void
+PublishShare(TextureShare *share) {
+  MTLD3D11Device *device;
+  {
+    std::lock_guard<std::mutex> lock(share_registry_mutex);
+    device = share->unpublished_device;
+  }
+  if (!device)
+    return;
+  auto &initializer = device->GetMullionDevice().queue().initializer;
+  if (auto seq = initializer.flushToWait())
+    initializer.wait(seq);
+  std::lock_guard<std::mutex> lock(share_registry_mutex);
+  if (share->unpublished_device == device)
+    share->unpublished_device = nullptr;
+}
+
+// a share this process already holds, by the identity its handle carries, without opening its mapping
+static Rc<TextureShare>
+FindShare(uint64_t id) {
+  std::lock_guard<std::mutex> lock(share_registry_mutex);
+  auto it = share_registry.find(id);
+  if (it == share_registry.end())
+    return {};
+  return Rc<TextureShare>(it->second);
 }
 
 // one share is one entry per process however its handle arrives; the entry keeps the share's mapping open while
@@ -416,6 +452,9 @@ public:
       return E_INVALIDARG;
     }
 
+    // the handle is the first sight another device or process has of this share, so its initial contents land
+    // before this returns
+    PublishShare(share_.ptr());
     *pSharedHandle = share_->legacyHandle();
     return S_OK;
   }
@@ -429,6 +468,10 @@ public:
     // "The name is limited to MAX_PATH characters." (Microsoft Learn, ID3D11Fence::CreateSharedHandle)
     if (pName && wcslen(pName) > MAX_PATH)
       return DXGI_ERROR_INVALID_CALL;
+
+    // the handle is the first sight another device or process has of this share, so its initial contents land
+    // before it exists
+    PublishShare(share_.ptr());
 
     // the handle is a handle to the share's own mapping, which carries its identity: "The duplicate handle
     // refers to the same object as the original handle" (Microsoft Learn, DuplicateHandle). Access is not
@@ -536,13 +579,12 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     if (FAILED(hr))
       return hr;
     // a shared allocation is observed from other devices and processes, which cannot order against this queue:
-    // the initial contents must land in it before any handle to the share exists, so the initializer's batched
-    // uploads are flushed and waited for here
-    if (auto seq = initializer.flushToWait())
-      initializer.wait(seq);
+    // the initial contents must land in it before any handle to the share exists. creation has no handle to give
+    // out yet, so it records the wait it owes and leaves it to be paid where the share first becomes visible
     Rc<TextureShare> share(new TextureShare());
     memcpy(share->data.tag, shared_texture_tag, sizeof(shared_texture_tag));
     share->data.share_id = MakeShareId();
+    share->unpublished_device = pDevice;
     MakeUniqueSharedName(share->data.mach_port_name);
     share->data.dimension = tag::dimension;
     memcpy(&share->data.desc, pDesc, sizeof(typename tag::DESC1));
@@ -650,6 +692,10 @@ ImportSharedTextureInternal(
     MTLD3D11Device *pDevice, const Rc<TextureShare> &share, const typename tag::DESC1 *pDescUnchecked, REFIID riid,
     void **ppTexture
 ) {
+  // a share of this process may still owe its initial contents: the mapping is named from creation, so a share
+  // can be reached by name before any handle exists, and an import can then come first
+  PublishShare(share.ptr());
+
   WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDescUnchecked, &finalDesc, &info)))
@@ -706,33 +752,39 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (ppTexture == nullptr)
     return S_FALSE;
 
-  // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
-  // made it, for as long as any device anywhere still holds a resource of the share
-  char mapping_name[64];
-  ShareMappingName(reinterpret_cast<uintptr_t>(hResource) & ~(uintptr_t(1) << 62), mapping_name);
-  HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, mapping_name);
-  if (!mapping) {
-    // "released sharing chain retained its handle": no resource of the share exists anywhere any more
-    WARN("ImportSharedTexture: shared handle is no longer valid");
-    return E_INVALIDARG;
-  }
-  SharedTextureData data = {};
-  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData));
-  if (!view) {
-    WARN("ImportSharedTexture: shared handle is unreadable: ", GetLastError());
+  // the narrow path first: a handle that names a share of this process resolves by the identity it carries,
+  // which needs no mapping. the named mapping stays the fallback, so a handle marshalled from another process of
+  // the session resolves exactly as it always has
+  const uint64_t share_id = reinterpret_cast<uintptr_t>(hResource) & ~(uintptr_t(1) << 62);
+  Rc<TextureShare> share = FindShare(share_id);
+  if (!share) {
+    // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
+    // made it, for as long as any device anywhere still holds a resource of the share
+    char mapping_name[64];
+    ShareMappingName(share_id, mapping_name);
+    HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, mapping_name);
+    if (!mapping) {
+      // "released sharing chain retained its handle": no resource of the share exists anywhere any more
+      WARN("ImportSharedTexture: shared handle is no longer valid");
+      return E_INVALIDARG;
+    }
+    SharedTextureData data = {};
+    void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData));
+    if (!view) {
+      WARN("ImportSharedTexture: shared handle is unreadable: ", GetLastError());
+      CloseHandle(mapping);
+      return E_INVALIDARG;
+    }
+    memcpy(&data, view, sizeof(data));
+    UnmapViewOfFile(view);
     CloseHandle(mapping);
-    return E_INVALIDARG;
+    if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
+        data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.mutex_name[sizeof(data.mutex_name) - 1]) {
+      WARN("ImportSharedTexture: handle is not a shared texture");
+      return E_INVALIDARG;
+    }
+    share = JoinShare(data);
   }
-  memcpy(&data, view, sizeof(data));
-  UnmapViewOfFile(view);
-  CloseHandle(mapping);
-  if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
-      data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.mutex_name[sizeof(data.mutex_name) - 1]) {
-    WARN("ImportSharedTexture: handle is not a shared texture");
-    return E_INVALIDARG;
-  }
-
-  auto share = JoinShare(data);
 
   switch (share->data.dimension) {
   case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
