@@ -24,10 +24,10 @@ UINT max_texture_size(D3D_FEATURE_LEVEL level) {
   return level >= D3D_FEATURE_LEVEL_11_0 ? 16384u : level >= D3D_FEATURE_LEVEL_10_0 ? 8192u : 4096u;
 }
 
-// what a device of this milestone can do: be a HAL, present to a window, and
-// move a frame's bytes between its back buffer and the CPU's memory. no
-// shaders, no fixed function pipeline, no depth buffer, no draw
-// (src/d3d9/README)
+// what a device of this milestone can do: be a HAL, present to a window, move
+// a frame's bytes between its back buffer and the CPU's memory, and draw
+// with the fixed-function pipeline's pre-transformed vertices. no shaders of a
+// game's, no depth buffer, no render state (src/d3d9/README)
 D3DCAPS9
 caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   D3DCAPS9 caps{};

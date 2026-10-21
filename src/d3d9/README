@@ -18,25 +18,59 @@ gets the build they had):
     frame's buffer; tests/d3d9/d3d9_present.cpp checks the fourth frame as it checks the first).
   * A surface read back: D3DPOOL_SYSTEMMEM surfaces are staging textures, and GetRenderTargetData copies the back
     buffer into one, which LockRect then reads.
-  * The back buffer a chain hands out is a new surface after every Present (the buffer it is over is a new one): a game
-    that kept the surface of an earlier frame reads the wrong one, and has to ask again as D3D9's flip model says.
+  * The back buffer a chain hands out stays the same buffer across a Present. The chain turns its buffers over by
+    giving buffer 0 the next buffer's storage (DXGI's flip model as this build implements it), so the view and the
+    surface taken from it stay the frame's, and a game that keeps its surface draws into the frame being drawn.
 
 tests/d3d9/d3d9_present.cpp is the test of this milestone, a window test since it presents to one. It reads each
 frame back twice: out of the back buffer through GetRenderTargetData before Present, and out of the window through
 GDI after it (the frame reaches the window through GDI because the test asks for dxgi.presentThroughGDI, since
 nothing reads a Metal view's pixels back).
 
-# Milestone 2: what a game draws with
-The resources and state a draw needs, still over D3D11: vertex and index buffers, textures, vertex declarations and
-state blocks; the fixed function pipeline (transformed vertices at first: D3DFVF_XYZRHW and its texture coordinates,
-which is what a 2D game and a menu use), render states that reach a Metal pipeline; depth stencil surfaces.
+# Milestone 2 (done): geometry through the fixed-function path
+What a build of this milestone draws, over the D3D11 device and draw path D3D11 already has:
 
-# Milestone 3: the pipeline a game's shaders run on
+  * IDirect3DVertexBuffer9 and IDirect3DIndexBuffer9: CreateVertexBuffer and CreateIndexBuffer (D3DPOOL_DEFAULT or
+    D3DPOOL_MANAGED, D3DFMT_INDEX16/INDEX32), Lock and Unlock with D3D9's rules (one lock at a time; DISCARD and
+    NOOVERWRITE only on a dynamic buffer and never both; a lock's range must fit the buffer), and GetDesc. The D3D11
+    buffer under each is dynamic, which the D3D11 core only maps for a whole-buffer discard, so the wrapper keeps the
+    buffer's bytes and Unlock uploads them: a lock that does not discard keeps what was there, as D3D9's does.
+  * SetFVF with D3DFVF_XYZRHW | D3DFVF_DIFFUSE, a vertex already in screen space with a colour. Any other format is
+    D3DERR_INVALIDCALL and the device keeps the format it had (tests/d3d9/d3d9_triangle.cpp checks that with
+    D3DFVF_XYZ, which needs the world transform this milestone does not do).
+  * SetStreamSource (stream 0, an offset and a stride) and SetStreamSourceFreq (1, no instancing), SetIndices.
+  * DrawPrimitive, DrawIndexedPrimitive and DrawPrimitiveUP, all three through two shaders of the library's own (a
+    vertex shader that maps the screen-space vertex onto the viewport through a viewport constant, and a pixel shader
+    that writes the vertex colour) and D3D11's default rasterizer for D3D9's defaults: fill solid, cull clockwise, no
+    depth test, no blend. A screen-clockwise triangle is a back face and is not drawn.
+  * What a draw refuses, with D3D9's code: a draw with no stream source, an indexed draw whose index range or vertex
+    range does not fit the buffers it names, a base vertex that puts the range outside them, an FVF this milestone
+    cannot transform, and a vertex buffer whose stride is not the format's. A draw of no primitives is S_OK and draws
+    nothing.
+  * The device holds the vertex buffer it is the stream source of: an application's Release does not take it away,
+    and the draw after the release still draws.
+
+tests/d3d9/d3d9_triangle.cpp draws four frames in a row, each a triangle of a known colour at a known place (a
+vertex buffer, an index buffer, vertices in memory, and a vertex buffer the application released), and reads each
+one back out of the back buffer and out of the window after Present. tests/d3d9/d3d9_draw_contract.cpp is what the
+draw path refuses and what it keeps between calls.
+
+# Milestone 3: what a game draws with
+The rest of the fixed-function pipeline and the resources around it, still over D3D11: textures and their sampler
+state, vertex declarations and state blocks, the world/view/projection transform for D3DFVF_XYZ vertices, lighting
+and the texture-coordinate formats, render states that reach a Metal pipeline; depth stencil surfaces.
+
+# Milestone 4: the pipeline a game's shaders run on
 D3D9 vertex and pixel shaders through airconv (SM 1.x to 3.0 are D3D9's, and airconv takes DXBC), constants and
-sampler state, draws (DrawPrimitive, DrawIndexedPrimitive, the UP variants), queries and occlusion.
+sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and occlusion.
 
 # What is not there yet, and is refused rather than pretended
-  * anything that makes a resource or shader: E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so once
-  * draws: D3DERR_INVALIDCALL (nothing is emitted, so nothing is silently missing from a frame)
+  * anything that makes a resource or shader this milestone does not have (textures, cube and volume textures, depth
+    stencil surfaces): E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so once
+  * a vertex format other than D3DFVF_XYZRHW | D3DFVF_DIFFUSE: D3DERR_INVALIDCALL, and the device keeps the format
+    it had, so a frame is not drawn with a transform nobody asked for
+  * DrawIndexedPrimitiveUP: D3DERR_INVALIDCALL (nothing is emitted, so nothing is silently missing from a frame)
+  * SetRenderState, SetTextureStageState and the sampler states: D3DERR_INVALIDCALL; a draw is D3D9's default state
+  * textures, lights, vertex declarations, state blocks, queries: D3DERR_INVALIDCALL
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
   * GetAvailableTextureMem answers 0: nothing has measured what the Metal device's textures take
