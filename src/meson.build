@@ -17,6 +17,10 @@ if get_option('enable_d3d12')
 subdir('d3d12')
 endif
 
+if get_option('enable_d3d9')
+subdir('d3d9')
+endif
+
 if get_option('enable_nvapi')
 subdir('nvapi')
 endif

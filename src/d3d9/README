@@ -1,0 +1,42 @@
+Direct3D 9, being implemented.
+
+The plan's Phase 3 is D3D9 on the pieces D3D11 already has: a D3D9 device over this build's D3D11 device, its chains
+over DXGI's presenter, and draws through airconv, so a D3D9 game reaches Metal by the same road a D3D11 one does.
+
+# Milestone 1 (done): the device and presentation
+What a build with -Denable_d3d9=true makes (the option is off by default, so a contributor who does not ask for D3D9
+gets the build they had):
+
+  * Direct3DCreate9: the IDirect3D9 object over DXGI's adapters, which are this build's Metal devices. Adapter
+    identity is DXGI's (the Metal device's name, vendor and device ids); the caps are the ones that adapter's D3D11
+    device has, with the texture size of its feature level. The caps say what is there: a HAL that presents, and no
+    shaders, fixed function pipeline, depth buffer or draw yet.
+  * CreateDevice with D3DDEVTYPE_HAL for a window: a D3D11 device over the same adapter, and the window's implicit
+    swap chain through DXGI's factory (a flip model DISCARD chain, at least two buffers).
+  * Clear of the back buffer, and Present: what was cleared is shown, four frames in a row. The chain turns its
+    buffers over at Present, so every frame takes the back buffer again (a view taken before Present is not the next
+    frame's buffer; tests/d3d9/d3d9_present.cpp checks the fourth frame as it checks the first).
+  * A surface read back: D3DPOOL_SYSTEMMEM surfaces are staging textures, and GetRenderTargetData copies the back
+    buffer into one, which LockRect then reads.
+  * The back buffer a chain hands out is a new surface after every Present (the buffer it is over is a new one): a game
+    that kept the surface of an earlier frame reads the wrong one, and has to ask again as D3D9's flip model says.
+
+tests/d3d9/d3d9_present.cpp is the test of this milestone, a window test since it presents to one. It reads each
+frame back twice: out of the back buffer through GetRenderTargetData before Present, and out of the window through
+GDI after it (the frame reaches the window through GDI because the test asks for dxgi.presentThroughGDI, since
+nothing reads a Metal view's pixels back).
+
+# Milestone 2: what a game draws with
+The resources and state a draw needs, still over D3D11: vertex and index buffers, textures, vertex declarations and
+state blocks; the fixed function pipeline (transformed vertices at first: D3DFVF_XYZRHW and its texture coordinates,
+which is what a 2D game and a menu use), render states that reach a Metal pipeline; depth stencil surfaces.
+
+# Milestone 3: the pipeline a game's shaders run on
+D3D9 vertex and pixel shaders through airconv (SM 1.x to 3.0 are D3D9's, and airconv takes DXBC), constants and
+sampler state, draws (DrawPrimitive, DrawIndexedPrimitive, the UP variants), queries and occlusion.
+
+# What is not there yet, and is refused rather than pretended
+  * anything that makes a resource or shader: E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so once
+  * draws: D3DERR_INVALIDCALL (nothing is emitted, so nothing is silently missing from a frame)
+  * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
+  * GetAvailableTextureMem answers 0: nothing has measured what the Metal device's textures take
