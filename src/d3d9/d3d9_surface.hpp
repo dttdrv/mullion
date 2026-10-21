@@ -6,14 +6,16 @@
 
 namespace mullion::d3d9 {
 
-// what this build's own code asks a surface for: the texture under it and
-// whether its bytes are on the CPU. reached through QueryInterface, so a
+// what this build's own code asks a surface for: the texture under it, whether
+// its bytes are on the CPU, and whether it is a depth-stencil surface (which a
+// draw tests against and never draws into). reached through QueryInterface, so a
 // surface of someone else's is refused rather than misread.
 struct IMTLD3D9Surface {
   virtual ULONG AddRef() = 0;
   virtual ULONG Release() = 0;
   virtual ID3D11Texture2D *texture() = 0;
   virtual bool lockable() = 0;
+  virtual bool depth_stencil() = 0;
 };
 
 // the interface id of IMTLD3D9Surface, compared in QueryInterface
@@ -22,7 +24,7 @@ extern const IID IID_IMTLD3D9Surface;
 class MTLD3D9Surface final : private Object9, public IDirect3DSurface9, public IMTLD3D9Surface {
 public:
   MTLD3D9Surface(IDirect3DDevice9 *device, const ComPtr<ID3D11Texture2D> &texture, D3DFORMAT format, bool lockable,
-                 const ComPtr<ID3D11DeviceContext> &context);
+                 const ComPtr<ID3D11DeviceContext> &context, bool depth_stencil = false);
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -32,6 +34,7 @@ public:
   // IMTLD3D9Surface
   ID3D11Texture2D *texture() override { return texture_.Get(); }
   bool lockable() override { return lockable_; }
+  bool depth_stencil() override { return depth_stencil_; }
 
   // IDirect3DResource9
   HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
@@ -59,6 +62,7 @@ private:
   ComPtr<ID3D11DeviceContext> context_;
   D3DSURFACE_DESC desc_{};
   bool lockable_ = false;
+  bool depth_stencil_ = false;
   D3D11_MAPPED_SUBRESOURCE mapped_{};
   bool mapped_valid_ = false;
 };

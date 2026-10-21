@@ -1,11 +1,14 @@
 // a Direct3D 9 device: a D3D11 device of this build's over the adapter the
 // Metal device is, the implicit swap chain a window's frames are shown
 // through, and the fixed-function path's pre-transformed geometry: vertex and
-// index buffers, one stream source, and the draws that read them. textures,
-// the world transform and a game's own shaders come next (src/d3d9/README).
+// index buffers, one stream source, the draws that read them, and the render
+// state, depth-stencil surfaces and render targets they are drawn with and into.
+// textures, the world transform and a game's own shaders come next
+// (src/d3d9/README).
 #include "d3d9_device.hpp"
 #include "d3d9_buffer.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_state.hpp"
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
 #include <algorithm>
@@ -149,11 +152,7 @@ public:
   HRESULT STDMETHODCALLTYPE Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float depth,
                                   DWORD stencil) override;
 
-  HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD index, IDirect3DSurface9 **surface) override {
-    if (index != 0)
-      return D3DERR_INVALIDCALL;
-    return back_buffer(0, surface);
-  }
+  HRESULT STDMETHODCALLTYPE GetRenderTarget(DWORD index, IDirect3DSurface9 **surface) override;
 
   HRESULT STDMETHODCALLTYPE GetRenderTargetData(IDirect3DSurface9 *render_target,
                                                 IDirect3DSurface9 *destination) override;
@@ -209,18 +208,6 @@ public:
                                                HANDLE *shared_handle) override;
   HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length, DWORD usage, D3DFORMAT format, D3DPOOL pool,
                                               IDirect3DIndexBuffer9 **index_buffer, HANDLE *shared_handle) override;
-  HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
-                                               D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
-                                               WINBOOL Lockable, IDirect3DSurface9 **ppSurface,
-                                               HANDLE *pSharedHandle) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format,
-                                                      D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
-                                                      WINBOOL Discard, IDirect3DSurface9 **ppSurface,
-                                                      HANDLE *pSharedHandle) override {
-    return D3DERR_INVALIDCALL;
-  }
   HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect,
                                           IDirect3DSurface9 *dst_surface, const POINT *dst_point) override {
     return D3DERR_INVALIDCALL;
@@ -237,15 +224,17 @@ public:
   HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override {
     return D3DERR_INVALIDCALL;
   }
-  HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9 **ppZStencilSurface) override {
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
+                                               D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
+                                               WINBOOL Lockable, IDirect3DSurface9 **ppSurface,
+                                               HANDLE *pSharedHandle) override;
+  HRESULT STDMETHODCALLTYPE CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format,
+                                                      D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
+                                                      WINBOOL Discard, IDirect3DSurface9 **ppSurface,
+                                                      HANDLE *pSharedHandle) override;
+  HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD render_target, IDirect3DSurface9 *surface) override;
+  HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9 *surface) override;
+  HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9 **surface) override;
   HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
     return D3DERR_INVALIDCALL;
   }
@@ -255,8 +244,8 @@ public:
   HRESULT STDMETHODCALLTYPE MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
     return D3DERR_INVALIDCALL;
   }
-  HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9 *viewport) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9 *pViewport) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9 *viewport) override;
+  HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9 *viewport) override;
   HRESULT STDMETHODCALLTYPE SetMaterial(const D3DMATERIAL9 *material) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetMaterial(D3DMATERIAL9 *pMaterial) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetLight(DWORD index, const D3DLIGHT9 *light) override { return D3DERR_INVALIDCALL; }
@@ -265,12 +254,8 @@ public:
   HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, WINBOOL *pEnable) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD index, const float *plane) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD Index, float *pPlane) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue) override {
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE state, DWORD value) override;
+  HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) override;
   HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) override {
     return D3DERR_INVALIDCALL;
   }
@@ -423,6 +408,11 @@ private:
   // frames this milestone's tests draw, present and draw again check that, and a Present that took the buffer again
   // changed nothing they could see)
   HRESULT ensure_back_buffer();
+  // the frame's target: the back buffer until SetRenderTarget names another one
+  HRESULT ensure_render_target();
+  // a surface of this device's, of the kind a target or a depth-stencil surface has to be; reached through
+  // QueryInterface, so a surface of someone else's is refused rather than misread
+  HRESULT device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IMTLD3D9Surface **out);
   void invalidate_back_buffer() {
     back_buffer_surface_.Reset();
     render_target_.Reset();
@@ -447,6 +437,16 @@ private:
   ComPtr<ID3D11RenderTargetView> render_target_;
   ComPtr<MTLD3D9Surface> back_buffer_surface_;
   bool in_scene_ = false;
+
+  // the surface the frame is drawn into (the back buffer until SetRenderTarget names another one), the depth-stencil
+  // surface a draw tests against, and the viewport a draw is placed and clipped by
+  ComPtr<IDirect3DSurface9> current_target_;
+  ComPtr<ID3D11RenderTargetView> current_target_view_;
+  UINT target_width_ = 0, target_height_ = 0;
+  ComPtr<MTLD3D9Surface> depth_stencil_;
+  ComPtr<ID3D11DepthStencilView> depth_stencil_view_;
+  D3DVIEWPORT9 viewport_{};
+  RenderState render_state_;
 
   // the fixed-function path, and the state a draw reads: the FVF, one stream source and the indices (what this
   // milestone draws with; SetStreamSourceFreq is 1, no instancing)
@@ -526,6 +526,24 @@ MTLD3D9Device::init(IDXGIFactory2 *factory) {
 
   swap_chain_.Attach(new MTLD3D9SwapChain(static_cast<IDirect3DDevice9 *>(this),
                                           static_cast<IMTLD3D9PresentSource *>(this), present_));
+
+  // the viewport of a device that has drawn nothing yet is its chain's whole back buffer, as D3D9's is
+  viewport_ = D3DVIEWPORT9{0, 0, width_, height_, 0.0f, 1.0f};
+
+  // a chain made with an automatic depth-stencil surface gets one, so a game that asked for depth has it from its
+  // first frame rather than drawing every pixel in the order it drew them
+  if (present_.EnableAutoDepthStencil) {
+    ComPtr<IDirect3DSurface9> auto_depth;
+    HRESULT depth_hr = CreateDepthStencilSurface(width_, height_, present_.AutoDepthStencilFormat,
+                                                 D3DMULTISAMPLE_NONE, 0, TRUE, &auto_depth, nullptr);
+    if (SUCCEEDED(depth_hr))
+      depth_hr = SetDepthStencilSurface(auto_depth.Get());
+    if (FAILED(depth_hr)) {
+      ERR("D3D9: no automatic depth-stencil surface of format {}: {}", (uint32_t)present_.AutoDepthStencilFormat,
+          (uint32_t)depth_hr);
+      return D3DERR_INVALIDCALL;
+    }
+  }
   return S_OK;
 }
 
@@ -551,6 +569,35 @@ MTLD3D9Device::ensure_back_buffer() {
   render_target_ = view;
   back_buffer_surface_.Attach(new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), back_buffer_texture_,
                                                  present_.BackBufferFormat, false, context_));
+  return S_OK;
+}
+
+// what a frame is drawn into: the surface SetRenderTarget named, or the back buffer when it named none. a target of
+// the app's is a surface of this device's, so it outlives the reference the app holds.
+HRESULT
+MTLD3D9Device::ensure_render_target() {
+  if (current_target_view_)
+    return S_OK;
+  HRESULT hr = ensure_back_buffer();
+  if (FAILED(hr))
+    return hr;
+  current_target_ = back_buffer_surface_;
+  current_target_view_ = render_target_;
+  target_width_ = width_;
+  target_height_ = height_;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IMTLD3D9Surface **out) {
+  *out = nullptr;
+  if (!surface)
+    return D3DERR_INVALIDCALL;
+  ComPtr<IMTLD3D9Surface> ours;
+  if (FAILED(surface->QueryInterface(IID_IMTLD3D9Surface, reinterpret_cast<void **>(ours.GetAddressOf()))) ||
+      ours->depth_stencil() != depth_stencil)
+    return D3DERR_INVALIDCALL;
+  *out = ours.Detach();
   return S_OK;
 }
 
@@ -595,21 +642,28 @@ MTLD3D9Device::display_mode(D3DDISPLAYMODE *mode) {
 }
 
 HRESULT
-MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float, DWORD) {
-  // a depth or stencil buffer is a resource this milestone has none of: a clear
-  // of one has nothing to clear
-  if (!(flags & D3DCLEAR_TARGET))
+MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float depth, DWORD stencil) {
+  if (!(flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
 
-  HRESULT hr = ensure_back_buffer();
+  HRESULT hr = ensure_render_target();
   if (FAILED(hr))
     return hr;
   if (count && rects) {
-    ERR_ONCE("D3D9: clearing part of the back buffer is not implemented yet; "
-             "the whole of it is cleared.");
+    ERR_ONCE("D3D9: clearing part of a surface is not implemented yet; the whole of it is cleared.");
   }
-  const float rgba[4] = {channel(colour, 16), channel(colour, 8), channel(colour, 0), channel(colour, 24)};
-  context_->ClearRenderTargetView(render_target_.Get(), rgba);
+  if (flags & D3DCLEAR_TARGET) {
+    const float rgba[4] = {channel(colour, 16), channel(colour, 8), channel(colour, 0), channel(colour, 24)};
+    context_->ClearRenderTargetView(current_target_view_.Get(), rgba);
+  }
+  // a device made without a depth-stencil surface has nothing to clear of one, as D3D9's has not
+  UINT surfaces = 0;
+  if ((flags & D3DCLEAR_ZBUFFER) && depth_stencil_view_)
+    surfaces |= D3D11_CLEAR_DEPTH;
+  if ((flags & D3DCLEAR_STENCIL) && depth_stencil_view_)
+    surfaces |= D3D11_CLEAR_STENCIL;
+  if (surfaces)
+    context_->ClearDepthStencilView(depth_stencil_view_.Get(), surfaces, depth, (UINT8)stencil);
   return S_OK;
 }
 
@@ -620,7 +674,7 @@ MTLD3D9Device::source_surface(IDirect3DSurface9 *surface, IMTLD3D9Surface **out)
     return D3DERR_INVALIDCALL;
   ComPtr<IMTLD3D9Surface> ours;
   if (FAILED(surface->QueryInterface(IID_IMTLD3D9Surface, reinterpret_cast<void **>(ours.GetAddressOf()))) ||
-      ours->lockable())
+      ours->lockable() || ours->depth_stencil())
     return D3DERR_INVALIDCALL;
   *out = ours.Detach();
   return S_OK;
@@ -692,6 +746,207 @@ MTLD3D9Device::CreateOffscreenPlainSurface(UINT width, UINT height, D3DFORMAT fo
 }
 
 
+HRESULT
+MTLD3D9Device::GetRenderTarget(DWORD index, IDirect3DSurface9 **surface) {
+  if (index != 0 || !surface)
+    return D3DERR_INVALIDCALL;
+  *surface = nullptr;
+  HRESULT hr = ensure_render_target();
+  if (FAILED(hr))
+    return hr;
+  *surface = current_target_.Get();
+  (*surface)->AddRef();
+  return S_OK;
+}
+
+// a surface SetRenderTarget or SetDepthStencilSurface can take: a texture this device draws into, or tests against
+HRESULT
+MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample,
+                                  DWORD, WINBOOL lockable, IDirect3DSurface9 **surface, HANDLE *shared_handle) {
+  if (!surface || shared_handle || !width || !height)
+    return D3DERR_INVALIDCALL;
+  *surface = nullptr;
+  if (multisample != D3DMULTISAMPLE_NONE)
+    return D3DERR_NOTAVAILABLE;
+  if (lockable) {
+    ERR_ONCE("D3D9: a render target whose bytes the CPU locks is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
+  if (dxgi_format == DXGI_FORMAT_UNKNOWN)
+    return D3DERR_INVALIDCALL;
+
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = width;
+  desc.Height = height;
+  desc.MipLevels = 1;
+  desc.ArraySize = 1;
+  desc.Format = dxgi_format;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtr<ID3D11Texture2D> texture;
+  if (FAILED(d3d11_device_->CreateTexture2D(&desc, nullptr, &texture)))
+    return D3DERR_INVALIDCALL;
+
+  ComPtr<MTLD3D9Surface> result;
+  result.Attach(new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, false, context_));
+  *surface = result.Detach();
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::CreateDepthStencilSurface(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample,
+                                         DWORD, WINBOOL, IDirect3DSurface9 **surface, HANDLE *shared_handle) {
+  if (!surface || shared_handle || !width || !height)
+    return D3DERR_INVALIDCALL;
+  *surface = nullptr;
+  if (multisample != D3DMULTISAMPLE_NONE)
+    return D3DERR_NOTAVAILABLE;
+  const DXGI_FORMAT dxgi_format = to_dxgi_depth_format(format);
+  if (dxgi_format == DXGI_FORMAT_UNKNOWN) {
+    ERR_ONCE("D3D9: this build has no depth-stencil surface of that format.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = width;
+  desc.Height = height;
+  desc.MipLevels = 1;
+  desc.ArraySize = 1;
+  desc.Format = dxgi_format;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+  ComPtr<ID3D11Texture2D> texture;
+  if (FAILED(d3d11_device_->CreateTexture2D(&desc, nullptr, &texture)))
+    return D3DERR_INVALIDCALL;
+
+  ComPtr<MTLD3D9Surface> result;
+  result.Attach(new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, false, context_, true));
+  *surface = result.Detach();
+  return S_OK;
+}
+
+// a target of a size the depth-stencil surface does not have is refused: the two are one target's, and D3D9 refuses
+// a pair whose sizes differ rather than drawing with half of one
+HRESULT
+MTLD3D9Device::SetRenderTarget(DWORD index, IDirect3DSurface9 *surface) {
+  if (index != 0)
+    return D3DERR_INVALIDCALL;
+  ComPtr<IMTLD3D9Surface> ours;
+  if (FAILED(device_surface(surface, false, &ours)))
+    return D3DERR_INVALIDCALL;
+
+  D3D11_TEXTURE2D_DESC desc, depth_desc;
+  ours->texture()->GetDesc(&desc);
+  if (depth_stencil_) {
+    depth_stencil_->texture()->GetDesc(&depth_desc);
+    if (depth_desc.Width != desc.Width || depth_desc.Height != desc.Height) {
+      ERR_ONCE("D3D9: a render target of another size than the depth-stencil surface is not taken.");
+      return D3DERR_INVALIDCALL;
+    }
+  }
+
+  ComPtr<ID3D11RenderTargetView> view;
+  if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), nullptr, &view)))
+    return D3DERR_INVALIDCALL;
+  current_target_ = surface;
+  current_target_view_ = view;
+  target_width_ = desc.Width;
+  target_height_ = desc.Height;
+  // a target brings its own viewport: D3D9 places it on the target SetRenderTarget set (Wine's
+  // device_reset_viewport_state, dlls/d3d9/device.c), so a game that switches targets and draws without another
+  // SetViewport draws over the new target rather than over the old one's place in it
+  viewport_ = D3DVIEWPORT9{0, 0, desc.Width, desc.Height, 0.0f, 1.0f};
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *surface) {
+  if (!surface) {
+    depth_stencil_.Reset();
+    depth_stencil_view_.Reset();
+    return S_OK;
+  }
+  ComPtr<IMTLD3D9Surface> ours;
+  if (FAILED(device_surface(surface, true, &ours)))
+    return D3DERR_INVALIDCALL;
+  HRESULT hr = ensure_render_target();
+  if (FAILED(hr))
+    return hr;
+
+  D3D11_TEXTURE2D_DESC desc;
+  ours->texture()->GetDesc(&desc);
+  if (desc.Width != target_width_ || desc.Height != target_height_) {
+    ERR_ONCE("D3D9: a depth-stencil surface of another size than the render target is not taken.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  ComPtr<ID3D11DepthStencilView> view;
+  if (FAILED(d3d11_device_->CreateDepthStencilView(ours->texture(), nullptr, &view)))
+    return D3DERR_INVALIDCALL;
+  depth_stencil_.Attach(static_cast<MTLD3D9Surface *>(ours.Detach()));
+  depth_stencil_view_ = view;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::GetDepthStencilSurface(IDirect3DSurface9 **surface) {
+  if (!surface)
+    return D3DERR_INVALIDCALL;
+  *surface = depth_stencil_.Get();
+  if (*surface)
+    (*surface)->AddRef();
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::SetViewport(const D3DVIEWPORT9 *viewport) {
+  if (!viewport)
+    return D3DERR_INVALIDCALL;
+  HRESULT hr = ensure_render_target();
+  if (FAILED(hr))
+    return hr;
+  // a viewport is a rectangle of the target, and its depths are the device's 0 to 1
+  if (!viewport->Width || !viewport->Height || viewport->X + viewport->Width > target_width_ ||
+      viewport->Y + viewport->Height > target_height_ || viewport->MinZ < 0.0f || viewport->MaxZ > 1.0f ||
+      viewport->MinZ > viewport->MaxZ) {
+    ERR_ONCE("D3D9: that viewport is not one of the target's; the device keeps the one it had.");
+    return D3DERR_INVALIDCALL;
+  }
+  viewport_ = *viewport;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::GetViewport(D3DVIEWPORT9 *viewport) {
+  if (!viewport)
+    return D3DERR_INVALIDCALL;
+  *viewport = viewport_;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE state, DWORD value) {
+  if (!RenderState::supported(state)) {
+    ERR_ONCE("D3D9: render state {} is not honored yet; the call is refused rather than ignored.", (int)state);
+    return D3DERR_INVALIDCALL;
+  }
+  if (!RenderState::usable_value(state, value)) {
+    ERR_ONCE("D3D9: render state {} cannot take {}; the device keeps the value it had.", (int)state, value);
+    return D3DERR_INVALIDCALL;
+  }
+  return render_state_.set(state, value);
+}
+
+HRESULT
+MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) {
+  if (!value || !RenderState::supported(state))
+    return D3DERR_INVALIDCALL;
+  return render_state_.get(state, value);
+}
+
 // the vertices (or indices, which are one per vertex of a primitive) a primitive count is made of, for the topologies
 // D3D11 has a primitive for. D3DPT_TRIANGLEFAN has none: this milestone refuses it rather than draws it wrong.
 bool
@@ -735,18 +990,21 @@ MTLD3D9Device::topology_of(D3DPRIMITIVETYPE type) {
   }
 }
 
-// a draw's target: the back buffer the chain has now (the flip-model chain turns it over at Present, so it is asked
-// for again here), the viewport and shaders the fixed-function path binds, and nothing else of D3D11's state
+// a draw's target: the surface SetRenderTarget named (the back buffer until it names another), the depth-stencil
+// surface a draw tests against, the render state, and the viewport and shaders the fixed-function path binds
 HRESULT
 MTLD3D9Device::prepare_draw() {
   if (!FixedFunctionPipeline::supports(fvf_))
     return D3DERR_INVALIDCALL;
-  HRESULT hr = ensure_back_buffer();
+  HRESULT hr = ensure_render_target();
   if (FAILED(hr))
     return hr;
-  ID3D11RenderTargetView *target = render_target_.Get();
-  context_->OMSetRenderTargets(1, &target, nullptr);
-  return fixed_function_.bind(context_.Get(), width_, height_);
+  ID3D11RenderTargetView *target = current_target_view_.Get();
+  context_->OMSetRenderTargets(1, &target, depth_stencil_view_.Get());
+  hr = render_state_.apply(d3d11_device_.Get(), context_.Get());
+  if (FAILED(hr))
+    return hr;
+  return fixed_function_.bind(context_.Get(), viewport_, render_state_.flat_shaded());
 }
 
 HRESULT

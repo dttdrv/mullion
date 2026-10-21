@@ -61,6 +61,24 @@ inline DXGI_FORMAT to_dxgi_format(D3DFORMAT format) {
   }
 }
 
+// the DXGI format a D3D9 depth-stencil format is made as, DXGI_FORMAT_UNKNOWN when this build has none. D3D9's D24X8
+// and D24X4S4 hold no stencil, but the depth they hold is the top 24 bits of the 32 a D24S8 surface has, which is what
+// this build's depth surfaces are.
+inline DXGI_FORMAT to_dxgi_depth_format(D3DFORMAT format) {
+  switch (format) {
+  case D3DFMT_D16:
+    return DXGI_FORMAT_D16_UNORM;
+  case D3DFMT_D24X8:
+  case D3DFMT_D24X4S4:
+  case D3DFMT_D24S8:
+    return DXGI_FORMAT_D24_UNORM_S8_UINT;
+  case D3DFMT_D32:
+    return DXGI_FORMAT_D32_FLOAT;
+  default:
+    return DXGI_FORMAT_UNKNOWN;
+  }
+}
+
 // the D3D9 format a DXGI format is read back as
 inline D3DFORMAT from_dxgi_format(DXGI_FORMAT format) {
   switch (format) {

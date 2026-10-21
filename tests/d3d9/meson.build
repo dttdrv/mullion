@@ -14,3 +14,10 @@ test('d3d9_triangle', executable('d3d9_triangle', ['d3d9_triangle.cpp'], depende
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
 test('d3d9_draw_contract', executable('d3d9_draw_contract', ['d3d9_draw_contract.cpp'], dependencies : d3d9_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# the render states and the surfaces a frame is drawn into: depth, cull, fill, blend and shade read back out of the
+# pixels, and render targets, depth surfaces and the viewport read back the same way
+test('d3d9_states', executable('d3d9_states', ['d3d9_states.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_targets', executable('d3d9_targets', ['d3d9_targets.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

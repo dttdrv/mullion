@@ -5,11 +5,16 @@ namespace mullion::d3d9 {
 const IID IID_IMTLD3D9Surface = {0x4c7b4a3e, 0x1e0f, 0x4a15, {0x9c, 0x2b, 0x77, 0xbb, 0x5f, 0x2e, 0x71, 0x31}};
 
 MTLD3D9Surface::MTLD3D9Surface(IDirect3DDevice9 *device, const ComPtr<ID3D11Texture2D> &texture, D3DFORMAT format,
-                               bool lockable, const ComPtr<ID3D11DeviceContext> &context)
-    : device_(device), texture_(texture), context_(context), lockable_(lockable) {
+                               bool lockable, const ComPtr<ID3D11DeviceContext> &context, bool depth_stencil)
+    : device_(device), texture_(texture), context_(context), lockable_(lockable), depth_stencil_(depth_stencil) {
   D3D11_TEXTURE2D_DESC texture_desc;
   texture_->GetDesc(&texture_desc);
   desc_ = to_surface_desc(texture_desc, format, lockable);
+  if (depth_stencil_) {
+    // a depth-stencil surface is a device's, never the CPU's
+    desc_.Usage = D3DUSAGE_DEPTHSTENCIL;
+    desc_.Pool = D3DPOOL_DEFAULT;
+  }
 }
 
 HRESULT STDMETHODCALLTYPE MTLD3D9Surface::QueryInterface(REFIID riid, void **object) {

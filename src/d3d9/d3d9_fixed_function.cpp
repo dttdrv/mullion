@@ -21,6 +21,10 @@ FixedFunctionPipeline::initialize(ID3D11Device *device) {
   if (SUCCEEDED(hr))
     hr = device->CreatePixelShader(kVertexColourPixelShader, sizeof(kVertexColourPixelShader), nullptr, &pixel_shader_);
   if (SUCCEEDED(hr))
+    hr = device->CreatePixelShader(
+        kFlatVertexColourPixelShader, sizeof(kFlatVertexColourPixelShader), nullptr, &flat_pixel_shader_
+    );
+  if (SUCCEEDED(hr))
     hr = device->CreateInputLayout(
         kPreTransformedLayout, ARRAYSIZE(kPreTransformedLayout), kPreTransformedVertexShader,
         sizeof(kPreTransformedVertexShader), &vertex_layout_
@@ -30,18 +34,7 @@ FixedFunctionPipeline::initialize(ID3D11Device *device) {
     return hr;
   }
 
-  // D3D9's default rasterizer: cull counter-clockwise faces, which is the clockwise winding of a screen-space
-  // triangle counted as its front (the y of clip space points the other way than a window's)
-  D3D11_RASTERIZER_DESC rasterizer_desc{};
-  rasterizer_desc.FillMode = D3D11_FILL_SOLID;
-  rasterizer_desc.CullMode = D3D11_CULL_BACK;
-  rasterizer_desc.FrontCounterClockwise = TRUE;
-  rasterizer_desc.DepthClipEnable = TRUE;
-  hr = device->CreateRasterizerState(&rasterizer_desc, &rasterizer_);
-  if (FAILED(hr))
-    return hr;
-
-  // what the vertex shader maps screen space with: the target's size
+  // what the vertex shader maps screen space with: the viewport's origin and size
   D3D11_BUFFER_DESC viewport_desc{};
   viewport_desc.ByteWidth = 16;
   viewport_desc.Usage = D3D11_USAGE_DYNAMIC;
@@ -51,25 +44,29 @@ FixedFunctionPipeline::initialize(ID3D11Device *device) {
 }
 
 HRESULT
-FixedFunctionPipeline::bind(ID3D11DeviceContext *context, UINT width, UINT height) {
-  if (!vertex_shader_ || !pixel_shader_ || !vertex_layout_ || !viewport_)
+FixedFunctionPipeline::bind(ID3D11DeviceContext *context, const D3DVIEWPORT9 &viewport, bool flat_shaded) {
+  if (!vertex_shader_ || !pixel_shader_ || !flat_pixel_shader_ || !vertex_layout_ || !viewport_)
     return D3DERR_INVALIDCALL;
 
-  D3D11_VIEWPORT viewport{0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
-  context->RSSetViewports(1, &viewport);
-  context->RSSetState(rasterizer_.Get());
+  D3D11_VIEWPORT d3d11_viewport{(float)viewport.X, (float)viewport.Y, (float)viewport.Width,
+                                (float)viewport.Height, viewport.MinZ,          viewport.MaxZ};
+  context->RSSetViewports(1, &d3d11_viewport);
+  // D3D9's viewport is a clip rectangle as well as a place: the scissor is what clips the draw to it
+  const D3D11_RECT clip{(LONG)viewport.X, (LONG)viewport.Y, (LONG)(viewport.X + viewport.Width),
+                        (LONG)(viewport.Y + viewport.Height)};
+  context->RSSetScissorRects(1, &clip);
   context->VSSetShader(vertex_shader_.Get(), nullptr, 0);
-  context->PSSetShader(pixel_shader_.Get(), nullptr, 0);
+  context->PSSetShader(flat_shaded ? flat_pixel_shader_.Get() : pixel_shader_.Get(), nullptr, 0);
   context->IASetInputLayout(vertex_layout_.Get());
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (FAILED(context->Map(viewport_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
     return D3DERR_INVALIDCALL;
-  const float size[4] = {(float)width, (float)height, 0.0f, 0.0f};
-  memcpy(mapped.pData, size, sizeof(size));
+  const float constant[4] = {(float)viewport.X, (float)viewport.Y, (float)viewport.Width, (float)viewport.Height};
+  memcpy(mapped.pData, constant, sizeof(constant));
   context->Unmap(viewport_.Get(), 0);
-  ID3D11Buffer *constant = viewport_.Get();
-  context->VSSetConstantBuffers(0, 1, &constant);
+  ID3D11Buffer *buffer = viewport_.Get();
+  context->VSSetConstantBuffers(0, 1, &buffer);
   return S_OK;
 }
 
