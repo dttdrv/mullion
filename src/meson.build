@@ -9,6 +9,7 @@ endif
 
 subdir('mullion')
 subdir('dxgi')
+subdir('dxcore')
 subdir('d3d11')
 subdir('d3d10')
 
