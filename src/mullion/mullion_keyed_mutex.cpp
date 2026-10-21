@@ -70,8 +70,13 @@ KeyedMutex::~KeyedMutex() {
   if (state_) {
     // "destroying the owner abandons its acquired mutex" (tests/d3d11/d3d11_shared_resource.cpp): an abandoned
     // mutex reports WAIT_ABANDONED to every later acquire and never grants ownership again
-    if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) == static_cast<LONG64>(token_))
+    if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) == static_cast<LONG64>(token_)) {
       InterlockedExchange(&state_->abandoned, 1);
+      // an acquirer sleeps on the release that will never come: the death of its owner signals in that release's
+      // place, so the acquirer wakes, reads the abandoned mutex and returns WAIT_ABANDONED
+      if (event_)
+        event_.signalValue(InterlockedIncrement64(reinterpret_cast<volatile LONG64 *>(&state_->fence_value)));
+    }
     UnmapViewOfFile(state_);
     state_ = nullptr;
   }
@@ -172,8 +177,17 @@ HRESULT
 KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t milliseconds) {
   if (!state_)
     return E_FAIL;
+  // a key nobody released yet waits for the release that publishes it: "If the mutex is not released within the
+  // time-out interval, the method returns", so an acquirer that arrives before its turn finds the key when the other
+  // side releases it, and a wrong key with no timeout still fails at once. the wait is the shared event's own: each
+  // release signals it at the release count it publishes, so an acquirer that is not its turn sleeps on the event
+  // instead of polling the state, and INFINITE waits for as long as the release takes
+  const bool forever = milliseconds == INFINITE;
   uint64_t deadline = GetTickCount64() + milliseconds;
   for (;;) {
+    // the release that publishes this key signals the event at the release count plus one, read before the checks:
+    // a release that lands between a check and the wait still signals the value the wait asked for
+    const uint64_t next = state_->fence_value + 1;
     LONG64 owner = InterlockedCompareExchange64(&state_->owner, 0, 0);
     if (owner == static_cast<LONG64>(token_))
       return DXGI_ERROR_INVALID_CALL;
@@ -189,14 +203,19 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
         func_acquire(state_->fence_value);
         return S_OK;
       }
-      // a key nobody released yet waits for the release that publishes it: "If the mutex is not released within
-      // the time-out interval, the method returns", so an acquirer that arrives before its turn finds the key
-      // when the other side releases it, and a wrong key with no timeout still fails at once
       InterlockedExchange64(&state_->owner, 0);
     }
-    if (!milliseconds || GetTickCount64() >= deadline)
+    if (!milliseconds)
       return WAIT_TIMEOUT;
-    Sleep(1);
+    uint64_t remaining = ~0ULL;
+    if (!forever) {
+      uint64_t now = GetTickCount64();
+      if (now >= deadline)
+        return WAIT_TIMEOUT;
+      remaining = deadline - now;
+    }
+    // nothing is polled: the next release (or the death of an owner that holds the mutex) signals the event
+    event_.waitUntilSignaledValue(next, remaining);
   }
 }
 

@@ -228,6 +228,122 @@ child_shared(char **argv) {
   return verdict();
 }
 
+// the blocked child: the parent owns the mutex when this process asks for the key it will release, so an infinite
+// acquire can only return once that release lands; a wrong key then gives up at its own time-out, not before
+static int
+child_blocked(char **argv) {
+  HANDLE shared = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
+  HANDLE ready = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[3], nullptr, 10)));
+  HANDLE go = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[4], nullptr, 10)));
+  HANDLE go2 = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[5], nullptr, 10)));
+  HANDLE die = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[6], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResource1(shared, IID_PPV_ARGS(&imported)));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  CloseHandle(shared);
+  if (!expect(!!SetEvent(ready), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(ready);
+  if (!expect(WaitForSingleObject(go, wait_ms) == WAIT_OBJECT_0, "the parent never asked for the blocked acquire"))
+    ExitProcess(1);
+  CloseHandle(go);
+  // the parent owns the mutex and has not released key 1 yet: this acquire cannot return before it does
+  ULONGLONG started = GetTickCount64();
+  HRESULT hr = mutex->AcquireSync(1, INFINITE);
+  ULONGLONG waited = GetTickCount64() - started;
+  if (!expect(hr == S_OK, "the infinite acquire returned %#lx instead of taking the released key", hr))
+    ExitProcess(1);
+  if (!expect(waited >= 200, "the infinite acquire returned after %llu ms, before the release it waits for",
+              (unsigned long long)waited))
+    ExitProcess(1);
+  if (!expect(mutex->ReleaseSync(2) == S_OK, "the woken owner could not release the mutex"))
+    ExitProcess(1);
+  if (!expect(!!SetEvent(go2), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(go2);
+  if (!expect(WaitForSingleObject(die, wait_ms) == WAIT_OBJECT_0, "the parent never took the mutex back"))
+    ExitProcess(1);
+  CloseHandle(die);
+  // the parent owns it again: a key nobody released waits out its whole time-out
+  started = GetTickCount64();
+  hr = mutex->AcquireSync(probe_salt, 150);
+  waited = GetTickCount64() - started;
+  if (!expect(hr == WAIT_TIMEOUT, "a wrong key returned %#lx instead of waiting out its time-out", hr))
+    ExitProcess(1);
+  if (!expect(waited >= 120, "the time-out returned after %llu ms, before its 150 ms", (unsigned long long)waited))
+    ExitProcess(1);
+  return verdict();
+}
+
+// the owner child: take the mutex and die holding it, so its destruction abandons the mutex for whoever waits
+static int
+child_owner(char **argv) {
+  HANDLE shared = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
+  HANDLE ready = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[3], nullptr, 10)));
+  HANDLE die = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[4], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResource1(shared, IID_PPV_ARGS(&imported)));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  CloseHandle(shared);
+  if (!expect(mutex->AcquireSync(0, wait_ms) == S_OK, "the owner could not take the initial key"))
+    ExitProcess(1);
+  if (!expect(!!SetEvent(ready), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(ready);
+  if (!expect(WaitForSingleObject(die, wait_ms) == WAIT_OBJECT_0, "the parent never ended the owner"))
+    ExitProcess(1);
+  CloseHandle(die);
+  return verdict(); // the references die here, owning the mutex
+}
+
+// the abandoning waiter: the mutex is owned when this process blocks on it, so only the death of that owner can end
+// the wait, and it must end with WAIT_ABANDONED rather than waiting for a release that will never come
+static int
+child_abandoned(char **argv) {
+  HANDLE shared = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
+  HANDLE ready = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[3], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResource1(shared, IID_PPV_ARGS(&imported)));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  CloseHandle(shared);
+  if (!expect(!!SetEvent(ready), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(ready);
+  ULONGLONG started = GetTickCount64();
+  HRESULT hr = mutex->AcquireSync(0, INFINITE);
+  ULONGLONG waited = GetTickCount64() - started;
+  if (!expect(hr == WAIT_ABANDONED, "the death of the owner woke the blocked acquire as %#lx, not WAIT_ABANDONED", hr))
+    ExitProcess(1);
+  if (!expect(waited >= 150, "the blocked acquire woke after %llu ms, before the owner it waits for died",
+              (unsigned long long)waited))
+    ExitProcess(1);
+  return verdict();
+}
+
 static int
 parent() {
   const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
@@ -298,6 +414,139 @@ parent() {
   resource.Reset();
   expect(texture.Reset() == 0, "the keyed texture retained an extra reference");
 
+  step("an infinite acquire returns only when the release it waits for lands");
+  ComPtr<ID3D11Texture2D> waiting_texture;
+  CHECK(device->CreateTexture2D(&desc, nullptr, &waiting_texture));
+  ComPtr<IDXGIResource1> waiting_resource;
+  CHECK(waiting_texture.As(&waiting_resource));
+  ComPtr<IDXGIKeyedMutex> waiting_mutex;
+  CHECK(waiting_texture.As(&waiting_mutex));
+  HANDLE waiting_handle = nullptr;
+  CHECK(waiting_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                             &waiting_handle));
+  HANDLE waiting_duplicate = nullptr;
+  if (!expect(!!DuplicateHandle(GetCurrentProcess(), waiting_handle, GetCurrentProcess(), &waiting_duplicate, 0, TRUE,
+                                DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(waiting_handle);
+  HANDLE blocked_ready = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE blocked_go = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE blocked_go2 = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE blocked_die = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  if (!expect(blocked_ready && blocked_go && blocked_go2 && blocked_die, "CreateEvent: %lu", GetLastError()))
+    return verdict();
+  // the parent owns the mutex while the child asks for key 1: nothing but its release can end that wait
+  CHECK(waiting_mutex->AcquireSync(0, wait_ms));
+  command = "\"" + std::string(executable) + "\" --blocked " +
+            std::to_string(reinterpret_cast<uintptr_t>(waiting_duplicate)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(blocked_ready)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(blocked_go)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(blocked_go2)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(blocked_die));
+  PROCESS_INFORMATION blocked_child{};
+  if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                               &blocked_child), "CreateProcess: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(blocked_child.hThread);
+  CloseHandle(waiting_duplicate);
+  if (!expect(WaitForSingleObject(blocked_ready, wait_ms) == WAIT_OBJECT_0, "the blocked child did not open the texture")) {
+    TerminateProcess(blocked_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(blocked_ready);
+  if (!expect(!!SetEvent(blocked_go), "SetEvent: %lu", GetLastError()))
+    return verdict();
+  Sleep(250); // the child is waiting on a release this process has not made yet
+  if (!expect(waiting_mutex->ReleaseSync(1) == S_OK, "the owner could not release the key the child waits for"))
+    return verdict();
+  if (!expect(WaitForSingleObject(blocked_go2, wait_ms) == WAIT_OBJECT_0, "the blocked acquire never returned")) {
+    TerminateProcess(blocked_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(blocked_go2);
+  if (!expect(waiting_mutex->AcquireSync(2, wait_ms) == S_OK, "the parent could not take the key the child released"))
+    return verdict();
+  if (!expect(!!SetEvent(blocked_die), "SetEvent: %lu", GetLastError()))
+    return verdict();
+  if (!expect(WaitForSingleObject(blocked_child.hProcess, 60000) == WAIT_OBJECT_0, "the blocked child did not exit")) {
+    TerminateProcess(blocked_child.hProcess, 1);
+    return verdict();
+  }
+  GetExitCodeProcess(blocked_child.hProcess, &code);
+  expect(code == 0, "the blocked child exited %lu", code);
+  CloseHandle(blocked_child.hProcess);
+  CloseHandle(blocked_die);
+
+  step("the death of an owner wakes an acquire blocked on it");
+  ComPtr<ID3D11Texture2D> abandoning_texture;
+  CHECK(device->CreateTexture2D(&desc, nullptr, &abandoning_texture));
+  ComPtr<IDXGIResource1> abandoning_resource;
+  CHECK(abandoning_texture.As(&abandoning_resource));
+  HANDLE abandoning_handle = nullptr;
+  CHECK(abandoning_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                nullptr, &abandoning_handle));
+  HANDLE abandoning_duplicate = nullptr;
+  if (!expect(!!DuplicateHandle(GetCurrentProcess(), abandoning_handle, GetCurrentProcess(), &abandoning_duplicate, 0,
+                                TRUE, DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(abandoning_handle);
+  HANDLE owner_ready = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE owner_die = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE waiter_ready = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  if (!expect(owner_ready && owner_die && waiter_ready, "CreateEvent: %lu", GetLastError()))
+    return verdict();
+  command = "\"" + std::string(executable) + "\" --owner " +
+            std::to_string(reinterpret_cast<uintptr_t>(abandoning_duplicate)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(owner_ready)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(owner_die));
+  PROCESS_INFORMATION owner_child{};
+  if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                               &owner_child), "CreateProcess: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(owner_child.hThread);
+  if (!expect(WaitForSingleObject(owner_ready, wait_ms) == WAIT_OBJECT_0, "the owner child did not take the mutex")) {
+    TerminateProcess(owner_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(owner_ready);
+  // the owner is alive and holds the mutex: only its death can end the waiter's infinite acquire
+  command = "\"" + std::string(executable) + "\" --abandoned " +
+            std::to_string(reinterpret_cast<uintptr_t>(abandoning_duplicate)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(waiter_ready));
+  PROCESS_INFORMATION waiter_child{};
+  if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                               &waiter_child), "CreateProcess: %lu", GetLastError())) {
+    TerminateProcess(owner_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(waiter_child.hThread);
+  CloseHandle(abandoning_duplicate);
+  if (!expect(WaitForSingleObject(waiter_ready, wait_ms) == WAIT_OBJECT_0, "the waiter child did not open the texture")) {
+    TerminateProcess(owner_child.hProcess, 1);
+    TerminateProcess(waiter_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(waiter_ready);
+  Sleep(200); // the waiter is blocked on an owner that is about to die holding the mutex
+  if (!expect(!!SetEvent(owner_die), "SetEvent: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(owner_die);
+  if (!expect(WaitForSingleObject(owner_child.hProcess, 60000) == WAIT_OBJECT_0, "the owner child did not exit")) {
+    TerminateProcess(owner_child.hProcess, 1);
+    TerminateProcess(waiter_child.hProcess, 1);
+    return verdict();
+  }
+  GetExitCodeProcess(owner_child.hProcess, &code);
+  expect(code == 0, "the owner child exited %lu", code);
+  CloseHandle(owner_child.hProcess);
+  if (!expect(WaitForSingleObject(waiter_child.hProcess, 60000) == WAIT_OBJECT_0, "the waiter child did not exit")) {
+    TerminateProcess(waiter_child.hProcess, 1);
+    return verdict();
+  }
+  GetExitCodeProcess(waiter_child.hProcess, &code);
+  expect(code == 0, "the waiter child exited %lu", code);
+  CloseHandle(waiter_child.hProcess);
+
   step("shared texture, marshalled legacy handle, its lifetime outlives its creator");
   D3D11_TEXTURE2D_DESC shared_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                    D3D11_BIND_SHADER_RESOURCE, 0, D3D11_RESOURCE_MISC_SHARED};
@@ -367,6 +616,12 @@ int
 main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[1], "--keyed"))
     return child_keyed(argv);
+  if (argc > 2 && !strcmp(argv[1], "--blocked"))
+    return child_blocked(argv);
+  if (argc > 2 && !strcmp(argv[1], "--owner"))
+    return child_owner(argv);
+  if (argc > 2 && !strcmp(argv[1], "--abandoned"))
+    return child_abandoned(argv);
   if (argc > 2 && !strcmp(argv[1], "--shared"))
     return child_shared(argv);
   return parent();
