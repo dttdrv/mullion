@@ -132,6 +132,9 @@ public:
 
   /* Texture Operations */
 
+  // Metal's own sampler for a texel fetch: nearest, clamped, no mip filtering
+  Value *CreateGetReadSampler();
+
   std::pair<Value *, Value *>
   CreateSample(
       const Texture &Texture, Value *Handle, Value *Sampler, Value *Coord, Value *ArrayIndex, const int32_t Offset[3]

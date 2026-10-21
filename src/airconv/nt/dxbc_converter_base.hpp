@@ -551,6 +551,15 @@ public:
       const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
       llvm::Value *Level
   );
+  // whether a tiled texture's tiles are mapped where a texel fetch reads (D3D12's CheckAccessFullyMapped status for
+  // Load), from Metal's sampling feedback: a fetch of one texel is a nearest sample of its centre. Metal's own feedback
+  // for a fetch says nothing of the mappings (it is 16 bytes of a mapped tile, whatever is mapped); its sampling
+  // feedback is exact. a fetch of what cannot be sampled (multi-sampled textures, texel buffers, cube maps) keeps its
+  // own, and so does a resource that is not tiled
+  llvm::Value *LoadResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+      llvm::Value *Residency
+  );
   llvm::Value *ExtractBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, bool Signed);
   llvm::Value *InsertBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, llvm::Value *Dst);
   llvm::Value *MaskedSumOfAbsDiff(llvm::Value *Ref, llvm::Value *Src, llvm::Value *Accum);

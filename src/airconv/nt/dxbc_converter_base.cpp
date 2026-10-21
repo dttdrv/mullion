@@ -1469,6 +1469,56 @@ Converter::operator()(const InstLoad &load) {
   StoreFeedback(load.feedback, Residency);
 }
 
+llvm::Value *
+Converter::LoadResidency(
+    const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+    llvm::Value *Residency
+) {
+  using namespace llvm;
+  using namespace llvm::air;
+  auto &Info = AIRBuilder::getTextureInfo(Tex.Logical);
+  // a sampler reads a texture of 2 or 3 dimensions and their arrays: a cube's face is addressed by a direction rather
+  // than a texel, and a texel buffer or a multi-sampled texture has no sampler at all
+  if (!Tex.Range || !Residency || Info.is_cube || Info.is_ms || Tex.Logical == Texture::texture_buffer)
+    return Residency;
+  auto Metadata = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Sparse = ir.CreateICmpNE(ir.CreateAnd(Metadata, SM50_TEXTURE_VIEW_METADATA_SPARSE), ir.getInt64(0));
+  auto Head = ir.GetInsertBlock();
+  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
+  if (auto Branch = Head->getTerminator())
+    Branch->eraseFromParent();
+  auto Probe = llvm::BasicBlock::Create(ctx.llvm, "load_residency", Head->getParent(), Tail);
+  ir.SetInsertPoint(Head);
+  ir.CreateCondBr(Sparse, Probe, Tail);
+  ir.SetInsertPoint(Probe);
+  // the texel's centre in the sampler's coordinates of the level it is fetched from
+  auto Dimensions = TextureDimensions(Tex, Info.is_mipmaped ? Level : air.getInt(0));
+  auto CoordType = air.getTextureSampleCoordType(Tex.Texture);
+  Value *Coord = UndefValue::get(CoordType);
+  for (unsigned i = 0; i < Info.coord_dimension; i++) {
+    Value *Texel = Address->getType()->isVectorTy() ? ir.CreateExtractElement(Address, i) : Address;
+    auto Centre = ir.CreateFAdd(
+        air.CreateConvertToFloat(Texel, Signedness::Unsigned), ConstantFP::get(air.getFloatTy(), 0.5)
+    );
+    auto Size = air.CreateConvertToFloat(ir.CreateExtractElement(Dimensions, i), Signedness::Unsigned);
+    Coord = ir.CreateInsertElement(Coord, ir.CreateFDiv(Centre, Size), i);
+  }
+  // Metal's own sampler goes where it is used: one fetch elsewhere in the shader must not hand this one a value its
+  // block does not dominate
+  auto Sampler = air.CreateGetReadSampler();
+  const int32_t NoOffset[3] = {};
+  auto Lod = air.CreateConvertToFloat(Info.is_mipmaped ? Level : air.getInt(0), Signedness::Signed);
+  auto Status =
+      air.CreateSample(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, NoOffset, sample_level{Lod}).second;
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Tail, Tail->begin());
+  auto Merged = ir.CreatePHI(Status->getType(), 2);
+  Merged->addIncoming(Status, Probe);
+  Merged->addIncoming(Residency, Head);
+  return Merged;
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::ReadTexel(
     const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
@@ -1476,6 +1526,7 @@ Converter::ReadTexel(
 ) {
   auto [Value, Residency] =
       air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+  Residency = LoadResidency(Tex, Address, ArrayIndex, Level, Residency);
   if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV)
     return {Value, Residency};
   // an R32G32B32 element's green and blue are the next two R32 texels; its alpha is R32's 1, the default of a

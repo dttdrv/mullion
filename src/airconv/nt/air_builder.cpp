@@ -327,6 +327,17 @@ AIRBuilder::getTextureRWPositionType(const Texture &Texture) {
   return getIntTy(info.coord_dimension);
 }
 
+Value *
+AIRBuilder::CreateGetReadSampler() {
+  auto Fn = getModule()->getOrInsertFunction(
+      "air.get_read_sampler", FunctionType::get(getSamplerHandleType(), {}, false),
+      AttributeList::get(getContext(), {{~0U, Attribute::get(getContext(), Attribute::AttrKind::ReadOnly)},
+                                        {~0U, Attribute::get(getContext(), Attribute::AttrKind::NoUnwind)},
+                                        {~0U, Attribute::get(getContext(), Attribute::AttrKind::WillReturn)}})
+  );
+  return builder.CreateCall(Fn);
+};
+
 std::pair<Value *, Value *>
 AIRBuilder::CreateSampleCommon(
     const Texture &Texture, Value *Handle, Value *Sampler, Value *Coord, Value *ArrayIndex, Value *Offset,
