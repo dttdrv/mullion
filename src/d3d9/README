@@ -84,9 +84,17 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
 tests/d3d9/d3d9_states.cpp is the state test: two triangles at different depths in both drawing orders, depth off,
 depth writes off, ZFUNC, a colour clear against a depth clear, both cull windings with both cull modes, wireframe
 against solid, SRCALPHA/INVSRCALPHA and ONE/ONE blending, the colour write mask, GOURAUD against FLAT, and the states
-and values that are refused. tests/d3d9/d3d9_targets.cpp is the surfaces and viewport test: a custom target that takes
-the draw while the back buffer does not, the viewport it brings and the one a draw is placed and clipped by, the depth
-surface on it, the automatic depth-stencil surface, and the targets, depths and viewports that are refused.
+and values that are refused. It reports every state on its own: each SetRenderState of a state under test and each
+pixel it is read out of is a check, and a state the device refuses is a `wrong:` line the run carries on past, so the
+same test against milestone 2's device (which has no render state at all) named 36 wrongs across depth, cull, fill,
+blend, colour write and shade instead of stopping at the first missing call. tests/d3d9/d3d9_targets.cpp is the
+surfaces and viewport test: a custom target that takes the draw while the back buffer does not, the viewport it brings
+and the one a draw is placed and clipped by, the depth surface on it, the automatic depth-stencil surface, and the
+targets, depths and viewports that are refused.
+
+The device's source is split by what a frame needs: d3d9_device.cpp has the object, its chain, its back buffer and
+the surfaces a frame is read back into, d3d9_device_targets.cpp the render states, depth-stencil surfaces, render
+targets and viewport, and d3d9_device_draw.cpp the buffers and draws, over the class in d3d9_device.hpp.
 
 # Milestone 4: what a game draws with
 The rest of the fixed-function pipeline and the resources around it, still over D3D11: textures and their sampler

@@ -97,10 +97,14 @@ main() {
   ComPtr<IDirect3DDevice9> device;
   CHECK(d3d9->CreateDevice(0, D3DDEVTYPE_HAL, window, D3DCREATE_HARDWARE_VERTEXPROCESSING, &present, &device));
 
+  // depth testing needs a depth-stencil surface; without one the depth checks report what they could not do and the
+  // states that do not need it are still checked, so a red run says what every state did rather than stopping here
   ComPtr<IDirect3DSurface9> depth;
-  CHECK(device->CreateDepthStencilSurface(client, client, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &depth,
-                                          nullptr));
-  CHECK(device->SetDepthStencilSurface(depth.Get()));
+  const bool depth_ready =
+      SUCCEEDED(device->CreateDepthStencilSurface(client, client, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &depth,
+                                                  nullptr)) &&
+      SUCCEEDED(device->SetDepthStencilSurface(depth.Get()));
+  expect(depth_ready, "no depth-stencil surface for the depth states");
 
   ComPtr<IDirect3DSurface9> readback;
   CHECK(device->CreateOffscreenPlainSurface(client, client, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &readback, nullptr));
@@ -128,62 +132,64 @@ main() {
   };
   CHECK(device->SetFVF(kPreTransformedFVF));
 
-  // two triangles of the same shape at the same place, one behind the other
-  PreTransformedVertex far_triangle[3], near_triangle[3];
-  triangle_at(20.0f, 20.0f, 100.0f, 0.75f, D3DCOLOR_XRGB(255, 0, 0), far_triangle);
-  triangle_at(20.0f, 20.0f, 100.0f, 0.25f, D3DCOLOR_XRGB(0, 255, 0), near_triangle);
+  if (depth_ready) {
+    // two triangles of the same shape at the same place, one behind the other
+    PreTransformedVertex far_triangle[3], near_triangle[3];
+    triangle_at(20.0f, 20.0f, 100.0f, 0.75f, D3DCOLOR_XRGB(255, 0, 0), far_triangle);
+    triangle_at(20.0f, 20.0f, 100.0f, 0.25f, D3DCOLOR_XRGB(0, 255, 0), near_triangle);
 
-  // depth: the near triangle is the one at the pixel, in either drawing order
-  CHECK(clear(kClear, true));
-  draw(far_triangle);
-  draw(near_triangle);
-  expect(pixel(40, 40) == 0x00FF00, "depth did not keep the near triangle drawn after the far one");
-  const D3DCOLOR far_then_near = pixel(40, 40);
-  CHECK(clear(kClear, true));
-  draw(near_triangle);
-  draw(far_triangle);
-  expect(pixel(40, 40) == 0x00FF00, "depth did not keep the near triangle drawn before the far one");
-  printf("depth: the near triangle reads %06lx over the far one in both orders\n", (unsigned long)far_then_near);
+    // depth: the near triangle is the one at the pixel, in either drawing order
+    CHECK(clear(kClear, true));
+    draw(far_triangle);
+    draw(near_triangle);
+    expect(pixel(40, 40) == 0x00FF00, "depth did not keep the near triangle drawn after the far one");
+    const D3DCOLOR far_then_near = pixel(40, 40);
+    CHECK(clear(kClear, true));
+    draw(near_triangle);
+    draw(far_triangle);
+    expect(pixel(40, 40) == 0x00FF00, "depth did not keep the near triangle drawn before the far one");
+    printf("depth: the near triangle reads %06lx over the far one in both orders\n", (unsigned long)far_then_near);
 
-  // depth off: the later draw is the pixel's, wherever it is
-  CHECK(device->SetRenderState(D3DRS_ZENABLE, FALSE));
-  CHECK(clear(kClear, true));
-  draw(near_triangle);
-  draw(far_triangle);
-  expect(pixel(40, 40) == 0xFF0000, "a draw past the near one did not win with depth off");
-  CHECK(device->SetRenderState(D3DRS_ZENABLE, TRUE));
+    // depth off: the later draw is the pixel's, wherever it is
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZENABLE, FALSE)), "D3DRS_ZENABLE was refused");
+    CHECK(clear(kClear, true));
+    draw(near_triangle);
+    draw(far_triangle);
+    expect(pixel(40, 40) == 0xFF0000, "a draw past the near one did not win with depth off");
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZENABLE, TRUE)), "D3DRS_ZENABLE was refused");
 
-  // depth writes off: the near triangle leaves the depth where it was, so the far one still passes
-  CHECK(device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE));
-  CHECK(clear(kClear, true));
-  draw(near_triangle);
-  CHECK(device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE));
-  draw(far_triangle);
-  expect(pixel(40, 40) == 0xFF0000, "a triangle that did not write depth kept the far one out");
-  CHECK(device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE));
+    // depth writes off: the near triangle leaves the depth where it was, so the far one still passes
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE)), "D3DRS_ZWRITEENABLE was refused");
+    CHECK(clear(kClear, true));
+    draw(near_triangle);
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE)), "D3DRS_ZWRITEENABLE was refused");
+    draw(far_triangle);
+    expect(pixel(40, 40) == 0xFF0000, "a triangle that did not write depth kept the far one out");
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE)), "D3DRS_ZWRITEENABLE was refused");
 
-  // ZFUNC is the comparison: the near triangle fails a GREATER test against the far one's depth
-  CHECK(clear(kClear, true));
-  draw(far_triangle);
-  CHECK(device->SetRenderState(D3DRS_ZFUNC, D3DCMP_GREATER));
-  draw(near_triangle);
-  expect(pixel(40, 40) == 0xFF0000, "ZFUNC GREATER drew a nearer triangle");
-  CHECK(device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL));
+    // ZFUNC is the comparison: the near triangle fails a GREATER test against the far one's depth
+    CHECK(clear(kClear, true));
+    draw(far_triangle);
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZFUNC, D3DCMP_GREATER)), "D3DRS_ZFUNC was refused");
+    draw(near_triangle);
+    expect(pixel(40, 40) == 0xFF0000, "ZFUNC GREATER drew a nearer triangle");
+    expect(SUCCEEDED(device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL)), "D3DRS_ZFUNC was refused");
 
-  // a colour clear leaves depth alone; D3DCLEAR_ZBUFFER is what puts it back
-  CHECK(clear(kClear, true));
-  PreTransformedVertex stored[3], deeper[3];
-  triangle_at(20.0f, 20.0f, 100.0f, 0.5f, D3DCOLOR_XRGB(0, 255, 0), stored);
-  triangle_at(20.0f, 20.0f, 100.0f, 0.8f, D3DCOLOR_XRGB(255, 0, 0), deeper);
-  draw(stored);
-  CHECK(clear(kClear, false));
-  draw(deeper);
-  expect(pixel(40, 40) == (kClear & 0x00FFFFFF), "a colour clear forgot the depth it had");
-  CHECK(clear(kClear, true));
-  draw(deeper);
-  expect(pixel(40, 40) == 0xFF0000, "a depth clear did not let the far triangle through");
-  printf("depth: a colour clear keeps it (%06lx) and a depth clear resets it (%06lx)\n",
-         (unsigned long)(kClear & 0x00FFFFFF), (unsigned long)pixel(40, 40));
+    // a colour clear leaves depth alone; D3DCLEAR_ZBUFFER is what puts it back
+    CHECK(clear(kClear, true));
+    PreTransformedVertex stored[3], deeper[3];
+    triangle_at(20.0f, 20.0f, 100.0f, 0.5f, D3DCOLOR_XRGB(0, 255, 0), stored);
+    triangle_at(20.0f, 20.0f, 100.0f, 0.8f, D3DCOLOR_XRGB(255, 0, 0), deeper);
+    draw(stored);
+    CHECK(clear(kClear, false));
+    draw(deeper);
+    expect(pixel(40, 40) == (kClear & 0x00FFFFFF), "a colour clear forgot the depth it had");
+    CHECK(clear(kClear, true));
+    draw(deeper);
+    expect(pixel(40, 40) == 0xFF0000, "a depth clear did not let the far triangle through");
+    printf("depth: a colour clear keeps it (%06lx) and a depth clear resets it (%06lx)\n",
+           (unsigned long)(kClear & 0x00FFFFFF), (unsigned long)pixel(40, 40));
+  }
 
   // cull: the default culls a clockwise triangle, NONE draws it, CCW culls the counter-clockwise one
   PreTransformedVertex clockwise[3] = {{20.0f, 20.0f, 0.0f, 1.0f, D3DCOLOR_XRGB(0, 255, 255)},
@@ -195,30 +201,30 @@ main() {
   CHECK(clear(kClear, false));
   draw(clockwise);
   expect(pixel(40, 40) == (kClear & 0x00FFFFFF), "the default cull mode drew a clockwise triangle");
-  CHECK(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE)), "D3DRS_CULLMODE was refused");
   CHECK(clear(kClear, false));
   draw(clockwise);
   expect(pixel(40, 40) == 0x00FFFF, "CULLMODE NONE culled a triangle");
-  CHECK(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW)), "D3DRS_CULLMODE was refused");
   CHECK(clear(kClear, false));
   draw(counter_clockwise);
   expect(pixel(40, 40) == (kClear & 0x00FFFFFF), "CULLMODE CCW drew a counter-clockwise triangle");
   CHECK(clear(kClear, false));
   draw(clockwise);
   expect(pixel(40, 40) == 0x00FFFF, "CULLMODE CCW culled a clockwise triangle");
-  CHECK(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW)), "D3DRS_CULLMODE was refused");
   printf("cull: the default and CCW cull the windings they name, NONE draws both\n");
 
   // fill: wireframe is the edges, solid is the interior
   CHECK(clear(kClear, false));
-  CHECK(device->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME)), "D3DRS_FILLMODE was refused");
   draw(counter_clockwise);
   expect(pixel(35, 35) == (kClear & 0x00FFFFFF), "wireframe filled the triangle's interior");
   bool edge = false;
   for (UINT x = 19; x <= 21; x++)
     edge |= pixel(x, 60) == 0xFFFF00;
   expect(edge, "wireframe did not draw the triangle's edge");
-  CHECK(device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID)), "D3DRS_FILLMODE was refused");
   CHECK(clear(kClear, false));
   draw(counter_clockwise);
   expect(pixel(35, 35) == 0xFFFF00, "solid fill did not fill the triangle's interior");
@@ -230,19 +236,19 @@ main() {
   triangle_at(20.0f, 20.0f, 100.0f, 0.0f, D3DCOLOR_ARGB(128, 255, 0, 0), half_red);
   const D3DCOLOR blue = D3DCOLOR_XRGB(0, 0, 255);
   CHECK(clear(blue, false));
-  CHECK(device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE));
-  CHECK(device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA));
-  CHECK(device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE)), "D3DRS_ALPHABLENDENABLE was refused");
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA)), "D3DRS_SRCBLEND was refused");
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA)), "D3DRS_DESTBLEND was refused");
   draw(half_red);
   const D3DCOLOR blended = pixel(40, 40);
   expect(close_to(blended, 0x80007F, 3), "SRCALPHA/INVSRCALPHA did not mix the vertex alpha with the target");
-  CHECK(device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE)), "D3DRS_ALPHABLENDENABLE was refused");
   CHECK(clear(blue, false));
   draw(half_red);
   expect(pixel(40, 40) == 0xFF0000, "a draw with blending off did not write its colour whole");
-  CHECK(device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE));
-  CHECK(device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE));
-  CHECK(device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE)), "D3DRS_ALPHABLENDENABLE was refused");
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE)), "D3DRS_SRCBLEND was refused");
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE)), "D3DRS_DESTBLEND was refused");
   CHECK(clear(blue, false));
   draw(half_red);
   const D3DCOLOR added = pixel(40, 40);
@@ -252,32 +258,32 @@ main() {
   const D3DCOLOR grey = D3DCOLOR_XRGB(100, 100, 100);
   PreTransformedVertex light_grey[3];
   triangle_at(20.0f, 20.0f, 100.0f, 0.0f, D3DCOLOR_XRGB(200, 200, 200), light_grey);
-  CHECK(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_SUBTRACT));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_SUBTRACT)), "D3DRS_BLENDOP was refused");
   CHECK(clear(grey, false));
   draw(light_grey);
   const D3DCOLOR subtracted = pixel(40, 40);
   expect(subtracted == 0x646464, "BLENDOP SUBTRACT did not draw the source minus the destination");
-  CHECK(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_REVSUBTRACT));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_REVSUBTRACT)), "D3DRS_BLENDOP was refused");
   CHECK(clear(grey, false));
   draw(light_grey);
   const D3DCOLOR reverse_subtracted = pixel(40, 40);
   expect(reverse_subtracted == 0x000000, "BLENDOP REVSUBTRACT did not draw the destination minus the source");
-  CHECK(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD)), "D3DRS_BLENDOP was refused");
   printf("blend: SRCALPHA/INVSRCALPHA reads %06lx, blending off %06lx, ONE/ONE %06lx, SUBTRACT %06lx, REVSUBTRACT "
          "%06lx\n",
          (unsigned long)blended, (unsigned long)0xFF0000, (unsigned long)added, (unsigned long)subtracted,
          (unsigned long)reverse_subtracted);
-  CHECK(device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE)), "D3DRS_ALPHABLENDENABLE was refused");
 
   // COLORWRITEENABLE: a mask keeps the draw out of the channels it does not name
   CHECK(clear(blue, false));
-  CHECK(device->SetRenderState(D3DRS_COLORWRITEENABLE, 0));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_COLORWRITEENABLE, 0)), "D3DRS_COLORWRITEENABLE was refused");
   draw(half_red);
   expect(pixel(40, 40) == (blue & 0x00FFFFFF), "COLORWRITEENABLE 0 wrote a colour");
-  CHECK(device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED)), "D3DRS_COLORWRITEENABLE was refused");
   draw(half_red);
   expect(pixel(40, 40) == 0xFF00FF, "COLORWRITEENABLE RED changed a channel it does not name");
-  CHECK(device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF)), "D3DRS_COLORWRITEENABLE was refused");
   printf("colorwrite: 0 leaves the target, RED writes only red\n");
 
   // shade: GOURAUD interpolates the three colours, FLAT gives the triangle the first vertex's
@@ -289,7 +295,7 @@ main() {
   const D3DCOLOR gouraud = pixel(25, 25);
   expect(((gouraud >> 16) & 0xFF) > 200 && gouraud != 0xFF0000 && gouraud != 0x00FF00 && gouraud != 0x0000FF,
          "GOURAUD did not interpolate the three vertex colours");
-  CHECK(device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT)), "D3DRS_SHADEMODE was refused");
   CHECK(clear(kClear, false));
   draw(shaded);
   const D3DCOLOR flat = pixel(25, 25);
@@ -298,7 +304,7 @@ main() {
   CHECK(clear(kClear, false));
   draw(shaded);
   expect(pixel(25, 25) == 0xFF0000, "a refused SHADEMODE changed the mode");
-  CHECK(device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD));
+  expect(SUCCEEDED(device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD)), "D3DRS_SHADEMODE was refused");
   printf("shade: GOURAUD reads %06lx at 25,25, FLAT reads %06lx (wanted ff0000)\n", (unsigned long)gouraud,
          (unsigned long)flat);
 

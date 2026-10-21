@@ -5,6 +5,8 @@ d3d9_src = [
   'd3d9_buffer.cpp',
   'd3d9_direct3d.cpp',
   'd3d9_device.cpp',
+  'd3d9_device_draw.cpp',
+  'd3d9_device_targets.cpp',
   'd3d9_fixed_function.cpp',
   'd3d9_state.cpp',
   'd3d9_swapchain.cpp',
