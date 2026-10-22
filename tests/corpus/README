@@ -1,0 +1,20 @@
+the shaders two tests read, and nothing else
+
+`dxil/` holds DXIL containers, each named by the hash it carries, which is the contract MULLION_CORPUS names and
+`tests/d3d12/d3d12_corpus.cpp` reads: a compute shader with a UAV, a vertex shader with an input signature, and
+a pixel shader whose inputs the vertex shader writes, so the corpus test can make a compute pipeline, a depth
+pipeline from the vertex shader, and a vertex-and-pixel one. Their sizes are chosen so one container's hash ends
+in a block of its own and the others do not, which is what `tests/host/dxbchash.cpp` requires of the containers
+it checks. `tests/run.py` names this directory in MULLION_CORPUS (in Wine's spelling) and MULLION_HASHED (the
+Unix path, for the host test), so the two tests run instead of skipping.
+
+`build.cpp` is how they were made, from HLSL in that file: nothing is downloaded, the compiler is the
+`dxcompiler.dll` the suite's DXIL halves already need, and the hash is `tests/dxbc_hash.hpp`. To make them again
+(from the repository root, with a prefix holding the native dxcompiler.dll):
+
+    x86_64-w64-mingw32-g++ -std=c++20 -O1 -static -Itests tests/corpus/build.cpp -o ../tmp/corpusbuild.exe
+    WINEPREFIX=<prefix> <wine>/bin/wine ../tmp/corpusbuild.exe 'Z:\...\repo\tests\corpus\dxil'
+
+A geometry shader was part of this corpus until it was measured: every pipeline of it answers E_INVALIDARG
+(0x80070057) from this implementation while the suite's own `d3d12_geometry` pipelines pass, so the corpus
+carries the stages the corpus test can make today, and that refusal is a gap of its own to measure.

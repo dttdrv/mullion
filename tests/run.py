@@ -300,6 +300,13 @@ def environment(args):
     if not (prefix / "drive_c").exists():
         subprocess.run([binary, "wineboot", "-u"], env=base, stdin=subprocess.DEVNULL, check=True)
     compilers(prefix)
+    # the corpus the shader tests read, written by tests/corpus/build.cpp and committed beside it: the corpus and hash
+    # tests skip without it. A test in the Wine needs Wine's own name for the directory (Z: is the Unix root), while
+    # the host tests are native binaries that need the Unix path, so the two names are different.
+    corpus = Path(__file__).resolve().parent / "corpus" / "dxil"
+    if corpus.is_dir():
+        base.setdefault("MULLION_CORPUS", "Z:" + str(corpus).replace("/", "\\"))
+        base.setdefault("MULLION_HASHED", str(corpus))
     # a display mode a test asks for is Wine's to give (win32u, sysparams.c), never the machine's display's: in every
     # prefix, as one made before the runner set this changes the real display
     subprocess.run([binary, "reg", "add", r"HKCU\Software\Wine\X11 Driver", "/v", "EmulateModeset", "/d", "Y", "/f"],
