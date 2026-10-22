@@ -385,7 +385,7 @@ main(int argc, char **argv) {
     return child(argc, argv);
   char exe[MAX_PATH], temporary[MAX_PATH], directory[MAX_PATH];
   if (!expect(
-          GetModuleFileNameA(nullptr, exe, sizeof(exe)) && GetTempPathA(sizeof(temporary), temporary), "paths found"
+          modulePath(exe, sizeof(exe)) && GetTempPathA(sizeof(temporary), temporary), "paths found"
       ))
     return verdict();
   for (const char *mode : {"never", "first", "second"})

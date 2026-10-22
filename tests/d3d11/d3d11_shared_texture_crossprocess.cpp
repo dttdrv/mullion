@@ -353,7 +353,7 @@ parent() {
                           nullptr, &context));
 
   char executable[MAX_PATH];
-  if (!expect(!!GetModuleFileNameA(nullptr, executable, sizeof(executable)), "GetModuleFileName: %lu", GetLastError()))
+  if (!expect(!!modulePath(executable, sizeof(executable)), "GetModuleFileName: %lu", GetLastError()))
     return verdict();
 
   step("keyed texture, inherited NT handle, two processes trade the keys");

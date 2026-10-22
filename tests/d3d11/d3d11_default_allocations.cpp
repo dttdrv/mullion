@@ -45,7 +45,7 @@ main(int argc, char **argv) {
   if (argc != 3 || strcmp(argv[1], "child")) {
     char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
     GetTempPathA(sizeof(temporary), temporary);
-    GetModuleFileNameA(nullptr, exe, sizeof(exe));
+    modulePath(exe, sizeof(exe));
     CHECK(GetTempFileNameA(temporary, "alc", 0, directory) ? S_OK : E_FAIL);
     DeleteFileA(directory);
     CHECK(CreateDirectoryA(directory, nullptr) ? S_OK : E_FAIL);

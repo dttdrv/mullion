@@ -672,7 +672,7 @@ main(int argc, char **argv) {
   step("seed %u: persist the library for another process", seed);
   char temporary[MAX_PATH], path[MAX_PATH], executable[MAX_PATH];
   if (!expect(GetTempPathA(sizeof(temporary), temporary) && GetTempFileNameA(temporary, "lib", 0, path) &&
-              GetModuleFileNameA(nullptr, executable, sizeof(executable)), "temporary library path failed"))
+              modulePath(executable, sizeof(executable)), "temporary library path failed"))
     return verdict();
   {
     std::ofstream file(path, std::ios::binary);

@@ -156,7 +156,7 @@ main(int argc, char **argv) {
   if (!expect(ready != nullptr, "CreateEvent: %lu", GetLastError()))
     return verdict();
   char executable[MAX_PATH];
-  if (!expect(!!GetModuleFileNameA(nullptr, executable, sizeof(executable)), "GetModuleFileName: %lu", GetLastError()))
+  if (!expect(!!modulePath(executable, sizeof(executable)), "GetModuleFileName: %lu", GetLastError()))
     return verdict();
   std::string command = "\"" + std::string(executable) + "\" --open " +
                         std::to_string(reinterpret_cast<uintptr_t>(duplicate)) + " " +

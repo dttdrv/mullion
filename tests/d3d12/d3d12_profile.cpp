@@ -414,7 +414,7 @@ main(int argc, char **argv) {
     return child(argv, device, vs, ps, cs);
   char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
   GetTempPathA(sizeof(temporary), temporary);
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  modulePath(exe, sizeof(exe));
   auto unix_name =
       (char *(__cdecl *)(const WCHAR *))GetProcAddress(GetModuleHandleA("kernel32.dll"), "wine_get_unix_file_name");
   if (!expect(unix_name != nullptr, "Wine path conversion unavailable"))

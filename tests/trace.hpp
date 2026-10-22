@@ -31,6 +31,19 @@ fault(EXCEPTION_POINTERS *info) {
 inline const int installed = (setvbuf(stdout, nullptr, _IONBF, 0), SetUnhandledExceptionFilter(fault), 0);
 } // namespace trace
 
+// the running test's own path, in the form the Win32 side and a Unix tool both accept: a test started from a
+// Unix path outside every drive has its module reported without a drive (the unix device, shown as unix\...),
+// which CreateProcess and Wine's Unix loader cannot use as it stands; a Z:\ or \\?\ path is already whole
+inline bool
+modulePath(char *path, size_t size) {
+  char reported[MAX_PATH];
+  if (!GetModuleFileNameA(nullptr, reported, sizeof(reported)))
+    return false;
+  if (reported[0] == '\\' || (reported[0] && reported[1] == ':'))
+    return snprintf(path, size, "%s", reported) > 0;
+  return snprintf(path, size, "\\\\?\\%s", reported) > 0;
+}
+
 // names what the test does next
 inline void
 step(const char *format, ...) {
