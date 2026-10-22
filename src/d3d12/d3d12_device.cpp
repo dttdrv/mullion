@@ -183,13 +183,14 @@ public:
           sparse_page_size_ = page;
     // each GPU core runs four SIMD groups at once; Metal reports neither, so it is an estimate, as on other drivers
     total_lanes_ = GetMTLDevice().gpuCoreCount() * 4 * simd_width_;
-    // the lock words of 64-bit atomics (dxil_converter.cpp): as many as lanes run at once, a power of two, whose mask
-    // is word 0, and after them the flag of an atomic that gave up waiting
+    // the locks of 64-bit atomics (dxil_converter.cpp): as many as lanes run at once, a power of two, whose mask is
+    // word 0. each lock is the ticket it hands out next and the one it serves now (words 1 through 2 * locks), so a
+    // waiter is served after those that arrived before it; after them the flag of an atomic that gave up waiting
     // before them, where every shader finds it, the header of the structure of nothing
     // (SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE)
     auto locks = std::bit_ceil(total_lanes_);
     WMTBufferInfo locks_info{
-        sizeof(AccelerationStructureHeader) + sizeof(uint32_t) * (locks + 2), WMTResourceStorageModeShared
+        sizeof(AccelerationStructureHeader) + sizeof(uint32_t) * (2 * locks + 2), WMTResourceStorageModeShared
     };
     atomic_locks_ = GetMTLDevice().newBuffer(locks_info);
     if (!atomic_locks_) {
@@ -200,8 +201,8 @@ public:
     *nothing = {};
     auto words = reinterpret_cast<uint32_t *>(nothing + 1);
     words[0] = locks - 1;
-    std::fill_n(words + 1, locks + 1, 0u);
-    atomic_locks_given_up_ = words + locks + 1;
+    std::fill_n(words + 1, 2 * locks + 1, 0u);
+    atomic_locks_given_up_ = words + 2 * locks + 1;
     atomic_locks_address_ = locks_info.gpu_address + sizeof(AccelerationStructureHeader);
     RegisterResidency(atomic_locks_);
 

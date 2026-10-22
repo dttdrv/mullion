@@ -358,8 +358,10 @@ main(int argc, char **argv) {
           }
   }
   step("inject the lock table's give-up flag without holding a GPU lock");
+  // the table is a mask word, then a ticket and the ticket a lock serves for each of bit_ceil(lanes) locks (a FIFO,
+  // so a waiter is served after those that arrived before it), then the give-up flag: the last word of the buffer
   lock_bytes = SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE +
-               sizeof(uint32_t) * (UINT64(std::bit_ceil(options.TotalLaneCount)) + 2);
+               sizeof(uint32_t) * (2 * UINT64(std::bit_ceil(options.TotalLaneCount)) + 2);
   auto module = reinterpret_cast<BYTE *>(GetModuleHandleA("d3d12core.dll"));
   if (!expect(module != nullptr, "d3d12core loaded"))
     return verdict();
