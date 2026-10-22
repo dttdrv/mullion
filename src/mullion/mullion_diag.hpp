@@ -147,6 +147,9 @@ PipelineRuns(Head head, Name name) {
       case WMTRenderCommandMullionTessellationMeshDrawIndirect:
       case WMTRenderCommandMullionTessellationMeshDrawIndexedIndirect:
       case WMTRenderCommandExecuteCommandsInBuffer:
+      // an ExecuteIndirect of draws is one call of its pipeline, recorded as its argument buffer's commands run
+      // (d3d12_command_allocator.cpp, EncodeIndirectRenderCommand)
+      case WMTRenderCommandExecuteCommandsInBufferIndirect:
         calls++;
         break;
       default:
@@ -161,6 +164,9 @@ PipelineRuns(Head head, Name name) {
       case WMTComputeCommandDispatchIndirect:
       case WMTComputeCommandDispatchThreads:
       case WMTComputeCommandDispatchPart:
+      // as for draws: an ExecuteIndirect of dispatches is one call of its pipeline
+      case WMTComputeCommandExecuteCommandsInBuffer:
+      case WMTComputeCommandExecuteCommandsInBufferIndirect:
         calls++;
         break;
       default:
