@@ -153,6 +153,9 @@ public:
 
     fullscreen_desc_ = pFullscreenDesc ? *pFullscreenDesc : DXGI_SWAP_CHAIN_FULLSCREEN_DESC{};
     fullscreen_desc_.Windowed = TRUE;
+    transition_mode_ = {desc_.Width, desc_.Height, fullscreen_desc_.RefreshRate, desc_.Format,
+                        fullscreen_desc_.ScanlineOrdering, fullscreen_desc_.Scaling};
+    created_mode_ = transition_mode_;
 
     preferred_max_frame_rate =
         Config::getInstance().getOption<int>("d3d11.preferredMaxFrameRate", 0);
@@ -269,6 +272,9 @@ public:
         HRESULT hr = LeaveFullscreenMode();
         if (FAILED(hr))
           return hr;
+        // another output takes the chain's own mode, not the mode the output it leaves was put in
+        std::lock_guard<mullion::mutex> lock(mutex_);
+        transition_mode_ = created_mode_;
       }
     }
 
@@ -302,14 +308,14 @@ public:
     if (HRESULT hr = output->GetDesc(&desc); FAILED(hr))
       return hr;
 
-    DXGI_MODE_DESC1 preferred_display_mode = {
-        desc_.Width,
-        desc_.Height,
-        fullscreen_desc_.RefreshRate,
-        desc_.Format,
-        fullscreen_desc_.ScanlineOrdering,
-        fullscreen_desc_.Scaling
-    };
+    // the mode this transition applies is the one the chain is in, size and rate together: a
+    // ResizeTarget while fullscreen sets the display mode and the next entry re-applies that mode.
+    // Taking the rate from there and the size from the buffer instead composes a mode nobody asked
+    // for -- 640x480@120 after a ResizeTarget to 1728x1117@120 -- which ChangeDisplayMode's
+    // exact-mode rule then refuses on any output that has the size at one rate only.
+    DXGI_MODE_DESC1 preferred_display_mode = transition_mode_;
+    if (preferred_display_mode.Format == DXGI_FORMAT_UNKNOWN)
+      preferred_display_mode.Format = desc_.Format;
     bool modeSwitch = (desc_.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) != 0u;
     if (modeSwitch && FAILED(ChangeDisplayMode(output.ptr(), &preferred_display_mode))) {
       ERR("DXGI: EnterFullscreenMode: Failed to change display mode");
@@ -587,6 +593,12 @@ public:
     if (modeset_inprogress)
       return DXGI_STATUS_MODE_CHANGE_IN_PROGRESS;
 
+    // a mode with no pixels on an axis is not a size; whatever windowed or fullscreen means here,
+    // accepting it would report a resize that cannot be one. a nested call is answered above, as
+    // Wine's own dxgi answers the transition in progress before looking at the mode.
+    if (pDesc->Width == 0 || pDesc->Height == 0)
+      return DXGI_ERROR_INVALID_CALL;
+
     // Promote display mode
     DXGI_MODE_DESC1 newDisplayMode = {};
     newDisplayMode.Width = pDesc->Width;
@@ -596,6 +608,7 @@ public:
     newDisplayMode.ScanlineOrdering = pDesc->ScanlineOrdering;
     newDisplayMode.Scaling = pDesc->Scaling;
 
+    bool applied = false;
     if (fullscreen_desc_.Windowed) {
       if (!wsi::resizeWindow(hWnd, &window_state_, newDisplayMode.Width, newDisplayMode.Height))
         return DXGI_ERROR_INVALID_CALL;
@@ -616,8 +629,11 @@ public:
       if (!wsi::updateFullscreenWindow(monitor_, hWnd, &state, false))
         return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
       window_state_ = state;
+      applied = true;
     }
     std::lock_guard<mullion::mutex> lock(mutex_);
+    if (applied)
+      transition_mode_ = newDisplayMode;
     if (pDesc->RefreshRate.Numerator != 0)
       fullscreen_desc_.RefreshRate = pDesc->RefreshRate;
     fullscreen_desc_.ScanlineOrdering = pDesc->ScanlineOrdering;
@@ -1102,6 +1118,10 @@ private:
   DXGI_SWAP_CHAIN_DESC1 desc_;
   SwapChainSettings settings_;
   DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc_;
+  // the display mode the chain applies when it enters fullscreen: its created mode, or the mode a
+  // ResizeTarget set while it was fullscreen
+  DXGI_MODE_DESC1 transition_mode_;
+  DXGI_MODE_DESC1 created_mode_;
   D3D11_TEXTURE2D_DESC1 backbuffer_desc_;
   IMTLD3D11DeviceContext* device_context_;
   std::vector<Com<D3D11ResourceCommon, false>> backbuffers_;
