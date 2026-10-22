@@ -379,8 +379,29 @@ public:
       return hr;
     }
 
+    // A fullscreen transition applies the mode the swap chain was created with, or it fails. Wine's own dxgi
+    // does not pass WINED3D_SWAPCHAIN_USE_CLOSEST_MATCHING_MODE to wined3d (dlls/dxgi/utils.c, dxgi_swapchain
+    // flags), so wined3d requires the exact mode and its failure becomes DXGI_ERROR_NOT_CURRENTLY_AVAILABLE.
+    // Taking the closest match here and reporting success instead is what d3d11_fullscreen recorded as a switch
+    // that handed back a different mode than it asked for: 960x600@59 was answered with 960x600@60, and
+    // 2624x1696 with 1728x1117, both with S_OK.
     if (!selected_mode.RefreshRate.Denominator)
       selected_mode.RefreshRate.Denominator = 1;
+    const bool same_size =
+        selected_mode.Width == preferred_mode.Width && selected_mode.Height == preferred_mode.Height;
+    const bool rate_asked =
+        preferred_mode.RefreshRate.Numerator && preferred_mode.RefreshRate.Denominator;
+    const bool same_rate =
+        !rate_asked || uint64_t(selected_mode.RefreshRate.Numerator) * preferred_mode.RefreshRate.Denominator ==
+                           uint64_t(preferred_mode.RefreshRate.Numerator) * selected_mode.RefreshRate.Denominator;
+    if (!same_size || !same_rate) {
+      ERR("DXGI: the output has no mode ",
+          preferred_mode.Width, "x", preferred_mode.Height, "@",
+          preferred_mode.RefreshRate.Numerator / std::max(preferred_mode.RefreshRate.Denominator, 1u),
+          "; the closest is ", selected_mode.Width, "x", selected_mode.Height, "@",
+          selected_mode.RefreshRate.Numerator / std::max(selected_mode.RefreshRate.Denominator, 1u));
+      return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+    }
 
     DXGI_OUTPUT_DESC output_desc;
     if (HRESULT hr = pOutput->GetDesc(&output_desc); FAILED(hr))
