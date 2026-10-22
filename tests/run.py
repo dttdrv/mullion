@@ -66,6 +66,51 @@ def builtin(pe):
         return file.read(16) == b"Wine builtin DLL"
 
 
+# the shader compilers a test's shaders are made with: WINEDLLOVERRIDES below makes d3dcompiler_47 native, and the
+# D3D12 tests load dxcompiler.dll for their dxil half. wineboot installs neither -- the d3dcompiler_47 it writes is
+# its own builtin -- so a prefix made from scratch answers STATUS_DLL_NOT_FOUND (exit status 53, in 0 s, with an
+# empty log) to every test that imports one, which is not a verdict about anything. the size a real one has at least,
+# which no builtin of the same name reaches
+COMPILERS = {"d3dcompiler_47.dll": 2_000_000, "dxcompiler.dll": 2_000_000, "dxil.dll": 1_000_000}
+
+
+def prepared():
+    """the directories that may already hold the shader compilers: the one MULLION_COMPILERS names, then the prepared
+    prefix beside this checkout (this file is repo/tests/run.py, so ../.. is the checkout's parent)"""
+    named = os.environ.get("MULLION_COMPILERS")
+    return [place for place in (
+        Path(named) if named else None,
+        Path(__file__).resolve().parents[2] / "prefix" / "drive_c" / "windows" / "system32",
+    ) if place and place.is_dir()]
+
+
+def compilers(prefix):
+    """the shader compilers the prefix must have: what it lacks is copied from a prepared prefix, and what neither
+    has is named here, so a run cannot start on a prefix that answers exit status 53 to most of the suite"""
+    system32 = prefix / "drive_c" / "windows" / "system32"
+    system32.mkdir(parents=True, exist_ok=True)
+
+    def whole(place, name):
+        return (place / name).exists() and (place / name).stat().st_size >= COMPILERS[name]
+
+    missing = [name for name in COMPILERS if not whole(system32, name)]
+    if not missing:
+        return
+    for place in prepared():
+        found = [name for name in missing if whole(place, name)]
+        for name in found:
+            shutil.copy2(place / name, system32 / name)
+        missing = [name for name in missing if name not in found]
+        if not missing:
+            print(f"compilers: copied {', '.join(found)} into {system32}", flush=True)
+            return
+    sys.exit(
+        f"the prefix has no {', '.join(missing)}. run.py makes d3dcompiler_47 native and the D3D12 tests load "
+        f"dxcompiler, so a prefix without them answers exit status 53 to most of the suite in 0 s.\n"
+        f"copy them into {system32}, or name a directory holding them in MULLION_COMPILERS"
+    )
+
+
 def install(wine, prefix, unix, pe):
     for path in pe.values():
         shutil.copy2(path, prefix / "drive_c" / "windows" / "system32")
@@ -254,6 +299,7 @@ def environment(args):
     binary = wine / "bin" / "wine"
     if not (prefix / "drive_c").exists():
         subprocess.run([binary, "wineboot", "-u"], env=base, stdin=subprocess.DEVNULL, check=True)
+    compilers(prefix)
     # a display mode a test asks for is Wine's to give (win32u, sysparams.c), never the machine's display's: in every
     # prefix, as one made before the runner set this changes the real display
     subprocess.run([binary, "reg", "add", r"HKCU\Software\Wine\X11 Driver", "/v", "EmulateModeset", "/d", "Y", "/f"],

@@ -2019,6 +2019,11 @@ static NTSTATUS
 _ReleaseMetalView(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
 
+  // a swap chain that presents through GDI makes no view, and its release is asked for all the same: Wine's own
+  // (macdrv_view_release_metal_view) reads the view's fields on the main thread and faults on a null one
+  if (!params->handle)
+    return STATUS_SUCCESS;
+
   void (*pfn_macdrv_view_release_metal_view)(macdrv_metal_view v) = NULL;
 
   struct macdrv_functions_t *macdrv_functions;
