@@ -110,6 +110,17 @@ HRESULT ComPrivateData::setData(REFGUID guid, UINT size, const void *data) {
 }
 
 HRESULT ComPrivateData::setInterface(REFGUID guid, const IUnknown *iface) {
+  // a null interface removes what the GUID held, as a null buffer does SetPrivateData: the child's private data is a
+  // store an application can empty, and a GUID it emptied is not found afterwards
+  if (!iface) {
+    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+      if (it->hasGuid(guid)) {
+        m_entries.erase(it);
+        return S_OK;
+      }
+    }
+    return S_FALSE;
+  }
   this->insertEntry(ComPrivateDataEntry(guid, iface));
   return S_OK;
 }
@@ -164,6 +175,15 @@ HRESULT ConcurrentComPrivateData::setData(REFGUID guid, UINT size, const void *d
 
 HRESULT ConcurrentComPrivateData::setInterface(REFGUID guid, const IUnknown *iface) {
   std::lock_guard<mullion::mutex> lock(mutex_);
+  if (!iface) {
+    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+      if (it->hasGuid(guid)) {
+        m_entries.erase(it);
+        return S_OK;
+      }
+    }
+    return S_FALSE;
+  }
   this->insertEntry(ComPrivateDataEntry(guid, iface));
   return S_OK;
 }
