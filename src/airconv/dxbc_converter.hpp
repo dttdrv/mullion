@@ -511,6 +511,8 @@ public:
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
   uint32_t ps_has_coverage_output = 0;
+  // the pixel shader's input registers it takes flat, and those it interpolates without perspective
+  uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
   // a DXIL library's ray tracing shaders, by their functions' names
   struct RayShader {
@@ -695,5 +697,27 @@ args_get_data(const struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *data, data_t *
   *out = NULL;
   return false;
 }
+
+
+// conservative rasterization (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative), dxbc_converter_gs.cpp
+struct ConservativeFan {
+  pvalue over_w[9][3], linear[9][3];
+  pvalue position[9], rcp_w[9];          // each point's, and the plane's 1/w there
+  pvalue window[3][2];                   // the corners in the window
+  pvalue in_front, degenerate, expanded; // all corners before the eye; no area there; grown
+};
+
+// conservative_fan's comment, at its definition
+ConservativeFan conservative_fan(
+    llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, air::AirType &types, pvalue const (&clip)[3],
+    pvalue viewports, pvalue viewport_index
+);
+// the output registers (`output`, int4s) of the fan's point `u`, from the corners' (`corner`): blended as the pixel
+// shader interpolates them (over w, or in the window), the position the fan's, flat and integer ones the first corner's
+void conservative_point(
+    llvm::IRBuilder<> &builder, air::AirType &types, const ConservativeFan &fan, uint32_t u, const SM50ShaderInternal &stage,
+    uint32_t position_reg, uint32_t flat_inputs, uint32_t noperspective_inputs,
+    const std::function<pvalue(uint32_t corner, uint32_t reg)> &corner, pvalue output
+);
 
 } // namespace mullion::dxbc

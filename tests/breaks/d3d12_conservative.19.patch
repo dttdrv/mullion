@@ -1,0 +1,12 @@
+# SV_Coverage is the samples Metal gives each grown triangle
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -597,7 +597,7 @@
+          )}
+     );
+     // the grown triangles share the pixels on their edges, each with some of their samples
+-    if (~conservative_coverage) {
++    if (false) {
+       auto all =
+           builder.CreateSub(builder.CreateShl(builder.getInt32(1), air.CreateGetNumSamples()), builder.getInt32(1));
+       conservative_inputs.push_back(
