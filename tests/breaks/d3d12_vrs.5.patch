@@ -1,0 +1,12 @@
+# the image's tiles are 8x8
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -144,7 +144,7 @@
+   auto word = [&](uint32_t i) { return ir.CreateLoad(i32, ir.CreateConstGEP1_32(i32, rates, i)); };
+   auto base = word(0), first = word(1), second = word(2), image_width = word(3), image_height = word(4);
+   Value *primitive = ~varying_ ? (Value *)function->getArg(varying_) : ir.getInt32(0);
+-  auto tx = ir.CreateLShr(x, 4), ty = ir.CreateLShr(y, 4);
++  auto tx = ir.CreateLShr(x, 3), ty = ir.CreateLShr(y, 3);
+   auto inside = ir.CreateAnd(ir.CreateICmpULT(tx, image_width), ir.CreateICmpULT(ty, image_height));
+   auto image = function->getArg(image_);
+   auto bytes = ir.CreateBitCast(image, ir.getInt8Ty()->getPointerTo(image->getType()->getPointerAddressSpace()));

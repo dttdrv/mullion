@@ -1,0 +1,12 @@
+# inner coverage is set where the square overlaps the triangle
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -397,7 +397,7 @@
+     );
+     auto reach = builder.CreateFMul(builder.CreateFAdd(abs(a), abs(b)), f(half));
+     outside = builder.CreateOr(outside, builder.CreateFCmpOLT(builder.CreateFAdd(value, reach), f(0)));
+-    inside = builder.CreateAnd(inside, builder.CreateFCmpOGE(builder.CreateFSub(value, reach), f(0)));
++    inside = builder.CreateAnd(inside, builder.CreateFCmpOGE(builder.CreateFAdd(value, reach), f(0)));
+   }
+   return {builder.CreateAnd(outside, builder.CreateNot(air.CreateIsNaN(x(0)))), builder.CreateAnd(inside, builder.CreateNot(air.CreateIsNaN(x(0))))};
+ }

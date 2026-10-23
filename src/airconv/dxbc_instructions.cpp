@@ -356,6 +356,12 @@ SrcOperand readSrcOperand(
       .attribute = shader::common::InputAttribute::CoverageMask,
     };
   }
+  case D3D11_SB_OPERAND_TYPE_INNER_COVERAGE: {
+    return SrcOperandAttribute{
+      ._ = readSrcOperandCommon(O, read_type),
+      .attribute = shader::common::InputAttribute::InnerCoverage,
+    };
+  }
   case D3D11_SB_OPERAND_TYPE_OUTPUT_CONTROL_POINT_ID: {
     return SrcOperandAttribute{
       // providing swizzle here because compiler emits

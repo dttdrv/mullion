@@ -1,0 +1,12 @@
+# inner coverage is never set
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -541,7 +541,7 @@
+       window[i] = function->getArg(conservative_window[i]);
+     auto position = function->getArg(conservative_position);
+     auto [culled, inside] = conservative_overlap(builder, air, position, window);
+-    resource_map.inner_coverage = builder.CreateZExt(inside, builder.getInt32Ty());
++    resource_map.inner_coverage = builder.getInt32(0);
+     auto discard = llvm::BasicBlock::Create(context, "conservative_discard", function, epilogue_bb);
+     auto live = llvm::BasicBlock::Create(context, "conservative_live", function, epilogue_bb);
+     builder.CreateCondBr(culled, discard, live);

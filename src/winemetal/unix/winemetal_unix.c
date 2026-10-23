@@ -2229,6 +2229,11 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];
   bool pipeline_statistics;
+  bool depth_bounds;
+  bool late_tests;
+  bool coarse_shading;
+  uint32_t shading_rate_varying;
+  bool conservative;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2249,6 +2254,9 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   uint32_t strip_cut_index;
   uint32_t input_primitive;
   bool pass_through;
+  bool conservative;
+  uint32_t flat_inputs;
+  uint32_t noperspective_inputs;
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA32 {
@@ -2268,6 +2276,9 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
   uint32_t mesh_vertex_size;
   uint32_t max_mesh_threadgroups;
   sm50_shader_t geometry;
+  bool conservative;
+  uint32_t flat_inputs;
+  uint32_t noperspective_inputs;
 };
 
 struct SM50_SHADER_ROOT_SIGNATURE_DATA32 {
@@ -2314,6 +2325,11 @@ sm50_compilation_argument32_convert(
       data->dual_source_blending = src->dual_source_blending;
       memcpy(data->pixel_formats, src->pixel_formats, sizeof(data->pixel_formats));
       data->pipeline_statistics = src->pipeline_statistics;
+      data->depth_bounds = src->depth_bounds;
+      data->late_tests = src->late_tests;
+      data->coarse_shading = src->coarse_shading;
+      data->shading_rate_varying = src->shading_rate_varying;
+      data->conservative = src->conservative;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -2352,12 +2368,15 @@ sm50_compilation_argument32_convert(
       data->strip_cut_index = src->strip_cut_index;
       data->input_primitive = src->input_primitive;
       data->pass_through = src->pass_through;
+      data->conservative = src->conservative;
+      data->flat_inputs = src->flat_inputs;
+      data->noperspective_inputs = src->noperspective_inputs;
       break;
     }
     case SM50_SHADER_MESH_SHADER: {
       // next, type, then the pixel shader's bytecode
       uint32_t *src = (void *)args32;
-      struct SM50_SHADER_MESH_SHADER_DATA *data = malloc(sizeof(struct SM50_SHADER_MESH_SHADER_DATA));
+      struct SM50_SHADER_MESH_SHADER_DATA *data = calloc(1, sizeof(struct SM50_SHADER_MESH_SHADER_DATA));
       last_arg->next = data;
       last_arg = (void *)data;
       last_arg->next = NULL;
@@ -2401,6 +2420,9 @@ sm50_compilation_argument32_convert(
       data->mesh_vertex_size = src->mesh_vertex_size;
       data->max_mesh_threadgroups = src->max_mesh_threadgroups;
       data->geometry = src->geometry;
+      data->conservative = src->conservative;
+      data->flat_inputs = src->flat_inputs;
+      data->noperspective_inputs = src->noperspective_inputs;
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:

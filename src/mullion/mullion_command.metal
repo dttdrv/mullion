@@ -1450,3 +1450,54 @@ enum {
   *(device packed_uint3 *)(dst + pos.z * layout.dst_image + pos.y * layout.dst_row +
                           pos.x * sizeof(packed_uint3)) = packed_uint3(rgba.xyz);
 }
+
+// the samples of a depth attachment whose depth is in the bounds, a bit each in a byte for each pixel, for the depth
+// bounds test of a GPU without one (SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds); an array's first slice
+struct DepthBounds {
+  float2 range;
+  uint pitch;
+};
+
+[[kernel]] void depth_bounds_samples_2d(
+    depth2d<float, access::read> depth [[texture(0)]], device uchar *samples [[buffer(1)]],
+    constant DepthBounds &bounds [[buffer(0)]], uint2 pos [[thread_position_in_grid]]) {
+  if (pos.x >= depth.get_width() || pos.y >= depth.get_height())
+    return;
+  float z = depth.read(pos);
+  samples[pos.y * bounds.pitch + pos.x] = z >= bounds.range.x && z <= bounds.range.y;
+}
+
+[[kernel]] void depth_bounds_samples_2d_array(
+    depth2d_array<float, access::read> depth [[texture(0)]], device uchar *samples [[buffer(1)]],
+    constant DepthBounds &bounds [[buffer(0)]], uint2 pos [[thread_position_in_grid]]) {
+  if (pos.x >= depth.get_width() || pos.y >= depth.get_height())
+    return;
+  float z = depth.read(pos, 0);
+  samples[pos.y * bounds.pitch + pos.x] = z >= bounds.range.x && z <= bounds.range.y;
+}
+
+[[kernel]] void depth_bounds_samples_2d_ms(
+    depth2d_ms<float, access::read> depth [[texture(0)]], device uchar *samples [[buffer(1)]],
+    constant DepthBounds &bounds [[buffer(0)]], uint2 pos [[thread_position_in_grid]]) {
+  if (pos.x >= depth.get_width() || pos.y >= depth.get_height())
+    return;
+  uint kept = 0;
+  for (uint s = 0; s < depth.get_num_samples(); s++) {
+    float z = depth.read(pos, s);
+    kept |= uint(z >= bounds.range.x && z <= bounds.range.y) << s;
+  }
+  samples[pos.y * bounds.pitch + pos.x] = kept;
+}
+
+[[kernel]] void depth_bounds_samples_2d_ms_array(
+    depth2d_ms_array<float, access::read> depth [[texture(0)]], device uchar *samples [[buffer(1)]],
+    constant DepthBounds &bounds [[buffer(0)]], uint2 pos [[thread_position_in_grid]]) {
+  if (pos.x >= depth.get_width() || pos.y >= depth.get_height())
+    return;
+  uint kept = 0;
+  for (uint s = 0; s < depth.get_num_samples(); s++) {
+    float z = depth.read(pos, 0, s);
+    kept |= uint(z >= bounds.range.x && z <= bounds.range.y) << s;
+  }
+  samples[pos.y * bounds.pitch + pos.x] = kept;
+}

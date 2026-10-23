@@ -265,6 +265,10 @@ Converter::LoadOperand(const SrcOperandAttribute &SrcOp, mask_t Mask) {
                                             : res.coverage_mask_arg;
     break;
   }
+  case InputAttribute::InnerCoverage: {
+    Ret = res.inner_coverage ? res.inner_coverage : ir.getInt32(0);
+    break;
+  }
   case InputAttribute::Domain: {
     Ret = res.domain;
     break;

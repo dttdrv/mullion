@@ -1,0 +1,12 @@
+# a conservative pipeline without a pixel shader leaves the depth bounds untested
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -792,7 +792,7 @@
+     if (outside)
+       discard_fragment();
+   }
+-)" + (depth_bounds_emulated ? R"(  if (bounds.x) {
++)" + (false ? R"(  if (bounds.x) {
+     kept.samples = samples[uint(in.position.y) * bounds.y + uint(in.position.x)];
+     if (!kept.samples)
+       discard_fragment();

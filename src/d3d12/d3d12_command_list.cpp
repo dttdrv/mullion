@@ -200,6 +200,21 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // OMSetDepthBounds' range, NaN as 0; the pass has a range set when depth_bounds_set_
   FLOAT depth_bounds_[2];
   bool depth_bounds_set_ = false;
+  // the depth bounds test of a GPU without one: the samples in the range a kernel found before the pass it is for, until
+  // the range changes or a draw writes depth (DepthBoundsSamples)
+  WMT::Buffer depth_bounds_samples_{};
+  EncoderData *depth_bounds_pass_ = nullptr;
+  bool depth_bounds_stale_ = true;
+  // variable rate shading: RSSetShadingRate's rate and combiners, and RSSetShadingRateImage's image, whose bytes a copy
+  // before the pass gives the pixel shader (SM50_BINDING_INDEX_SHADING_RATE_IMAGE)
+  D3D12_SHADING_RATE shading_rate_ = D3D12_SHADING_RATE_1X1;
+  D3D12_SHADING_RATE_COMBINER shading_rate_combiners_[2] = {
+      D3D12_SHADING_RATE_COMBINER_PASSTHROUGH, D3D12_SHADING_RATE_COMBINER_PASSTHROUGH
+  };
+  MTLD3D12Resource *shading_rate_image_ = nullptr;
+  WMT::Buffer shading_rate_bytes_{};
+  uint64_t shading_rate_offset_ = 0;
+  EncoderData *shading_rate_pass_ = nullptr;
 
   // occlusion queries: the running ones, each from the first visibility slot it counts in; the slots' GPU addresses,
   // in order; and the sums the ended ones need (sum_occlusion's), made before their results are read
@@ -584,6 +599,10 @@ public:
     stencil_ref_ = back_stencil_ref_ = 0;
     depth_bounds_[0] = 0.0f;
     depth_bounds_[1] = 1.0f;
+    shading_rate_ = D3D12_SHADING_RATE_1X1;
+    shading_rate_combiners_[0] = shading_rate_combiners_[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+    shading_rate_image_ = nullptr;
+    shading_rate_pass_ = nullptr;
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
@@ -725,10 +744,97 @@ public:
     return {offset, stride};
   }
 
+  // the samples of the depth stencil view in the depth bounds, a bit each, for the pixel shader's test, in a pass of
+  // their own before the draw's (SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds)
+  void
+  DepthBoundsSamples() {
+    auto depth = dsv.Texture->view(dsv.View).texture;
+    auto type = dsv.Texture->textureType(dsv.View);
+    uint32_t kind = (type == WMTTextureType2DArray || type == WMTTextureType2DMultisampleArray) +
+                    2 * (type == WMTTextureType2DMultisample || type == WMTTextureType2DMultisampleArray);
+    StartComputePass();
+    depth_bounds_samples_ = allocator_->DepthBoundsSamples(uint64_t(dsv.Width) * dsv.Height);
+    auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+    pso.type = WMTComputeCommandSetPSO;
+    pso.pso = device_->depth_bounds_samples[kind];
+    pso.threadgroup_size = {8, 8, 1};
+    auto &texture = allocator_->EncodeComputeCommand<wmtcmd_compute_settexture>();
+    texture.type = WMTComputeCommandSetTexture;
+    texture.texture = depth.handle;
+    texture.index = 0;
+    auto &samples = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+    samples.type = WMTComputeCommandSetBuffer;
+    samples.buffer = depth_bounds_samples_;
+    samples.offset = 0;
+    samples.index = 1;
+    // DepthBounds, mullion_command.metal
+    struct {
+      float range[2];
+      uint32_t pitch;
+    } bounds{{std::clamp(depth_bounds_[0], 0.0f, 1.0f), std::clamp(depth_bounds_[1], 0.0f, 1.0f)}, dsv.Width};
+    auto &bytes = allocator_->EncodeComputeCommand<wmtcmd_compute_setbytes>();
+    bytes.type = WMTComputeCommandSetBytes;
+    bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(bounds), 16), &bounds, sizeof(bounds)));
+    bytes.length = sizeof(bounds);
+    bytes.index = 0;
+    auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+    dispatch.type = WMTComputeCommandDispatchThreads;
+    dispatch.size = {dsv.Width, dsv.Height, 1};
+  }
+
+  // whether draws shade coarse pixels: some combination of the rates may be coarser than 1x1
+  bool
+  CoarseShading() {
+    return pso_graphics_ && pso_graphics_->pixel_shader && pso_graphics_->coarse_shading &&
+           (shading_rate_ != D3D12_SHADING_RATE_1X1 ||
+            shading_rate_combiners_[0] != D3D12_SHADING_RATE_COMBINER_PASSTHROUGH ||
+            shading_rate_combiners_[1] != D3D12_SHADING_RATE_COMBINER_PASSTHROUGH);
+  }
+
+  // the shading rate image's bytes, a row of its width after another, for the passes after this one's start
+  void
+  ShadingRateImageBytes() {
+    D3D12_RESOURCE_DESC desc;
+    shading_rate_image_->GetDesc(&desc);
+    uint32_t width = desc.Width, height = desc.Height;
+    PreBlit();
+    std::tie(shading_rate_bytes_, shading_rate_offset_) = allocator_->AllocateTempBuffer(uint64_t(width) * height, 16);
+    auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+    copy.type = WMTBlitCommandCopyFromTextureToBuffer;
+    copy.src = shading_rate_image_->texture->current()->texture();
+    copy.slice = 0;
+    copy.level = 0;
+    copy.origin = {0, 0, 0};
+    copy.size = {width, height, 1};
+    copy.dst = shading_rate_bytes_;
+    copy.offset = shading_rate_offset_;
+    copy.bytes_per_row = width;
+    copy.bytes_per_image = width * height;
+  }
+
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false) {
     if (!pso_graphics_)
       return DrawCallStatus::Invalid;
+    // a draw that tests the depth bounds where the GPU cannot finds the samples that pass first, unless the pass it is
+    // in has them for this range and nothing has written depth since
+    bool bounds_tested = pso_graphics_->depth_bounds_emulated && pso_graphics_->dsv_mask && dsv.Texture &&
+                         (DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)) & 1);
+    bool bounds_found = false;
+    if (bounds_tested && depth_bounds_[0] > depth_bounds_[1])
+      return DrawCallStatus::Invalid;
+    if (bounds_tested && (depth_bounds_stale_ || !allocator_->encoder_current ||
+                          allocator_->encoder_current != depth_bounds_pass_)) {
+      DepthBoundsSamples();
+      bounds_found = true;
+    }
+    // the shading rate image, which changes only outside passes, copied before the pass of the first coarse draw
+    bool coarse = CoarseShading(), image_copied = false;
+    if (coarse && shading_rate_image_ &&
+        (!allocator_->encoder_current || allocator_->encoder_current != shading_rate_pass_)) {
+      ShadingRateImageBytes();
+      image_copied = true;
+    }
     // a draw whose scissors or viewports the pass has no room for starts the next pass
     const UINT count = D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     if (auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
@@ -836,6 +942,12 @@ public:
       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef, DirtyState::DepthBounds);
       depth_bounds_set_ = false;
       dirty_state_.set(DirtyState::GraphicsPipelineState);
+      if (bounds_found) {
+        depth_bounds_pass_ = allocator_->encoder_current;
+        depth_bounds_stale_ = false;
+      }
+      if (image_copied)
+        shading_rate_pass_ = allocator_->encoder_current;
       if (!active_queries_.empty())
         CountVisibility();
     }
@@ -911,6 +1023,19 @@ public:
       dirty_state_.clr(DirtyState::GraphicsRootSignature);
     }
 
+    // a conservative rasterizer's mesh stage dilates triangles by pixels of the viewport each chooses
+    if (pso_graphics_->conservative) {
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(SM50_CONSERVATIVE_VIEWPORTS), 16);
+      auto data = static_cast<SM50_CONSERVATIVE_VIEWPORTS *>(mapped);
+      memset(data, 0, sizeof(*data));
+      for (UINT i = 0; i < std::min<UINT>(num_viewports, std::size(data->viewports)); i++)
+        data->viewports[i][0] = viewports[i].TopLeftX, data->viewports[i][1] = viewports[i].TopLeftY,
+        data->viewports[i][2] = viewports[i].Width, data->viewports[i][3] = viewports[i].Height;
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, sizeof(*data), "conservative viewports");
+      EncodeBuffer(WMTRenderCommandSetMeshBuffer, offset, SM50_BINDING_INDEX_VIEWPORTS);
+    }
+
     // a primitive names one of the viewports and scissors there may be (D3D11.3 15.8.1). a viewport that is not set
     // is of no size and a scissor that is not set is empty (15.6, 15.7): nothing is drawn through either, which an
     // empty scissor says to Metal, whatever viewport it has there
@@ -972,6 +1097,56 @@ public:
       cmd.back_stencil_ref = back_stencil_ref_;
       dirty_state_.clr(DirtyState::StencilRef);
     }
+
+    // the pixel shader's test where the GPU has none: whether the draw tests, and the samples that pass
+    if (pso_graphics_->depth_bounds_emulated) {
+      uint32_t words[2] = {bounds_tested, dsv.Width};
+      auto &bytes = allocator_->EncodeRenderCommand<wmtcmd_render_setbytes>();
+      bytes.type = WMTRenderCommandSetFragmentBytes;
+      bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(words), 16), words, sizeof(words)));
+      bytes.length = sizeof(words);
+      bytes.index = SM50_BINDING_INDEX_DEPTH_BOUNDS;
+      if (bounds_tested) {
+        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+        buffer.type = WMTRenderCommandSetFragmentBuffer;
+        buffer.buffer = depth_bounds_samples_;
+        buffer.offset = 0;
+        buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
+      }
+    }
+    // coarse shading's rates and combiners, and its image's bytes (or none, but a buffer bound)
+    if (coarse) {
+      D3D12_RESOURCE_DESC desc{};
+      if (shading_rate_image_)
+        shading_rate_image_->GetDesc(&desc);
+      SM50_SHADING_RATE rates{
+          uint32_t(shading_rate_),
+          {uint32_t(shading_rate_combiners_[0]), uint32_t(shading_rate_combiners_[1])},
+          uint32_t(desc.Width),
+          desc.Height
+      };
+      auto &bytes = allocator_->EncodeRenderCommand<wmtcmd_render_setbytes>();
+      bytes.type = WMTRenderCommandSetFragmentBytes;
+      bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(rates), 16), &rates, sizeof(rates)));
+      bytes.length = sizeof(rates);
+      bytes.index = SM50_BINDING_INDEX_SHADING_RATE;
+      if (shading_rate_image_) {
+        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+        buffer.type = WMTRenderCommandSetFragmentBuffer;
+        buffer.buffer = shading_rate_bytes_;
+        buffer.offset = shading_rate_offset_;
+        buffer.index = SM50_BINDING_INDEX_SHADING_RATE_IMAGE;
+      } else {
+        auto &none = allocator_->EncodeRenderCommand<wmtcmd_render_setbytes>();
+        none.type = WMTRenderCommandSetFragmentBytes;
+        none.bytes.set(memset(allocator_->AllocateCPUHeap(16, 16), 0, 16));
+        none.length = 16;
+        none.index = SM50_BINDING_INDEX_SHADING_RATE_IMAGE;
+      }
+    }
+    // a draw that writes depth changes which samples are in the bounds
+    if (pso_graphics_->writes_depth && dsv.Texture && !(dsv.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH))
+      depth_bounds_stale_ = true;
 
     // stored depth passes inside the range, clamped to [0, 1]; an inverted range fails everything, and a pass without
     // a depth buffer passes. Metal's test is off at [0, 1]
@@ -1082,7 +1257,9 @@ public:
     for (unsigned i = 0; i < std::size(pass->colors); i++)
       if (pass->colors[i].attachment)
         mask |= 1u << i;
-    return pso_graphics_->RenderTargets(Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty());
+    return pso_graphics_->RenderTargets(
+        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading()
+    );
   }
 
   // the pipeline's variant for the topology: a geometry pipeline has one for strips, and with stream output one
@@ -3091,8 +3268,10 @@ public:
   OMSetDepthBounds(FLOAT Min, FLOAT Max) {
     if (Record([=](auto *l) { l->OMSetDepthBounds(Min, Max); }))
       return;
-    depth_bounds_[0] = std::isnan(Min) ? 0.0f : Min;
-    depth_bounds_[1] = std::isnan(Max) ? 0.0f : Max;
+    float bounds[2] = {std::isnan(Min) ? 0.0f : Min, std::isnan(Max) ? 0.0f : Max};
+    depth_bounds_stale_ |= bounds[0] != depth_bounds_[0] || bounds[1] != depth_bounds_[1];
+    depth_bounds_[0] = bounds[0];
+    depth_bounds_[1] = bounds[1];
     dirty_state_.set(DirtyState::DepthBounds);
   }
 
@@ -3869,13 +4048,27 @@ public:
   }
 
   void STDMETHODCALLTYPE
-  RSSetShadingRate(D3D12_SHADING_RATE, const D3D12_SHADING_RATE_COMBINER *) {
-    ERR("RSSetShadingRate: variable rate shading is not supported yet");
+  RSSetShadingRate(D3D12_SHADING_RATE BaseShadingRate, const D3D12_SHADING_RATE_COMBINER *pCombinerArray) {
+    if (Record([=, combiners = pCombinerArray ? std::array{pCombinerArray[0], pCombinerArray[1]}
+                                              : std::array<D3D12_SHADING_RATE_COMBINER, 2>{}](auto *l) {
+          l->RSSetShadingRate(BaseShadingRate, pCombinerArray ? combiners.data() : nullptr);
+        }))
+      return;
+    shading_rate_ = BaseShadingRate;
+    // a null array is passthrough, passthrough
+    for (unsigned i = 0; i < 2; i++)
+      shading_rate_combiners_[i] = pCombinerArray ? pCombinerArray[i] : D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+    // the pipeline's variant may change
+    dirty_state_.set(DirtyState::GraphicsPipelineState);
   }
 
   void STDMETHODCALLTYPE
-  RSSetShadingRateImage(ID3D12Resource *) {
-    ERR("RSSetShadingRateImage: variable rate shading is not supported yet");
+  RSSetShadingRateImage(ID3D12Resource *pShadingRateImage) {
+    if (Record([=](auto *l) { l->RSSetShadingRateImage(pShadingRateImage); }))
+      return;
+    shading_rate_image_ = static_cast<MTLD3D12Resource *>(pShadingRateImage);
+    // a new image is copied before the next coarse draw
+    shading_rate_pass_ = nullptr;
   }
 
   void STDMETHODCALLTYPE

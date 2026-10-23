@@ -251,6 +251,12 @@ public:
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
 
     occlusion_sum = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("sum_occlusion"), err);
+    for (uint32_t i = 0; i < 4; i++) {
+      const char *names[] = {"depth_bounds_samples_2d", "depth_bounds_samples_2d_array", "depth_bounds_samples_2d_ms",
+                             "depth_bounds_samples_2d_ms_array"};
+      depth_bounds_samples[i] =
+          GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction(names[i]), err);
+    }
     pipeline_statistics_sum = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("sum_pipeline_statistics"), err
     );
@@ -258,7 +264,8 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
-    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances) {
+    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
     }
@@ -554,16 +561,39 @@ public:
       if (!out->NumFeatureLevels)
         return E_INVALIDARG;
       // the highest level the options make up, as D3D12 defines the levels: 11_1 with logic ops, 12_0 with tiled
-      // resources tier 2, binding tier 2 and typed UAV loads, 12_1 with ROVs and conservative rasterization
+      // resources tier 2, binding tier 2 and typed UAV loads, 12_1 with ROVs and conservative rasterization tier 1,
+      // 12_2 (Direct3D feature level 12_2) with shader model 6.5, ray tracing tier 1.1, variable rate shading tier 2,
+      // mesh shaders, sampler feedback, binding, tiled resources and conservative rasterization tier 3, root
+      // signature 1.1 and the depth bounds test
       D3D12_FEATURE_DATA_D3D12_OPTIONS o;
+      D3D12_FEATURE_DATA_D3D12_OPTIONS2 o2;
+      D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5;
+      D3D12_FEATURE_DATA_D3D12_OPTIONS6 o6;
+      D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7;
+      D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_5};
+      D3D12_FEATURE_DATA_ROOT_SIGNATURE root{D3D_ROOT_SIGNATURE_VERSION_1_1};
       CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof(o));
+      CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &o2, sizeof(o2));
+      CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof(o5));
+      CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &o6, sizeof(o6));
+      CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7));
+      CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
+      CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &root, sizeof(root));
+      bool level_12_2 =
+          model.HighestShaderModel >= D3D_SHADER_MODEL_6_5 && o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 &&
+          o6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_2 &&
+          o7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1 && o7.SamplerFeedbackTier >= D3D12_SAMPLER_FEEDBACK_TIER_0_9 &&
+          o.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3 &&
+          o.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_3 &&
+          o.ConservativeRasterizationTier >= D3D12_CONSERVATIVE_RASTERIZATION_TIER_3 &&
+          root.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1 && o2.DepthBoundsTestSupported;
       auto max_level = !o.OutputMergerLogicOp ? D3D_FEATURE_LEVEL_11_0
                        : o.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2 ||
-                               o.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 ||
-                               !o.TypedUAVLoadAdditionalFormats
+                               o.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 || !o.TypedUAVLoadAdditionalFormats
                            ? D3D_FEATURE_LEVEL_11_1
                        : !o.ROVsSupported || !o.ConservativeRasterizationTier ? D3D_FEATURE_LEVEL_12_0
-                                                                             : D3D_FEATURE_LEVEL_12_1;
+                       : !level_12_2                                          ? D3D_FEATURE_LEVEL_12_1
+                                                                              : D3D_FEATURE_LEVEL_12_2;
       out->MaxSupportedFeatureLevel = {};
       for (unsigned i = 0; i < out->NumFeatureLevels; i++)
         if (out->pFeatureLevelsRequested[i] <= max_level)
@@ -609,13 +639,16 @@ public:
       out->OutputMergerLogicOp = TRUE;
 #endif
       out->MinPrecisionSupport = D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT;
-      // placement sparse resources carry tier 2; tier 3 needs D3D12's standard 3D tile shapes, which Metal's differ from
-      out->TiledResourcesTier = sparse_page_size_ ? D3D12_TILED_RESOURCES_TIER_2 : D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+      // placement sparse resources carry tier 3: a reserved 3D texture is a placement sparse 3D texture, whose tiles
+      // GetResourceTiling reports, Metal's slabs a texel deep rather than D3D11.3's standard 3D shapes (5.9.4)
+      out->TiledResourcesTier = sparse_page_size_ ? D3D12_TILED_RESOURCES_TIER_3 : D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
       out->ResourceBindingTier = D3D12_RESOURCE_BINDING_TIER_3;
       out->PSSpecifiedStencilRefSupported = TRUE;
       out->TypedUAVLoadAdditionalFormats = TRUE;
       out->ROVsSupported = TRUE;
-      out->ConservativeRasterizationTier = D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
+      // emulated: the mesh stage grows triangles, degenerate ones too, and the pixel shader takes the pixels they
+      // overlap and knows those inside (airconv)
+      out->ConservativeRasterizationTier = D3D12_CONSERVATIVE_RASTERIZATION_TIER_3;
       out->MaxGPUVirtualAddressBitsPerResource = 48;
       out->StandardSwizzle64KBSupported = FALSE;
       out->CrossNodeSharingTier = D3D12_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
@@ -636,7 +669,8 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS2))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS2 *>(pFeatureData);
-      out->DepthBoundsTestSupported = GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
+      // Metal's on Apple10, the pixel shader's elsewhere (d3d12_command_list.cpp, DepthBoundsSamples)
+      out->DepthBoundsTestSupported = TRUE;
       out->ProgrammableSamplePositionsTier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
       return S_OK;
     }
@@ -831,6 +865,27 @@ public:
       reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS11 *>(pFeatureData)->AtomicInt64OnDescriptorHeapResourceSupported = TRUE;
       return S_OK;
     }
+    // variable rate shading, which pixel shaders of coarse pixels emulate: per primitive from a vertex or geometry
+    // shader, and from a shading rate image of 16x16 tiles; coarse pixels of up to 2x2 (CoarseShading, airconv)
+    case D3D12_FEATURE_D3D12_OPTIONS6: {
+      if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(pFeatureData, DataSize) != S_OK)
+        return E_INVALIDARG;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS6 *>(pFeatureData);
+      out->AdditionalShadingRatesSupported = FALSE;
+      out->PerPrimitiveShadingRateSupportedWithViewportIndexing = FALSE;
+      out->VariableShadingRateTier = D3D12_VARIABLE_SHADING_RATE_TIER_2;
+      out->ShadingRateImageTileSize = 16;
+      out->BackgroundProcessingSupported = FALSE;
+      return S_OK;
+    }
+    // the sum combiner; a mesh shader's SV_ShadingRate is not read
+    case D3D12_FEATURE_D3D12_OPTIONS10: {
+      if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS10>(pFeatureData, DataSize) != S_OK)
+        return E_INVALIDARG;
+      reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS10 *>(pFeatureData)->VariableRateShadingSumCombinerSupported =
+          TRUE;
+      return S_OK;
+    }
     case D3D12_FEATURE_D3D12_OPTIONS14: {
       if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS14>(pFeatureData, DataSize) != S_OK)
         return E_INVALIDARG;
@@ -839,12 +894,8 @@ public:
       return S_OK;
     }
     /* capabilities with no complete path yet: D3D12 defines an all-zero answer as unsupported, or tier 0, in each */
-    case D3D12_FEATURE_D3D12_OPTIONS6:
-      return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS8:
       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS8>(pFeatureData, DataSize);
-    case D3D12_FEATURE_D3D12_OPTIONS10:
-      return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS10>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS13:
       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS13>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS15:

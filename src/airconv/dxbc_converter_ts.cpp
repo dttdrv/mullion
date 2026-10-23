@@ -4,6 +4,7 @@
 #include "nt/air_builder.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "tessellation_limits.hpp"
+#include <cmath>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
@@ -92,7 +93,7 @@ mesh_threadgroups_per_workload(
       !pso_tess->geometry)
     return {tessellation_pieces(
                 factor_int, pHullStage->tessellation_domain, pHullStage->tessellator_output_primitive,
-                pso_tess ? pso_tess->mesh_vertex_size : 0
+                pso_tess ? pso_tess->mesh_vertex_size : 0, pso_tess && pso_tess->conservative
             )
                 .count,
             1};
@@ -956,14 +957,19 @@ convert_dxbc_tesselator_domain_shader(
   // the primitives it makes of a workload that several share (tessellation_pieces)
   SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
   args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
+  uint32_t corners = get_primitive_vertices(pHullStage->tessellator_output_primitive);
+  // conservative rasterization of its triangles: each a fan of its own (conservative_fan), from corners that wait in
+  // threadgroup memory for every thread of the piece
+  bool conservative = pso_tess && pso_tess->conservative && !pso_tess->geometry && corners == 3;
   auto pieces = tessellation_pieces(
       factor_int, pHullStage->tessellation_domain, pHullStage->tessellator_output_primitive,
-      pso_tess ? pso_tess->mesh_vertex_size : 0
+      pso_tess ? pso_tess->mesh_vertex_size : 0, conservative
   );
-  uint32_t corners = get_primitive_vertices(pHullStage->tessellator_output_primitive);
-  uint32_t mesh_vertices = pieces.primitives ? pieces.primitives * corners
+  if (conservative && !pieces.primitives)
+    return llvm::make_error<UnsupportedFeature>("conservative rasterization of a domain shader of vertices too large");
+  uint32_t mesh_vertices = pieces.primitives ? pieces.primitives * (conservative ? 9 : corners)
                                              : get_max_workload_vertices(factor_int, pHullStage->tessellation_domain);
-  uint32_t mesh_primitives = pieces.primitives ? pieces.primitives : mesh_vertices;
+  uint32_t mesh_primitives = pieces.primitives ? pieces.primitives * (conservative ? 7 : 1) : mesh_vertices;
   switch (pHullStage->tessellator_output_primitive) {
   case microsoft::D3D11_SB_TESSELLATOR_OUTPUT_POINT: {
     func_signature.DefineInput(air::InputMesh{mesh_vertices, mesh_primitives, air::MeshOutputTopology::Point});
@@ -983,8 +989,9 @@ convert_dxbc_tesselator_domain_shader(
   // 15.4.2): the group's threads say what each vertex is behind, a bit for each distance, and the thread that makes
   // the primitives culls them
   llvm::GlobalVariable *behind = nullptr;
-  if (pShaderInternal->cull_distance_scalars.size()) {
+  if (pShaderInternal->cull_distance_scalars.size())
     func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveCulled{});
+  if (pShaderInternal->cull_distance_scalars.size() && !conservative) {
     auto type = llvm::ArrayType::get(types._int, mesh_vertices);
     behind = new llvm::GlobalVariable(
         module, type, false, llvm::GlobalValue::InternalLinkage, llvm::UndefValue::get(type), "", nullptr,
@@ -999,6 +1006,38 @@ convert_dxbc_tesselator_domain_shader(
   if (pShaderInternal->clip_distance_scalars.size() > 0) {
     func_signature.DefineMeshVertexOutput(
         air::OutputClipDistance{.count = pShaderInternal->clip_distance_scalars.size()}
+    );
+  }
+
+  // the viewports, the window coordinates the pixel shader tests against, and the corners' registers and whether
+  // each is the piece's
+  uint32_t viewports_idx = 0, conservative_at = pShaderInternal->num_mesh_vertex_data;
+  llvm::GlobalVariable *stash = nullptr, *made = nullptr;
+  auto registers_type = llvm::ArrayType::get(types._int4, std::max(max_output_register, 1u));
+  if (conservative) {
+    viewports_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_VIEWPORTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::msl_float4,
+        .arg_name = "viewports",
+        .raster_order_group = {}
+    });
+    for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS + SM50_CONSERVATIVE_RCP_W; i++)
+      func_signature.DefineMeshVertexOutput(air::OutputMeshData{
+          .user = "mullion_conservative" + std::to_string(i), .type = air::msl_float, .index = conservative_at + i
+      });
+    auto stash_type = llvm::ArrayType::get(registers_type, pieces.primitives * 3);
+    stash = new llvm::GlobalVariable(
+        module, stash_type, false, llvm::GlobalValue::InternalLinkage, llvm::UndefValue::get(stash_type), "", nullptr,
+        llvm::GlobalValue::NotThreadLocal, (uint32_t)air::AddressSpace::threadgroup
+    );
+    auto made_type = llvm::ArrayType::get(types._int, pieces.primitives * 3);
+    made = new llvm::GlobalVariable(
+        module, made_type, false, llvm::GlobalValue::InternalLinkage, llvm::UndefValue::get(made_type), "", nullptr,
+        llvm::GlobalValue::NotThreadLocal, (uint32_t)air::AddressSpace::threadgroup
     );
   }
 
@@ -1064,12 +1103,30 @@ convert_dxbc_tesselator_domain_shader(
       pShaderInternal, pHullStage, payload_struct_type, function->getArg(payload_idx), workload_index, ctx
   );
 
+  // no corner is the piece's until it is made
+  auto made_at = [&](pvalue i) {
+    return builder.CreateInBoundsGEP(made->getValueType(), made, {builder.getInt32(0), i});
+  };
+  if (conservative) {
+    for (uint32_t i = 0; i < pieces.primitives * 3; i += 32) {
+      auto index = builder.CreateAdd(thread_index, builder.getInt32(i));
+      auto in = llvm::BasicBlock::Create(context, "conservative_clear", function, vertex_start);
+      auto next = llvm::BasicBlock::Create(context, "conservative_cleared", function, vertex_start);
+      builder.CreateCondBr(builder.CreateICmpULT(index, builder.getInt32(pieces.primitives * 3)), in, next);
+      builder.SetInsertPoint(in);
+      builder.CreateStore(builder.getInt32(0), made_at(index));
+      builder.CreateBr(next);
+      builder.SetInsertPoint(next);
+    }
+    air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+  }
+  auto preheader = builder.GetInsertBlock();
   builder.CreateBr(vertex_start);
 
   builder.SetInsertPoint(vertex_start);
 
   auto phi_thread_index_base = builder.CreatePHI(types._int, 2);
-  phi_thread_index_base->addIncoming(air.getInt(0), entry_bb);
+  phi_thread_index_base->addIncoming(air.getInt(0), preheader);
 
   auto actual_thread_index = builder.CreateAdd(phi_thread_index_base, thread_index);
 
@@ -1089,6 +1146,19 @@ convert_dxbc_tesselator_domain_shader(
   builder.CreateCondBr(active, real_entry.get(), vertex_end);
 
   builder.SetInsertPoint(vertex_emit);
+  if (conservative) {
+    // the corner waits for the fan, its piece's thread's
+    for (uint32_t reg = 0; reg < max_output_register; reg++)
+      builder.CreateStore(
+          builder.CreateLoad(
+              types._int4, builder.CreateGEP(registers_type, resource_map.output.ptr_int4, {builder.getInt32(0), builder.getInt32(reg)})
+          ),
+          builder.CreateInBoundsGEP(stash->getValueType(), stash, {builder.getInt32(0), actual_thread_index, builder.getInt32(reg)})
+      );
+    builder.CreateStore(builder.getInt32(1), made_at(actual_thread_index));
+    builder.CreateBr(vertex_end);
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "unconservative", function, vertex_end));
+  }
 
   auto vertex_id = actual_thread_index;
   // a primitive's vertices are `corners` threads' when it has its own
@@ -1146,6 +1216,119 @@ convert_dxbc_tesselator_domain_shader(
   builder.CreateCondBr(iterate, vertex_start, generate_primitive_pre);
 
   builder.SetInsertPoint(generate_primitive_pre);
+  if (conservative) {
+    // thread p grows primitive p of the piece, when the piece has it; the first counts them
+    air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+    uint32_t position_reg = ~0u, viewport_reg = ~0u, viewport_component = 0;
+    for (auto &element : pShaderInternal->output_signature) {
+      if (element.systemValue() == D3D10_SB_NAME_POSITION)
+        position_reg = element.reg();
+      if (element.systemValue() == D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX)
+        viewport_reg = element.reg(), viewport_component = std::countr_zero(element.mask());
+    }
+    auto corner_at = [&](pvalue primitive, uint32_t k, uint32_t reg) {
+      auto vertex = builder.CreateAdd(builder.CreateMul(primitive, builder.getInt32(3)), builder.getInt32(k));
+      return builder.CreateLoad(
+          types._int4,
+          builder.CreateInBoundsGEP(stash->getValueType(), stash, {builder.getInt32(0), vertex, builder.getInt32(reg)})
+      );
+    };
+    auto grow = llvm::BasicBlock::Create(context, "conservative_grow", function, real_return);
+    auto count = llvm::BasicBlock::Create(context, "conservative_count", function, real_return);
+    auto p = thread_index;
+    builder.CreateCondBr(
+        builder.CreateAnd(
+            builder.CreateICmpULT(p, builder.getInt32(pieces.primitives)),
+            builder.CreateICmpNE(builder.CreateLoad(types._int, made_at(builder.CreateMul(p, builder.getInt32(3)))), builder.getInt32(0))
+        ),
+        grow, count
+    );
+    builder.SetInsertPoint(grow);
+    if (position_reg != ~0u) {
+      pvalue clip[3];
+      for (uint32_t k = 0; k < 3; k++)
+        clip[k] = builder.CreateBitCast(corner_at(p, k, position_reg), types._float4);
+      pvalue viewport_index = builder.getInt32(0);
+      if (viewport_reg != ~0u)
+        viewport_index = builder.CreateExtractElement(corner_at(p, 0, viewport_reg), uint64_t(viewport_component));
+      viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
+      auto fan = conservative_fan(builder, air, types, clip, function->getArg(viewports_idx), viewport_index);
+      auto vertex_base = builder.CreateMul(p, builder.getInt32(9)), primitive_base = builder.CreateMul(p, builder.getInt32(7));
+      for (uint32_t u = 0; u < 9; u++) {
+        conservative_point(
+            builder, types, fan, u, *pShaderInternal, position_reg, pso_tess->flat_inputs, pso_tess->noperspective_inputs,
+            [&](uint32_t k, uint32_t reg) { return corner_at(p, k, reg); }, resource_map.output.ptr_int4
+        );
+        auto vertex = builder.CreateAdd(vertex_base, builder.getInt32(u));
+        MeshOutputContext out{vertex, builder.CreateAdd(primitive_base, builder.getInt32(std::min(u, 6u)))};
+        for (auto &h : ds_output_handlers)
+          if (auto err = h(out).build(ctx).takeError())
+            return err;
+        for (auto x : llvm::enumerate(pShaderInternal->clip_distance_scalars)) {
+          if (x.value().reg >= max_output_register)
+            continue;
+          auto src_ptr = builder.CreateGEP(
+              llvm::ArrayType::get(types._float4, max_output_register), resource_map.output.ptr_float4,
+              {builder.getInt32(0), builder.getInt32(x.value().reg), builder.getInt32(x.value().component)}
+          );
+          air.CreateSetMeshClipDistance(vertex, builder.getInt32(x.index()), builder.CreateLoad(types._float, src_ptr));
+        }
+        for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++) {
+          pvalue window = fan.window[i / 2][i % 2];
+          if (i == 0)
+            window = builder.CreateSelect(fan.in_front, window, air.getFloat(NAN));
+          air.CreateSetMeshVertexData(vertex, builder.getInt32(conservative_at + i), window);
+        }
+        for (uint32_t i = 0; i < SM50_CONSERVATIVE_RCP_W; i++)
+          air.CreateSetMeshVertexData(vertex, builder.getInt32(conservative_at + SM50_CONSERVATIVE_VARYINGS + i), fan.rcp_w[u]);
+      }
+      // culled together by a distance all three corners are behind
+      pvalue culled = builder.getFalse();
+      for (auto &distance : pShaderInternal->cull_distance_scalars) {
+        pvalue all = builder.getTrue();
+        for (uint32_t k = 0; k < 3; k++) {
+          auto value = builder.CreateBitCast(
+              builder.CreateExtractElement(corner_at(p, k, distance.reg), uint64_t(distance.component)), types._float
+          );
+          all = builder.CreateAnd(all, builder.CreateFCmpULT(value, llvm::ConstantFP::get(types._float, 0)));
+        }
+        culled = builder.CreateOr(culled, all);
+      }
+      for (uint32_t t = 0; t < 7; t++) {
+        auto primitive = builder.CreateAdd(primitive_base, builder.getInt32(t));
+        for (uint32_t i = 0; i < 3; i++)
+          air.CreateSetMeshIndex(
+              builder.CreateAdd(builder.CreateMul(primitive, builder.getInt32(3)), builder.getInt32(i)),
+              builder.CreateAdd(vertex_base, builder.getInt32(i ? t + i : 0))
+          );
+        air.CreateSetMeshPrimitiveID(primitive, resource_map.patch_id);
+        if (pShaderInternal->cull_distance_scalars.size())
+          air.CreateSetMeshPrimitiveCulled(primitive, culled);
+      }
+    }
+    builder.CreateBr(count);
+    builder.SetInsertPoint(count);
+    auto first_thread = llvm::BasicBlock::Create(context, "conservative_counted", function, real_return);
+    builder.CreateCondBr(builder.CreateICmpEQ(thread_index, builder.getInt32(0)), first_thread, real_return);
+    builder.SetInsertPoint(first_thread);
+    // the piece's primitives are the first of its corners that were made
+    pvalue primitives = builder.getInt32(0);
+    for (uint32_t q = 0; q < pieces.primitives; q++)
+      primitives = builder.CreateAdd(
+          primitives, builder.CreateZExt(
+                          builder.CreateICmpNE(builder.CreateLoad(types._int, made_at(builder.getInt32(q * 3))), builder.getInt32(0)),
+                          types._int
+                      )
+      );
+    air.CreateSetMeshPrimitiveCount(builder.CreateMul(primitives, builder.getInt32(7)));
+    builder.CreateBr(real_return);
+    builder.SetInsertPoint(generate_primitive);
+    builder.CreateBr(real_return);
+    builder.SetInsertPoint(real_return);
+    builder.CreateRetVoid();
+    module.getOrInsertNamedMetadata("air.mesh")->addOperand(function_metadata);
+    return llvm::Error::success();
+  }
   if (behind)
     air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   builder.CreateCondBr(

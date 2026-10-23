@@ -1,0 +1,12 @@
+# each lane discards its own pixel
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -285,7 +285,7 @@
+   }
+   // the leader's discard is the coarse pixel's; a pixel's own (the depth bounds test's) is its alone
+   auto discarded = ir.CreateOr(
+-      quad_shuffle(ir, air, ir.CreateLoad(ir.getInt1Ty(), discarded_), leader_),
++      ir.CreateLoad(ir.getInt1Ty(), discarded_),
+       ir.CreateLoad(ir.getInt1Ty(), pixel_discarded_)
+   );
+   auto discard = llvm::BasicBlock::Create(ir.getContext(), "coarse_discard", function_);

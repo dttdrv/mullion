@@ -1,0 +1,12 @@
+# the device stays at 12_1 with 12_2's options
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -500,7 +500,7 @@
+                                o.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 || !o.TypedUAVLoadAdditionalFormats
+                            ? D3D_FEATURE_LEVEL_11_1
+                        : !o.ROVsSupported || !o.ConservativeRasterizationTier ? D3D_FEATURE_LEVEL_12_0
+-                       : !level_12_2                                          ? D3D_FEATURE_LEVEL_12_1
++                       : true                                                 ? D3D_FEATURE_LEVEL_12_1
+                                                                               : D3D_FEATURE_LEVEL_12_2;
+       out->MaxSupportedFeatureLevel = {};
+       for (unsigned i = 0; i < out->NumFeatureLevels; i++)

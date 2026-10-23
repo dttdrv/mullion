@@ -1,0 +1,12 @@
+# the primitive's rate does not reach the pixel shader
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1117,7 +1117,7 @@
+       // the primitive's shading rate, from the stage before the rasterizer: a domain or mesh shader has none
+       data_ps.shading_rate_varying = sm50_shader_t(shader_gs)      ? ref_gs.ShadingRateOutput
+                                      : tessellation || mesh_shader ? 0
+-                                                                   : ref_vs.ShadingRateOutput;
++                                                                   : 0;
+       coarse_shading = !ref_ps.PixelShader.FineShading;
+ 
+       std::array<WMTPixelFormat, std::size(data_ps.pixel_formats)> formats{};

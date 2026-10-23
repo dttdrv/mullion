@@ -1,0 +1,12 @@
+# SV_Coverage is only the lane's own pixel's
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -249,7 +249,7 @@
+     for (unsigned j = 0; j < 4; j++) {
+       auto index = fine_index(ir.getInt32(j & 1), ir.getInt32(j >> 1));
+       auto bits = ir.CreateShl(quad_shuffle(ir, air, own, ir.getInt32(j)), ir.CreateMul(index, samples));
+-      all = ir.CreateOr(all, ir.CreateSelect(members[j], bits, ir.getInt32(0)));
++      all = ir.CreateOr(all, ir.CreateSelect(ir.CreateICmpEQ(lane_, ir.getInt32(j)), bits, ir.getInt32(0)));
+     }
+     centered_.push_back({function->getArg(coverage_), ir.CreateSelect(coarse, all, own)});
+   }

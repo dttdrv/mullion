@@ -1,0 +1,12 @@
+# a new range leaves the samples in the old one
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3173,7 +3173,7 @@
+     if (Record([=](auto *l) { l->OMSetDepthBounds(Min, Max); }))
+       return;
+     float bounds[2] = {std::isnan(Min) ? 0.0f : Min, std::isnan(Max) ? 0.0f : Max};
+-    depth_bounds_stale_ |= bounds[0] != depth_bounds_[0] || bounds[1] != depth_bounds_[1];
++
+     depth_bounds_[0] = bounds[0];
+     depth_bounds_[1] = bounds[1];
+     dirty_state_.set(DirtyState::DepthBounds);

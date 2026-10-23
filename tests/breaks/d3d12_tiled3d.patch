@@ -1,0 +1,12 @@
+# a 3D texture's tiles are counted twice as deep as they are
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -1014,7 +1014,7 @@
+       auto extent = [&](uint64_t size, UINT tile) { return UINT((std::max(size >> mip, uint64_t(1)) + tile - 1) / tile); };
+       return D3D12_SUBRESOURCE_TILING{
+           extent(desc_.Width, shape.WidthInTexels), UINT16(extent(desc_.Height, shape.HeightInTexels)),
+-          UINT16(desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? extent(desc_.DepthOrArraySize, shape.DepthInTexels) : 1)
++          UINT16(desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? extent(desc_.DepthOrArraySize, 2 * shape.DepthInTexels) : 1)
+       };
+     };
+     if (reserved_) {

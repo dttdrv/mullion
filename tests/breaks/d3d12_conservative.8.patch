@@ -1,0 +1,12 @@
+# a domain shader's piece has a fan's first triangle of each primitive
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -1318,7 +1318,7 @@
+                           types._int
+                       )
+       );
+-    air.CreateSetMeshPrimitiveCount(builder.CreateMul(primitives, builder.getInt32(7)));
++    air.CreateSetMeshPrimitiveCount(builder.CreateMul(primitives, builder.getInt32(1)));
+     builder.CreateBr(real_return);
+     builder.SetInsertPoint(generate_primitive);
+     builder.CreateBr(real_return);

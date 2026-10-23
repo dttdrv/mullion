@@ -1,0 +1,12 @@
+# derivatives span a pixel, not a coarse pixel
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -202,7 +202,7 @@
+   // each axis the coarse pixel spans, so that a derivative (across the quad) is the coarse pixels'
+   auto offset = [&](Value *spans, Value *own, Value *at, Value *leader_at, Value *p) {
+     auto center = ir.CreateFAdd(ir.CreateUIToFP(ir.CreateAnd(at, ~1u), f32), ConstantFP::get(f32, 1.0));
+-    auto away = ir.CreateFMul(ir.CreateSIToFP(ir.CreateSub(own, leader_at), f32), ConstantFP::get(f32, 2.0));
++    auto away = ir.CreateFMul(ir.CreateSIToFP(ir.CreateSub(own, leader_at), f32), ConstantFP::get(f32, 1.0));
+     return ir.CreateSelect(spans, ir.CreateFSub(ir.CreateFAdd(center, away), p), ConstantFP::get(f32, 0.0));
+   };
+   auto dx = offset(wide_, lx, x, ir.CreateAnd(leader, 1), px);

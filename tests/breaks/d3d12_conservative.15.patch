@@ -1,0 +1,12 @@
+# the pixel test takes pixels half a pixel away
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -365,7 +365,7 @@
+   auto min = [&](llvm::Value *l, llvm::Value *r) { return air.CreateFPBinOp(AIRBuilder::fmin, l, r, false); };
+   auto max = [&](llvm::Value *l, llvm::Value *r) { return air.CreateFPBinOp(AIRBuilder::fmax, l, r, false); };
+   // the pixel's center; a little more than half a pixel around it, the uncertainty tier 1 has room for
+-  const double half = 0.5 + 1.0 / 256;
++  const double half = 1.0;
+   llvm::Value *center[2];
+   for (uint32_t axis = 0; axis < 2; axis++)
+     center[axis] = builder.CreateFAdd(

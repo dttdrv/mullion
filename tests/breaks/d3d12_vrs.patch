@@ -1,0 +1,12 @@
+# the inputs stay at each pixel
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -313,7 +313,7 @@
+ 
+ void
+ CoarseShading::Finish() {
+-  for (auto [argument, value] : centered_)
++  for (auto [argument, value] : decltype(centered_){})
+     argument->replaceUsesWithIf(value, [&](Use &use) {
+       auto user = dyn_cast<llvm::Instruction>(use.getUser());
+       return user && !before_.contains(user);

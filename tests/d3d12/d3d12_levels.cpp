@@ -31,17 +31,41 @@ main(int argc, char **argv) {
   D3D12_FEATURE_DATA_D3D12_OPTIONS1 o1{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof(o)));
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &o1, sizeof(o1)));
+  // 12_2's (Direct3D feature level 12_2): shader model 6.5, ray tracing tier 1.1, variable rate shading tier 2, mesh
+  // shaders, sampler feedback, binding, tiled resources and conservative rasterization tier 3, root signature 1.1 and
+  // the depth bounds test
+  D3D12_FEATURE_DATA_D3D12_OPTIONS2 o2{};
+  D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5{};
+  D3D12_FEATURE_DATA_D3D12_OPTIONS6 o6{};
+  D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7{};
+  D3D12_FEATURE_DATA_SHADER_MODEL model65{D3D_SHADER_MODEL_6_5};
+  D3D12_FEATURE_DATA_ROOT_SIGNATURE root{D3D_ROOT_SIGNATURE_VERSION_1_1};
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &o2, sizeof(o2)));
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof(o5)));
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &o6, sizeof(o6)));
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7)));
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model65, sizeof(model65)));
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &root, sizeof(root)));
+  bool level_12_2 =
+      model65.HighestShaderModel >= D3D_SHADER_MODEL_6_5 && o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 &&
+      o6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_2 &&
+      o7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1 && o7.SamplerFeedbackTier >= D3D12_SAMPLER_FEEDBACK_TIER_0_9 &&
+      o.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3 && o.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_3 &&
+      o.ConservativeRasterizationTier >= D3D12_CONSERVATIVE_RASTERIZATION_TIER_3 &&
+      root.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1 && o2.DepthBoundsTestSupported;
   auto want = !o.OutputMergerLogicOp ? D3D_FEATURE_LEVEL_11_0
-              : o.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2 || o.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 ||
-                      !o.TypedUAVLoadAdditionalFormats
+              : o.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2 ||
+                      o.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 || !o.TypedUAVLoadAdditionalFormats
                   ? D3D_FEATURE_LEVEL_11_1
               : !o.ROVsSupported || !o.ConservativeRasterizationTier ? D3D_FEATURE_LEVEL_12_0
-                                                                    : D3D_FEATURE_LEVEL_12_1;
+              : !level_12_2                                          ? D3D_FEATURE_LEVEL_12_1
+                                                                     : D3D_FEATURE_LEVEL_12_2;
   const D3D_FEATURE_LEVEL all[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
                                    D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2};
   D3D12_FEATURE_DATA_FEATURE_LEVELS levels{(UINT)std::size(all), all};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels)));
   expect(levels.MaxSupportedFeatureLevel == want, "the feature level is not the one the options make up");
+  printf("feature level %#x\n", levels.MaxSupportedFeatureLevel);
   for (auto level : all) {
     ComPtr<ID3D12Device> other;
     bool created = SUCCEEDED(D3D12CreateDevice(nullptr, level, IID_PPV_ARGS(&other)));

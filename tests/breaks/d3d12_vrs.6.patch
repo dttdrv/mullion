@@ -1,0 +1,12 @@
+# the sum combiner passes the rate through
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -161,7 +161,7 @@
+       c = ir.CreateSelect(ir.CreateICmpEQ(combiner, ir.getInt32(1)), b, c);
+       c = ir.CreateSelect(ir.CreateICmpEQ(combiner, ir.getInt32(2)), ir.CreateSelect(ir.CreateICmpULT(a, b), a, b), c);
+       c = ir.CreateSelect(ir.CreateICmpEQ(combiner, ir.getInt32(3)), ir.CreateSelect(ir.CreateICmpUGT(a, b), a, b), c);
+-      c = ir.CreateSelect(ir.CreateICmpEQ(combiner, ir.getInt32(4)), ir.CreateAdd(a, b), c);
++      c = ir.CreateSelect(ir.CreateICmpEQ(combiner, ir.getInt32(4)), a, c);
+       return c;
+     };
+     auto x = axis(ir.CreateAnd(ir.CreateLShr(a, 2), 3), ir.CreateAnd(ir.CreateLShr(b, 2), 3));

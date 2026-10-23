@@ -1,0 +1,12 @@
+# an amplification shader asks for a group's mesh threadgroups, not its slices
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2542,7 +2542,7 @@
+       Value *grid = UndefValue::get(FixedVectorType::get(ir.getInt32Ty(), 3));
+       for (unsigned i = 0; i < 3; i++)
+         grid = ir.CreateInsertElement(
+-            grid, i || ctx.resource.mesh_slices == 1 ? a(1 + i) : ir.CreateMul(a(1), ir.getInt32(ctx.resource.mesh_slices)),
++            grid, a(1 + i),
+             i
+         );
+       air.CreateSetMeshProperties(grid);

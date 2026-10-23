@@ -1,0 +1,12 @@
+# every pixel takes the output coverage's first bits
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -278,7 +278,7 @@
+     auto index = fine_index(ir.CreateAnd(lane_, 1), ir.CreateLShr(lane_, 1));
+     auto samples = air.CreateGetNumSamples();
+     auto own = ir.CreateAnd(
+-        ir.CreateLShr(mask, ir.CreateMul(index, samples)),
++        ir.CreateLShr(mask, ir.getInt32(0)),
+         ir.CreateSub(ir.CreateShl(ir.getInt32(1), samples), ir.getInt32(1))
+     );
+     ir.CreateStore(own, resource.coverage_mask_reg);
