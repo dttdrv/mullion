@@ -264,11 +264,15 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   auto &recording = device_->recording;
   {
     std::lock_guard<mullion::mutex> lock(recording.mutex);
-    if (!recording.commands.Initialize() || !recording.arguments.Initialize())
+    if (!recording.commands.Initialize())
       return E_OUTOFMEMORY;
     if (!recording.buffer) {
+      // the GPU's half of the arena is memory the device owns: a buffer over a mapping the system placed is
+      // refused when that mapping is more than one region, which a gigabyte of address space is (Metal accepts
+      // each region of it on its own), while the device's own allocation of the same length is one region and
+      // costs nothing until it is written. the recorded commands address it by its gpu address either way
       WMTBufferInfo buffer_info;
-      buffer_info.memory.set(recording.arguments.base);
+      buffer_info.memory.set(nullptr);
       buffer_info.length = RecordingArena::kSize;
       buffer_info.options = WMTResourceHazardTrackingModeUntracked;
       recording.buffer = device_->GetMTLDevice().newBuffer(buffer_info);
@@ -277,6 +281,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
         return E_FAIL;
       }
       recording.address = buffer_info.gpu_address;
+      if (!recording.arguments.Adopt(buffer_info.memory.ptr))
+        return E_OUTOFMEMORY;
     }
     if (!recording.zeros && !(recording.zeros = recording.arguments.Acquire(1)))
       return E_OUTOFMEMORY;

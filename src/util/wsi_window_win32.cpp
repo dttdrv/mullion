@@ -73,7 +73,30 @@ static bool setMonitorDisplayMode(HMONITOR hMonitor, DEVMODEW *pMode) {
                                         CDS_FULLSCREEN, nullptr);
   }
 
-  return status == DISP_CHANGE_SUCCESSFUL;
+  if (status != DISP_CHANGE_SUCCESSFUL)
+    return false;
+
+  // DISP_CHANGE_SUCCESSFUL is Wine's word for the mode it recorded, not for the mode the display is in: with
+  // EmulateModeset set (which the test harness sets so that a test never changes the Mac's own display) win32u
+  // does not ask the driver at all and answers success for the recorded mode
+  // (dlls/win32u/sysparams.c, apply_display_settings), and a recording that fails is a WARN that leaves that
+  // success standing, so the mode every later read reports is still the old one. A caller that takes that as
+  // applied enters fullscreen at a size the output does not have, which is what d3d11_fullscreen recorded as a
+  // pair of "fullscreen output mode" and "unexpected display mode change" wrong results while
+  // SetFullscreenState answered S_OK. So read the mode back and report what actually happened.
+  DEVMODEW applied = {};
+  applied.dmSize = sizeof(applied);
+
+  if (!getMonitorDisplayMode(hMonitor, ENUM_CURRENT_SETTINGS, &applied) ||
+      applied.dmPelsWidth != pMode->dmPelsWidth || applied.dmPelsHeight != pMode->dmPelsHeight ||
+      ((pMode->dmFields & DM_DISPLAYFREQUENCY) && applied.dmDisplayFrequency != pMode->dmDisplayFrequency)) {
+    Logger::err(str::format("Setting display mode: asked for ", pMode->dmPelsWidth, "x",
+                            pMode->dmPelsHeight, "@", pMode->dmDisplayFrequency, ", the display reports ",
+                            applied.dmPelsWidth, "x", applied.dmPelsHeight, "@", applied.dmDisplayFrequency));
+    return false;
+  }
+
+  return true;
 }
 
 void getWindowSize(HWND hWindow, uint32_t *pWidth, uint32_t *pHeight) {

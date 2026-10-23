@@ -1,0 +1,281 @@
+// the Direct3D 9 object: DXGI's adapters, which are this build's Metal devices,
+// as D3D9's adapters. the caps of an adapter are the ones its D3D11 device has,
+// so a device this build makes and a device a game asks about agree; the
+// texture size is Metal's own limit as the D3D11 feature level over it carries
+// it.
+#include "d3d9_direct3d.hpp"
+#include "d3d9_device.hpp"
+#include <cwchar>
+
+namespace mullion::d3d9 {
+
+namespace {
+
+// a Direct3D 9 identifier's strings are the narrow ones this header has (Wine's
+// d3d9.h, as Windows' ANSI build)
+void set_ansi(char *destination, size_t count, const WCHAR *value) {
+  if (!WideCharToMultiByte(CP_ACP, 0, value ? value : L"", -1, destination, (int)count, nullptr, nullptr))
+    destination[0] = 0;
+}
+
+// the largest texture a device of `level` makes: D3D11's required maximum for
+// the feature level over the Metal device
+UINT max_texture_size(D3D_FEATURE_LEVEL level) {
+  return level >= D3D_FEATURE_LEVEL_11_0 ? 16384u : level >= D3D_FEATURE_LEVEL_10_0 ? 8192u : 4096u;
+}
+
+// what a device of this milestone can do: be a HAL, present to a window, move
+// a frame's bytes between its back buffer and the CPU's memory, and draw
+// with the fixed-function pipeline's pre-transformed vertices. no shaders of a
+// game's, no depth buffer, no render state (src/d3d9/README)
+D3DCAPS9
+caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
+  D3DCAPS9 caps{};
+  caps.DeviceType = D3DDEVTYPE_HAL;
+  caps.AdapterOrdinal = adapter;
+  caps.PresentationIntervals = D3DPRESENT_INTERVAL_IMMEDIATE | D3DPRESENT_INTERVAL_ONE;
+  caps.MaxTextureWidth = max_texture_size(level);
+  caps.MaxTextureHeight = caps.MaxTextureWidth;
+  caps.MaxTextureRepeat = 65536;
+  caps.MaxTextureAspectRatio = 1;
+  caps.MaxAnisotropy = 1;
+  caps.MaxStreams = 1;
+  caps.MaxVertexIndex = 0xFFFFFF;
+  caps.MaxPrimitiveCount = 0x555555;
+  caps.MaxTextureBlendStages = 1;
+  caps.MaxSimultaneousTextures = 1;
+  caps.MaxPointSize = 1.0f;
+  caps.NumSimultaneousRTs = 1;
+  caps.VertexShaderVersion = 0;
+  caps.PixelShaderVersion = 0;
+  caps.MaxVertexShaderConst = 0;
+  return caps;
+}
+
+} // namespace
+
+class MTLD3D9Direct3D9 final : private Object9, public IDirect3D9 {
+public:
+  explicit MTLD3D9Direct3D9(ComPtr<IDXGIFactory2> factory) : factory_(std::move(factory)) {
+    for (UINT index = 0;; index++) {
+      ComPtr<IDXGIAdapter1> adapter;
+      if (factory_->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
+        break;
+      adapters_.push_back(adapter);
+      probes_.emplace_back(nullptr);
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override {
+    if (!object)
+      return E_POINTER;
+    *object = nullptr;
+    if (riid == IID_IUnknown || riid == __uuidof(IDirect3D9)) {
+      *object = static_cast<IDirect3D9 *>(this);
+      AddRef();
+      return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
+
+  ULONG STDMETHODCALLTYPE Release() override { return Object9::Release(); }
+
+  HRESULT STDMETHODCALLTYPE RegisterSoftwareDevice(void *) override { return E_NOTIMPL; }
+
+  UINT STDMETHODCALLTYPE GetAdapterCount() override { return (UINT)adapters_.size(); }
+
+  // the identity DXGI has of the adapter, which is the Metal device's: its
+  // name, and the vendor and device ids the Metal bridge reports for it
+  HRESULT STDMETHODCALLTYPE GetAdapterIdentifier(UINT adapter, DWORD, D3DADAPTER_IDENTIFIER9 *identifier) override {
+    if (!identifier || adapter >= adapters_.size())
+      return D3DERR_INVALIDCALL;
+    DXGI_ADAPTER_DESC1 description{};
+    if (FAILED(adapters_[adapter]->GetDesc1(&description)))
+      return D3DERR_INVALIDCALL;
+
+    *identifier = {};
+    set_ansi(identifier->Description, ARRAYSIZE(identifier->Description), description.Description);
+    set_ansi(identifier->DeviceName, ARRAYSIZE(identifier->DeviceName), L"Mullion Metal Device");
+    set_ansi(identifier->Driver, ARRAYSIZE(identifier->Driver), L"Mullion");
+    identifier->DriverVersion.QuadPart = 0x000A0000; // 10.0: this build's own, not a driver's
+    identifier->VendorId = description.VendorId;
+    identifier->DeviceId = description.DeviceId;
+    identifier->SubSysId = description.SubSysId;
+    identifier->Revision = description.Revision;
+    // a device's identity, from the one the Metal bridge reports: not Windows'
+    // GUID for a real card, since there is no card, but the same every run of
+    // this build on the same Metal device
+    identifier->DeviceIdentifier.Data1 = description.VendorId;
+    identifier->DeviceIdentifier.Data2 = (WORD)description.DeviceId;
+    identifier->DeviceIdentifier.Data3 = (WORD)(description.DeviceId >> 16);
+    identifier->WHQLLevel = 0;
+    return S_OK;
+  }
+
+  // the modes of a display this build shows a window on: the desktop's, since
+  // nothing changes a display mode yet
+  UINT STDMETHODCALLTYPE GetAdapterModeCount(UINT adapter, D3DFORMAT format) override {
+    if (adapter >= adapters_.size() || format != D3DFMT_X8R8G8B8)
+      return 0;
+    return 1;
+  }
+
+  HRESULT STDMETHODCALLTYPE EnumAdapterModes(UINT adapter, D3DFORMAT format, UINT mode,
+                                             D3DDISPLAYMODE *result) override {
+    if (adapter >= adapters_.size() || format != D3DFMT_X8R8G8B8 || mode != 0 || !result)
+      return D3DERR_INVALIDCALL;
+    *result = desktop_mode();
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetAdapterDisplayMode(UINT adapter, D3DDISPLAYMODE *mode) override {
+    if (adapter >= adapters_.size() || !mode)
+      return D3DERR_INVALIDCALL;
+    *mode = desktop_mode();
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckDeviceType(UINT adapter, D3DDEVTYPE type, D3DFORMAT display_format,
+                                            D3DFORMAT back_buffer_format, WINBOOL windowed) override {
+    if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    // a fullscreen chain is a display mode set, which this milestone does not
+    // do
+    if (!windowed)
+      return D3DERR_NOTAVAILABLE;
+    if (to_dxgi_format(display_format) == DXGI_FORMAT_UNKNOWN ||
+        to_dxgi_format(back_buffer_format) == DXGI_FORMAT_UNKNOWN)
+      return D3DERR_NOTAVAILABLE;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckDeviceFormat(UINT adapter, D3DDEVTYPE type, D3DFORMAT, DWORD usage,
+                                              D3DRESOURCETYPE resource_type, D3DFORMAT format) override {
+    if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    // a surface that is a render target or read back is a texture this build
+    // makes; a texture a shader samples or a resource a device has to hold is
+    // not yet
+    if (usage != 0 || resource_type != D3DRTYPE_SURFACE)
+      return D3DERR_NOTAVAILABLE;
+    return to_dxgi_format(format) == DXGI_FORMAT_UNKNOWN ? D3DERR_NOTAVAILABLE : S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckDeviceMultiSampleType(UINT adapter, D3DDEVTYPE type, D3DFORMAT, WINBOOL,
+                                                       D3DMULTISAMPLE_TYPE samples, DWORD *quality_levels) override {
+    if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    if (samples != D3DMULTISAMPLE_NONE)
+      return D3DERR_NOTAVAILABLE;
+    if (quality_levels)
+      *quality_levels = 1;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckDepthStencilMatch(UINT adapter, D3DDEVTYPE type, D3DFORMAT, D3DFORMAT render_target,
+                                                   D3DFORMAT depth_stencil) override {
+    if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    (void)render_target;
+    (void)depth_stencil;
+    // no depth buffer yet, so no render target has one that matches
+    return D3DERR_NOTAVAILABLE;
+  }
+
+  HRESULT STDMETHODCALLTYPE CheckDeviceFormatConversion(UINT adapter, D3DDEVTYPE type, D3DFORMAT source,
+                                                        D3DFORMAT target) override {
+    if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    if (to_dxgi_format(source) == DXGI_FORMAT_UNKNOWN || to_dxgi_format(source) != to_dxgi_format(target))
+      return D3DERR_NOTAVAILABLE;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetDeviceCaps(UINT adapter, D3DDEVTYPE type, D3DCAPS9 *caps) override {
+    if (!caps || adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+    D3D_FEATURE_LEVEL level;
+    HRESULT hr = level_of(adapter, level);
+    if (FAILED(hr))
+      return D3DERR_NOTAVAILABLE;
+    *caps = caps_of(adapter, level);
+    return S_OK;
+  }
+
+  HMONITOR STDMETHODCALLTYPE GetAdapterMonitor(UINT adapter) override {
+    if (adapter >= adapters_.size())
+      return nullptr;
+    return MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateDevice(UINT adapter, D3DDEVTYPE type, HWND window, DWORD behavior_flags,
+                                         D3DPRESENT_PARAMETERS *present, IDirect3DDevice9 **device) override {
+    if (!present || !device || adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
+      return D3DERR_INVALIDCALL;
+
+    D3D_FEATURE_LEVEL level;
+    HRESULT hr = level_of(adapter, level);
+    if (FAILED(hr))
+      return D3DERR_NOTAVAILABLE;
+
+    return create_device(static_cast<IDirect3D9 *>(this), factory_.Get(), adapters_[adapter].Get(), adapter,
+                         caps_of(adapter, level), window, behavior_flags, *present, device);
+  }
+
+private:
+  // the feature level this build's D3D11 device over the adapter has, which its
+  // caps come from: asked once per adapter, since the device a probe is costs a
+  // Metal device
+  HRESULT level_of(UINT adapter, D3D_FEATURE_LEVEL &level) {
+    if (adapter >= adapters_.size())
+      return D3DERR_INVALIDCALL;
+    if (!probes_[adapter]) {
+      HRESULT hr = D3D11CreateDevice(adapters_[adapter].Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                                     D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &probes_[adapter],
+                                     nullptr, nullptr);
+      if (FAILED(hr)) {
+        ERR("D3D9: no D3D11 device over adapter %u: 0x%08x", adapter, hr);
+        return hr;
+      }
+    }
+    level = probes_[adapter]->GetFeatureLevel();
+    return S_OK;
+  }
+
+  D3DDISPLAYMODE desktop_mode() const {
+    D3DDISPLAYMODE mode{};
+    mode.Width = (UINT)GetSystemMetrics(SM_CXSCREEN);
+    mode.Height = (UINT)GetSystemMetrics(SM_CYSCREEN);
+    mode.RefreshRate = 60;
+    mode.Format = D3DFMT_X8R8G8B8;
+    return mode;
+  }
+
+  ComPtr<IDXGIFactory2> factory_;
+  std::vector<ComPtr<IDXGIAdapter1>> adapters_;
+  // the D3D11 device of each adapter's caps: one probe for the whole object,
+  // not one per question
+  std::vector<ComPtr<ID3D11Device>> probes_;
+};
+
+IDirect3D9 *create_direct3d() {
+  ComPtr<IDXGIFactory1> factory;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    ERR("D3D9: no DXGI factory, so no adapters.");
+    return nullptr;
+  }
+  ComPtr<IDXGIFactory2> factory2;
+  if (FAILED(factory.As(&factory2))) {
+    ERR("D3D9: DXGI has no factory 2, which a window's chain is made by.");
+    return nullptr;
+  }
+  ComPtr<MTLD3D9Direct3D9> result;
+  result.Attach(new MTLD3D9Direct3D9(factory2));
+  if (!result->GetAdapterCount())
+    ERR("D3D9: DXGI has no adapters, so this machine presents nothing.");
+  return result.Detach();
+}
+
+} // namespace mullion::d3d9

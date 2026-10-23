@@ -47,15 +47,30 @@ main(int argc, char **argv) {
     auto loader_path = unix_name(loader.c_str());
     if (!expect(loader_path != nullptr, "the loader's Unix path is unavailable"))
       return verdict();
-    char exe[MAX_PATH];
-    const auto length = GetModuleFileNameA(nullptr, exe, sizeof(exe));
-    if (!expect(length && length < sizeof(exe), "the executable's path is unavailable")) {
+    // a test run from a Unix path outside every drive reports its module as unix\... (the
+    // \\?\unix device without its prefix), which the loader cannot open and the conversion
+    // below does not recognize; a Z:\ module is already whole
+    WCHAR module[MAX_PATH], exe_path[MAX_PATH + 4];
+    const auto length = GetModuleFileNameW(nullptr, module, std::size(module));
+    if (!expect(length && length < std::size(module), "the executable's path is unavailable")) {
+      HeapFree(GetProcessHeap(), 0, loader_path);
+      return verdict();
+    }
+    if (module[0] == L'\\' || module[1] == L':') {
+      lstrcpynW(exe_path, module, std::size(exe_path));
+    } else {
+      lstrcpyW(exe_path, L"\\\\?\\");
+      lstrcpynW(exe_path + 4, module, std::size(exe_path) - 4);
+    }
+    auto exe = unix_name(exe_path);
+    if (!expect(exe != nullptr, "the executable's Unix path is unavailable")) {
       HeapFree(GetProcessHeap(), 0, loader_path);
       return verdict();
     }
     const auto setting = "MULLION_TEST_LATE=" + std::to_string(delay_ms);
     const char *args[] = {"env", setting.c_str(), loader_path, exe, argc > 1 ? argv[1] : "dxil", "child", nullptr};
     const auto status = spawn(const_cast<char *const *>(args), TRUE);
+    HeapFree(GetProcessHeap(), 0, exe);
     HeapFree(GetProcessHeap(), 0, loader_path);
     expect(status == 0, "late child ended with %ld", status);
     SetEvent(finished);

@@ -59,7 +59,8 @@ public:
   GetUAVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) = 0;
   virtual llvm::Optional<CounterDescriptor>
   GetUAVCounter(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) = 0;
-  // the device's table of lock words for 64-bit atomics (word 0 its index mask), where the binding carries one
+  // the device's table of locks for 64-bit atomics (word 0 its index mask, then a ticket and the ticket it serves per
+  // lock), where the binding carries one
   virtual llvm::Value *
   GetAtomicLocks(llvm::air::AIRBuilder &Builder) {
     return nullptr;

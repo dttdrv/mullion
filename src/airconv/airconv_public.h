@@ -350,6 +350,9 @@ enum SM50_SAMPLER_METADATA {
 enum SM50_TEXTURE_VIEW_METADATA : uint64_t {
   SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS = 7,
   SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE = 1ull << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS,
+  /* the resource's tiles are mapped to heaps (CreateReservedResource), whether a shader writes it or not: the mip
+     count above it is at most D3D12_REQ_MIP_LEVELS (15) mips of 8 bits, so bit 15 of the qword is spare */
+  SM50_TEXTURE_VIEW_METADATA_SPARSE = 1ull << 15,
 };
 
 /* WMTSamplerAddressMode, with one border */

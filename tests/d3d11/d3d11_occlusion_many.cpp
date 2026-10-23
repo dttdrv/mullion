@@ -46,7 +46,7 @@ main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "shaders"))
     return verdict();
   char directory[MAX_PATH], exe[MAX_PATH];
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  modulePath(exe, sizeof(exe));
   if (argc == 1) {
     GetTempPathA(sizeof(directory), directory);
     const std::string path = std::string(directory) + "d3d11_occlusion_many-" + std::to_string(GetCurrentProcessId());

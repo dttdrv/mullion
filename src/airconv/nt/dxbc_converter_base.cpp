@@ -20,6 +20,8 @@
 #include "../dxbc_converter.hpp"
 #include "air_builder.hpp"
 #include <limits>
+#include <tuple>
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
@@ -1469,6 +1471,56 @@ Converter::operator()(const InstLoad &load) {
   StoreFeedback(load.feedback, Residency);
 }
 
+llvm::Value *
+Converter::LoadResidency(
+    const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+    llvm::Value *Residency
+) {
+  using namespace llvm;
+  using namespace llvm::air;
+  auto &Info = AIRBuilder::getTextureInfo(Tex.Logical);
+  // a sampler reads a texture of 2 or 3 dimensions and their arrays: a cube's face is addressed by a direction rather
+  // than a texel, and a texel buffer or a multi-sampled texture has no sampler at all
+  if (!Tex.Range || !Residency || Info.is_cube || Info.is_ms || Tex.Logical == Texture::texture_buffer)
+    return Residency;
+  auto Metadata = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Sparse = ir.CreateICmpNE(ir.CreateAnd(Metadata, SM50_TEXTURE_VIEW_METADATA_SPARSE), ir.getInt64(0));
+  auto Head = ir.GetInsertBlock();
+  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
+  if (auto Branch = Head->getTerminator())
+    Branch->eraseFromParent();
+  auto Probe = llvm::BasicBlock::Create(ctx.llvm, "load_residency", Head->getParent(), Tail);
+  ir.SetInsertPoint(Head);
+  ir.CreateCondBr(Sparse, Probe, Tail);
+  ir.SetInsertPoint(Probe);
+  // the texel's centre in the sampler's coordinates of the level it is fetched from
+  auto Dimensions = TextureDimensions(Tex, Info.is_mipmaped ? Level : air.getInt(0));
+  auto CoordType = air.getTextureSampleCoordType(Tex.Texture);
+  Value *Coord = UndefValue::get(CoordType);
+  for (unsigned i = 0; i < Info.coord_dimension; i++) {
+    Value *Texel = Address->getType()->isVectorTy() ? ir.CreateExtractElement(Address, i) : Address;
+    auto Centre = ir.CreateFAdd(
+        air.CreateConvertToFloat(Texel, Signedness::Unsigned), ConstantFP::get(air.getFloatTy(), 0.5)
+    );
+    auto Size = air.CreateConvertToFloat(ir.CreateExtractElement(Dimensions, i), Signedness::Unsigned);
+    Coord = ir.CreateInsertElement(Coord, ir.CreateFDiv(Centre, Size), i);
+  }
+  // Metal's own sampler goes where it is used: one fetch elsewhere in the shader must not hand this one a value its
+  // block does not dominate
+  auto Sampler = air.CreateGetReadSampler();
+  const int32_t NoOffset[3] = {};
+  auto Lod = air.CreateConvertToFloat(Info.is_mipmaped ? Level : air.getInt(0), Signedness::Signed);
+  auto Status =
+      air.CreateSample(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, NoOffset, sample_level{Lod}).second;
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Tail, Tail->begin());
+  auto Merged = ir.CreatePHI(Status->getType(), 2);
+  Merged->addIncoming(Status, Probe);
+  Merged->addIncoming(Residency, Head);
+  return Merged;
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::ReadTexel(
     const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
@@ -1476,6 +1528,7 @@ Converter::ReadTexel(
 ) {
   auto [Value, Residency] =
       air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+  Residency = LoadResidency(Tex, Address, ArrayIndex, Level, Residency);
   if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV)
     return {Value, Residency};
   // an R32G32B32 element's green and blue are the next two R32 texels; its alpha is R32's 1, the default of a
@@ -2263,6 +2316,81 @@ Converter::CalculateLOD(
   return {ir.CreateSelect(Empty, llvm::ConstantFP::get(air.getFloatTy(), 0.0), Clamped), Unclamped};
 }
 
+llvm::Value *
+Converter::SampleFootprintResidency(
+    const TextureResourceHandle &Tex, llvm::Value *Sampler, llvm::Value *Coord, llvm::Value *ArrayIndex,
+    const int32_t Offset[3], llvm::Value *Level, llvm::Value *Linear
+) {
+  using namespace llvm;
+  using namespace llvm::air;
+  auto &Info = AIRBuilder::getTextureInfo(Tex.Logical);
+  auto Axes = Info.coord_dimension;
+  auto Dimensions = TextureDimensions(Tex, Level);
+  auto Size = [&](unsigned Axis) {
+    return air.CreateConvertToFloat(ir.CreateExtractElement(Dimensions, Axis), Signedness::Unsigned);
+  };
+  // the coordinate in the level's texels, its base texel and the fraction toward the next one (D3D11.3 7.18.11's
+  // footprint: the texel it lands on, and the neighbours the filter also weights)
+  auto At = [&](unsigned Axis) {
+    auto Texel = ir.CreateFSub(ir.CreateFMul(ir.CreateExtractElement(Coord, Axis), Size(Axis)),
+                               ConstantFP::get(air.getFloatTy(), 0.5f));
+    return ir.CreateFAdd(Texel, ConstantFP::get(air.getFloatTy(), float(Offset[Axis])));
+  };
+  auto Base = [&](unsigned Axis) { return air.CreateFPUnOp(AIRBuilder::floor, At(Axis)); };
+  auto Fraction = [&](unsigned Axis) { return ir.CreateFSub(At(Axis), Base(Axis)); };
+  auto Last = [&](unsigned Axis) {
+    auto Extent = ir.CreateExtractElement(Dimensions, Axis);
+    return ir.CreateSelect(ir.CreateICmpSGT(Extent, ir.getInt32(0)), ir.CreateSub(Extent, ir.getInt32(1)),
+                           ir.getInt32(0));
+  };
+  // a texel's status: a sample reports the status of the texel its coordinate lands on, a read reports the texture's,
+  // so it is a sample at the texel's centre. Bilinear there weighs the texel alone, and the level is stated rather than
+  // taken from the sampler, so neither the filter nor Metal's own level choice can move it
+  auto CoordType = air.getTextureSampleCoordType(Tex.Texture);
+  auto Lod = air.CreateConvertToFloat(Level, Signedness::Signed);
+  const int32_t NoOffset[3] = {};
+  auto TexelStatus = [&](Value *Address) {
+    Value *Centre = UndefValue::get(CoordType);
+    for (unsigned Axis = 0; Axis < Axes; Axis++) {
+      auto Texel = Address->getType()->isVectorTy() ? ir.CreateExtractElement(Address, Axis) : Address;
+      auto Half = ir.CreateFDiv(air.CreateConvertToFloat(Texel, Signedness::Unsigned), Size(Axis));
+      auto Unit = ir.CreateFAdd(
+          Half, ir.CreateFDiv(ConstantFP::get(air.getFloatTy(), 0.5f), Size(Axis)));
+      Centre = CoordType->isVectorTy() ? ir.CreateInsertElement(Centre, Unit, Axis) : Unit;
+    }
+    auto Status =
+        air.CreateSample(Tex.Texture, Tex.Handle, Sampler, Centre, ArrayIndex, NoOffset, sample_level{Lod}).second;
+    return ir.CreateAnd(Status, 1);
+  };
+  auto PositionType = air.getTextureRWPositionType(Tex.Texture);
+  Value *Status = nullptr;
+  for (unsigned Corner = 0; Corner < (1u << Axes); Corner++) {
+    Value *Address = Constant::getNullValue(PositionType);
+    Value *Contributes = ir.getTrue();
+    for (unsigned Axis = 0; Axis < Axes; Axis++) {
+      const unsigned Step = (Corner >> Axis) & 1;
+      auto Index = air.CreateConvertToSigned(ir.CreateFAdd(Base(Axis), ConstantFP::get(air.getFloatTy(), float(Step))));
+      Index = ir.CreateSelect(ir.CreateICmpSLT(Index, ir.getInt32(0)), ir.getInt32(0),
+                              ir.CreateSelect(ir.CreateICmpSGT(Index, Last(Axis)), Last(Axis), Index));
+      Address = PositionType->isVectorTy() ? ir.CreateInsertElement(Address, Index, Axis) : Index;
+      // a zero-weight texel takes no part in D3D's answer (D3D11.3 5.9.4.5.3); a point read weights one texel only
+      auto Frac = Fraction(Axis);
+      auto Zero = ConstantFP::get(air.getFloatTy(), 0);
+      auto Half = ConstantFP::get(air.getFloatTy(), 0.5f);
+      auto LinearWeight = Step ? ir.CreateFCmpONE(Frac, Zero) : (Value *)ir.getTrue();
+      auto PointWeight = Step ? ir.CreateFCmpOGE(Frac, Half) : ir.CreateFCmpOLT(Frac, Half);
+      Contributes = ir.CreateAnd(Contributes, ir.CreateSelect(Linear, LinearWeight, PointWeight));
+    }
+    // Metal's residency byte sets bit 0 where the texels read are not mapped (dxil_converter's
+    // CheckAccessFullyMapped), so the footprint's bit is the bit of any texel it reads
+    auto Found = TexelStatus(Address);
+    auto Mapped = ir.CreateAnd(Found, ConstantInt::get(Found->getType(), 1));
+    auto Wanted = ir.CreateSelect(Contributes, Mapped, ConstantInt::get(Found->getType(), 0));
+    Status = Status ? ir.CreateOr(Status, Wanted) : Wanted;
+  }
+  return Status;
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::SamplingResidency(
     const TextureResourceHandle &Tex, llvm::Value *Sampler, llvm::Value *SamplerMetadata, llvm::Value *Coord,
@@ -2290,9 +2418,21 @@ Converter::SamplingResidency(
   ir.SetInsertPoint(Head);
   auto Metadata = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
   auto Writable = ir.CreateICmpNE(ir.CreateAnd(Metadata, SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE), ir.getInt64(0));
-  ir.CreateCondBr(
-      ir.CreateAnd(Writable, ir.CreateICmpNE(ir.CreateAnd(Residency, 1), ConstantInt::get(Residency->getType(), 0))),
-      Check, Tail);
+  // Metal's answer for a sample is the status of the one texel the coordinate lands on, not of the footprint: a filtered
+  // read that straddles a mapped and an unmapped texel reports mapped, though D3D's answer weighs every texel the filter
+  // reads (D3D11.3 7.18.11, 5.9.4.5). So where a footprint can be built the branch is taken whenever the status is asked
+  // for, and the footprint is the answer; a resource whose footprint cannot be read (a cube's faces, a multisampled
+  // texture) keeps Metal's answer, corrected where Metal's own level and filter made the texels differ.
+  auto &Info = AIRBuilder::getTextureInfo(Tex.Logical);
+  bool Footprint = !Info.is_cube && !Info.is_ms && Info.coord_dimension >= 1 && Info.coord_dimension <= 3;
+  // an anisotropic read that takes its level from its own derivatives spans texels across levels, more than one level's
+  // 2x2 holds, and one level's answer may call it unmapped, never mapped (tests/d3d12/d3d12_sample_residency). Such a
+  // read keeps Metal's answer; one that states its level is read in that level alone
+  auto Anisotropy = ir.CreateAnd(ir.CreateLShr(SamplerMetadata, SM50_SAMPLER_METADATA_ANISOTROPY),
+                                 (1 << SM50_SAMPLER_METADATA_ANISOTROPY_BITS) - 1);
+  auto Isotropic = Explicit ? (Value *)ir.getTrue() : ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
+  auto Unmapped = ir.CreateICmpNE(ir.CreateAnd(Residency, 1), ConstantInt::get(Residency->getType(), 0));
+  ir.CreateCondBr(ir.CreateAnd(Writable, Footprint ? Isotropic : Unmapped), Check, Tail);
 
   ir.SetInsertPoint(Check);
   // what such a texture reports wrongly it also filters wrongly, when its status is asked for: with one mip, a
@@ -2304,11 +2444,14 @@ Converter::SamplingResidency(
                    ir.getInt32(1)),
       Signedness::Unsigned);
   Value *Safe = ir.CreateFCmpOLE(DecodeTextureMinLODClamp(Tex.Metadata), Last);
+  // D3D picks the filter by whether the read is minified or magnified, from the LOD before its clamps (D3D11.3
+  // 7.18.11); Metal's clamps are not D3D's, so the clamps below do not decide it
+  auto FilterLOD = Level;
   if (!Explicit) {
-    // a component bounds the isotropic footprint from below (D3D11.3 7.18.11). its binary exponent avoids log
-    // approximation; one exponent lower also bounds upward rounding when gradients are scaled to texels.
+    // a component bounds the isotropic footprint (D3D11.3 7.18.11): the level is the log2 of the largest derivative in
+    // texels. Metal's own level cannot be read back, and it is the level a reserved texture a shader can write answers
+    // wrongly, so D3D's is computed here
     Level = ConstantFP::get(air.getFloatTy(), -std::numeric_limits<float>::infinity());
-    auto &Info = AIRBuilder::getTextureInfo(Tex.Logical);
     if (!Info.is_cube) {
       auto Size = air.CreateConvertToFloat(TextureDimensions(Tex, ir.getInt32(0)), Signedness::Unsigned);
       Value *Largest = ConstantFP::get(air.getFloatTy(), 0);
@@ -2318,51 +2461,60 @@ Converter::SamplingResidency(
               air.CreateFPBinOp(AIRBuilder::fmax, Largest,
                                 air.CreateFPUnOp(AIRBuilder::fabs, ir.CreateFMul(ir.CreateExtractElement(D, i),
                                                                                  ir.CreateExtractElement(Size, i))));
-      auto &Semantics = Largest->getType()->getFltSemantics();
-      unsigned Fraction = APFloat::semanticsPrecision(Semantics) - 1;
-      unsigned Exponent = Largest->getType()->getScalarSizeInBits() - Fraction - 1;
-      auto Bits = ir.CreateBitCast(Largest, ir.getIntNTy(Largest->getType()->getScalarSizeInBits()));
-      auto Field = ir.CreateAnd(ir.CreateLShr(Bits, Fraction), llvm::maskTrailingOnes<uint64_t>(Exponent));
-      auto ExponentBias = 1 - APFloat::semanticsMinExponent(Semantics);
-      Level = ir.CreateSelect(
-          ir.CreateICmpEQ(Field, ConstantInt::get(Field->getType(), 0)), Level,
-          air.CreateConvertToFloat(ir.CreateSub(Field, ConstantInt::get(Field->getType(), ExponentBias + 1))));
+      Level = air.CreateFPUnOp(AIRBuilder::log2, Largest);
       Safe = ir.CreateAnd(
           Safe, ir.CreateFCmpOLT(Largest, ConstantFP::get(air.getFloatTy(), std::numeric_limits<float>::infinity())));
     }
     if (Bias)
       Level = ir.CreateFAdd(Level, Bias);
-    Level = CalculateLOD(Tex, Sampler, SamplerMetadata, Coord, ir.CreateFSub(Level, DecodeSamplerBias(SamplerMetadata)),
-                         true)
-                .first;
+    std::tie(Level, FilterLOD) =
+        CalculateLOD(Tex, Sampler, SamplerMetadata, Coord, ir.CreateFSub(Level, DecodeSamplerBias(SamplerMetadata)), true);
     if (MinLOD) {
       Level = air.CreateFPBinOp(AIRBuilder::fmax, Level, MinLOD);
       Safe = ir.CreateAnd(Safe, ir.CreateFCmpOLE(MinLOD, Last));
     }
     // an anisotropic footprint cannot be replaced by a single isotropic sample without losing texels.
-    auto Anisotropy = ir.CreateAnd(ir.CreateLShr(SamplerMetadata, SM50_SAMPLER_METADATA_ANISOTROPY),
-                                   (1 << SM50_SAMPLER_METADATA_ANISOTROPY_BITS) - 1);
     Safe =
         ir.CreateAnd(Safe, ir.CreateAnd(ir.CreateICmpULE(Anisotropy, ir.getInt64(1)), ir.CreateFCmpOGE(Level, Last)));
     Safe = ir.CreateAnd(Safe, ir.CreateFCmpOGT(Last, ConstantFP::get(air.getFloatTy(), 0)));
   }
-  // the probe of a texture of one mip is a magnified read: where the filters differ its texels are other ones
+  // what is left of Safe gates the probe below, which a resource a footprint cannot be read from still needs; the
+  // probe of a texture of one mip is a magnified read: where the filters differ its texels are other ones
   auto Filter = [&](unsigned Shift) { return ir.CreateAnd(ir.CreateLShr(SamplerMetadata, Shift), 1); };
   Safe = ir.CreateAnd(
       Safe, ir.CreateOr(ir.CreateFCmpOGT(Last, ConstantFP::get(air.getFloatTy(), 0)),
                         ir.CreateICmpEQ(Filter(SM50_SAMPLER_METADATA_MIN_LINEAR), Filter(SM50_SAMPLER_METADATA_MAG_LINEAR))));
-  auto Probe = llvm::BasicBlock::Create(ctx.llvm, "sample_last_mip", Head->getParent(), Tail);
-  ir.CreateCondBr(Safe, Probe, Tail);
-  ir.SetInsertPoint(Probe);
-  auto Fixed = air.CreateSample(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, Offset,
-                                sample_level{air.CreateFPBinOp(AIRBuilder::fmin, Level, Last)})
-                   .second;
-  ir.CreateBr(Tail);
+  llvm::SmallVector<std::tuple<llvm::BasicBlock *, llvm::Value *, llvm::Value *>, 3> Edges;
+  Edges.emplace_back(Head, Sample.first, Residency);
+  if (Footprint) {
+    // the filter D3D picks for the read's unclamped LOD (7.18.11), and the level the footprint is in: the LOD rounded,
+    // inside the mips there are
+    auto Linear = ir.CreateICmpNE(
+        ir.CreateSelect(ir.CreateFCmpOGT(FilterLOD, ConstantFP::get(air.getFloatTy(), 0)),
+                        Filter(SM50_SAMPLER_METADATA_MIN_LINEAR), Filter(SM50_SAMPLER_METADATA_MAG_LINEAR)),
+        ir.getInt64(0));
+    auto Target = air.CreateFPBinOp(
+        AIRBuilder::fmax, air.CreateFPBinOp(AIRBuilder::fmin, Level, Last), ConstantFP::get(air.getFloatTy(), 0));
+    auto LevelInt = air.CreateConvertToSigned(
+        air.CreateFPUnOp(AIRBuilder::floor, ir.CreateFAdd(Target, ConstantFP::get(air.getFloatTy(), 0.5f))));
+    auto Found = SampleFootprintResidency(Tex, Sampler, Coord, ArrayIndex, Offset, LevelInt, Linear);
+    ir.CreateBr(Tail);
+    Edges.emplace_back(Check, Again, Found);
+  } else {
+    auto Probe = llvm::BasicBlock::Create(ctx.llvm, "sample_last_mip", Head->getParent(), Tail);
+    ir.CreateCondBr(Safe, Probe, Tail);
+    ir.SetInsertPoint(Probe);
+    auto Fixed = air.CreateSample(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, Offset,
+                                  sample_level{air.CreateFPBinOp(AIRBuilder::fmin, Level, Last)})
+                     .second;
+    ir.CreateBr(Tail);
+    Edges.emplace_back(Check, Again, Residency);
+    Edges.emplace_back(Probe, Again, Fixed);
+  }
   ir.SetInsertPoint(Tail, Tail->begin());
-  auto Value = ir.CreatePHI(Sample.first->getType(), 3);
-  auto Result = ir.CreatePHI(Residency->getType(), 3);
-  for (auto [Block, Texels, Status] : {std::tuple{Head, Sample.first, Residency},
-                                       std::tuple{Check, Again, Residency}, std::tuple{Probe, Again, Fixed}}) {
+  auto Value = ir.CreatePHI(Sample.first->getType(), Edges.size());
+  auto Result = ir.CreatePHI(Residency->getType(), Edges.size());
+  for (auto &[Block, Texels, Status] : Edges) {
     Value->addIncoming(Texels, Block);
     Result->addIncoming(Status, Block);
   }

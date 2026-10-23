@@ -19,7 +19,7 @@
 #pragma once
 #include "Metal.hpp"
 #include "rc/util_rc_ptr.hpp"
-#include "util_d3dkmt.h"
+#include <windows.h>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -29,6 +29,19 @@ namespace mullion {
 using KeyedMutexAcquire = std::function<void(uint64_t)>;
 using KeyedMutexRelease = std::function<void(uint64_t)>;
 
+// the keyed mutex's shared state: one named file mapping per mutex, openable by name from any device or process of
+// the session that holds a texture made from it. the GPU ordering travels separately, on the shared event whose
+// mach port is registered under the same name (the carrier pattern of d3d11_fence.cpp). the state is the contract
+// of IDXGIKeyedMutex: "the initial key is zero and subsequent keys are those released" (Microsoft Learn,
+// IDXGIKeyedMutex::AcquireSync), and "a keyed mutex does not support recursive calls to the AcquireSync method"
+struct SharedMutexState {
+  char tag[20];
+  volatile LONG64 owner;     // the owning instance's token, 0 when the mutex is free
+  volatile LONG abandoned;   // set when the owner is destroyed while owning, and never cleared
+  uint64_t current_key;      // the key the last release released with
+  uint64_t fence_value;      // the value the last release signaled on the shared event
+};
+
 class KeyedMutex {
 public:
   void incRef();
@@ -37,14 +50,14 @@ public:
   ~KeyedMutex();
 
   static Rc<KeyedMutex> create(WMT::Device device);
-  static Rc<KeyedMutex> import(WMT::Device device, D3DKMT_HANDLE global_kmt);
+  static Rc<KeyedMutex> import(WMT::Device device, const char *name);
 
-  HRESULT acquire(KeyedMutexAcquire&& func_acquire, uint64_t key, uint32_t milliseconds);
-  HRESULT release(KeyedMutexRelease&& func_release, uint64_t key);
+  HRESULT acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t milliseconds);
+  HRESULT release(KeyedMutexRelease &&func_release, uint64_t key);
 
-  D3DKMT_HANDLE
-  globalHandle() const {
-    return global_kmt_;
+  const char *
+  name() const {
+    return name_;
   }
 
   WMT::Reference<WMT::SharedEvent>
@@ -53,11 +66,13 @@ public:
   }
 
 private:
-  D3DKMT_HANDLE local_kmt_;
-  D3DKMT_HANDLE global_kmt_;
+  KeyedMutex() = default;
+
+  char name_[54] = {};
+  HANDLE mapping_ = nullptr;
+  SharedMutexState *state_ = nullptr;
+  uint64_t token_ = 0;
   std::atomic<uint32_t> refcount_ = {0u};
-  std::atomic_bool owned_ = false;
-  uint64_t fence_value_ = 0;
   WMT::Reference<WMT::SharedEvent> event_;
 };
 

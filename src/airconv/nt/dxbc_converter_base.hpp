@@ -495,6 +495,14 @@ public:
       llvm::Value *Level = nullptr, bool Conservative = false
   );
 
+  // the status of a sample's footprint (D3D11.3 7.18.11, 5.9.4.5): every texel of `Level` (a mip level, an integer)
+  // that the filter weighs, each sampled at its centre, which is the only query that reports one texel's tile.
+  // `Linear` picks the filtered footprint (two texels an axis) over a point read's one
+  llvm::Value *SampleFootprintResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Sampler, llvm::Value *Coord, llvm::Value *ArrayIndex,
+      const int32_t Offset[3], llvm::Value *Level, llvm::Value *Linear
+  );
+
   // a sample's texels and status, where Metal's own are wrong: a reserved texture a shader can write reports no
   // texel mapped, and filters as if magnified, when the level is past its last mip (D3D11.3 7.18.10: the level is
   // "clamped to available miplevels"). `Read` reads again, `Level` or the gradients say how the sample chose its level
@@ -550,6 +558,15 @@ public:
   std::pair<llvm::Value *, llvm::Value *> ReadTexel(
       const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
       llvm::Value *Level
+  );
+  // whether a tiled texture's tiles are mapped where a texel fetch reads (D3D12's CheckAccessFullyMapped status for
+  // Load), from Metal's sampling feedback: a fetch of one texel is a nearest sample of its centre. Metal's own feedback
+  // for a fetch says nothing of the mappings (it is 16 bytes of a mapped tile, whatever is mapped); its sampling
+  // feedback is exact. a fetch of what cannot be sampled (multi-sampled textures, texel buffers, cube maps) keeps its
+  // own, and so does a resource that is not tiled
+  llvm::Value *LoadResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+      llvm::Value *Residency
   );
   llvm::Value *ExtractBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, bool Signed);
   llvm::Value *InsertBits(llvm::Value *Width, llvm::Value *Offset, llvm::Value *Src, llvm::Value *Dst);

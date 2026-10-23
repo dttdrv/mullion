@@ -25,20 +25,38 @@ public:
   void *base = nullptr;
 
   ~RecordingArena() {
-    if (base)
+    if (base && owned_)
       VirtualFree(base, 0, MEM_RELEASE);
   }
 
   // blocks are what the system gives address space in
+  static size_t
+  blockSize() {
+    SYSTEM_INFO system;
+    GetSystemInfo(&system);
+    return system.dwAllocationGranularity;
+  }
+
   bool
   Initialize() {
     if (base)
       return true;
-    SYSTEM_INFO system;
-    GetSystemInfo(&system);
-    block_ = system.dwAllocationGranularity;
+    block_ = blockSize();
     used_.assign(kSize / block_, false);
+    owned_ = true;
     return (base = VirtualAlloc(nullptr, kSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+  }
+
+  // memory somebody else owns, of kSize: the device's buffer is one region of one mapping, where a mapping of
+  // this size that the system places is as many regions as it splits into
+  bool
+  Adopt(void *memory) {
+    if (base)
+      return true;
+    block_ = blockSize();
+    used_.assign(kSize / block_, false);
+    owned_ = false;
+    return (base = memory);
   }
 
   // the first whole blocks in one piece that hold `bytes`
@@ -65,6 +83,7 @@ public:
 private:
   size_t block_ = 0;
   std::vector<bool> used_;
+  bool owned_ = false;
   mullion::mutex mutex_;
 };
 

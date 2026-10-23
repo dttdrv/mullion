@@ -948,9 +948,19 @@ main(int argc, char **argv) {
 
 static int
 processes(int argc, char **argv) {
-  char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
+  char temporary[MAX_PATH], directory[MAX_PATH];
+  WCHAR module[MAX_PATH], module_path[MAX_PATH + 4];
   GetTempPathA(sizeof(temporary), temporary);
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  // a test run from a Unix path outside every drive reports its module as unix\... (the
+  // \\?\unix device without its prefix): put the prefix back for the conversion and the loader
+  if (!expect(GetModuleFileNameW(nullptr, module, std::size(module)), "the executable's path is unavailable"))
+    return verdict();
+  if (module[0] == L'\\' || module[1] == L':') {
+    lstrcpynW(module_path, module, std::size(module_path));
+  } else {
+    lstrcpyW(module_path, L"\\\\?\\");
+    lstrcpynW(module_path + 4, module, std::size(module_path) - 4);
+  }
   if (!expect(GetTempFileNameA(temporary, "sc", 0, directory), "no temporary name"))
     return verdict();
   DeleteFileA(directory);
@@ -969,6 +979,9 @@ processes(int argc, char **argv) {
     return verdict();
   std::string store = std::string("MULLION_SHADER_CACHE_PATH=") + path;
   HeapFree(GetProcessHeap(), 0, path);
+  auto exe = unix_name(module_path);
+  if (!expect(exe != nullptr, "the executable's Unix path is unavailable"))
+    return verdict();
   auto spawn = reinterpret_cast<LONG(WINAPI *)(char *const *, int)>(
       GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_unix_spawnvp")
   );
@@ -1062,6 +1075,7 @@ processes(int argc, char **argv) {
     run("grid", false, "MULLION_MESH_GRID_LIMIT=2");
     run("warm", false, "MULLION_MESH_GRID_LIMIT=2");
   }
+  HeapFree(GetProcessHeap(), 0, exe);
   HeapFree(GetProcessHeap(), 0, loader_path);
   auto find = FindFirstFileA((std::string(directory) + "\\*").c_str(), &found);
   if (find != INVALID_HANDLE_VALUE) {

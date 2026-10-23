@@ -196,6 +196,8 @@ public:
                                           (uint64_t)Texture->width() << 32 | (uint64_t)Texture->height() << 48;
       if (Texture->isSparse() && (Texture->usage() & WMTTextureUsageShaderWrite))
         gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE;
+      if (Texture->isSparse())
+        gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE;
     }
     return S_OK;
   }

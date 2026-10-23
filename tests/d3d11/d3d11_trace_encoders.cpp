@@ -232,7 +232,7 @@ main(int argc, char **argv) {
 
   char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
   GetTempPathA(sizeof(temporary), temporary);
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  modulePath(exe, sizeof(exe));
   struct Setting { bool trace, errors; };
   const Setting settings[] = {{false, false}, {false, true}, {true, false}, {true, true}};
   for (auto setting : settings) {

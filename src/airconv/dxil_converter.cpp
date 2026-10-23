@@ -2051,9 +2051,11 @@ convert_dxil(
             [=, &ir](Value *v) { ir.CreateStore(v, ptr); }};
   };
   // a 64-bit atomic, which Apple GPUs lack (but min and max without a result): `update` of `word`'s old value under a
-  // lock word of `locks` hashed from its key, returning the old value. every 64-bit atomic takes a lock, so none races
-  // a lock-free one. one lane of a SIMD group at a time takes one: a lane waiting on its own group's lock holder would
-  // wait forever, as the group's lanes do not run while one spins
+  // lock of `locks` hashed from its key, returning the old value. every 64-bit atomic takes a lock, so none races a
+  // lock-free one. a lock is a FIFO ticket: a lane takes the ticket its lock hands out next and waits for the lock to
+  // serve it, so it is served after the waiters that arrived before it and its wait is their number, not a race with
+  // newcomers it can lose for as long as the shader runs. one lane of a SIMD group at a time takes one: a lane waiting
+  // on its own group's lock holder would wait forever, as the group's lanes do not run while one spins
   auto locked = [&](const Word64 &word, Value *locks, std::function<Value *(Value *)> update) -> Value * {
     if (air.DiscardWrites && word.memory != llvm::air::MemFlags::Threadgroup)
       return word.read();
@@ -2063,8 +2065,8 @@ convert_dxil(
     auto exit = SplitBlock(head, &*ir.GetInsertPoint());
     auto block = [&](const char *name) { return llvm::BasicBlock::Create(ctx.llvm, name, ctx.function, exit); };
     auto loop = block("atomic64"), pending_lane = block("atomic64_pending"), elected = block("atomic64_elected"),
-         spin = block("atomic64_spin"), held = block("atomic64_held"), given_up = block("atomic64_given_up"),
-         next = block("atomic64_next");
+         take = block("atomic64_take"), spin = block("atomic64_spin"), wait = block("atomic64_wait"),
+         held = block("atomic64_held"), given_up = block("atomic64_given_up"), next = block("atomic64_next");
     // a pixel shader's helper lanes take no part: their atomics do nothing, so one would spin on a lock forever
     ir.SetInsertPoint(head->getTerminator());
     Value *lane = ctx.shader_type == D3D10_SB_PIXEL_SHADER
@@ -2085,32 +2087,46 @@ convert_dxil(
     auto hash =
         ir.CreateTrunc(ir.CreateLShr(ir.CreateMul(word.key, ir.getInt64(0x9e3779b97f4a7c15)), 32), ir.getInt32Ty());
     auto mask = ir.CreateLoad(ir.getInt32Ty(), locks);
-    auto lock = ir.CreateGEP(ir.getInt32Ty(), locks, {ir.CreateAdd(ir.CreateAnd(hash, mask), ir.getInt32(1))});
-    ir.CreateCondBr(first, spin, next);
-    // the wait is bounded, well inside the GPU's watchdog, so a lock whose holder never runs again cannot hang the GPU:
-    // a lane that gives up raises the table's flag, which removes the device (MTLD3D12Device::CheckAtomicLocks)
+    // each lock is two words of the table: the ticket it hands out next (1 + 2 * its index) and the one it serves now
+    // (2 + 2 * its index). a lane takes a ticket and waits for its turn, so the waiters are served in the order they
+    // arrived and the wait is the number of waiters before the lane, not a race it can lose forever to newcomers
+    auto ticket = ir.CreateGEP(
+        ir.getInt32Ty(), locks, {ir.CreateAdd(ir.CreateMul(ir.CreateAnd(hash, mask), ir.getInt32(2)), ir.getInt32(1))}
+    );
+    auto serving = ir.CreateGEP(ir.getInt32Ty(), ticket, ir.getInt32(1));
+    // the flag of an atomic that gave up waiting is one past the pairs
+    auto flag = ir.CreateGEP(
+        ir.getInt32Ty(), locks, {ir.CreateAdd(ir.CreateMul(ir.CreateAdd(mask, ir.getInt32(1)), ir.getInt32(2)), ir.getInt32(1))}
+    );
+    ir.CreateCondBr(first, take, next);
+    // the wait is still bounded, well inside the GPU's watchdog, so a lock whose holder never runs again cannot hang the
+    // GPU: a lane that gives up raises the table's flag, which removes the device (MTLD3D12Device::CheckAtomicLocks)
     constexpr uint32_t kSpins = 1u << 24;
+    ir.SetInsertPoint(take);
+    auto mine = air.CreateAtomicRMW(AtomicRMWInst::Add, ticket, ir.getInt32(1));
+    ir.CreateBr(spin);
     ir.SetInsertPoint(spin);
     auto spins = ir.CreatePHI(ir.getInt32Ty(), 2);
-    spins->addIncoming(ir.getInt32(0), elected);
-    auto taken = ir.CreateExtractValue(
-        ir.CreateAtomicCmpXchg(lock, ir.getInt32(0), ir.getInt32(1), {}, AtomicOrdering::Monotonic, AtomicOrdering::Monotonic), 1
-    );
+    spins->addIncoming(ir.getInt32(0), take);
+    // a spin reads the word rather than taking it: no waiter can delay another by merely looking, and an atomic read is
+    // the one that cannot be stale for the rest of a dispatch (CreateDeviceCoherentLoad's comment)
+    auto served = air.CreateAtomicRMW(AtomicRMWInst::Or, serving, ir.getInt32(0));
     auto spun = ir.CreateAdd(spins, ir.getInt32(1));
-    auto retry = block("atomic64_retry");
-    ir.CreateCondBr(taken, held, retry);
-    ir.SetInsertPoint(retry);
+    ir.CreateCondBr(ir.CreateICmpEQ(served, mine), held, wait);
+    spins->addIncoming(spun, wait);
+    ir.SetInsertPoint(wait);
     ir.CreateCondBr(ir.CreateICmpEQ(spun, ir.getInt32(kSpins)), given_up, spin);
-    spins->addIncoming(spun, retry);
     ir.SetInsertPoint(given_up);
-    air.CreateAtomicRMW(AtomicRMWInst::Or, ir.CreateGEP(ir.getInt32Ty(), locks, {ir.CreateAdd(mask, ir.getInt32(2))}), ir.getInt32(1));
+    air.CreateAtomicRMW(AtomicRMWInst::Or, flag, ir.getInt32(1));
+    // a ticket nobody serves would stop every later waiter for this word: it is passed over when it is our turn
+    ir.CreateAtomicCmpXchg(serving, mine, ir.CreateAdd(mine, ir.getInt32(1)), {}, AtomicOrdering::Monotonic, AtomicOrdering::Monotonic);
     ir.CreateBr(next);
     ir.SetInsertPoint(held);
     air.CreateAtomicFence(word.memory, scope);
     auto value = word.read();
     word.write(update(value));
     air.CreateAtomicFence(word.memory, scope);
-    air.CreateAtomicRMW(AtomicRMWInst::Xchg, lock, ir.getInt32(0));
+    air.CreateAtomicRMW(AtomicRMWInst::Add, serving, ir.getInt32(1));
     ir.CreateBr(next);
     ir.SetInsertPoint(next);
     auto still = ir.CreatePHI(ir.getInt1Ty(), 4), got = ir.CreatePHI(ir.getInt64Ty(), 4);

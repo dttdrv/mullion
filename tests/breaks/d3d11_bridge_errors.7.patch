@@ -1,12 +1,12 @@
 # return the MTLDevice_newLibraryWithSource error without ownership
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
-@@ -3549,7 +3549,7 @@
-       [[NSString alloc] initWithBytes:params->source.ptr length:params->length encoding:NSASCIIStringEncoding];
-   NSError *err = NULL;
-   params->ret_library = (obj_handle_t)[device newLibraryWithSource:source options:nil error:&err];
+@@ -3707,7 +3707,7 @@
+     options.languageVersion = MTLLanguageVersion3_0;
+   }
+   params->ret_library = (obj_handle_t)[device newLibraryWithSource:source options:options error:&err];
 -  params->ret_error = (obj_handle_t)[err retain];
 +  params->ret_error = (obj_handle_t)err;
+   [options release];
    [source release];
    return STATUS_SUCCESS;
- }

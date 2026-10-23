@@ -51,11 +51,19 @@ converted_calls(const std::string &code) {
   auto spawn = reinterpret_cast<LONG(WINAPI *)(char *const *, int)>(
       GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_unix_spawnvp")
   );
-  WCHAR exe[MAX_PATH], temporary[MAX_PATH], name[MAX_PATH];
-  if (!expect(unix_name && spawn && GetModuleFileNameW(nullptr, exe, std::size(exe)) &&
+  WCHAR module[MAX_PATH], exe[MAX_PATH + 4], temporary[MAX_PATH], name[MAX_PATH];
+  if (!expect(unix_name && spawn && GetModuleFileNameW(nullptr, module, std::size(module)) &&
                   GetTempPathW(std::size(temporary), temporary) && GetTempFileNameW(temporary, L"mm", 0, name),
               "converter paths or process launch unavailable"))
     return {};
+  // a test run from a Unix path outside every drive reports its module as unix\... (the
+  // \\?\unix device without its prefix): put the prefix back so the path names a real file
+  if (module[0] == L'\\' || module[1] == L':') {
+    lstrcpynW(exe, module, std::size(exe));
+  } else {
+    lstrcpyW(exe, L"\\\\?\\");
+    lstrcpynW(exe + 4, module, std::size(exe) - 4);
+  }
   std::filesystem::path source(name), output(source.wstring() + L".ll");
   auto tool = std::filesystem::path(exe).parent_path().parent_path().parent_path() / "src" / "airconv" / "darwin" /
               "airconv";

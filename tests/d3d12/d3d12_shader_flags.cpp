@@ -59,7 +59,7 @@ main(int argc, char **argv) {
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   if (argc < 3) {
     char executable[MAX_PATH], temporary[MAX_PATH], directory[MAX_PATH];
-    GetModuleFileNameA(nullptr, executable, sizeof(executable));
+    modulePath(executable, sizeof(executable));
     GetTempPathA(sizeof(temporary), temporary);
     if (!expect(GetTempFileNameA(temporary, "flg", 0, directory), "temporary log name"))
       return verdict();

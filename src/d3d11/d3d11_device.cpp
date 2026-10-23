@@ -1523,7 +1523,16 @@ public:
 
     *ppvObject = nullptr;
 
-    if (riid == __uuidof(IUnknown) || riid == __uuidof(IDXGIObject) ||
+    // on Windows the D3D11 device is the DXGI device: one object, so ID3D11Device's interfaces and IDXGIDevice's
+    // answer IUnknown with one pointer. this device keeps them in two objects, and the D3D11 one is what an
+    // application holds, compares and stores (Wine's dlls/d3d11/tests/d3d11.c, test_immediate_context, asks the
+    // device and its info queue for it)
+    if (riid == __uuidof(IUnknown)) {
+      *ppvObject = ref_and_cast<ID3D11Device>(&d3d11_device_);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IDXGIObject) ||
         riid == __uuidof(IDXGIDevice) || riid == __uuidof(IDXGIDevice1) ||
         riid == __uuidof(IDXGIDevice2) || riid == __uuidof(IDXGIDevice3) ||
         riid == __uuidof(IMTLDXGIDevice)) {

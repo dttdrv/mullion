@@ -414,7 +414,7 @@ main(int argc, char **argv) {
     return child(argv, device, vs, ps, cs);
   char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
   GetTempPathA(sizeof(temporary), temporary);
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  modulePath(exe, sizeof(exe));
   auto unix_name =
       (char *(__cdecl *)(const WCHAR *))GetProcAddress(GetModuleHandleA("kernel32.dll"), "wine_get_unix_file_name");
   if (!expect(unix_name != nullptr, "Wine path conversion unavailable"))
@@ -643,10 +643,22 @@ main(int argc, char **argv) {
       for (UINT i = 0; i < std::size(render_runs); i++)
         expect(run_counts[render_runs[i]] == frames && run_counts[compute_runs[i]] == frames,
                "pipeline lost on list replay");
-      for (UINT frame = 0; frame < frames; frame++) {
-        auto &fast = kernel_times[compute_runs[0]], &slow = kernel_times[compute_runs[1]];
-        if (expect(fast.size() == frames && slow.size() == frames, "kernel samples missing"))
-          expect(slow[frame] > fast[frame] && fast[frame] > 0, "long kernel not slower in frame %u", frame);
+      // a stage's sample is the time from one stage boundary to the next, so a pass the GPU preempts
+      // carries the stall: in 31 recorded runs the short kernel's span reached 173 us against its usual
+      // 6 us, and one run's frame compared 0.8 while the kernels' own work differs by about 40 times.
+      // the frames' median is the measurement -- one frame's stall is not a property of the kernels --
+      // and every frame still has to have its sample.
+      {
+        auto &fast_times = kernel_times[compute_runs[0]], &slow_times = kernel_times[compute_runs[1]];
+        if (expect(fast_times.size() == frames && slow_times.size() == frames, "kernel samples missing")) {
+          auto median = [](std::vector<UINT64> times) {
+            std::nth_element(times.begin(), times.begin() + times.size() / 2, times.end());
+            return times[times.size() / 2];
+          };
+          const UINT64 fast = median(fast_times), slow = median(slow_times);
+          expect(slow > fast && fast > 0, "long kernel not slower: %llu ns against %llu ns over %u frames", slow,
+                 fast, frames);
+        }
       }
       UINT overflow_buffers = 0;
       for (auto &[key, group] : by_buffer)

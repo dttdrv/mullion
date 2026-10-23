@@ -9,3 +9,5 @@ option('enable_tests', type : 'boolean', value : false)
 option('enable_nvapi', type : 'boolean', value : false)
 option('enable_nvngx', type : 'boolean', value : false)
 option('enable_d3d12', type : 'boolean', value : true)
+# Direct3D 9 is being implemented (src/d3d9/README): off, so a build that does not ask for it is the one it was
+option('enable_d3d9', type : 'boolean', value : false)

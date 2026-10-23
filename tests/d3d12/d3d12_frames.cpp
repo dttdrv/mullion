@@ -133,7 +133,7 @@ main(int argc, char **argv) {
     return child(argc > 3 ? argv[3] : nullptr);
   char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];
   GetTempPathA(sizeof(temporary), temporary);
-  GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  modulePath(exe, sizeof(exe));
   const std::string requested = std::to_string(first) + ":" + std::to_string(count);
   const std::string beyond = std::to_string(frames) + ":1";
   const std::string maximum = std::to_string(std::numeric_limits<UINT64>::max());
