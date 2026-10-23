@@ -37,6 +37,11 @@ enum SM50_BINDING_INDEX: uint32_t {
   /* a geometry draw's first object threadgroup and instance (uint2): not zero where a draw runs in parts */
   SM50_BINDING_INDEX_DRAW_ORIGIN = 9,
   SM50_BINDING_INDEX_PIPELINE_STATISTICS = SM50_BINDING_INDEX_DRAW_ORIGIN + 1,
+  /* the depth bounds test of a GPU without one, a pixel shader's (SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds):
+     whether the draw has it and the row pitch of the samples that pass it, two uints, then those samples, a byte for
+     each pixel */
+  SM50_BINDING_INDEX_DEPTH_BOUNDS = SM50_BINDING_INDEX_PIPELINE_STATISTICS + 2,
+  SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES = SM50_BINDING_INDEX_DEPTH_BOUNDS + 1,
 
   SM50_BINDING_INDEX_ROOT_ARGUMENTS = 0,
   SM50_BINDING_INDEX_STATIC_SAMPLERS = 1,
@@ -404,6 +409,14 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];
   bool pipeline_statistics;
+  /* the depth bounds test, which a GPU without it has the pixel shader do: at SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES a
+     byte for each pixel holds, a bit for each sample, the samples whose depth is in the bounds, and at
+     SM50_BINDING_INDEX_DEPTH_BOUNDS whether the draw tests and the bytes' row pitch; a pixel of none is discarded and
+     the others keep only those samples */
+  bool depth_bounds;
+  /* the depth and stencil tests after the shader, whatever it declares: a discard then takes a sample out of an
+     occlusion query, which the test of depth_bounds must do */
+  bool late_tests;
 };
 
 struct SM50_IA_INPUT_ELEMENT {

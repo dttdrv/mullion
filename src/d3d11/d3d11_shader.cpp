@@ -189,6 +189,8 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.unorm_output_reg_mask = variant.unorm_output_reg_mask;
     std::copy(variant.pixel_formats.begin(), variant.pixel_formats.end(), data.pixel_formats);
     data.pipeline_statistics = variant.pipeline_statistics;
+    data.depth_bounds = false;
+    data.late_tests = false;
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;

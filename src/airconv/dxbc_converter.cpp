@@ -377,6 +377,8 @@ llvm::Error convert_dxbc_pixel_shader(
     pso_unorm_output_reg_mask = pso_data->unorm_output_reg_mask;
     pso_sample_mask = pso_data->sample_mask;
     pso_pixel_formats = pso_data->pixel_formats;
+    if (pso_data->late_tests)
+      func_signature.UseLateFragmentTests();
   }
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
@@ -446,6 +448,34 @@ llvm::Error convert_dxbc_pixel_shader(
     coverage = sample < *statistics ? ~0u : func_signature.DefineInput(air::InputInputCoverage{});
   }
 
+  // the depth bounds test of a GPU without one: the pixel's position, whether the draw tests, and the samples that pass
+  uint32_t bounds_position = ~0u, bounds_enabled = ~0u, bounds_mask = ~0u, bounds_coverage = ~0u;
+  if (pso_data && pso_data->depth_bounds) {
+    bounds_position =
+        func_signature.DefineInput(air::InputPosition{.interpolation = air::Interpolation::center_no_perspective});
+    bounds_enabled = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = 8,
+        .location_index = SM50_BINDING_INDEX_DEPTH_BOUNDS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::msl_uint2,
+        .arg_name = "depth_bounds",
+        .raster_order_group = {}
+    });
+    bounds_mask = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::msl_uint,
+        .arg_name = "depth_bounds_samples",
+        .raster_order_group = {}
+    });
+    bounds_coverage = func_signature.DefineOutput(air::OutputCoverageMask{});
+  }
+
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_PIXEL_SHADER, rootsig->bytecode,
                                    rootsig->bytecode_length
@@ -471,6 +501,50 @@ llvm::Error convert_dxbc_pixel_shader(
   );
 
   setup_metal_version(module, metal_version);
+
+  // the samples in the bounds, all without the test; none discards the pixel before anything else
+  llvm::Value *bounded = nullptr;
+  if (bounds_position != ~0u) {
+    auto words = builder.CreateLoad(llvm::FixedVectorType::get(builder.getInt32Ty(), 2), function->getArg(bounds_enabled));
+    auto enabled = builder.CreateICmpNE(builder.CreateExtractElement(words, uint64_t(0)), builder.getInt32(0));
+    auto position = function->getArg(bounds_position);
+    auto x = builder.CreateFPToUI(builder.CreateExtractElement(position, uint64_t(0)), builder.getInt32Ty());
+    auto y = builder.CreateFPToUI(builder.CreateExtractElement(position, uint64_t(1)), builder.getInt32Ty());
+    auto head = builder.GetInsertBlock();
+    auto test = llvm::BasicBlock::Create(context, "depth_bounds", function, epilogue_bb);
+    auto discard = llvm::BasicBlock::Create(context, "depth_bounds_discard", function, epilogue_bb);
+    auto kept = llvm::BasicBlock::Create(context, "depth_bounds_kept", function, epilogue_bb);
+    builder.CreateCondBr(enabled, test, kept);
+    builder.SetInsertPoint(test);
+    auto at = builder.CreateAdd(builder.CreateMul(y, builder.CreateExtractElement(words, uint64_t(1))), x);
+    auto bytes = builder.CreateBitCast(
+        function->getArg(bounds_mask),
+        builder.getInt8Ty()->getPointerTo(function->getArg(bounds_mask)->getType()->getPointerAddressSpace())
+    );
+    auto samples = builder.CreateZExt(
+        builder.CreateLoad(builder.getInt8Ty(), builder.CreateGEP(builder.getInt8Ty(), bytes, {at})), builder.getInt32Ty()
+    );
+    builder.CreateCondBr(builder.CreateICmpEQ(samples, builder.getInt32(0)), discard, kept);
+    builder.SetInsertPoint(discard);
+    air.CreateDiscard();
+    builder.CreateBr(kept);
+    builder.SetInsertPoint(kept);
+    auto phi = builder.CreatePHI(builder.getInt32Ty(), 3);
+    phi->addIncoming(builder.getInt32(~0u), head);
+    phi->addIncoming(samples, test);
+    phi->addIncoming(builder.getInt32(0), discard);
+    bounded = phi;
+    // the samples the shader or the pipeline keeps, of those
+    epilogue >> [=](pvalue value) -> IRValue {
+      return make_irvalue([=](struct context ctx) {
+        auto &builder = ctx.builder;
+        llvm::Value *kept = ctx.resource.coverage_mask_reg || ctx.pso_sample_mask != 0xffffffff
+                                ? builder.CreateExtractValue(value, {bounds_coverage})
+                                : builder.getInt32(~0u);
+        return builder.CreateInsertValue(value, builder.CreateAnd(kept, bounded), {bounds_coverage});
+      });
+    };
+  }
 
   if (statistics) {
     // D3D11.3 20.4.7 counts executions even when an output depth fails the test.
@@ -544,6 +618,15 @@ llvm::Error convert_dxbc_pixel_shader(
   } else {
     builder.CreateRet(value);
   }
+  // the registers' allocas made after the depth bounds test split the entry block go back to it, where SROA promotes
+  // them
+  auto &entry = function->getEntryBlock();
+  for (auto &block : *function)
+    if (&block != &entry)
+      for (auto &instruction : llvm::make_early_inc_range(block))
+        if (auto alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
+            alloca && llvm::isa<llvm::ConstantInt>(alloca->getArraySize()))
+          alloca->moveBefore(&*entry.getFirstInsertionPt());
 
   module.getOrInsertNamedMetadata("air.fragment")
     ->addOperand(function_metadata);

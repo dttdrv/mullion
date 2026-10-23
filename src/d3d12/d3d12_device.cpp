@@ -251,6 +251,12 @@ public:
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
 
     occlusion_sum = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("sum_occlusion"), err);
+    for (uint32_t i = 0; i < 4; i++) {
+      const char *names[] = {"depth_bounds_samples_2d", "depth_bounds_samples_2d_array", "depth_bounds_samples_2d_ms",
+                             "depth_bounds_samples_2d_ms_array"};
+      depth_bounds_samples[i] =
+          GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction(names[i]), err);
+    }
     pipeline_statistics_sum = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("sum_pipeline_statistics"), err
     );
@@ -258,7 +264,8 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
-    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances) {
+    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
     }
@@ -636,7 +643,8 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS2))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS2 *>(pFeatureData);
-      out->DepthBoundsTestSupported = GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
+      // Metal's on Apple10, the pixel shader's elsewhere (d3d12_command_list.cpp, DepthBoundsSamples)
+      out->DepthBoundsTestSupported = TRUE;
       out->ProgrammableSamplePositionsTier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
       return S_OK;
     }

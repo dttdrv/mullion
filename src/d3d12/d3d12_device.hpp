@@ -458,11 +458,15 @@ public:
   float scole_scale;
   float depth_bias_clamp;
   uint32_t forced_sample_count;
-  // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test
+  // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
+  // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
+  // depth_bounds); and whether the pipeline writes depth, which changes what passes
   bool depth_bounds = false;
+  bool depth_bounds_emulated = false;
+  bool writes_depth = false;
 
   virtual WMT::RenderPipelineState RenderTargets(WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar,
-                                                 bool Statistics = false) = 0;
+                                                 bool Statistics = false, bool Occluded = false) = 0;
   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
 };
 
@@ -579,6 +583,9 @@ public:
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
+  // the samples of a depth attachment in the depth bounds, for a GPU without the test (depth_bounds_samples_*): of a
+  // 2D, 2D array, multisampled and multisampled array view
+  WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
 
   WMT::Reference<WMT::DepthStencilState> default_depth_stencil_state;
 

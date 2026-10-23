@@ -422,6 +422,24 @@ public:
   static constexpr size_t kVisibilitySegments = 4096;
   static constexpr size_t kVisibilityWindow = (1 + kVisibilitySegments) * sizeof(uint64_t);
   std::vector<WMT::Reference<WMT::Buffer>> visibility_;
+  // the depth bounds test of a GPU without one: buffers of the samples in the bounds, a byte for each pixel
+  // (SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES), the last at least as large as asked for, which the lists' passes use one
+  // after another
+  std::vector<WMT::Reference<WMT::Buffer>> depth_bounds_samples_;
+  uint64_t depth_bounds_length_ = 0;
+  WMT::Buffer
+  DepthBoundsSamples(uint64_t length) {
+    if (depth_bounds_samples_.empty() || depth_bounds_length_ < length) {
+      depth_bounds_length_ = length;
+      WMTBufferInfo info;
+      info.memory.set(nullptr);
+      info.length = length;
+      info.options = WMTResourceStorageModePrivate | WMTResourceHazardTrackingModeUntracked;
+      depth_bounds_samples_.push_back(device_->GetMTLDevice().newBuffer(info));
+      exhausted_ |= !depth_bounds_samples_.back();
+    }
+    return depth_bounds_samples_.back();
+  }
   std::tuple<WMT::Buffer, uint64_t, size_t>
   VisibilitySlot() {
     if (visibility_used_ == kVisibilityWindow) {

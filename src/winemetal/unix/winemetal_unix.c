@@ -2229,6 +2229,8 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];
   bool pipeline_statistics;
+  bool depth_bounds;
+  bool late_tests;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2314,6 +2316,8 @@ sm50_compilation_argument32_convert(
       data->dual_source_blending = src->dual_source_blending;
       memcpy(data->pixel_formats, src->pixel_formats, sizeof(data->pixel_formats));
       data->pipeline_statistics = src->pipeline_statistics;
+      data->depth_bounds = src->depth_bounds;
+      data->late_tests = src->late_tests;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {

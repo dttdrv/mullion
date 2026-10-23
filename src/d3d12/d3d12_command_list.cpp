@@ -200,6 +200,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // OMSetDepthBounds' range, NaN as 0; the pass has a range set when depth_bounds_set_
   FLOAT depth_bounds_[2];
   bool depth_bounds_set_ = false;
+  // the depth bounds test of a GPU without one: the samples in the range a kernel found before the pass it is for, until
+  // the range changes or a draw writes depth (DepthBoundsSamples)
+  WMT::Buffer depth_bounds_samples_{};
+  EncoderData *depth_bounds_pass_ = nullptr;
+  bool depth_bounds_stale_ = true;
 
   // occlusion queries: the running ones, each from the first visibility slot it counts in; the slots' GPU addresses,
   // in order; and the sums the ended ones need (sum_occlusion's), made before their results are read
@@ -725,10 +730,60 @@ public:
     return {offset, stride};
   }
 
+  // the samples of the depth stencil view in the depth bounds, a bit each, for the pixel shader's test, in a pass of
+  // their own before the draw's (SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds)
+  void
+  DepthBoundsSamples() {
+    auto depth = dsv.Texture->view(dsv.View).texture;
+    auto type = dsv.Texture->textureType(dsv.View);
+    uint32_t kind = (type == WMTTextureType2DArray || type == WMTTextureType2DMultisampleArray) +
+                    2 * (type == WMTTextureType2DMultisample || type == WMTTextureType2DMultisampleArray);
+    StartComputePass();
+    depth_bounds_samples_ = allocator_->DepthBoundsSamples(uint64_t(dsv.Width) * dsv.Height);
+    auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+    pso.type = WMTComputeCommandSetPSO;
+    pso.pso = device_->depth_bounds_samples[kind];
+    pso.threadgroup_size = {8, 8, 1};
+    auto &texture = allocator_->EncodeComputeCommand<wmtcmd_compute_settexture>();
+    texture.type = WMTComputeCommandSetTexture;
+    texture.texture = depth.handle;
+    texture.index = 0;
+    auto &samples = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+    samples.type = WMTComputeCommandSetBuffer;
+    samples.buffer = depth_bounds_samples_;
+    samples.offset = 0;
+    samples.index = 1;
+    // DepthBounds, mullion_command.metal
+    struct {
+      float range[2];
+      uint32_t pitch;
+    } bounds{{std::clamp(depth_bounds_[0], 0.0f, 1.0f), std::clamp(depth_bounds_[1], 0.0f, 1.0f)}, dsv.Width};
+    auto &bytes = allocator_->EncodeComputeCommand<wmtcmd_compute_setbytes>();
+    bytes.type = WMTComputeCommandSetBytes;
+    bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(bounds), 16), &bounds, sizeof(bounds)));
+    bytes.length = sizeof(bounds);
+    bytes.index = 0;
+    auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+    dispatch.type = WMTComputeCommandDispatchThreads;
+    dispatch.size = {dsv.Width, dsv.Height, 1};
+  }
+
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false) {
     if (!pso_graphics_)
       return DrawCallStatus::Invalid;
+    // a draw that tests the depth bounds where the GPU cannot finds the samples that pass first, unless the pass it is
+    // in has them for this range and nothing has written depth since
+    bool bounds_tested = pso_graphics_->depth_bounds_emulated && pso_graphics_->dsv_mask && dsv.Texture &&
+                         (DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)) & 1);
+    bool bounds_found = false;
+    if (bounds_tested && depth_bounds_[0] > depth_bounds_[1])
+      return DrawCallStatus::Invalid;
+    if (bounds_tested && (depth_bounds_stale_ || !allocator_->encoder_current ||
+                          allocator_->encoder_current != depth_bounds_pass_)) {
+      DepthBoundsSamples();
+      bounds_found = true;
+    }
     // a draw whose scissors or viewports the pass has no room for starts the next pass
     const UINT count = D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     if (auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
@@ -836,6 +891,10 @@ public:
       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef, DirtyState::DepthBounds);
       depth_bounds_set_ = false;
       dirty_state_.set(DirtyState::GraphicsPipelineState);
+      if (bounds_found) {
+        depth_bounds_pass_ = allocator_->encoder_current;
+        depth_bounds_stale_ = false;
+      }
       if (!active_queries_.empty())
         CountVisibility();
     }
@@ -973,6 +1032,26 @@ public:
       dirty_state_.clr(DirtyState::StencilRef);
     }
 
+    // the pixel shader's test where the GPU has none: whether the draw tests, and the samples that pass
+    if (pso_graphics_->depth_bounds_emulated) {
+      uint32_t words[2] = {bounds_tested, dsv.Width};
+      auto &bytes = allocator_->EncodeRenderCommand<wmtcmd_render_setbytes>();
+      bytes.type = WMTRenderCommandSetFragmentBytes;
+      bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(words), 16), words, sizeof(words)));
+      bytes.length = sizeof(words);
+      bytes.index = SM50_BINDING_INDEX_DEPTH_BOUNDS;
+      if (bounds_tested) {
+        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+        buffer.type = WMTRenderCommandSetFragmentBuffer;
+        buffer.buffer = depth_bounds_samples_;
+        buffer.offset = 0;
+        buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
+      }
+    }
+    // a draw that writes depth changes which samples are in the bounds
+    if (pso_graphics_->writes_depth && dsv.Texture && !(dsv.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH))
+      depth_bounds_stale_ = true;
+
     // stored depth passes inside the range, clamped to [0, 1]; an inverted range fails everything, and a pass without
     // a depth buffer passes. Metal's test is off at [0, 1]
     bool bounded = pso_graphics_->depth_bounds && dsv.Texture;
@@ -1082,7 +1161,9 @@ public:
     for (unsigned i = 0; i < std::size(pass->colors); i++)
       if (pass->colors[i].attachment)
         mask |= 1u << i;
-    return pso_graphics_->RenderTargets(Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty());
+    return pso_graphics_->RenderTargets(
+        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty()
+    );
   }
 
   // the pipeline's variant for the topology: a geometry pipeline has one for strips, and with stream output one
@@ -3091,8 +3172,10 @@ public:
   OMSetDepthBounds(FLOAT Min, FLOAT Max) {
     if (Record([=](auto *l) { l->OMSetDepthBounds(Min, Max); }))
       return;
-    depth_bounds_[0] = std::isnan(Min) ? 0.0f : Min;
-    depth_bounds_[1] = std::isnan(Max) ? 0.0f : Max;
+    float bounds[2] = {std::isnan(Min) ? 0.0f : Min, std::isnan(Max) ? 0.0f : Max};
+    depth_bounds_stale_ |= bounds[0] != depth_bounds_[0] || bounds[1] != depth_bounds_[1];
+    depth_bounds_[0] = bounds[0];
+    depth_bounds_[1] = bounds[1];
     dirty_state_.set(DirtyState::DepthBounds);
   }
 

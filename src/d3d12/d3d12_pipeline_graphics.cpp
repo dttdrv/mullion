@@ -402,8 +402,9 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
-      auto &[next, type, mask, dual, depth, unorm, formats, statistics] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
-      hash(mask, dual, depth, unorm, formats, statistics);
+      auto &[next, type, mask, dual, depth, unorm, formats, statistics, bounds, late] =
+          *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+      hash(mask, dual, depth, unorm, formats, statistics, bounds, late);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -555,8 +556,10 @@ protected:
   };
   std::unordered_map<obj_handle_t, PipelineDescriptor> pipeline_descriptors_;
   mullion::mutex render_targets_mutex_;
-  std::function<WMT::Reference<WMT::Function>()> statistics_pixel_shader_;
-  WMT::Reference<WMT::Function> statistics_ps_;
+  // the pixel shader's variants, made when first drawn: counting pipeline statistics, and with its depth and stencil
+  // tests after it (an occlusion query and the depth bounds test of a GPU without one)
+  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late)> pixel_variant_;
+  WMT::Reference<WMT::Function> pixel_variants_[2][2];
 
   template <typename Info>
   WMT::Reference<WMT::RenderPipelineState>
@@ -681,6 +684,36 @@ protected:
       DumpShaders({VS, GS});
     }
     return variant;
+  }
+
+  // a fragment function of no outputs that discards the pixels of no sample in the depth bounds, and keeps the samples
+  // that are, as a pixel shader with SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds does
+  WMT::Reference<WMT::Function>
+  DepthBoundsFragment() {
+    static const char source[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct Kept {
+  uint samples [[sample_mask]];
+};
+fragment Kept depth_bounds_fragment(float4 position [[position]], constant uint2 &bounds [[buffer(12)]],
+                                    device const uchar *samples [[buffer(13)]]) {
+  Kept kept{~0u};
+  if (!bounds.x)
+    return kept;
+  kept.samples = samples[uint(position.y) * bounds.y + uint(position.x)];
+  if (!kept.samples)
+    discard_fragment();
+  return kept;
+}
+)";
+    static_assert(SM50_BINDING_INDEX_DEPTH_BOUNDS == 12 && SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES == 13);
+    WMT::Reference<WMT::Error> err;
+    auto library = device_->GetMTLDevice().newLibraryWithSource(std::string_view(source, sizeof(source) - 1), err);
+    if (!library) {
+      ERR("Failed to compile the depth bounds test's fragment function: ", err.description().getUTF8String());
+      return {};
+    }
+    return library.newFunction("depth_bounds_fragment");
   }
 
 public:
@@ -837,6 +870,7 @@ public:
       info.depth_compare_function = kCompareFunctionMap[pDesc->DepthStencilState.DepthFunc];
       info.depth_write_enabled = pDesc->DepthStencilState.DepthWriteMask == D3D12_DEPTH_WRITE_MASK_ALL;
     }
+    writes_depth = info.depth_write_enabled;
 
     if (pDesc->DepthStencilState.StencilEnable) {
       info.front_stencil.enabled = true;
@@ -1076,6 +1110,8 @@ public:
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
       data_ps.next = &common;
       data_ps.pipeline_statistics = false;
+      data_ps.depth_bounds = depth_bounds_emulated;
+      data_ps.late_tests = false;
 
       std::array<WMTPixelFormat, std::size(data_ps.pixel_formats)> formats{};
       for (unsigned i = 0; i < pDesc->NumRenderTargets; i++)
@@ -1087,24 +1123,31 @@ public:
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
       if (!(ps_func = function(shader_ps, pDesc->PS, root_signature(rootsig, &data_ps), ps_name.c_str())))
         return E_INVALIDARG;
-      statistics_pixel_shader_ =
+      pixel_variant_ =
           [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
-           signature = Com<ID3D12RootSignature>(pDesc->pRootSignature), data_ps, common, ps_name]() mutable {
+           signature = Com<ID3D12RootSignature>(pDesc->pRootSignature), data_ps, common,
+           ps_name](bool statistics, bool late) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
             MTL_SHADER_REFLECTION reflection;
             if (FAILED(InitializeShader(device_, bytecode, &shader, &reflection)))
               return WMT::Reference<WMT::Function>{};
-            data_ps.pipeline_statistics = true;
+            data_ps.pipeline_statistics = statistics;
+            data_ps.late_tests = late;
             data_ps.next = &common;
             SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
             auto arguments = RootSignature(rootsig, signature.ptr(), &data_ps);
-            return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, (ps_name + "_statistics").c_str(),
+            auto variant = ps_name + (statistics ? "_statistics" : "") + (late ? "_late" : "");
+            return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, variant.c_str(),
                                    [&shader](auto args, auto name, auto bitcode, auto error) {
                                      return SM50Compile(shader, args, name, bitcode, error);
                                    });
           };
     }
+
+    // without a pixel shader, one that only tests the depth bounds of a GPU without the test
+    if (depth_bounds_emulated && !ps_func && !(ps_func = DepthBoundsFragment()))
+      return E_FAIL;
 
     auto geometry_inputs = [&] {
       auto in = std::make_unique<GeometryInputs>();
@@ -1319,16 +1362,20 @@ public:
   }
 
   WMT::RenderPipelineState RenderTargets(WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar,
-                                         bool Statistics) override {
+                                         bool Statistics, bool Occluded) override {
     Mask &= rtv_mask;
     DSVPlanar &= dsv_mask;
     Statistics &= pixel_shader;
-    if (!Pipeline || (!Statistics && Mask == rtv_mask && DSVPlanar == dsv_mask))
+    // a pixel shader's discard of the depth bounds test takes its samples out of an occlusion query only before the
+    // depth and stencil tests
+    bool late = Occluded && depth_bounds_emulated && pixel_shader;
+    if (!Pipeline || (!Statistics && !late && Mask == rtv_mask && DSVPlanar == dsv_mask))
       return Pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
     auto &descriptor = pipeline_descriptors_.at(Pipeline.handle);
     auto key = Mask | (DSVPlanar << D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) |
-               (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2));
+               (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
+               (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3));
     auto found = descriptor.variants.find(key);
     if (found != descriptor.variants.end())
       return found->second;
@@ -1337,13 +1384,11 @@ public:
     // Graphics Rendering: Render Command Encoder, Creating and Configuring a Render Pipeline Descriptor)
     auto pipeline = std::visit(
         [&](auto info) {
-          if (Statistics && info.fragment_function) {
-            if (!statistics_ps_) {
-              if (!(statistics_ps_ = statistics_pixel_shader_()))
-                return WMT::Reference<WMT::RenderPipelineState>{};
-              statistics_pixel_shader_ = {};
-            }
-            info.fragment_function = statistics_ps_;
+          if ((Statistics || late) && info.fragment_function) {
+            auto &variant = pixel_variants_[Statistics][late];
+            if (!variant && !(variant = pixel_variant_(Statistics, late)))
+              return WMT::Reference<WMT::RenderPipelineState>{};
+            info.fragment_function = variant;
           }
           for (unsigned i = 0; i < std::size(info.colors); i++)
             if (!(Mask & (1u << i)))
@@ -1438,6 +1483,7 @@ CreateGraphicsPipelineState(
   if (cached)
     pso->cached_shaders = *cached;
   pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
+  pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds;
   HRESULT hr = pso->Initialize(&desc, AS, MS, depth_stencil2);
   if (FAILED(hr))
     return hr;

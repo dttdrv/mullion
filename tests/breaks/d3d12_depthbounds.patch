@@ -1,0 +1,12 @@
+# the pixel shader keeps every pixel
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -524,7 +524,7 @@
+     auto samples = builder.CreateZExt(
+         builder.CreateLoad(builder.getInt8Ty(), builder.CreateGEP(builder.getInt8Ty(), bytes, {at})), builder.getInt32Ty()
+     );
+-    builder.CreateCondBr(builder.CreateICmpEQ(samples, builder.getInt32(0)), discard, kept);
++    builder.CreateCondBr(builder.getFalse(), discard, kept);
+     builder.SetInsertPoint(discard);
+     air.CreateDiscard();
+     builder.CreateBr(kept);
