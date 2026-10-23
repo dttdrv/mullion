@@ -1,0 +1,12 @@
+# what the shader evaluates of a perspective input is not divided by 1/w there
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -696,7 +696,7 @@
+       auto user = llvm::dyn_cast<llvm::Instruction>(use.getUser());
+       return user && !conservative_own.contains(user);
+     });
+-  for (auto [index, at] : conservative_over_w) {
++  for (auto [index, at] : decltype(conservative_over_w){}) {
+     if (at != 3)
+       continue;
+     std::vector<llvm::CallInst *> evaluations;

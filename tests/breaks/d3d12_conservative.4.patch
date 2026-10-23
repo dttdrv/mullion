@@ -1,0 +1,12 @@
+# a flat input is the second corner's, not the first's
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1356,7 +1356,7 @@ convert_pass_through_geometry_shader(
+       bool integer = pVertexStage->register_types(v.reg, RegisterComponentType::Float)[v.component] != RegisterComponentType::Float;
+       bool flat = integer || (pso_data->flat_inputs >> v.reg & 1);
+       // a flat varying is the first corner's, which every triangle of the fan starts at
+-      auto value = component(conservative && flat ? 0 : corner, v.reg, v.component);
++      auto value = component(conservative && flat ? 1 : corner, v.reg, v.component);
+       if (conservative && clip[0] && !flat) {
+         bool screen = pso_data->noperspective_inputs >> v.reg & 1;
+         air.CreateSetMeshVertexData(

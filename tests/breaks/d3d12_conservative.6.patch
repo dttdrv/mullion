@@ -1,0 +1,12 @@
+# a geometry shader's flat outputs are the last corner's
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -712,7 +712,7 @@
+               return builder.CreateExtractElement(builder.CreateLoad(types._int4, ring_at(slot[k], reg)), uint64_t(c));
+             };
+             bool flat = component_types[c] != RegisterComponentType::Float || (pso_data->flat_inputs >> reg & 1);
+-            pvalue component = corner(0);
++            pvalue component = corner(2);
+             if (!flat && reg != position_reg) {
+               auto &parts = pso_data->noperspective_inputs >> reg & 1 ? fan.linear : fan.perspective;
+               pvalue sum = nullptr;

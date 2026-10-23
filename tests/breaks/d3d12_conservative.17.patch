@@ -1,0 +1,12 @@
+# perspective inputs are not divided by the 1/w interpolated with them
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -579,7 +579,7 @@
+     auto position = function->getArg(conservative_position);
+     // what reads the inputs gets them divided by the 1/w Metal interpolates with them, and the position's w over it
+     auto rcp_w = [&](uint32_t at) { return function->getArg(conservative_rcp_w[at]); };
+-    for (auto [index, at] : conservative_over_w) {
++    for (auto [index, at] : decltype(conservative_over_w){}) {
+       auto input = function->getArg(index);
+       if (at == 3)
+         continue; // at each evaluation instead
