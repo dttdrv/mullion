@@ -911,6 +911,19 @@ public:
       dirty_state_.clr(DirtyState::GraphicsRootSignature);
     }
 
+    // a conservative rasterizer's mesh stage dilates triangles by pixels of the viewport each chooses
+    if (pso_graphics_->conservative) {
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(SM50_CONSERVATIVE_VIEWPORTS), 16);
+      auto data = static_cast<SM50_CONSERVATIVE_VIEWPORTS *>(mapped);
+      memset(data, 0, sizeof(*data));
+      for (UINT i = 0; i < std::min<UINT>(num_viewports, std::size(data->viewports)); i++)
+        data->viewports[i][0] = viewports[i].TopLeftX, data->viewports[i][1] = viewports[i].TopLeftY,
+        data->viewports[i][2] = viewports[i].Width, data->viewports[i][3] = viewports[i].Height;
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, sizeof(*data), "conservative viewports");
+      EncodeBuffer(WMTRenderCommandSetMeshBuffer, offset, SM50_BINDING_INDEX_VIEWPORTS);
+    }
+
     // a primitive names one of the viewports and scissors there may be (D3D11.3 15.8.1). a viewport that is not set
     // is of no size and a scissor that is not set is empty (15.6, 15.7): nothing is drawn through either, which an
     // empty scissor says to Metal, whatever viewport it has there

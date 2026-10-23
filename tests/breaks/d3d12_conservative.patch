@@ -1,0 +1,12 @@
+# the pixel shader takes every pixel of the grown triangle
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -396,7 +396,7 @@ conservative_overlap(llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, llv
+     auto reach = builder.CreateFMul(builder.CreateFAdd(abs(a), abs(b)), f(half));
+     outside = builder.CreateOr(outside, builder.CreateFCmpOLT(builder.CreateFAdd(value, reach), f(0)));
+   }
+-  return builder.CreateAnd(outside, builder.CreateNot(air.CreateIsNaN(x(0))));
++  return builder.getFalse();
+ }
+ 
+ llvm::Error convert_dxbc_pixel_shader(

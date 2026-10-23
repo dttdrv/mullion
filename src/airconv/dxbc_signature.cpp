@@ -298,6 +298,12 @@ void handle_signature_ps(
   auto &func_signature = sm50_shader->func_signature;
   // the components of an input register the shader declares, as varyings
   auto varyings = [&](uint32_t reg, uint32_t mask, RegisterComponentType type, air::Interpolation interpolation) {
+    if (interpolation == air::Interpolation::flat || type != RegisterComponentType::Float)
+      sm50_shader->ps_flat_input_mask |= 1u << reg;
+    else if (interpolation == air::Interpolation::center_no_perspective ||
+             interpolation == air::Interpolation::centroid_no_perspective ||
+             interpolation == air::Interpolation::sample_no_perspective)
+      sm50_shader->ps_noperspective_input_mask |= 1u << reg;
     signature_handlers.push_back([=](SignatureContext &ctx) {
       bool pull_mode = bool(ctx.pull_mode_reg_mask & (1 << reg)) && interpolation != air::Interpolation::flat;
       for (unsigned c = 0; c < 4; c++) {

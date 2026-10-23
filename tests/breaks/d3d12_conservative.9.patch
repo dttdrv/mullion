@@ -1,0 +1,12 @@
+# a mesh shader's every Metal threadgroup grows the first slice
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -4192,7 +4192,7 @@
+       cm.slice = builder.CreateURem(x, builder.getInt32(slices));
+       group = builder.CreateInsertElement(group, builder.CreateUDiv(x, builder.getInt32(slices)), uint64_t(0));
+     } else {
+-      cm.slice = x;
++      cm.slice = builder.getInt32(0);
+       group = builder.CreateLoad(
+           FixedVectorType::get(builder.getInt32Ty(), 3),
+           builder.CreateBitCast(

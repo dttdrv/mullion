@@ -1105,6 +1105,9 @@ read_dxil(
       declare(D3D10_SB_OPCODE_DCL_INPUT, type, 0, 0, D3D10_SB_NAME_UNDEFINED, 0, ~0u);
   if (used_ops.count(SampleIndex))
     shader->func_signature.DefineInput(air::InputSampleIndex{});
+  for (auto op : {BufferStore, RawBufferStore, TextureStore, AtomicBinOp, AtomicCompareExchange, BufferUpdateCounter,
+                  WriteSamplerFeedback, WriteSamplerFeedbackBias, WriteSamplerFeedbackLevel, WriteSamplerFeedbackGrad})
+    shader->writes_resources |= used_ops.count(op) != 0;
   // a SIMD group's lane and width are inputs of every Metal stage but vertex, for the operations that read them
   auto used = [&](std::initializer_list<uint32_t> ops) {
     return llvm::any_of(ops, [&](auto op) { return used_ops.count(op); });
@@ -1608,9 +1611,43 @@ convert_dxil(
   auto i8 = ir.getInt8Ty();
   uint32_t corners = shader->mesh_lines ? 2 : 3;
   GlobalVariable *staged_position = nullptr, *staged_distance = nullptr, *staged_index = nullptr, *staged_culled = nullptr;
+  // conservative rasterization keeps every output for the group's fans (io_binding_map::ConservativeMesh): a vertex's
+  // varyings, position and clip distances, a primitive's varyings, ID, layer and viewport, as 32-bit words
+  auto cm = ctx.resource.conservative_mesh.get();
+  GlobalVariable *conservative_vertices = nullptr, *conservative_primitives = nullptr;
+  uint32_t clip_count = 0, vertex_columns = 0, primitive_columns = 0;
+  bool primitive_outputs[4] = {}; // ID, layer, viewport, culled
+  if (cm) {
+    for (auto &e : shader->mesh_outputs[0])
+      if (e.semantic == SemanticClipDistance)
+        clip_count += e.rows * e.cols;
+    for (auto &e : shader->mesh_outputs[1]) {
+      primitive_outputs[0] |= e.semantic == SemanticPrimitiveID;
+      primitive_outputs[1] |= e.semantic == SemanticRenderTargetArrayIndex;
+      primitive_outputs[2] |= e.semantic == SemanticViewportArrayIndex;
+    }
+    primitive_outputs[3] = culls || cull_distances;
+    vertex_columns = cm->registers[0].size() + 4 + clip_count;
+    primitive_columns = cm->registers[1].size() + 3;
+  }
   // the counts SetMeshOutputCounts gave this thread, nothing until then
   Value *mesh_counts[2]{};
-  if (staged_positions || cull_distances) {
+  if (cm) {
+    IRBuilder<>::InsertPointGuard guard(ir);
+    ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
+    for (auto &count : mesh_counts)
+      ir.CreateStore(ir.getInt32(0), count = ir.CreateAlloca(ir.getInt32Ty()));
+    conservative_vertices =
+        threadgroup(ArrayType::get(ArrayType::get(ir.getInt32Ty(), vertex_columns), std::max(shader->mesh_max_vertices, 1u)));
+    conservative_primitives = threadgroup(
+        ArrayType::get(ArrayType::get(ir.getInt32Ty(), primitive_columns), std::max(shader->mesh_max_primitives, 1u))
+    );
+    staged_index = threadgroup(ArrayType::get(ArrayType::get(i8, corners), std::max(shader->mesh_max_primitives, 1u)));
+    if (cull_distances)
+      staged_distance = threadgroup(ArrayType::get(ArrayType::get(i8, cull_distances), shader->mesh_max_vertices));
+    if (culls)
+      staged_culled = threadgroup(ArrayType::get(i8, shader->mesh_max_primitives));
+  } else if (staged_positions || cull_distances) {
     IRBuilder<>::InsertPointGuard guard(ir);
     ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
     for (auto &count : mesh_counts)
@@ -2457,7 +2494,12 @@ convert_dxil(
       break;
     }
     case SetMeshOutputCounts:
-      // Metal counts the vertices itself
+      // Metal counts the vertices itself; a conservative mesh's are its fans', set at the end
+      if (cm) {
+        for (unsigned i = 0; i < 2; i++)
+          ir.CreateStore(a(1 + i), mesh_counts[i]);
+        break;
+      }
       air.CreateSetMeshPrimitiveCount(a(2));
       if (mesh_counts[0])
         for (unsigned i = 0; i < 2; i++)
@@ -2466,6 +2508,10 @@ convert_dxil(
     case EmitIndices:
       for (unsigned i = 0; i < corners; i++) {
         auto index = ir.CreateTrunc(a(2 + i), i8);
+        if (cm) {
+          ir.CreateStore(index, element_of(staged_index, {a(1), ir.getInt32(i)}));
+          continue;
+        }
         air.CreateSetMeshIndex(ir.CreateAdd(ir.CreateMul(a(1), ir.getInt32(corners)), ir.getInt32(i)), index);
         if (staged_index)
           ir.CreateStore(index, element_of(staged_index, {a(1), ir.getInt32(i)}));
@@ -2492,9 +2538,13 @@ convert_dxil(
           ir.CreateICmpEQ(ctx.resource.thread_id_in_group_flat_arg, ir.getInt32(0)), call, false
       ));
       ir.CreateStore(ir.CreateLoad(type, local), payload);
+      // a conservative mesh shader grows each D3D group's triangles in slices, threadgroups along x
       Value *grid = UndefValue::get(FixedVectorType::get(ir.getInt32Ty(), 3));
       for (unsigned i = 0; i < 3; i++)
-        grid = ir.CreateInsertElement(grid, a(1 + i), i);
+        grid = ir.CreateInsertElement(
+            grid, i || ctx.resource.mesh_slices == 1 ? a(1 + i) : ir.CreateMul(a(1), ir.getInt32(ctx.resource.mesh_slices)),
+            i
+        );
       air.CreateSetMeshProperties(grid);
       ir.SetInsertPoint(call);
       break;
@@ -2517,6 +2567,48 @@ convert_dxil(
       v = ir.CreateBitCast(v, e.type == RegisterComponentType::Float ? ir.getFloatTy() : ir.getInt32Ty());
       mesh_row(call, e.rows, [&](uint32_t row) {
         auto component = row * e.cols + column;
+        // a conservative mesh's wait for its fans; cull distances as before
+        if (cm) {
+          auto bits = ir.CreateBitCast(v, ir.getInt32Ty());
+          auto keep = [&](uint32_t at) {
+            ir.CreateStore(
+                bits, element_of(primitive ? conservative_primitives : conservative_vertices, {a(5), ir.getInt32(at)})
+            );
+          };
+          auto varying = varyings[component];
+          if (~varying)
+            keep(varying);
+          uint32_t first = cm->registers[primitive].size();
+          switch (e.semantic) {
+          case SemanticPosition:
+            keep(first + column);
+            break;
+          case SemanticClipDistance:
+            keep(first + 4 + data + component);
+            break;
+          case SemanticCullDistance:
+            ir.CreateStore(
+                ir.CreateZExt(ir.CreateFCmpULT(v, ConstantFP::get(ir.getFloatTy(), 0)), i8),
+                element_of(staged_distance, {a(5), ir.getInt32(data + component)})
+            );
+            break;
+          case SemanticPrimitiveID:
+            keep(first);
+            break;
+          case SemanticRenderTargetArrayIndex:
+            keep(first + 1);
+            break;
+          case SemanticViewportArrayIndex:
+            keep(first + 2);
+            break;
+          case SemanticCullPrimitive:
+            ir.CreateStore(ir.CreateZExt(ir.CreateICmpNE(v, ir.getInt32(0)), i8), element_of(staged_culled, {a(5)}));
+            break;
+          default:
+            break;
+          }
+          return;
+        }
         if (auto varying = varyings[component]; ~varying)
           primitive ? air.CreateSetMeshPrimitiveData(a(5), ir.getInt32(varying), v)
                     : air.CreateSetMeshVertexData(a(5), ir.getInt32(varying), v);
@@ -3690,7 +3782,130 @@ convert_dxil(
       call->replaceAllUsesWith(ret);
     call->eraseFromParent();
   }
-  if (staged_position || staged_distance) {
+  if (cm) {
+    // every path of the function ends here first: each thread grows the group's triangles of this slice a group's size
+    // apart from its own index, of those the shader set and never more than it declares (conservative_fan)
+    auto exported = llvm::BasicBlock::Create(ctx.llvm, "export_conservative_mesh", ctx.function, epilogue);
+    epilogue->replaceAllUsesWith(exported);
+    ir.SetInsertPoint(exported);
+    air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+    auto &n = shader->threadgroup_size;
+    auto fans = ir.getInt32(cm->fans);
+    auto count = air.CreateIntBinOp(
+        llvm::air::AIRBuilder::min, ir.CreateLoad(ir.getInt32Ty(), mesh_counts[1]), ir.getInt32(shader->mesh_max_primitives)
+    );
+    auto first = ir.CreateMul(cm->slice, fans);
+    auto from = ir.GetInsertBlock();
+    auto head = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, epilogue);
+    auto body = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, epilogue);
+    auto grow = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, epilogue);
+    auto next = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, epilogue);
+    auto done = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, epilogue);
+    ir.CreateBr(head);
+    ir.SetInsertPoint(head);
+    auto f = ir.CreatePHI(ir.getInt32Ty(), 2);
+    f->addIncoming(ctx.resource.thread_id_in_group_flat_arg, from);
+    ir.CreateCondBr(ir.CreateICmpULT(f, fans), body, done);
+    ir.SetInsertPoint(body);
+    auto p = ir.CreateAdd(first, f);
+    ir.CreateCondBr(ir.CreateICmpULT(p, count), grow, next);
+    ir.SetInsertPoint(grow);
+    {
+      Value *corner[3];
+      for (uint32_t k = 0; k < 3; k++)
+        corner[k] = ir.CreateZExt(ir.CreateLoad(i8, element_of(staged_index, {p, ir.getInt32(k)})), ir.getInt32Ty());
+      auto word = [&](GlobalVariable *of, Value *at, uint32_t column) {
+        return ir.CreateLoad(ir.getInt32Ty(), element_of(of, {at, ir.getInt32(column)}));
+      };
+      auto real = [&](Value *bits) { return ir.CreateBitCast(bits, ir.getFloatTy()); };
+      uint32_t position_at = cm->registers[0].size();
+      Value *clip[3];
+      for (uint32_t k = 0; k < 3; k++) {
+        clip[k] = UndefValue::get(FixedVectorType::get(ir.getFloatTy(), 4));
+        for (uint32_t c = 0; c < 4; c++)
+          clip[k] = ir.CreateInsertElement(clip[k], real(word(conservative_vertices, corner[k], position_at + c)), c);
+      }
+      Value *viewport = primitive_outputs[2] ? (Value *)word(conservative_primitives, p, cm->registers[1].size() + 2) : ir.getInt32(0);
+      viewport = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport, ir.getInt32(15), false);
+      auto fan = conservative_fan(ir, air, ctx.types, clip, cm->viewports, viewport);
+      auto blend = [&](const ConservativeFan::Weights &parts, uint32_t u, uint32_t column) {
+        Value *sum = nullptr;
+        for (uint32_t k = 0; k < 3; k++) {
+          auto part = ir.CreateFMul(parts[u][k], real(word(conservative_vertices, corner[k], column)));
+          sum = sum ? ir.CreateFAdd(sum, part) : part;
+        }
+        return sum;
+      };
+      auto vertex_base = ir.CreateMul(f, ir.getInt32(9)), primitive_base = ir.CreateMul(f, ir.getInt32(7));
+      for (uint32_t u = 0; u < 9; u++) {
+        auto vertex = ir.CreateAdd(vertex_base, ir.getInt32(u));
+        air.CreateSetMeshPosition(vertex, fan.position[u]);
+        // a flat varying is the first corner's, every triangle of the fan starting there
+        for (uint32_t i = 0; i < cm->registers[0].size(); i++) {
+          auto reg = cm->registers[0][i];
+          bool integer = cm->integers[0][i], flat = integer || (cm->flat_inputs >> reg & 1);
+          Value *value = flat ? word(conservative_vertices, corner[0], i)
+                              : blend(cm->noperspective_inputs >> reg & 1 ? fan.linear : fan.over_w, u, i);
+          if (flat && !integer)
+            value = real(value);
+          air.CreateSetMeshVertexData(vertex, ir.getInt32(i), value);
+        }
+        for (uint32_t i = 0; i < clip_count; i++)
+          air.CreateSetMeshClipDistance(vertex, ir.getInt32(i), blend(fan.over_w, u, position_at + 4 + i));
+        for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++) {
+          Value *window = fan.window[i / 2][i % 2];
+          if (i == 0)
+            window = ir.CreateSelect(fan.in_front, window, air.getFloat(NAN));
+          air.CreateSetMeshVertexData(vertex, ir.getInt32(cm->at + i), window);
+        }
+        for (uint32_t i = 0; i < SM50_CONSERVATIVE_RCP_W; i++)
+          air.CreateSetMeshVertexData(vertex, ir.getInt32(cm->at + SM50_CONSERVATIVE_VARYINGS + i), fan.rcp_w[u]);
+      }
+      // a primitive is culled when one distance puts all its vertices out, or when the shader culls it itself
+      Value *culled = fan.degenerate;
+      if (culls)
+        culled = ir.CreateOr(culled, ir.CreateICmpNE(ir.CreateLoad(i8, element_of(staged_culled, {p})), ir.getInt8(0)));
+      for (uint32_t distance = 0; distance < cull_distances; distance++) {
+        Value *out = ir.getInt8(1);
+        for (uint32_t k = 0; k < 3; k++)
+          out = ir.CreateAnd(out, ir.CreateLoad(i8, element_of(staged_distance, {corner[k], ir.getInt32(distance)})));
+        culled = ir.CreateOr(culled, ir.CreateICmpNE(out, ir.getInt8(0)));
+      }
+      for (uint32_t t = 0; t < 7; t++) {
+        auto primitive = ir.CreateAdd(primitive_base, ir.getInt32(t));
+        for (uint32_t i = 0; i < 3; i++)
+          air.CreateSetMeshIndex(
+              ir.CreateAdd(ir.CreateMul(primitive, ir.getInt32(3)), ir.getInt32(i)),
+              ir.CreateTrunc(ir.CreateAdd(vertex_base, ir.getInt32(i ? t + i : 0)), i8)
+          );
+        for (uint32_t i = 0; i < cm->registers[1].size(); i++) {
+          Value *value = word(conservative_primitives, p, i);
+          air.CreateSetMeshPrimitiveData(primitive, ir.getInt32(i), cm->integers[1][i] ? value : real(value));
+        }
+        auto system = [&](uint32_t at) { return word(conservative_primitives, p, cm->registers[1].size() + at); };
+        if (primitive_outputs[0])
+          air.CreateSetMeshPrimitiveID(primitive, system(0));
+        if (primitive_outputs[1])
+          air.CreateSetMeshRenderTargetArrayIndex(primitive, system(1));
+        if (primitive_outputs[2])
+          air.CreateSetMeshViewportArrayIndex(primitive, system(2));
+        if (primitive_outputs[3])
+          air.CreateSetMeshPrimitiveCulled(primitive, culled);
+      }
+    }
+    ir.CreateBr(next);
+    ir.SetInsertPoint(next);
+    f->addIncoming(ir.CreateAdd(f, ir.getInt32(n[0] * n[1] * n[2])), next);
+    ir.CreateBr(head);
+    ir.SetInsertPoint(done);
+    // this slice's fans
+    auto mine = air.CreateIntBinOp(
+        llvm::air::AIRBuilder::min,
+        ir.CreateSelect(ir.CreateICmpUGT(count, first), ir.CreateSub(count, first), ir.getInt32(0)), fans, false
+    );
+    air.CreateSetMeshPrimitiveCount(ir.CreateMul(mine, ir.getInt32(7)));
+    ir.CreateBr(epilogue);
+  } else if (staged_position || staged_distance) {
     // every path of the function ends here first
     auto exported = llvm::BasicBlock::Create(ctx.llvm, "export_mesh", ctx.function, epilogue);
     epilogue->replaceAllUsesWith(exported);
@@ -3817,14 +4032,30 @@ convert_dxil_mesh_stage(
   io_binding_map resource_map;
   air::AirType types(context);
 
+  // conservative rasterization: a slice of the group's triangles grown in each Metal mesh threadgroup
+  bool conservative = mesh && link && link->conservative && link->fans && !pShaderInternal->mesh_lines;
+  uint32_t slices = link && link->conservative ? std::max(link->slices, 1u) : 1;
+  if (conservative) {
+    resource_map.conservative_mesh = std::make_shared<io_binding_map::ConservativeMesh>();
+    resource_map.conservative_mesh->fans = link->fans;
+    resource_map.conservative_mesh->flat_inputs = link->flat_inputs;
+    resource_map.conservative_mesh->noperspective_inputs = link->noperspective_inputs;
+  }
+  resource_map.mesh_slices = slices;
+
   uint32_t thread_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
   uint32_t group_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
-  // a Metal payload has a size; a mesh shader without one still takes what its object stage, if any, sent
-  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = std::max(pShaderInternal->payload_size, 4u)});
+  // a Metal payload has a size; a mesh shader without one still takes what its object stage, if any, sent: without an
+  // amplification shader, a conservative one's group ID
+  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{
+      .size = std::max(pShaderInternal->payload_size, conservative && !link->amplified ? 16u : 4u)
+  });
   auto &threads = pShaderInternal->threadgroup_size;
   if (mesh) {
+    auto fans = conservative ? link->fans : 0;
     func_signature.DefineInput(air::InputMesh{
-        pShaderInternal->mesh_max_vertices, pShaderInternal->mesh_max_primitives,
+        conservative ? 9 * fans : pShaderInternal->mesh_max_vertices,
+        conservative ? 7 * fans : pShaderInternal->mesh_max_primitives,
         pShaderInternal->mesh_lines ? air::MeshOutputTopology::Line : air::MeshOutputTopology::Triangle
     });
     func_signature.UseMaxMeshWorkgroupSize(threads[0] * threads[1] * threads[2]);
@@ -3878,6 +4109,10 @@ convert_dxil_mesh_stage(
                 func_signature.DefineMeshPrimitiveOutput(attribute);
               else
                 func_signature.DefineMeshVertexOutput(attribute);
+              if (conservative) {
+                resource_map.conservative_mesh->registers[primitive].push_back(p.Register);
+                resource_map.conservative_mesh->integers[primitive].push_back(e.type != RegisterComponentType::Float);
+              }
               varyings[row * e.cols + c] = attributes++;
             }
           }
@@ -3888,10 +4123,32 @@ convert_dxil_mesh_stage(
     // Metal culls by primitive: the group derives it from the vertices' cull distances
     if (cull_distances)
       func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveCulled{});
+    // and the window coordinates the pixel shader tests against, after the vertices' varyings
+    if (conservative) {
+      auto &cm = *resource_map.conservative_mesh;
+      cm.at = cm.registers[0].size();
+      for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS + SM50_CONSERVATIVE_RCP_W; i++)
+        func_signature.DefineMeshVertexOutput(air::OutputMeshData{
+            .user = "mullion_conservative" + std::to_string(i), .type = air::msl_float, .index = cm.at + i
+        });
+    }
   } else {
     func_signature.DefineInput(air::InputMeshGridProperties{});
     func_signature.UseMaxWorkgroupSize(threads[0] * threads[1] * threads[2]);
   }
+
+  uint32_t viewports_idx = 0;
+  if (conservative)
+    viewports_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_VIEWPORTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::msl_float4,
+        .arg_name = "viewports",
+        .raster_order_group = {}
+    });
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, pShaderInternal->shader_type, rootsig->bytecode,
@@ -3923,7 +4180,29 @@ convert_dxil_mesh_stage(
 
   // the thread's IDs: in its group, the group's, in the dispatch (the group's times the group's size, plus its own),
   // and flattened in its group
-  auto thread = function->getArg(thread_idx), group = function->getArg(group_idx);
+  llvm::Value *thread = function->getArg(thread_idx), *group = function->getArg(group_idx);
+  // a conservative mesh shader's group: the D3D group whose slice it grows, which the amplification shader's grid
+  // has `slices` threadgroups wide, or without one the object function gives as the payload, a slice a threadgroup
+  if (conservative) {
+    auto &cm = *resource_map.conservative_mesh;
+    cm.viewports = function->getArg(viewports_idx);
+    auto x = builder.CreateExtractElement(group, uint64_t(0));
+    if (link->amplified) {
+      cm.slice = builder.CreateURem(x, builder.getInt32(slices));
+      group = builder.CreateInsertElement(group, builder.CreateUDiv(x, builder.getInt32(slices)), uint64_t(0));
+    } else {
+      cm.slice = x;
+      group = builder.CreateLoad(
+          FixedVectorType::get(builder.getInt32Ty(), 3),
+          builder.CreateBitCast(
+              function->getArg(payload_idx),
+              FixedVectorType::get(builder.getInt32Ty(), 3)->getPointerTo(
+                  function->getArg(payload_idx)->getType()->getPointerAddressSpace()
+              )
+          )
+      );
+    }
+  }
   auto size = llvm::ConstantDataVector::get(context, llvm::ArrayRef<uint32_t>(threads, 3));
   auto at = [&](unsigned i) { return builder.CreateExtractElement(thread, i); };
   resource_map.thread_id_in_group_arg = thread;

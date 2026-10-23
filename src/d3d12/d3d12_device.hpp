@@ -460,6 +460,8 @@ public:
   uint32_t forced_sample_count;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test
   bool depth_bounds = false;
+  // conservative rasterization of triangles: the mesh stage reads the viewports (SM50_BINDING_INDEX_VIEWPORTS)
+  bool conservative = false;
 
   virtual WMT::RenderPipelineState RenderTargets(WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar,
                                                  bool Statistics = false) = 0;
