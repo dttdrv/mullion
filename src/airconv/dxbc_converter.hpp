@@ -18,6 +18,7 @@
 #include "shader_common.hpp"
 
 #include "airconv_public.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 namespace mullion::dxbc {
 
@@ -198,6 +199,8 @@ struct io_binding_map {
   llvm::Value *thread_id_in_group_arg = nullptr;
   llvm::Value *thread_id_in_group_flat_arg = nullptr;
   llvm::Value *coverage_mask_arg = nullptr;
+  // a coarse shading pixel shader's rate (D3D12_SHADING_RATE), its SV_ShadingRate
+  llvm::Value *shading_rate = nullptr;
 
   llvm::Value *domain = nullptr;
   llvm::Value *patch_id = nullptr;
@@ -511,6 +514,8 @@ public:
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
   uint32_t ps_has_coverage_output = 0;
+  // a pixel shader that runs per pixel or sample at any shading rate (MTL_PIXEL_SHADER_REFLECTION's FineShading)
+  bool ps_fine_shading = false;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
   // a DXIL library's ray tracing shaders, by their functions' names
   struct RayShader {
@@ -536,6 +541,44 @@ public:
 };
 
 void declare_dispatch_origin(SM50ShaderInternal *sm50_shader);
+
+// a pixel shader of coarse pixels, two wide or high at most (SM50_SHADER_PSO_PIXEL_SHADER_DATA's coarse_shading). a
+// coarse pixel is in one quad, whose lanes it covers run the shader with their inputs where the coarse pixel's center
+// is (so a derivative spans coarse pixels) and take the outputs of one, the leader, which alone discards and writes
+class CoarseShading {
+public:
+  // its inputs, defined before the function is made: `varying` is the primitive's rate, or 0
+  CoarseShading(air::FunctionSignatureBuilder &signature, uint32_t varying);
+  // in the entry block, before anything reads the inputs: the coarse pixel, its leader, and its inputs' values
+  void
+  Enter(llvm::Function *function, llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, io_binding_map &resource);
+  // at the epilogue, before the outputs are read: the leader's, and its discard
+  void Leave(llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, io_binding_map &resource);
+  // once the function is whole: what reads the inputs gets their values at the center, and the leader alone discards
+  // and writes
+  void Finish();
+
+private:
+  struct Input {
+    uint32_t index;
+    bool perspective;
+  };
+  std::vector<Input> inputs_;
+  uint32_t position_, coverage_ = ~0u, varying_ = ~0u, rates_, image_;
+  llvm::Function *function_ = nullptr;
+  // what the function had when entered, whose inputs and discards stay as they are (the depth bounds test's)
+  llvm::SmallPtrSet<llvm::Instruction *, 32> before_;
+  std::vector<std::pair<llvm::Argument *, llvm::Value *>> centered_;
+  llvm::Value *lane_ = nullptr, *leader_ = nullptr, *leads_ = nullptr, *wide_ = nullptr, *high_ = nullptr;
+  llvm::AllocaInst *discarded_ = nullptr, *pixel_discarded_ = nullptr;
+  llvm::Instruction *discard_ = nullptr;
+  llvm::IRBuilder<> *builder_ = nullptr;
+  llvm::Value *fine_index(llvm::Value *x, llvm::Value *y);
+};
+
+// d3dcommon.h's D3D_NAME_SHADINGRATE (SM 6.4), which DXBC has no name for: the primitive's shading rate a vertex or
+// geometry shader outputs, and the pixel's a pixel shader reads
+constexpr auto D3D12_SB_NAME_SHADING_RATE = microsoft::D3D10_SB_NAME(24);
 
 void handle_signature(
   microsoft::CSignatureParser &inputParser,

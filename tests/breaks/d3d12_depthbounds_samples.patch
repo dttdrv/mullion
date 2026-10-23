@@ -1,0 +1,12 @@
+# a draw that writes depth leaves the samples in the bounds as they were
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1049,7 +1049,7 @@
+       }
+     }
+     // a draw that writes depth changes which samples are in the bounds
+-    if (pso_graphics_->writes_depth && dsv.Texture && !(dsv.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH))
++    if (false)
+       depth_bounds_stale_ = true;
+ 
+     // stored depth passes inside the range, clamped to [0, 1]; an inverted range fails everything, and a pass without

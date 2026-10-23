@@ -1131,6 +1131,7 @@ convert_pass_through_geometry_shader(
     case D3D10_SB_NAME_UNDEFINED:
     case D3D10_SB_NAME_CLIP_DISTANCE:
     case D3D10_SB_NAME_CULL_DISTANCE:
+    case D3D12_SB_NAME_SHADING_RATE:
       break;
     default:
       continue;

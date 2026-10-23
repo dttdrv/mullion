@@ -1,0 +1,11 @@
+# a shader that outputs depth shades coarse pixels
+--- a/src/airconv/dxbc_signature.cpp
++++ b/src/airconv/dxbc_signature.cpp
+@@ -515,7 +515,6 @@
+     case D3D10_SB_OPERAND_TYPE_OUTPUT_DEPTH:
+     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
+     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL: {
+-      sm50_shader->ps_fine_shading = true;
+       signature_handlers.push_back([=](SignatureContext &ctx) {
+         ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
+           assert(

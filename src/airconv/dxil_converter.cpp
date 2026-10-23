@@ -983,7 +983,8 @@ read_dxil(
   // values the system generates rather than a previous stage produces
   auto generated = [](D3D10_SB_NAME name) {
     return name == D3D10_SB_NAME_VERTEX_ID || name == D3D10_SB_NAME_INSTANCE_ID || name == D3D10_SB_NAME_PRIMITIVE_ID ||
-           name == D3D10_SB_NAME_IS_FRONT_FACE || name == D3D10_SB_NAME_SAMPLE_INDEX;
+           name == D3D10_SB_NAME_IS_FRONT_FACE || name == D3D10_SB_NAME_SAMPLE_INDEX ||
+           name == D3D12_SB_NAME_SHADING_RATE;
   };
   bool pixel = shader->shader_type == D3D10_SB_PIXEL_SHADER, hull = shader->shader_type == D3D11_SB_HULL_SHADER,
        domain = shader->shader_type == D3D11_SB_DOMAIN_SHADER, geometry = shader->shader_type == D3D10_SB_GEOMETRY_SHADER;

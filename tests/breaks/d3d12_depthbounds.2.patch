@@ -1,0 +1,12 @@
+# an occlusion query counts what the pixel shader discards
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1368,7 +1368,7 @@
+     Statistics &= pixel_shader;
+     // a pixel shader's discard of the depth bounds test takes its samples out of an occlusion query only before the
+     // depth and stencil tests
+-    bool late = Occluded && depth_bounds_emulated && pixel_shader;
++    bool late = false;
+     if (!Pipeline || (!Statistics && !late && Mask == rtv_mask && DSVPlanar == dsv_mask))
+       return Pipeline;
+     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);

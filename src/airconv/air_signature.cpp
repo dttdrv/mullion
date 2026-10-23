@@ -440,6 +440,22 @@ auto ArgumentBufferBuilder::Build(
   return std::make_pair(struct_type, struct_metadata.BuildTuple(context));
 };
 
+void
+FunctionSignatureBuilder::CenterCentroids() {
+  auto center = [](Interpolation &interpolation) {
+    if (interpolation == Interpolation::centroid_perspective)
+      interpolation = Interpolation::center_perspective;
+    else if (interpolation == Interpolation::centroid_no_perspective)
+      interpolation = Interpolation::center_no_perspective;
+  };
+  for (auto &input : inputs) {
+    if (auto stage_in = std::get_if<InputFragmentStageIn>(&input))
+      center(stage_in->interpolation);
+    else if (auto position = std::get_if<InputPosition>(&input))
+      center(position->interpolation);
+  }
+}
+
 uint32_t FunctionSignatureBuilder::DefineInput(const FunctionInput &input) {
   uint32_t index = inputs.size();
   for (auto &element : enumerate(inputs)) {

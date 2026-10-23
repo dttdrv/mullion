@@ -1,0 +1,12 @@
+# perspective inputs move as noperspective ones
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -232,7 +232,7 @@
+     if (!value->getType()->getScalarType()->isFloatingPointTy())
+       continue;
+     Value *at_center;
+-    if (input.perspective) {
++    if (false) {
+       auto over_w = each(ir, value, [&](Value *c) { return ir.CreateFMul(c, rcp_w); });
+       at_center = each(ir, moved(over_w), [&](Value *c) { return ir.CreateFDiv(c, moved_rcp_w); });
+     } else {

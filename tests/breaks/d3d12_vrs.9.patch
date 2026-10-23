@@ -1,0 +1,12 @@
+# a helper can lead
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -193,7 +193,7 @@
+         ir.CreateOr(high_, ir.CreateICmpEQ(ly, ir.getInt32(j >> 1)))
+     );
+     auto lane_live = quad_shuffle(ir, air, live, ir.getInt32(j));
+-    leader = ir.CreateSelect(ir.CreateAnd(members[j], lane_live), ir.getInt32(j), leader);
++    leader = ir.CreateSelect(members[j], ir.getInt32(j), leader);
+   }
+   leader_ = leader;
+   leads_ = ir.CreateICmpEQ(leader, lane_);

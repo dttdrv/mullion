@@ -252,6 +252,10 @@ void handle_signature_vs(
       });
       break;
     }
+    // a varying of the pixel shader's coarse shading variant (SM50_SHADER_PSO_PIXEL_SHADER_DATA's shading_rate_varying)
+    case D3D12_SB_NAME_SHADING_RATE:
+      varyings(reg, RegisterComponentType::Uint);
+      break;
     default:
       assert(0 && "Unexpected/unhandled input system value");
       break;
@@ -391,6 +395,8 @@ void handle_signature_ps(
     auto interpolation =
       to_air_interpolation(Inst.m_InputPSDeclSIV.InterpolationMode);
     uint32_t assigned_index, sample_index_at = ~0u;
+    sm50_shader->ps_fine_shading |=
+        interpolation == Interpolation::sample_perspective || interpolation == Interpolation::sample_no_perspective;
     switch (siv) {
     case D3D10_SB_NAME_POSITION:
       if (interpolation == Interpolation::sample_no_perspective) {
@@ -446,10 +452,21 @@ void handle_signature_ps(
       break;
     case microsoft::D3D10_SB_NAME_SAMPLE_INDEX:
       assigned_index = func_signature.DefineInput(InputSampleIndex{});
+      sm50_shader->ps_fine_shading = true;
       break;
     case microsoft::D3D10_SB_NAME_PRIMITIVE_ID:
       assigned_index = func_signature.DefineInput(InputPrimitiveID{});
       break;
+    // the coarse pixel's rate, which the coarse shading variant finds (io_binding_map's shading_rate), 1x1 elsewhere
+    case D3D12_SB_NAME_SHADING_RATE:
+      signature_handlers.push_back([=](SignatureContext &ctx) {
+        ctx.prologue << make_effect_bind([=](struct context ctx) {
+          auto rate = ctx.resource.shading_rate ? ctx.resource.shading_rate : ctx.builder.getInt32(0);
+          return store_at_vec4_array_masked(ctx.resource.input.ptr_int4, ctx.builder.getInt32(reg), rate, mask);
+        });
+      });
+      max_input_register = std::max(reg + 1, max_input_register);
+      return;
     default:
       assert(0 && "Unexpected/unhandled input system value");
       break;
@@ -471,6 +488,8 @@ void handle_signature_ps(
     max_input_register = std::max(reg + 1, max_input_register);
     if (sig.mask() == 0) break;
     varyings(reg, mask, sig.componentType(), interpolation);
+    sm50_shader->ps_fine_shading |=
+        interpolation == Interpolation::sample_perspective || interpolation == Interpolation::sample_no_perspective;
     break;
   }
   case D3D10_SB_OPCODE_DCL_OUTPUT_SGV: {
@@ -496,6 +515,7 @@ void handle_signature_ps(
     case D3D10_SB_OPERAND_TYPE_OUTPUT_DEPTH:
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL: {
+      sm50_shader->ps_fine_shading = true;
       signature_handlers.push_back([=](SignatureContext &ctx) {
         ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
           assert(
@@ -536,6 +556,7 @@ void handle_signature_ps(
       break;
     }
     case D3D11_SB_OPERAND_TYPE_OUTPUT_STENCIL_REF: {
+      sm50_shader->ps_fine_shading = true;
       signature_handlers.push_back([=](SignatureContext &ctx) {
         ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
           assert(ctx.resource.stencil_ref_reg == nullptr && "otherwise oStencil is defined twice");
@@ -1169,6 +1190,10 @@ handle_signature_gs(
       });
       break;
     }
+    // a varying, as the vertex shader's: flat in the pixel shader, so the primitive's first vertex's
+    case D3D12_SB_NAME_SHADING_RATE:
+      define_mesh_varyings(sm50_shader, reg, RegisterComponentType::Uint);
+      break;
     default:
       assert(0 && "Unexpected/unhandled geometry shader output siv");
       break;

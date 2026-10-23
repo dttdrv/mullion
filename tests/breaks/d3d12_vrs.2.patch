@@ -1,0 +1,12 @@
+# each pixel keeps its own outputs
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -270,7 +270,7 @@
+         {ir.getInt32(0), ir.getInt32(reg)}
+     );
+     auto value = ir.CreateLoad(int4, at);
+-    ir.CreateStore(each(ir, value, [&](Value *c) { return quad_shuffle(ir, air, c, leader_); }), at);
++    ir.CreateStore(each(ir, value, [&](Value *c) { return c; }), at);
+   }
+   // each pixel's samples of the coarse pixel's output coverage
+   if (resource.coverage_mask_reg) {

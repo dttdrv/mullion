@@ -251,6 +251,12 @@ public:
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
 
     occlusion_sum = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("sum_occlusion"), err);
+    for (uint32_t i = 0; i < 4; i++) {
+      const char *names[] = {"depth_bounds_samples_2d", "depth_bounds_samples_2d_array", "depth_bounds_samples_2d_ms",
+                             "depth_bounds_samples_2d_ms_array"};
+      depth_bounds_samples[i] =
+          GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction(names[i]), err);
+    }
     pipeline_statistics_sum = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("sum_pipeline_statistics"), err
     );
@@ -258,7 +264,8 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
-    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances) {
+    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
     }
@@ -636,7 +643,8 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS2))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS2 *>(pFeatureData);
-      out->DepthBoundsTestSupported = GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
+      // Metal's on Apple10, the pixel shader's elsewhere (d3d12_command_list.cpp, DepthBoundsSamples)
+      out->DepthBoundsTestSupported = TRUE;
       out->ProgrammableSamplePositionsTier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
       return S_OK;
     }
@@ -831,6 +839,27 @@ public:
       reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS11 *>(pFeatureData)->AtomicInt64OnDescriptorHeapResourceSupported = TRUE;
       return S_OK;
     }
+    // variable rate shading, which pixel shaders of coarse pixels emulate: per primitive from a vertex or geometry
+    // shader, and from a shading rate image of 16x16 tiles; coarse pixels of up to 2x2 (CoarseShading, airconv)
+    case D3D12_FEATURE_D3D12_OPTIONS6: {
+      if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(pFeatureData, DataSize) != S_OK)
+        return E_INVALIDARG;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS6 *>(pFeatureData);
+      out->AdditionalShadingRatesSupported = FALSE;
+      out->PerPrimitiveShadingRateSupportedWithViewportIndexing = FALSE;
+      out->VariableShadingRateTier = D3D12_VARIABLE_SHADING_RATE_TIER_2;
+      out->ShadingRateImageTileSize = 16;
+      out->BackgroundProcessingSupported = FALSE;
+      return S_OK;
+    }
+    // the sum combiner; a mesh shader's SV_ShadingRate is not read
+    case D3D12_FEATURE_D3D12_OPTIONS10: {
+      if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS10>(pFeatureData, DataSize) != S_OK)
+        return E_INVALIDARG;
+      reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS10 *>(pFeatureData)->VariableRateShadingSumCombinerSupported =
+          TRUE;
+      return S_OK;
+    }
     case D3D12_FEATURE_D3D12_OPTIONS14: {
       if (NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS14>(pFeatureData, DataSize) != S_OK)
         return E_INVALIDARG;
@@ -839,12 +868,8 @@ public:
       return S_OK;
     }
     /* capabilities with no complete path yet: D3D12 defines an all-zero answer as unsupported, or tier 0, in each */
-    case D3D12_FEATURE_D3D12_OPTIONS6:
-      return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS8:
       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS8>(pFeatureData, DataSize);
-    case D3D12_FEATURE_D3D12_OPTIONS10:
-      return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS10>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS13:
       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS13>(pFeatureData, DataSize);
     case D3D12_FEATURE_D3D12_OPTIONS15:

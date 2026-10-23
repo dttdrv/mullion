@@ -141,8 +141,10 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
     if (any_bit_set(Device->GetMTLPixelFormatCapability(InfoOut.pixel_format) & FormatCapability::Atomic))
       Usage |= WMTTextureUsageShaderAtomic;
   }
-  // a resolve reads its source's samples in a shader, whatever the resource allows the application's
-  if (!(Desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) || InfoOut.sample_count > 1)
+  // a resolve reads its source's samples in a shader, whatever the resource allows the application's; and so does the
+  // depth bounds test of a GPU without one its depth (d3d12_command_list.cpp, DepthBoundsSamples)
+  if (!(Desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) || InfoOut.sample_count > 1 ||
+      ((Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && !Device->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10)))
     Usage |= WMTTextureUsageShaderRead;
   // and renders its destination, which D3D12 lets be any single-sampled texture of a format that resolves
   if (InfoOut.type == WMTTextureType2D || InfoOut.type == WMTTextureType2DArray)

@@ -295,6 +295,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   sparse_clear_texels_.clear();
   visibility_.clear();
   visibility_used_ = kVisibilityWindow;
+  depth_bounds_samples_.clear();
+  depth_bounds_length_ = 0;
   acceleration_structures_.clear();
   acceleration_structure_inputs_.clear();
 

@@ -377,6 +377,8 @@ llvm::Error convert_dxbc_pixel_shader(
     pso_unorm_output_reg_mask = pso_data->unorm_output_reg_mask;
     pso_sample_mask = pso_data->sample_mask;
     pso_pixel_formats = pso_data->pixel_formats;
+    if (pso_data->late_tests)
+      func_signature.UseLateFragmentTests();
   }
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
@@ -427,8 +429,12 @@ llvm::Error convert_dxbc_pixel_shader(
     };
   }
 
+  // variable rate shading, of a shader that is not run per pixel or sample whatever the rate
+  bool coarse_shading =
+      pso_data && pso_data->coarse_shading && !pShaderInternal->ps_fine_shading && !shader_info->pull_mode_reg_mask;
+
   std::optional<uint32_t> statistics;
-  uint32_t sample = 0, coverage = 0;
+  uint32_t sample = 0, coverage = ~0u;
   if (pso_data && pso_data->pipeline_statistics) {
     statistics = func_signature.DefineInput(air::ArgumentBindingBuffer{
         .buffer_size = sizeof(uint64_t),
@@ -442,9 +448,44 @@ llvm::Error convert_dxbc_pixel_shader(
     // with a sample index input Metal runs the function once for each covered sample, each run given the pixel's
     // coverage: the run of the first covered sample counts, unless the shader runs per sample itself, which its own
     // sample index, declared before the counter, tells
-    sample = func_signature.DefineInput(air::InputSampleIndex{});
-    coverage = sample < *statistics ? ~0u : func_signature.DefineInput(air::InputInputCoverage{});
+    // sample index, declared before the counter, tells. a coarse pixel's leader alone counts (CoarseShading)
+    if (!coarse_shading) {
+      sample = func_signature.DefineInput(air::InputSampleIndex{});
+      coverage = sample < *statistics ? ~0u : func_signature.DefineInput(air::InputInputCoverage{});
+    }
   }
+
+  // the depth bounds test of a GPU without one: the pixel's position, whether the draw tests, and the samples that pass
+  uint32_t bounds_position = ~0u, bounds_enabled = ~0u, bounds_mask = ~0u, bounds_coverage = ~0u;
+  if (pso_data && pso_data->depth_bounds) {
+    bounds_position =
+        func_signature.DefineInput(air::InputPosition{.interpolation = air::Interpolation::center_no_perspective});
+    bounds_enabled = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = 8,
+        .location_index = SM50_BINDING_INDEX_DEPTH_BOUNDS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::msl_uint2,
+        .arg_name = "depth_bounds",
+        .raster_order_group = {}
+    });
+    bounds_mask = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::msl_uint,
+        .arg_name = "depth_bounds_samples",
+        .raster_order_group = {}
+    });
+    bounds_coverage = func_signature.DefineOutput(air::OutputCoverageMask{});
+  }
+
+  std::optional<CoarseShading> coarse;
+  if (coarse_shading)
+    coarse.emplace(func_signature, pso_data->shading_rate_varying);
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_PIXEL_SHADER, rootsig->bytecode,
@@ -471,6 +512,53 @@ llvm::Error convert_dxbc_pixel_shader(
   );
 
   setup_metal_version(module, metal_version);
+
+  // the samples in the bounds, all without the test; none discards the pixel before anything else
+  llvm::Value *bounded = nullptr;
+  if (bounds_position != ~0u) {
+    auto words = builder.CreateLoad(llvm::FixedVectorType::get(builder.getInt32Ty(), 2), function->getArg(bounds_enabled));
+    auto enabled = builder.CreateICmpNE(builder.CreateExtractElement(words, uint64_t(0)), builder.getInt32(0));
+    auto position = function->getArg(bounds_position);
+    auto x = builder.CreateFPToUI(builder.CreateExtractElement(position, uint64_t(0)), builder.getInt32Ty());
+    auto y = builder.CreateFPToUI(builder.CreateExtractElement(position, uint64_t(1)), builder.getInt32Ty());
+    auto head = builder.GetInsertBlock();
+    auto test = llvm::BasicBlock::Create(context, "depth_bounds", function, epilogue_bb);
+    auto discard = llvm::BasicBlock::Create(context, "depth_bounds_discard", function, epilogue_bb);
+    auto kept = llvm::BasicBlock::Create(context, "depth_bounds_kept", function, epilogue_bb);
+    builder.CreateCondBr(enabled, test, kept);
+    builder.SetInsertPoint(test);
+    auto at = builder.CreateAdd(builder.CreateMul(y, builder.CreateExtractElement(words, uint64_t(1))), x);
+    auto bytes = builder.CreateBitCast(
+        function->getArg(bounds_mask),
+        builder.getInt8Ty()->getPointerTo(function->getArg(bounds_mask)->getType()->getPointerAddressSpace())
+    );
+    auto samples = builder.CreateZExt(
+        builder.CreateLoad(builder.getInt8Ty(), builder.CreateGEP(builder.getInt8Ty(), bytes, {at})), builder.getInt32Ty()
+    );
+    builder.CreateCondBr(builder.CreateICmpEQ(samples, builder.getInt32(0)), discard, kept);
+    builder.SetInsertPoint(discard);
+    air.CreateDiscard();
+    builder.CreateBr(kept);
+    builder.SetInsertPoint(kept);
+    auto phi = builder.CreatePHI(builder.getInt32Ty(), 3);
+    phi->addIncoming(builder.getInt32(~0u), head);
+    phi->addIncoming(samples, test);
+    phi->addIncoming(builder.getInt32(0), discard);
+    bounded = phi;
+    // the samples the shader or the pipeline keeps, of those
+    epilogue >> [=](pvalue value) -> IRValue {
+      return make_irvalue([=](struct context ctx) {
+        auto &builder = ctx.builder;
+        llvm::Value *kept = ctx.resource.coverage_mask_reg || ctx.pso_sample_mask != 0xffffffff
+                                ? builder.CreateExtractValue(value, {bounds_coverage})
+                                : builder.getInt32(~0u);
+        return builder.CreateInsertValue(value, builder.CreateAnd(kept, bounded), {bounds_coverage});
+      });
+    };
+  }
+
+  if (coarse)
+    coarse->Enter(function, builder, air, resource_map);
 
   if (statistics) {
     // D3D11.3 20.4.7 counts executions even when an output depth fails the test.
@@ -534,6 +622,8 @@ llvm::Error convert_dxbc_pixel_shader(
   builder.CreateBr(real_entry.get());
 
   builder.SetInsertPoint(epilogue_bb);
+  if (coarse)
+    coarse->Leave(builder, air, resource_map);
   auto epilogue_result = epilogue.build(ctx);
   if (auto err = epilogue_result.takeError()) {
     return err;
@@ -544,6 +634,17 @@ llvm::Error convert_dxbc_pixel_shader(
   } else {
     builder.CreateRet(value);
   }
+  if (coarse)
+    coarse->Finish();
+  // the registers' allocas made after the depth bounds test split the entry block go back to it, where SROA promotes
+  // them
+  auto &entry = function->getEntryBlock();
+  for (auto &block : *function)
+    if (&block != &entry)
+      for (auto &instruction : llvm::make_early_inc_range(block))
+        if (auto alloca = llvm::dyn_cast<llvm::AllocaInst>(&instruction);
+            alloca && llvm::isa<llvm::ConstantInt>(alloca->getArraySize()))
+          alloca->moveBefore(&*entry.getFirstInsertionPt());
 
   module.getOrInsertNamedMetadata("air.fragment")
     ->addOperand(function_metadata);
@@ -1370,6 +1471,8 @@ AIRCONV_API int SM50Initialize(
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader = {sm50_shader->pso_valid_output_reg_mask, sm50_shader->ps_has_coverage_output, 0, 0};
+      // EvaluateAttribute* evaluates where the shader chooses, which coarse shading does not move
+      pRefl->PixelShader.FineShading = sm50_shader->ps_fine_shading || sm50_shader->shader_info.pull_mode_reg_mask;
       for (auto &out : sm50_shader->output_signature) {
         if (out.reg() >= std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats))
           continue;
@@ -1379,6 +1482,12 @@ AIRCONV_API int SM50Initialize(
             uint32_t(out.componentType() == RegisterComponentType::Uint) << out.reg();
       }
     }
+    pRefl->ShadingRateOutput = 0;
+    for (auto &out : sm50_shader->output_signature)
+      if (out.systemValue() == D3D12_SB_NAME_SHADING_RATE &&
+          (sm50_shader->shader_type == microsoft::D3D10_SB_VERTEX_SHADER ||
+           sm50_shader->shader_type == microsoft::D3D10_SB_GEOMETRY_SHADER))
+        pRefl->ShadingRateOutput = 1 + out.reg() * 4 + std::countr_zero(out.mask());
     pRefl->NumOutputElement = sm50_shader->max_output_register;
     pRefl->CullDistances = sm50_shader->cull_distance_scalars.size();
     pRefl->ArgumentTableQwords = binding_table.Size();

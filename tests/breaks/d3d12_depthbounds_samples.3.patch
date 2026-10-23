@@ -1,0 +1,12 @@
+# a multisampled pixel's first sample stands for all of them
+--- a/src/mullion/mullion_command.metal
++++ b/src/mullion/mullion_command.metal
+@@ -1483,7 +1483,7 @@
+     return;
+   uint kept = 0;
+   for (uint s = 0; s < depth.get_num_samples(); s++) {
+-    float z = depth.read(pos, s);
++    float z = depth.read(pos, 0);
+     kept |= uint(z >= bounds.range.x && z <= bounds.range.y) << s;
+   }
+   samples[pos.y * bounds.pitch + pos.x] = kept;

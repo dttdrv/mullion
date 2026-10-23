@@ -1,0 +1,12 @@
+# every lane of a coarse pixel writes
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -357,7 +357,7 @@
+   for (auto write : writes) {
+     IRBuilder<> ir(write);
+     auto head = write->getParent();
+-    auto writes = ir.CreateAnd(leads_, ir.CreateNot(ir.CreateLoad(i1, discarded_)));
++    auto writes = ir.CreateNot(ir.CreateLoad(i1, discarded_));
+     auto then = SplitBlockAndInsertIfThen(writes, write, false);
+     auto tail = write->getParent();
+     write->moveBefore(then);
