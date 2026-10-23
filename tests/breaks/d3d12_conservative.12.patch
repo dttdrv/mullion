@@ -1,0 +1,12 @@
+# a triangle of no area is not grown
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -278,7 +278,7 @@
+     boxed = builder.CreateInsertElement(boxed, builder.CreateFMul(y, w0), uint64_t(1));
+     boxed = builder.CreateInsertElement(boxed, at(clip[0], 2), uint64_t(2));
+     boxed = builder.CreateInsertElement(boxed, w0, uint64_t(3));
+-    fan.position[u] = builder.CreateSelect(fan.degenerate, boxed, fan.position[u]);
++    fan.position[u] = builder.CreateSelect(builder.getFalse(), boxed, fan.position[u]);
+     for (uint32_t j = 0; j < 3; j++) {
+       auto first = air.getFloat(j == 0 ? 1.0 : 0.0);
+       fan.over_w[u][j] = builder.CreateSelect(fan.degenerate, first, fan.over_w[u][j]);

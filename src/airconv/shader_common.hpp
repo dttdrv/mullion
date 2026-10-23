@@ -48,6 +48,8 @@ enum class InputAttribute {
   /* Fragment */
   PrimitiveId,
   CoverageMask,
+  // whether the pixel's square is inside the primitive, which only a conservative rasterizer knows (SV_InnerCoverage)
+  InnerCoverage,
 
   /* Hull */
   OutputControlPointId,

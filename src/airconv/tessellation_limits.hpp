@@ -115,12 +115,24 @@ struct tess_pieces {
   uint32_t count, primitives;
 };
 
+// conservative rasterization (`conservative`) always shares a workload of triangles: each primitive is a fan of nine
+// vertices and seven triangles, each vertex with six more floats (SM50_CONSERVATIVE_VARYINGS), and its corners'
+// registers wait in threadgroup memory, 16 KB of it, for the fans; `primitives` 0 where not even one fits
+constexpr uint32_t conservative_stash_limit = 16384;
+
 inline tess_pieces
 tessellation_pieces(
     uint32_t factor, microsoft::D3D11_SB_TESSELLATOR_DOMAIN domain,
-    microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE primitive, uint32_t vertex_size
+    microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE primitive, uint32_t vertex_size, bool conservative = false
 ) {
   uint32_t corners = get_primitive_vertices(primitive), vertices = get_max_workload_vertices(factor, domain);
+  if (conservative && corners == 3) {
+    uint32_t grown = vertex_size + 6 * sizeof(float);
+    uint32_t fans = std::min({256u / 9, 512u / 7, conservative_stash_limit / (3 * std::max(vertex_size, 1u))});
+    while (fans && mesh_size(9 * fans, grown, 7 * fans) > mesh_size_limit)
+      fans--;
+    return {fans ? (vertices + fans - 1) / fans : 0, fans};
+  }
   // a point has its size too
   vertex_size += corners == 1 ? sizeof(float) : 0;
   if (mesh_size(vertices, vertex_size, vertices) <= mesh_size_limit)

@@ -1,0 +1,12 @@
+# triangles are not grown
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -195,7 +195,7 @@
+   auto turn = builder.CreateSelect(counterclockwise, builder.getInt32(1), builder.getInt32(3));
+   // every sample of a pixel whose square the triangle overlaps is then inside, and the pixel shader takes only those
+   // pixels; each point is within a pixel of its corner
+-  fan.expanded = builder.CreateAnd(fan.in_front, builder.CreateNot(fan.degenerate));
++  fan.expanded = builder.getFalse();
+   pvalue weights[9][3], linear[9][3], grown[9][2];
+   for (uint32_t k = 0; k < 3; k++) {
+     uint32_t into = (k + 2) % 3, out = k; // the edges into and out of corner k, whose outward normals are -(a, b)

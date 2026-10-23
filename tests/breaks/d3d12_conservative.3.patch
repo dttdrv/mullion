@@ -1,0 +1,12 @@
+# noperspective inputs are extrapolated with perspective
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1358,7 +1358,7 @@ convert_pass_through_geometry_shader(
+       // a flat varying is the first corner's, which every triangle of the fan starts at
+       auto value = component(conservative && flat ? 0 : corner, v.reg, v.component);
+       if (conservative && clip[0] && !flat) {
+-        bool screen = pso_data->noperspective_inputs >> v.reg & 1;
++        bool screen = false;
+         air.CreateSetMeshVertexData(
+             vertex, builder.getInt32(v.index),
+             blend(screen ? window_linear : perspective, u, [&](uint32_t k) { return component(k, v.reg, v.component); })
