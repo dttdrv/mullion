@@ -402,8 +402,9 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
-      auto &[next, type, mask, dual, depth, unorm, formats, statistics] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
-      hash(mask, dual, depth, unorm, formats, statistics);
+      auto &[next, type, mask, dual, depth, unorm, formats, statistics, conservative] =
+          *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+      hash(mask, dual, depth, unorm, formats, statistics, conservative);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -416,8 +417,9 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
-      auto &[next, type, strip, cut, index, primitive, pass] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
-      hash(strip, cut, index, primitive, pass);
+      auto &[next, type, strip, cut, index, primitive, pass, conservative, flat, noperspective] =
+          *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
+      hash(strip, cut, index, primitive, pass, conservative, flat, noperspective);
       break;
     }
     case SM50_SHADER_PSO_TESSELLATOR: {
@@ -600,6 +602,9 @@ protected:
     WMT::Reference<WMT::Function> ps;
     D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip_cut;
     uint32_t primitive; // D3D10_SB_PRIMITIVE of the topology type
+    // conservative rasterization, and how the pixel shader interpolates its inputs
+    bool conservative;
+    uint32_t flat_inputs, noperspective_inputs;
   };
   std::unique_ptr<GeometryInputs> adjacency_inputs_;
   mullion::mutex adjacency_mutex_;
@@ -637,6 +642,9 @@ protected:
     pso_gs.strip_cut_index = in.strip_cut == D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF ? 0xffff : ~0u;
     pso_gs.input_primitive = primitive;
     pso_gs.pass_through = pass_through && !counting;
+    pso_gs.conservative = pso_gs.pass_through && in.conservative;
+    pso_gs.flat_inputs = in.flat_inputs;
+    pso_gs.noperspective_inputs = in.noperspective_inputs;
     pso_gs.next = &in.common;
     in.so.counting = counting;
     in.so.elements = in.so_elements.data();
@@ -681,6 +689,48 @@ protected:
       DumpShaders({VS, GS});
     }
     return variant;
+  }
+
+  // a fragment function of no outputs that discards the pixels whose squares miss the triangle the mesh stage passes
+  // on in SM50_CONSERVATIVE_VARYINGS, as airconv's conservative pixel shaders do
+  WMT::Reference<WMT::Function>
+  ConservativeFragment() {
+    static const char source[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct Triangle {
+  float4 position [[position]];
+  float x0 [[user(mullion_conservative0), flat]];
+  float y0 [[user(mullion_conservative1), flat]];
+  float x1 [[user(mullion_conservative2), flat]];
+  float y1 [[user(mullion_conservative3), flat]];
+  float x2 [[user(mullion_conservative4), flat]];
+  float y2 [[user(mullion_conservative5), flat]];
+};
+fragment void conservative_fragment(Triangle in [[stage_in]]) {
+  if (isnan(in.x0))
+    return;
+  const float half_pixel = 0.5 + 1.0 / 256;
+  float2 center = floor(in.position.xy) + 0.5, v[3] = {{in.x0, in.y0}, {in.x1, in.y1}, {in.x2, in.y2}};
+  float2 low = min(min(v[0], v[1]), v[2]), high = max(max(v[0], v[1]), v[2]);
+  bool outside = any(center + half_pixel < low) || any(center - half_pixel > high);
+  float area = (v[1].x - v[0].x) * (v[2].y - v[0].y) - (v[2].x - v[0].x) * (v[1].y - v[0].y);
+  float inward = area > 0 ? -1 : 1;
+  for (int i = 0; i < 3; i++) {
+    float2 a = v[i], b = v[(i + 1) % 3];
+    float2 n = float2(b.y - a.y, a.x - b.x) * inward;
+    outside |= dot(n, center - a) + (abs(n.x) + abs(n.y)) * half_pixel < 0;
+  }
+  if (outside)
+    discard_fragment();
+}
+)";
+    WMT::Reference<WMT::Error> err;
+    auto library = device_->GetMTLDevice().newLibraryWithSource(std::string_view(source, sizeof(source) - 1), err);
+    if (!library) {
+      ERR("Failed to compile the conservative rasterizer's fragment function: ", err.description().getUTF8String());
+      return {};
+    }
+    return library.newFunction("conservative_fragment");
   }
 
 public:
@@ -1019,7 +1069,20 @@ public:
     // the mesh stage passes the vertex shader's primitives on, less those
     vertex_registers = mesh_shader ? 0 : ref_vs.NumOutputElement;
     bool plain = !mesh_shader && !tessellation && !pDesc->GS.pShaderBytecode;
-    bool pass_through = plain && ref_vs.CullDistances;
+    // conservative rasterization dilates a vertex shader's triangles in the mesh stage, which passes them on
+    // (D3D12_CONSERVATIVE_RASTERIZATION_TIER_1); it does not apply to points and lines (D3D11.3 15.17)
+    conservative = pDesc->RasterizerState.ConservativeRaster == D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON &&
+                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    // after a geometry, hull or mesh shader the mesh stage is theirs: those triangles rasterize as usual for now
+    if (conservative && !plain) {
+      static std::once_flag warned;
+      std::call_once(warned, [] {
+        WARN("CreatePipelineState: conservative rasterization after a geometry, hull or mesh shader is not "
+             "implemented yet; those pipelines rasterize as usual");
+      });
+      conservative = false;
+    }
+    bool pass_through = plain && (ref_vs.CullDistances || conservative);
     geometry_shader |= pass_through;
     mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
@@ -1076,6 +1139,7 @@ public:
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
       data_ps.next = &common;
       data_ps.pipeline_statistics = false;
+      data_ps.conservative = conservative;
 
       std::array<WMTPixelFormat, std::size(data_ps.pixel_formats)> formats{};
       for (unsigned i = 0; i < pDesc->NumRenderTargets; i++)
@@ -1106,6 +1170,10 @@ public:
           };
     }
 
+    // without a pixel shader, one that only takes the pixels a conservative rasterizer must
+    if (conservative && !ps_func && !(ps_func = ConservativeFragment()))
+      return E_FAIL;
+
     auto geometry_inputs = [&] {
       auto in = std::make_unique<GeometryInputs>();
       in->vs.assign((const char *)pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength);
@@ -1119,6 +1187,9 @@ public:
       in->ps = ps_func;
       in->strip_cut = pDesc->IBStripCutValue;
       in->primitive = pDesc->PrimitiveTopologyType;
+      in->conservative = conservative;
+      in->flat_inputs = ps_func ? ref_ps.PixelShader.FlatInputs : 0;
+      in->noperspective_inputs = ps_func ? ref_ps.PixelShader.NoPerspectiveInputs : 0;
       WMT::InitializeMeshRenderPipelineInfo(in->info);
       bool dual_source = false;
       if (FAILED(InitializePSO(pDesc, in->info, dual_source)))

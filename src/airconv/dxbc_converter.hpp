@@ -511,6 +511,8 @@ public:
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
   uint32_t ps_has_coverage_output = 0;
+  // the pixel shader's input registers it takes flat, and those it interpolates without perspective
+  uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
   // a DXIL library's ray tracing shaders, by their functions' names
   struct RayShader {

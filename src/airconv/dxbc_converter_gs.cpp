@@ -10,6 +10,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <utility>
@@ -1102,8 +1103,12 @@ convert_pass_through_geometry_shader(
   air::AirType types(context);
   air::FunctionSignatureBuilder func_signature;
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
+  // conservative rasterization of triangles: the triangle grown by a square two pixels wide, the convex polygon of
+  // each corner's square's corners that face out there, three a corner (some the same), as a fan of seven triangles
+  bool conservative = pso_data->conservative && own.count == 3;
+  const uint32_t emitted = conservative ? 9 : own.count, primitives = conservative ? 7 : 1;
   func_signature.DefineInput(air::InputMesh{
-      own.count, 1,
+      emitted, primitives,
       own.count == 3   ? air::MeshOutputTopology::Triangle
       : own.count == 2 ? air::MeshOutputTopology::Line
                        : air::MeshOutputTopology::Point
@@ -1152,6 +1157,24 @@ convert_pass_through_geometry_shader(
   // Metal's points have a size to be given, Direct3D's are a pixel wide (D3D11.3 3.4.6)
   if (own.count == 1)
     func_signature.DefineMeshVertexOutput(air::OutputPointSize{});
+  // and the viewports, and the window coordinates the pixel shader tests against
+  uint32_t viewports_idx = 0, conservative_at = varyings.size();
+  if (conservative) {
+    viewports_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_VIEWPORTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::msl_float4,
+        .arg_name = "viewports",
+        .raster_order_group = {}
+    });
+    for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS + SM50_CONSERVATIVE_RCP_W; i++)
+      func_signature.DefineMeshVertexOutput(air::OutputMeshData{
+          .user = "mullion_conservative" + std::to_string(i), .type = air::msl_float, .index = conservative_at + i
+      });
+  }
 
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
   auto entry = llvm::BasicBlock::Create(context, "entry", function);
@@ -1176,12 +1199,11 @@ convert_pass_through_geometry_shader(
   builder.SetInsertPoint(active);
   // mesh threadgroups each emit one primitive, so its ID counts the draw's preceding primitives (D3D11.3 8.17)
   auto below = builder.CreateSub(builder.CreateShl(one, lane), one);
-  air.CreateSetMeshPrimitiveID(
-      zero, builder.CreateAdd(
-                word(kPayloadPrimitivesBefore),
-                air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid, below))
-            )
+  auto primitive_id = builder.CreateAdd(
+      word(kPayloadPrimitivesBefore), air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid, below))
   );
+  for (uint32_t p = 0; p < primitives; p++)
+    air.CreateSetMeshPrimitiveID(builder.getInt32(p), primitive_id);
   auto odd = strip_parity(builder, air, valid, lane, word(kPayloadStripOffset));
   uint32_t registers = pVertexStage->max_output_register;
   // component `c` of register `reg` of the primitive's vertex `corner`
@@ -1197,36 +1219,211 @@ convert_pass_through_geometry_shader(
     );
   };
   auto real = [&](pvalue bits) { return builder.CreateBitCast(bits, types._float); };
-  for (uint32_t corner = 0; corner < own.count; corner++) {
-    auto vertex = builder.getInt32(corner);
+  pvalue clip[3] = {};
+  for (uint32_t corner = 0; corner < own.count; corner++)
     for (auto &element : pVertexStage->output_signature) {
       if (element.systemValue() != D3D10_SB_NAME_POSITION)
         continue;
-      pvalue position = llvm::UndefValue::get(types._float4);
+      clip[corner] = llvm::UndefValue::get(types._float4);
       for (uint32_t c = 0; c < 4; c++)
-        position = builder.CreateInsertElement(position, real(component(corner, element.reg(), c)), c);
+        clip[corner] = builder.CreateInsertElement(clip[corner], real(component(corner, element.reg(), c)), c);
+    }
+  // what of each of the primitive's corners each emitted vertex has: its own corner's, or for a conservative
+  // rasterizer's polygon the triangle's barycentrics there in the window, and those over each corner's w, which are
+  // linear in the window too (of the plane's 1/w, an input over w): the polygon's vertices have a w of 1
+  auto source = [&](uint32_t u) { return conservative ? u / 3 : u; };
+  pvalue over_w[9][3], window_linear[9][3], grown[9][2] = {};
+  for (uint32_t u = 0; u < emitted; u++)
+    for (uint32_t k = 0; k < 3; k++)
+      over_w[u][k] = window_linear[u][k] = air.getFloat(source(u) == k ? 1.0 : 0.0);
+  pvalue viewport = nullptr, expanded = builder.getFalse();
+  pvalue window[3][2] = {}, degenerate = builder.getFalse(), in_front = builder.getFalse();
+  if (conservative && clip[0]) {
+    auto f = [&](double v) { return air.getFloat(v); };
+    auto at = [&](pvalue v, uint32_t i) { return builder.CreateExtractElement(v, i); };
+    // the viewport the primitive's first vertex chooses, of the 16 there may be
+    pvalue viewport_index = zero;
+    for (auto &element : pVertexStage->output_signature)
+      if (element.systemValue() == D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX)
+        viewport_index = component(0, element.reg(), std::countr_zero(element.mask()));
+    viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
+    viewport = builder.CreateLoad(
+        types._float4, builder.CreateGEP(types._float4, function->getArg(viewports_idx), {viewport_index})
+    );
+    // the corners in the window, where pixels are squares a unit wide; a corner at or behind the eye has none
+    in_front = builder.getTrue();
+    pvalue w[3];
+    for (uint32_t k = 0; k < 3; k++) {
+      w[k] = at(clip[k], 3);
+      in_front = builder.CreateAnd(in_front, builder.CreateFCmpOGT(w[k], f(1e-6)));
+      auto x = builder.CreateFDiv(at(clip[k], 0), w[k]), y = builder.CreateFDiv(at(clip[k], 1), w[k]);
+      window[k][0] = builder.CreateFAdd(at(viewport, 0), builder.CreateFMul(builder.CreateFAdd(x, f(1)), builder.CreateFMul(at(viewport, 2), f(0.5))));
+      window[k][1] = builder.CreateFAdd(at(viewport, 1), builder.CreateFMul(builder.CreateFSub(f(1), y), builder.CreateFMul(at(viewport, 3), f(0.5))));
+    }
+    // twice the signed area; a triangle of none may be culled (D3D11.3 15.17.2, after snapping)
+    auto dx = [&](uint32_t a, uint32_t b) { return builder.CreateFSub(window[b][0], window[a][0]); };
+    auto dy = [&](uint32_t a, uint32_t b) { return builder.CreateFSub(window[b][1], window[a][1]); };
+    auto area = builder.CreateFSub(builder.CreateFMul(dx(0, 1), dy(0, 2)), builder.CreateFMul(dx(0, 2), dy(0, 1)));
+    degenerate = builder.CreateAnd(in_front, builder.CreateNot(builder.CreateFCmpONE(area, f(0))));
+    auto counterclockwise = builder.CreateFCmpOGT(area, f(0));
+    auto inward = builder.CreateSelect(counterclockwise, f(-1), f(1));
+    // edge i, from corner i to i + 1, as a*x + b*y + c, positive inside
+    pvalue a[3], b[3], c[3];
+    for (uint32_t i = 0; i < 3; i++) {
+      uint32_t n = (i + 1) % 3;
+      a[i] = builder.CreateFMul(dy(i, n), inward), b[i] = builder.CreateFNeg(builder.CreateFMul(dx(i, n), inward));
+      c[i] = builder.CreateFNeg(builder.CreateFAdd(builder.CreateFMul(a[i], window[i][0]), builder.CreateFMul(b[i], window[i][1])));
+    }
+    auto edge = [&](uint32_t i, pvalue x, pvalue y) {
+      return builder.CreateFAdd(builder.CreateFAdd(builder.CreateFMul(a[i], x), builder.CreateFMul(b[i], y)), c[i]);
+    };
+    // the square's corners in order around it, (1, 1), (-1, 1), (-1, -1), (1, -1); the one an outward normal points to
+    auto quadrant = [&](pvalue nx, pvalue ny) {
+      auto positive_x = builder.CreateFCmpOGE(nx, f(0)), positive_y = builder.CreateFCmpOGE(ny, f(0));
+      return builder.CreateSelect(
+          positive_x, builder.CreateSelect(positive_y, builder.getInt32(0), builder.getInt32(3)),
+          builder.CreateSelect(positive_y, builder.getInt32(1), builder.getInt32(2))
+      );
+    };
+    // the corners turn the way the triangle's corners do
+    auto turn = builder.CreateSelect(counterclockwise, builder.getInt32(1), builder.getInt32(3));
+    // every sample of a pixel whose square the triangle overlaps is then inside, and the pixel shader takes only those
+    // pixels; each point is within a pixel of its corner
+    expanded = builder.CreateAnd(in_front, builder.CreateNot(degenerate));
+    pvalue weights[9][3], linear[9][3];
+    for (uint32_t k = 0; k < 3; k++) {
+      uint32_t into = (k + 2) % 3, out = k; // the edges into and out of corner k, whose outward normals are -(a, b)
+      auto from = quadrant(builder.CreateFNeg(a[into]), builder.CreateFNeg(b[into]));
+      auto to = quadrant(builder.CreateFNeg(a[out]), builder.CreateFNeg(b[out]));
+      // the corners from one normal's to the other's, at most two turns
+      auto steps = air.CreateIntBinOp(
+          llvm::air::AIRBuilder::min,
+          builder.CreateAnd(builder.CreateMul(builder.CreateAdd(builder.CreateSub(to, from), builder.getInt32(4)), turn), builder.getInt32(3)),
+          builder.getInt32(2), false
+      );
+      for (uint32_t m = 0; m < 3; m++) {
+        uint32_t u = k * 3 + m;
+        auto taken = air.CreateIntBinOp(llvm::air::AIRBuilder::min, builder.getInt32(m), steps, false);
+        auto corner = builder.CreateAnd(builder.CreateAdd(from, builder.CreateMul(taken, turn)), builder.getInt32(3));
+        auto ox = builder.CreateSelect(
+            builder.CreateOr(builder.CreateICmpEQ(corner, builder.getInt32(0)), builder.CreateICmpEQ(corner, builder.getInt32(3))),
+            f(1), f(-1)
+        );
+        auto oy = builder.CreateSelect(builder.CreateICmpULE(corner, builder.getInt32(1)), f(1), f(-1));
+        auto x = builder.CreateFAdd(window[k][0], ox), y = builder.CreateFAdd(window[k][1], oy);
+        grown[u][0] = x, grown[u][1] = y;
+        // corner j's barycentric there: edge j + 1, the one across from it, at the point over at the corner. the
+        // plane's 1/w there may be 0 or less, beyond the horizon, which nothing interpolated over it minds
+        for (uint32_t j = 0; j < 3; j++) {
+          uint32_t across = (j + 1) % 3;
+          linear[u][j] = builder.CreateFDiv(edge(across, x, y), edge(across, window[j][0], window[j][1]));
+          weights[u][j] = builder.CreateFDiv(linear[u][j], w[j]);
+        }
+      }
+    }
+    for (uint32_t u = 0; u < emitted; u++)
+      for (uint32_t j = 0; j < 3; j++) {
+        over_w[u][j] = builder.CreateSelect(expanded, weights[u][j], over_w[u][j]);
+        window_linear[u][j] = builder.CreateSelect(expanded, linear[u][j], window_linear[u][j]);
+      }
+  }
+  // vertex j's value of what the corners have, `bits` reads them
+  auto blend = [&](pvalue(&parts)[9][3], uint32_t j, auto &&bits) {
+    pvalue value = nullptr;
+    for (uint32_t k = 0; k < 3; k++) {
+      auto part = builder.CreateFMul(parts[j][k], real(bits(k)));
+      value = value ? builder.CreateFAdd(value, part) : part;
+    }
+    return value;
+  };
+  for (uint32_t u = 0; u < emitted; u++) {
+    auto vertex = builder.getInt32(u);
+    uint32_t corner = source(u);
+    if (clip[corner]) {
+      pvalue position = clip[corner];
+      if (conservative && clip[0]) {
+        // the point in normalized device coordinates, at the plane's depth there
+        auto f = [&](double v) { return air.getFloat(v); };
+        auto at = [&](pvalue v, uint32_t i) { return builder.CreateExtractElement(v, i); };
+        auto x = builder.CreateFSub(
+            builder.CreateFDiv(
+                builder.CreateFSub(grown[u][0], at(viewport, 0)), builder.CreateFMul(at(viewport, 2), f(0.5))
+            ),
+            f(1)
+        );
+        auto y = builder.CreateFSub(
+            f(1), builder.CreateFDiv(
+                      builder.CreateFSub(grown[u][1], at(viewport, 1)), builder.CreateFMul(at(viewport, 3), f(0.5))
+                  )
+        );
+        auto z = blend(over_w, u, [&](uint32_t k) { return at(clip[k], 2); });
+        pvalue point = llvm::UndefValue::get(types._float4);
+        point = builder.CreateInsertElement(point, x, uint64_t(0));
+        point = builder.CreateInsertElement(point, y, uint64_t(1));
+        point = builder.CreateInsertElement(point, z, uint64_t(2));
+        point = builder.CreateInsertElement(point, f(1), uint64_t(3));
+        position = builder.CreateSelect(expanded, point, position);
+      }
       air.CreateSetMeshPosition(vertex, position);
     }
     for (auto &v : varyings) {
-      auto value = component(corner, v.reg, v.component);
       bool integer = pVertexStage->register_types(v.reg, RegisterComponentType::Float)[v.component] != RegisterComponentType::Float;
+      bool flat = integer || (pso_data->flat_inputs >> v.reg & 1);
+      // a flat varying is the first corner's, which every triangle of the fan starts at
+      auto value = component(conservative && flat ? 0 : corner, v.reg, v.component);
+      if (conservative && clip[0] && !flat) {
+        bool screen = pso_data->noperspective_inputs >> v.reg & 1;
+        air.CreateSetMeshVertexData(
+            vertex, builder.getInt32(v.index),
+            blend(screen ? window_linear : over_w, u, [&](uint32_t k) { return component(k, v.reg, v.component); })
+        );
+        continue;
+      }
       air.CreateSetMeshVertexData(vertex, builder.getInt32(v.index), integer ? value : real(value));
     }
-    for (auto distance : llvm::enumerate(pVertexStage->clip_distance_scalars))
+    for (auto distance : llvm::enumerate(pVertexStage->clip_distance_scalars)) {
+      auto &d = distance.value();
       air.CreateSetMeshClipDistance(
-          vertex, builder.getInt32(distance.index()), real(component(corner, distance.value().reg, distance.value().component))
+          vertex, builder.getInt32(distance.index()),
+          conservative && clip[0] ? blend(over_w, u, [&](uint32_t k) { return component(k, d.reg, d.component); })
+                                  : real(component(corner, d.reg, d.component))
       );
+    }
+    // the triangle in the window for the pixel shader's test, which a corner behind the eye leaves to the clipper
+    if (conservative)
+      for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++) {
+        pvalue value = window[i / 2][0] ? window[i / 2][i % 2] : air.getFloat(NAN);
+        if (i == 0 && window[0][0])
+          value = builder.CreateSelect(in_front, value, air.getFloat(NAN));
+        air.CreateSetMeshVertexData(vertex, builder.getInt32(conservative_at + i), value);
+      }
+    // the plane's 1/w, over w, at each interpolation: 1 where the triangle is not grown
+    if (conservative) {
+      pvalue rcp_w = air.getFloat(1.0);
+      if (clip[0])
+        rcp_w = blend(over_w, u, [&](uint32_t) { return air.getFloat(1.0); });
+      for (uint32_t i = 0; i < SM50_CONSERVATIVE_RCP_W; i++)
+        air.CreateSetMeshVertexData(vertex, builder.getInt32(conservative_at + SM50_CONSERVATIVE_VARYINGS + i), rcp_w);
+    }
     if (own.count == 1)
       air.CreateSetMeshPointSize(vertex, air.getFloat(1.0));
-    air.CreateSetMeshIndex(vertex, vertex);
+    if (!conservative)
+      air.CreateSetMeshIndex(vertex, vertex);
   }
+  // the fan's triangles, from the first vertex
+  if (conservative)
+    for (uint32_t t = 0; t < primitives; t++)
+      for (uint32_t i = 0; i < 3; i++)
+        air.CreateSetMeshIndex(builder.getInt32(t * 3 + i), builder.getInt32(i ? t + i : 0));
   // a primitive's layer and viewport are its first vertex's
   for (auto &element : pVertexStage->output_signature) {
     auto value = [&] { return component(0, element.reg(), std::countr_zero(element.mask())); };
-    if (element.systemValue() == D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX)
-      air.CreateSetMeshRenderTargetArrayIndex(zero, value());
-    if (element.systemValue() == D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX)
-      air.CreateSetMeshViewportArrayIndex(zero, value());
+    for (uint32_t p = 0; p < primitives; p++) {
+      if (element.systemValue() == D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX)
+        air.CreateSetMeshRenderTargetArrayIndex(builder.getInt32(p), value());
+      if (element.systemValue() == D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX)
+        air.CreateSetMeshViewportArrayIndex(builder.getInt32(p), value());
+    }
   }
   // culled by a distance that every vertex is behind: negative, or NaN
   pvalue culled = builder.getFalse();
@@ -1239,8 +1436,9 @@ convert_pass_through_geometry_shader(
     culled = builder.CreateOr(culled, behind);
   }
   if (pVertexStage->cull_distance_scalars.size())
-    air.CreateSetMeshPrimitiveCulled(zero, culled);
-  builder.CreateStore(one, count);
+    for (uint32_t p = 0; p < primitives; p++)
+      air.CreateSetMeshPrimitiveCulled(builder.getInt32(p), culled);
+  builder.CreateStore(builder.CreateSelect(degenerate, zero, builder.getInt32(primitives)), count);
   builder.CreateBr(done);
 
   builder.SetInsertPoint(done);

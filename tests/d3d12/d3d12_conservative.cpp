@@ -1,0 +1,483 @@
+// contract: conservative rasterization, tier 1. a triangle drawn with D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON
+// covers every pixel whose square it overlaps, and no pixel farther than tier 1's uncertainty (half a pixel) from it;
+// such a pixel has all its samples covered (at 4x the test reads the target: Metal runs a 4x pixel's shader more
+// than once, and a discarding run still writes UAVs, with or without conservative rasterization), and each run's
+// SV_Coverage is every sample; its pixel shader sees the triangle's attributes extrapolated from their plane, so a
+// pixel whose center is inside sees what it sees without conservative rasterization, and a flat input is the first
+// vertex's, in perspective however strong. a pipeline without a pixel shader writes depth to the same pixels. a
+// pipeline with a geometry shader is made (its triangles rasterize as usual); the device reports tier 1 once those grow
+// too. D3D11.3 functional specification 15.17 (Conservative Rasterization): "any pixel
+// ... touched by the primitive must be rasterized"; 15.17.2, "Tier 1: 1/2 pixel uncertainty region"; 15.17.5, "the
+// coverage mask ... is full"; 15.17.4, attributes are "extrapolated" for pixels whose centers are outside.
+// https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#15.17%20Conservative%20Rasterization
+// D3D12_CONSERVATIVE_RASTERIZATION_TIER: "Tier_1 enforces a maximum 1/2 pixel uncertainty region".
+// https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_conservative_rasterization_tier
+#include "d3d12_test.hpp"
+#include <algorithm>
+#include <cmath>
+
+static const char hlsl[] = R"hlsl(
+struct V {
+  float4 position : SV_Position;
+  float perspective : PERSPECTIVE;
+  noperspective float screen : SCREEN;
+  nointerpolation uint flat : FLAT;
+};
+V vs(float4 position : POSITION, float perspective : PERSPECTIVE, float screen : SCREEN, uint flat : FLAT) {
+  V v = {position, perspective, screen, flat};
+  return v;
+}
+// per pixel: the attributes, then how many times the shader ran there, the samples it covered, and the runs that did
+// not cover every sample
+RWStructuredBuffer<uint4> o : register(u0);
+float ps(V v, uint coverage : SV_Coverage) : SV_Target {
+  uint2 p = uint2(v.position.xy);
+  uint i = p.y * WIDTH + p.x, was;
+  o[i].xyz = uint3(asuint(v.perspective), asuint(v.screen), v.flat);
+  InterlockedAdd(o[PIXELS + i].x, 1, was);
+  InterlockedOr(o[PIXELS + i].y, coverage, was);
+  InterlockedAdd(o[PIXELS + i].z, coverage != (1u << GetRenderTargetSampleCount()) - 1 ? 1 : 0, was);
+  return 1;
+}
+// the perspective input as the shader evaluates it, at the centroid: at 1x, of every sample covered, the center
+float ps_evaluate(V v) : SV_Target {
+  uint2 p = uint2(v.position.xy);
+  uint i = p.y * WIDTH + p.x, was;
+  o[i].x = asuint(EvaluateAttributeCentroid(v.perspective));
+  InterlockedAdd(o[PIXELS + i].x, 1, was);
+  return 1;
+}
+float4 vs_depth(float4 position : POSITION) : SV_Position { return position; }
+[maxvertexcount(3)] void gs(triangle V v[3], inout TriangleStream<V> s) {
+  s.Append(v[0]);
+  s.Append(v[1]);
+  s.Append(v[2]);
+}
+)hlsl";
+
+static const UINT kWidth = 24, kHeight = 24;
+// the viewport is offset in the target, so window coordinates are not the viewport's
+static const D3D12_VIEWPORT kViewport{2, 3, 20, 20, 0, 1};
+
+struct Vertex {
+  float position[4];
+  float perspective, linear;
+  UINT flat;
+};
+
+struct Triangle {
+  const char *what;
+  float window[3][2]; // in the target's pixels
+  float w[3];         // the corners' clip w: perspective
+};
+
+// whether the square of pixel (px, py), grown by `grow` on each side, has a point in the triangle: the separating
+// axis test, the square's axes, then the edges' normals
+static bool
+overlaps(const Triangle &t, int px, int py, double grow) {
+  double lo[2] = {px - grow, py - grow}, hi[2] = {px + 1 + grow, py + 1 + grow};
+  for (int axis = 0; axis < 2; axis++) {
+    double tmin = 1e30, tmax = -1e30;
+    for (auto &v : t.window)
+      tmin = std::min<double>(tmin, v[axis]), tmax = std::max<double>(tmax, v[axis]);
+    if (tmax < lo[axis] || tmin > hi[axis])
+      return false;
+  }
+  for (int i = 0; i < 3; i++) {
+    auto &a = t.window[i], &b = t.window[(i + 1) % 3], &c = t.window[(i + 2) % 3];
+    double nx = b[1] - a[1], ny = a[0] - b[0];
+    double side = nx * (c[0] - a[0]) + ny * (c[1] - a[1]);
+    if (side < 0)
+      nx = -nx, ny = -ny;
+    // the square's corner farthest inside
+    double best = -1e30;
+    for (double x : {lo[0], hi[0]})
+      for (double y : {lo[1], hi[1]})
+        best = std::max(best, nx * (x - a[0]) + ny * (y - a[1]));
+    if (best < 0)
+      return false;
+  }
+  return true;
+}
+
+// whether the pixel's center is inside, as an ordinary rasterizer would take it (away from edges)
+static bool
+center_inside(const Triangle &t, int px, int py, double margin) {
+  double x = px + 0.5, y = py + 0.5;
+  double area = (t.window[1][0] - t.window[0][0]) * (t.window[2][1] - t.window[0][1]) -
+                (t.window[2][0] - t.window[0][0]) * (t.window[1][1] - t.window[0][1]);
+  for (int i = 0; i < 3; i++) {
+    auto &a = t.window[i], &b = t.window[(i + 1) % 3];
+    double e = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+    double len = std::hypot(b[0] - a[0], b[1] - a[1]);
+    if ((area > 0 ? e : -e) < margin * len)
+      return false;
+  }
+  return true;
+}
+
+int
+main(int argc, char **argv) {
+  Compiler compiler;
+  if (!front_end(argc, argv, compiler)) {
+    printf("skipped: dxcompiler.dll not found\n");
+    return 77;
+  }
+  ComPtr<ID3D12Device> device;
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  // each step's first few
+  unsigned failures = 0, failures_before = 0;
+  auto fail = [&](const char *format, auto... args) {
+    if (failures++ - failures_before < 12) {
+      printf(format, args...);
+      printf("\n");
+    }
+  };
+
+  std::vector<std::string> defines = {"WIDTH=" + std::to_string(kWidth), "PIXELS=" + std::to_string(kWidth * kHeight)};
+  auto vs = compiler.compile(hlsl, "vs", "vs", defines), ps = compiler.compile(hlsl, "ps", "ps", defines),
+       vs_depth = compiler.compile(hlsl, "vs_depth", "vs", defines), gs = compiler.compile(hlsl, "gs", "gs", defines),
+       ps_evaluate = compiler.compile(hlsl, "ps_evaluate", "ps", defines);
+  if (vs.empty() || ps.empty() || vs_depth.empty() || gs.empty() || ps_evaluate.empty()) {
+    printf("failed: HLSL did not compile\n");
+    return 1;
+  }
+
+  D3D12_ROOT_PARAMETER param{D3D12_ROOT_PARAMETER_TYPE_UAV};
+  auto rs = root_signature(
+      device.Get(), {1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT}
+  );
+  const D3D12_INPUT_ELEMENT_DESC elements[] = {
+      {"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"PERSPECTIVE", 0, DXGI_FORMAT_R32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"SCREEN", 0, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"FLAT", 0, DXGI_FORMAT_R32_UINT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+  };
+  // by conservative rasterization and sample count
+  ComPtr<ID3D12PipelineState> pso[2][2], depth_pso, evaluate_pso;
+  for (int conservative = 0; conservative < 2; conservative++)
+    for (int msaa = 0; msaa < 2; msaa++) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{rs.Get(), bytecode(vs), bytecode(ps)};
+      desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+      desc.SampleMask = ~0u;
+      desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
+      desc.RasterizerState.DepthClipEnable = TRUE;
+      desc.RasterizerState.ConservativeRaster =
+          conservative ? D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON : D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+      desc.InputLayout = {elements, (UINT)std::size(elements)};
+      desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      desc.NumRenderTargets = 1;
+      desc.RTVFormats[0] = DXGI_FORMAT_R32_FLOAT;
+      desc.SampleDesc = {msaa ? 4u : 1u, 0};
+      CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso[conservative][msaa])));
+      if (conservative && !msaa) {
+        desc.PS = bytecode(ps_evaluate);
+        CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&evaluate_pso)));
+        desc.PS = bytecode(ps);
+      }
+      // a geometry shader's triangles are not dilated yet, but its pipeline is made
+      if (conservative && !msaa) {
+        desc.GS = bytecode(gs);
+        ComPtr<ID3D12PipelineState> geometry;
+        if (FAILED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&geometry))))
+          fail("a conservative pipeline with a geometry shader was refused");
+      }
+    }
+  {
+    // depth only, without a pixel shader
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{rs.Get(), bytecode(vs_depth)};
+    desc.SampleMask = ~0u;
+    desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
+    desc.RasterizerState.DepthClipEnable = TRUE;
+    desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON;
+    desc.DepthStencilState.DepthEnable = TRUE;
+    desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    desc.InputLayout = {elements, 1};
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    desc.SampleDesc = {1, 0};
+    CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&depth_pso)));
+  }
+
+  const Triangle triangles[] = {
+      {"a large triangle", {{4.3f, 5.1f}, {19.6f, 7.4f}, {9.2f, 20.7f}}, {1, 1, 1}},
+      {"a triangle inside one pixel, around no center", {{10.1f, 10.1f}, {10.4f, 10.2f}, {10.2f, 10.35f}}, {1, 1, 1}},
+      // whose plane's 1/w is below 0 a pixel away: at (9.1, 9.1), and across the pixel's square, (11, 10.1)
+      {"a triangle inside one pixel in steep perspective",
+       {{10.1f, 10.1f}, {10.4f, 10.2f}, {10.2f, 10.35f}},
+       {1, 4, 0.5f}},
+      {"a sliver across pixels", {{3.2f, 12.05f}, {20.8f, 12.2f}, {3.3f, 12.12f}}, {1, 1, 1}},
+      {"a needle", {{4.5f, 4.5f}, {20.5f, 19.0f}, {20.2f, 19.3f}}, {1, 1, 1}},
+      {"a triangle in perspective", {{5.5f, 6.2f}, {18.7f, 9.9f}, {7.1f, 19.4f}}, {1, 4, 0.5f}},
+      {"a triangle past the viewport", {{-6.0f, 8.0f}, {12.0f, 1.0f}, {8.0f, 30.0f}}, {1, 2, 1}},
+  };
+
+  const UINT64 row = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, pixels = kWidth * kHeight;
+  const UINT64 uav_bytes = pixels * 32, target_at = uav_bytes, depth_at = target_at + row * kHeight;
+  auto uav = buffer(
+      device.Get(), D3D12_HEAP_TYPE_DEFAULT, uav_bytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+  );
+  auto clear_uav = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, uav_bytes, D3D12_RESOURCE_STATE_GENERIC_READ);
+  auto readback =
+      buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, depth_at + row * kHeight, D3D12_RESOURCE_STATE_COPY_DEST);
+  auto vertices = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(Vertex) * 3, D3D12_RESOURCE_STATE_GENERIC_READ);
+  {
+    void *bytes;
+    CHECK(clear_uav->Map(0, nullptr, &bytes));
+    memset(bytes, 0xff, uav_bytes / 2);
+    memset((char *)bytes + uav_bytes / 2, 0, uav_bytes / 2);
+    clear_uav->Unmap(0, nullptr);
+  }
+  D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
+  // the 4x target resolves to the fraction of each pixel's samples covered
+  ComPtr<ID3D12Resource> targets[2], resolved, depth;
+  for (int msaa = 0; msaa < 2; msaa++) {
+    D3D12_RESOURCE_DESC desc{
+        D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        0,
+        kWidth,
+        kHeight,
+        1,
+        1,
+        DXGI_FORMAT_R32_FLOAT,
+        {msaa ? 4u : 1u, 0},
+        D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+    };
+    CHECK(device->CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&targets[msaa])
+    ));
+  }
+  {
+    D3D12_RESOURCE_DESC desc{
+        D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        0,
+        kWidth,
+        kHeight,
+        1,
+        1,
+        DXGI_FORMAT_R32_FLOAT,
+        {1, 0},
+        D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        D3D12_RESOURCE_FLAG_NONE
+    };
+    CHECK(device->CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr, IID_PPV_ARGS(&resolved)
+    ));
+  }
+  {
+    D3D12_RESOURCE_DESC desc{
+        D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        0,
+        kWidth,
+        kHeight,
+        1,
+        1,
+        DXGI_FORMAT_D32_FLOAT,
+        {1, 0},
+        D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+    };
+    D3D12_CLEAR_VALUE clear{DXGI_FORMAT_D32_FLOAT};
+    clear.DepthStencil.Depth = 1;
+    CHECK(device->CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS(&depth)
+    ));
+  }
+  ComPtr<ID3D12DescriptorHeap> rtvs, dsvs;
+  D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2}, dsv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1};
+  CHECK(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtvs)));
+  CHECK(device->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsvs)));
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv[2];
+  for (int msaa = 0; msaa < 2; msaa++) {
+    rtv[msaa] = rtvs->GetCPUDescriptorHandleForHeapStart();
+    rtv[msaa].ptr += msaa * device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    device->CreateRenderTargetView(targets[msaa].Get(), nullptr, rtv[msaa]);
+  }
+  auto dsv = dsvs->GetCPUDescriptorHandleForHeapStart();
+  device->CreateDepthStencilView(depth.Get(), nullptr, dsv);
+
+  ComPtr<ID3D12CommandQueue> queue;
+  ComPtr<ID3D12CommandAllocator> allocator;
+  ComPtr<ID3D12GraphicsCommandList> list;
+  D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+  CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+  CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
+  CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
+  CHECK(list->Close());
+
+  // the attributes and samples each pixel's shader saw, whether the target was written, and its depth
+  struct Pixels {
+    UINT attributes[kWidth * kHeight][4];
+    UINT runs[kWidth * kHeight][4];
+    float target[kWidth * kHeight]; // 1x: the shader's 1, 4x: the samples covered, of 1
+    float depth[kWidth * kHeight];
+  };
+  auto draw = [&](const Triangle &t, ID3D12PipelineState *pipeline, int msaa, bool depth_only, Pixels &out) -> HRESULT {
+    Vertex *v;
+    HRESULT hr;
+    if (FAILED(hr = vertices->Map(0, nullptr, (void **)&v)))
+      return hr;
+    for (int k = 0; k < 3; k++) {
+      float x = (t.window[k][0] - kViewport.TopLeftX) / kViewport.Width * 2 - 1;
+      float y = 1 - (t.window[k][1] - kViewport.TopLeftY) / kViewport.Height * 2;
+      v[k] = {{x * t.w[k], y * t.w[k], 0.5f * t.w[k], t.w[k]}, 1.0f + 2 * k, 10.0f * k, 7u + k};
+    }
+    vertices->Unmap(0, nullptr);
+    allocator->Reset();
+    list->Reset(allocator.Get(), pipeline);
+    transition(list.Get(), uav.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+    list->CopyBufferRegion(uav.Get(), 0, clear_uav.Get(), 0, uav_bytes);
+    transition(list.Get(), uav.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const float zero[4] = {};
+    list->ClearRenderTargetView(rtv[msaa], zero, 0, nullptr);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
+    list->SetGraphicsRootSignature(rs.Get());
+    list->SetGraphicsRootUnorderedAccessView(0, uav->GetGPUVirtualAddress());
+    D3D12_RECT scissor{0, 0, (LONG)kWidth, (LONG)kHeight};
+    list->RSSetViewports(1, &kViewport);
+    list->RSSetScissorRects(1, &scissor);
+    if (depth_only)
+      list->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    else
+      list->OMSetRenderTargets(1, &rtv[msaa], FALSE, nullptr);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    D3D12_VERTEX_BUFFER_VIEW view{vertices->GetGPUVirtualAddress(), sizeof(Vertex) * 3, sizeof(Vertex)};
+    list->IASetVertexBuffers(0, 1, &view);
+    list->DrawInstanced(3, 1, 0, 0);
+    transition(list.Get(), uav.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(readback.Get(), 0, uav.Get(), 0, uav_bytes);
+    transition(list.Get(), uav.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    {
+      ID3D12Resource *read = targets[0].Get();
+      if (msaa) {
+        transition(
+            list.Get(), targets[1].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE
+        );
+        list->ResolveSubresource(resolved.Get(), 0, targets[1].Get(), 0, DXGI_FORMAT_R32_FLOAT);
+        transition(
+            list.Get(), targets[1].Get(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET
+        );
+        transition(list.Get(), resolved.Get(), D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        read = resolved.Get();
+      } else {
+        transition(list.Get(), read, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+      }
+      D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+      dst.PlacedFootprint = {target_at, {DXGI_FORMAT_R32_FLOAT, kWidth, kHeight, 1, (UINT)row}};
+      D3D12_TEXTURE_COPY_LOCATION src{read, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+      list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+      transition(
+          list.Get(), read, D3D12_RESOURCE_STATE_COPY_SOURCE,
+          msaa ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_RENDER_TARGET
+      );
+    }
+    transition(list.Get(), depth.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION ddst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    ddst.PlacedFootprint = {depth_at, {DXGI_FORMAT_R32_TYPELESS, kWidth, kHeight, 1, (UINT)row}};
+    D3D12_TEXTURE_COPY_LOCATION dsrc{depth.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    list->CopyTextureRegion(&ddst, 0, 0, 0, &dsrc, nullptr);
+    transition(list.Get(), depth.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    if (FAILED(hr = submit(device.Get(), queue.Get(), list.Get())))
+      return hr;
+    char *bytes;
+    if (FAILED(hr = readback->Map(0, nullptr, (void **)&bytes)))
+      return hr;
+    memcpy(out.attributes, bytes, uav_bytes / 2);
+    memcpy(out.runs, bytes + uav_bytes / 2, uav_bytes / 2);
+    for (UINT y = 0; y < kHeight; y++)
+      for (UINT x = 0; x < kWidth; x++) {
+        out.target[y * kWidth + x] = reinterpret_cast<float *>(bytes + target_at + y * row)[x];
+        out.depth[y * kWidth + x] = reinterpret_cast<float *>(bytes + depth_at + y * row)[x];
+      }
+    readback->Unmap(0, nullptr);
+    return S_OK;
+  };
+
+  static Pixels normal, conservative, multisampled, depth_only, evaluated;
+  // a pixel inside the viewport and target: what a draw can reach
+  auto reachable = [&](int x, int y) {
+    return x >= kViewport.TopLeftX && y >= kViewport.TopLeftY && x < kViewport.TopLeftX + kViewport.Width &&
+           y < kViewport.TopLeftY + kViewport.Height;
+  };
+  for (auto &t : triangles) {
+    failures_before = failures;
+    step("%s", t.what);
+    CHECK(draw(t, pso[0][0].Get(), 0, false, normal));
+    CHECK(draw(t, pso[1][0].Get(), 0, false, conservative));
+    CHECK(draw(t, pso[1][1].Get(), 1, false, multisampled));
+    CHECK(draw(t, depth_pso.Get(), 0, true, depth_only));
+    CHECK(draw(t, evaluate_pso.Get(), 0, false, evaluated));
+    for (int y = 0; y < (int)kHeight; y++)
+      for (int x = 0; x < (int)kWidth; x++) {
+        int i = y * kWidth + x;
+        // certainly overlapped: the square less a sliver; certainly not: farther than the uncertainty region
+        bool must = reachable(x, y) && overlaps(t, x, y, -1.0 / 64), may = reachable(x, y) && overlaps(t, x, y, 0.5);
+        bool ran = conservative.runs[i][0];
+        // one primitive runs a pixel's shader once (D3D11.3 16.1); at 4x Metal may run it more than once, each with
+        // some of the samples, as it does without conservative rasterization, so there the runs' samples count
+        if (conservative.runs[i][0] > 1)
+          fail("%s: pixel (%d, %d) ran its shader %u times", t.what, x, y, conservative.runs[i][0]);
+        if ((conservative.target[i] == 1) != ran)
+          fail("%s: pixel (%d, %d) ran its shader %d, wrote the target %g", t.what, x, y, ran, conservative.target[i]);
+        if (must && !ran)
+          fail("%s: pixel (%d, %d), which the triangle overlaps, was not rasterized", t.what, x, y);
+        if (!may && ran)
+          fail("%s: pixel (%d, %d), more than half a pixel away, was rasterized", t.what, x, y);
+        // at 4x, what reached the target: Metal may run a pixel's shader more than once there, and a run that
+        // discards still writes UAVs, with or without conservative rasterization
+        float samples = multisampled.target[i];
+        if (must && samples != 1)
+          fail("%s: pixel (%d, %d) at 4x has %g of its samples, want all", t.what, x, y, samples);
+        if (!may && samples != 0)
+          fail("%s: pixel (%d, %d) at 4x, more than half a pixel away, has %g of its samples", t.what, x, y, samples);
+        if (may && samples != 0 && samples != 1)
+          fail("%s: pixel (%d, %d) at 4x has %g of its samples, want all or none", t.what, x, y, samples);
+        // every run's SV_Coverage is all of the pixel's samples (15.17.5), the grown triangles' shared edges too
+        if (conservative.runs[i][2] || multisampled.runs[i][2])
+          fail(
+              "%s: pixel (%d, %d) ran its shader with partial coverage %u times at 1x, %u at 4x (covering %#x)", t.what,
+              x, y, conservative.runs[i][2], multisampled.runs[i][2], multisampled.runs[i][1]
+          );
+        if (must && multisampled.runs[i][1] != 0xf)
+          fail("%s: pixel (%d, %d) at 4x saw coverage %#x, want 0xf", t.what, x, y, multisampled.runs[i][1]);
+        bool depth_written = depth_only.depth[i] != 1;
+        if ((must && !depth_written) || (!may && depth_written))
+          fail("%s: pixel (%d, %d) without a pixel shader: depth %g", t.what, x, y, depth_only.depth[i]);
+        if (depth_written && std::fabs(depth_only.depth[i] - 0.5f) > 1e-3f)
+          fail("%s: pixel (%d, %d) without a pixel shader: depth %g, want 0.5", t.what, x, y, depth_only.depth[i]);
+        if (ran && conservative.attributes[i][2] != 7)
+          fail("%s: pixel (%d, %d): flat %u, want the first vertex's 7", t.what, x, y, conservative.attributes[i][2]);
+        // inside, the attributes are the ordinary rasterizer's
+        if (ran && reachable(x, y) && center_inside(t, x, y, 0.05) && normal.runs[i][0])
+          for (int a = 0; a < 2; a++) {
+            float got, want;
+            memcpy(&got, &conservative.attributes[i][a], 4);
+            memcpy(&want, &normal.attributes[i][a], 4);
+            if (!(std::fabs(got - want) <= 1e-3f * std::max(1.0f, std::fabs(want))))
+              fail(
+                  "%s: pixel (%d, %d): %s %g, without conservative rasterization %g", t.what, x, y,
+                  a ? "noperspective" : "perspective", got, want
+              );
+          }
+        // and as the shader evaluates it there
+        if (ran && reachable(x, y) && center_inside(t, x, y, 0.05) && normal.runs[i][0]) {
+          float got, want;
+          memcpy(&got, &evaluated.attributes[i][0], 4);
+          memcpy(&want, &normal.attributes[i][0], 4);
+          if (!(std::fabs(got - want) <= 1e-3f * std::max(1.0f, std::fabs(want))))
+            fail(
+                "%s: pixel (%d, %d): perspective evaluated %g, without conservative rasterization %g", t.what, x, y,
+                got, want
+            );
+        }
+        // an ordinary rasterizer's pixel is a conservative one's
+        if (normal.target[i] == 1 && !ran)
+          fail("%s: pixel (%d, %d) is rasterized without conservative rasterization, not with it", t.what, x, y);
+      }
+  }
+  printf("%s: %u mismatches over %zu triangles\n", failures ? "failed" : "passed", failures, std::size(triangles));
+  return failures != 0;
+}

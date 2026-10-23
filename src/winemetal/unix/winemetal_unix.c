@@ -2229,6 +2229,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];
   bool pipeline_statistics;
+  bool conservative;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2249,6 +2250,9 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   uint32_t strip_cut_index;
   uint32_t input_primitive;
   bool pass_through;
+  bool conservative;
+  uint32_t flat_inputs;
+  uint32_t noperspective_inputs;
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA32 {
@@ -2314,6 +2318,7 @@ sm50_compilation_argument32_convert(
       data->dual_source_blending = src->dual_source_blending;
       memcpy(data->pixel_formats, src->pixel_formats, sizeof(data->pixel_formats));
       data->pipeline_statistics = src->pipeline_statistics;
+      data->conservative = src->conservative;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -2352,6 +2357,9 @@ sm50_compilation_argument32_convert(
       data->strip_cut_index = src->strip_cut_index;
       data->input_primitive = src->input_primitive;
       data->pass_through = src->pass_through;
+      data->conservative = src->conservative;
+      data->flat_inputs = src->flat_inputs;
+      data->noperspective_inputs = src->noperspective_inputs;
       break;
     }
     case SM50_SHADER_MESH_SHADER: {
