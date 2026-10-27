@@ -11,8 +11,8 @@ namespace mullion::d3d9 {
 // draw tests against and never draws into). reached through QueryInterface, so a
 // surface of someone else's is refused rather than misread.
 struct IMTLD3D9Surface {
-  virtual ULONG AddRef() = 0;
-  virtual ULONG Release() = 0;
+  virtual ULONG STDMETHODCALLTYPE AddRef() = 0;
+  virtual ULONG STDMETHODCALLTYPE Release() = 0;
   virtual ID3D11Texture2D *texture() = 0;
   virtual bool lockable() = 0;
   virtual bool depth_stencil() = 0;
