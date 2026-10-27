@@ -24,6 +24,32 @@ static const UINT width = 64, height = 1;
 static const UINT bytes = width * height * 4;
 static const UINT64 probe_salt = 0x5a5a5a5a5a5a5a5aULL;
 static const DWORD wait_ms = 10000;
+// the key a share is left at when its creator keeps nothing but the handle, and the keys a named share is left at
+static const UINT64 late_key = 11, named_key = 23, held_key = 33;
+
+// a second device of this process, as another application has one: an open has to work here as it does in a
+// process of its own
+struct second_device {
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+
+  bool
+  open() {
+    const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                                 nullptr, &context)))
+      return false;
+    return SUCCEEDED(device.As(&device1));
+  }
+};
+
+// the name a share publishes: one per test process, so a rerun of this test cannot collide with a name a previous
+// run left in the session's namespace
+static void
+share_name(DWORD pid, const WCHAR *suffix, WCHAR (&out)[64]) {
+  swprintf(out, 64, L"MULLION_shared_texture_crossprocess_%lu%s", static_cast<unsigned long>(pid), suffix);
+}
 
 // one byte pattern per turn, the same in both processes
 static std::vector<BYTE>
@@ -156,7 +182,9 @@ child_keyed(char **argv) {
   HRESULT hr = device->OpenSharedResource(shared, IID_PPV_ARGS(&wrong));
   if (!expect(hr == E_INVALIDARG && !wrong, "the NT handle opened through the legacy API, hr %#lx", hr))
     return 1;
-  hr = device1->OpenSharedResource1(HANDLE(uintptr_t(0x4000000000000001ull)), IID_PPV_ARGS(&wrong));
+  // the legacy marker is the handle's own second-highest bit, so the foreign handle means the same in either width
+  const uintptr_t foreign = (uintptr_t(1) << (sizeof(uintptr_t) * 8 - 2)) | 1u;
+  hr = device1->OpenSharedResource1(HANDLE(foreign), IID_PPV_ARGS(&wrong));
   if (!expect(hr == E_INVALIDARG && !wrong, "a foreign legacy handle opened through the NT API, hr %#lx", hr))
     return 1;
   CHECK(device1->OpenSharedResource1(shared, IID_PPV_ARGS(&imported)));
@@ -179,6 +207,38 @@ child_keyed(char **argv) {
   if (!expect(mutex->AcquireSync(4, wait_ms) == S_OK, "final acquire did not take the mutex"))
     ExitProcess(1);
   return verdict();
+}
+
+// the crashing child: open the inherited NT handle, take the mutex, say so, and then die the way a crash or a kill
+// does - with nothing unwound and no destructor run - so the mutex is left owned by a process that no longer exists
+static int
+child_keyed_crash(char **argv) {
+  HANDLE shared = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
+  HANDLE taken = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[3], nullptr, 10)));
+  HANDLE die = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[4], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResource1(shared, IID_PPV_ARGS(&imported)));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  CloseHandle(shared);
+  // a fresh mutex is free with the initial key, so this is the child's to take at once
+  if (!expect(mutex->AcquireSync(0, wait_ms) == S_OK, "the crashing child did not take the mutex"))
+    ExitProcess(1);
+  if (!expect(!!SetEvent(taken), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(taken);
+  // the parent asks the same key while this owner is certainly alive before it lets the child die
+  if (!expect(WaitForSingleObject(die, 60000) == WAIT_OBJECT_0, "the parent never let the child die"))
+    ExitProcess(1);
+  CloseHandle(die);
+  ExitProcess(0);
 }
 
 // the shared child: open the marshalled legacy handle, verify the identity and the creator's first bytes, land its
@@ -223,6 +283,112 @@ child_shared(char **argv) {
     ExitProcess(1);
   CloseHandle(ready);
   if (!expect(WaitForSingleObject(go, 60000) == WAIT_OBJECT_0, "the parent never finished with the handle"))
+    ExitProcess(1);
+  CloseHandle(go);
+  return verdict();
+}
+
+// the late child: the creator of the share whose handle this process inherited has released every resource of it,
+// so this handle is all that is left of the share. the texture it names and the mutex it was made with both have
+// to still be there, at the key the creator left them, because the handle is a handle to the share's own object
+static int
+child_late(char **argv) {
+  HANDLE kept = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResource1(kept, IID_PPV_ARGS(&imported)));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  CloseHandle(kept);
+  // a fresh mutex is free with the initial key, so taking the initial key is what a mutex that lost its state does:
+  // "If the mutex is not released within the time-out interval, the method returns" (Microsoft Learn,
+  // IDXGIKeyedMutex::AcquireSync)
+  if (!expect(mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "the late open took the initial key, so it came back fresh"))
+    return 1;
+  if (!expect(mutex->AcquireSync(late_key, wait_ms) == S_OK, "the late open lost the key the share was left with"))
+    return 1;
+  auto got = contents(device.Get(), context.Get(), imported.Get());
+  if (!expect(got == pattern(11), "the late open's bytes changed (%u bytes, first %02x)", (unsigned)got.size(),
+              got.empty() ? 0u : got[0]))
+    return 1;
+  if (!expect(mutex->ReleaseSync(2 * late_key) == S_OK, "the late open could not release the mutex"))
+    return 1;
+  return verdict();
+}
+
+// the named child: open the texture by the name its creator published, on a device of a process of its own
+static int
+child_named(char **argv) {
+  WCHAR published[64];
+  share_name(strtoul(argv[2], nullptr, 10), L"", published);
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResourceByName(
+      published, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&imported)
+  ));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  if (!expect(mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "the named open took the initial key, so it came back fresh"))
+    return 1;
+  if (!expect(mutex->AcquireSync(named_key, wait_ms) == S_OK, "the named open lost the key the share was left with"))
+    return 1;
+  auto got = contents(device.Get(), context.Get(), imported.Get());
+  if (!expect(got == pattern(21), "the named open's bytes did not arrive (%u bytes, first %02x)", (unsigned)got.size(),
+              got.empty() ? 0u : got[0]))
+    return 1;
+  if (!expect(mutex->ReleaseSync(2 * named_key) == S_OK, "the named open could not release the mutex"))
+    return 1;
+  return verdict();
+}
+
+// the holding child: open the texture by the name its creator published and keep the resource, so the name stays
+// published while the creator lets every resource of its own go
+static int
+child_named_hold(char **argv) {
+  WCHAR published[64];
+  share_name(strtoul(argv[2], nullptr, 10), L"_held", published);
+  HANDLE ready = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[3], nullptr, 10)));
+  HANDLE go = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[4], nullptr, 10)));
+  const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<ID3D11Device1> device1;
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                          nullptr, &context));
+  CHECK(device.As(&device1));
+  ComPtr<ID3D11Texture2D> imported;
+  CHECK(device1->OpenSharedResourceByName(
+      published, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&imported)
+  ));
+  ComPtr<IDXGIKeyedMutex> mutex;
+  CHECK(imported.As(&mutex));
+  if (!expect(mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "the holding open took the initial key, so it came back fresh"))
+    return 1;
+  if (!expect(mutex->AcquireSync(held_key, wait_ms) == S_OK, "the holding open lost the key the share had"))
+    return 1;
+  // handed back on the same key, so the open the creator makes next sees what this one saw
+  if (!expect(mutex->ReleaseSync(held_key) == S_OK, "the holding open could not release the mutex"))
+    return 1;
+  auto got = contents(device.Get(), context.Get(), imported.Get());
+  if (!expect(got == pattern(41), "the holding open's bytes did not arrive (%u bytes, first %02x)", (unsigned)got.size(),
+              got.empty() ? 0u : got[0]))
+    return 1;
+  if (!expect(!!SetEvent(ready), "SetEvent: %lu", GetLastError()))
+    ExitProcess(1);
+  CloseHandle(ready);
+  if (!expect(WaitForSingleObject(go, 60000) == WAIT_OBJECT_0, "the creator never finished with the name"))
     ExitProcess(1);
   CloseHandle(go);
   return verdict();
@@ -298,6 +464,63 @@ parent() {
   resource.Reset();
   expect(texture.Reset() == 0, "the keyed texture retained an extra reference");
 
+  step("keyed texture, a child killed while it owns the mutex, and the mutex it leaves behind");
+  D3D11_TEXTURE2D_DESC crash_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                  D3D11_BIND_SHADER_RESOURCE, 0,
+                                  D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
+  ComPtr<ID3D11Texture2D> crash_texture;
+  CHECK(device->CreateTexture2D(&crash_desc, nullptr, &crash_texture));
+  ComPtr<IDXGIResource1> crash_resource;
+  CHECK(crash_texture.As(&crash_resource));
+  ComPtr<IDXGIKeyedMutex> crash_mutex;
+  CHECK(crash_texture.As(&crash_mutex));
+  HANDLE crash_handle = nullptr;
+  CHECK(crash_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                           &crash_handle));
+  HANDLE inherited = nullptr;
+  if (!expect(!!DuplicateHandle(GetCurrentProcess(), crash_handle, GetCurrentProcess(), &inherited, 0, TRUE,
+                                DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(crash_handle);
+  HANDLE taken = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  HANDLE die = CreateEventA(&attributes, FALSE, FALSE, nullptr);
+  if (!expect(taken != nullptr && die != nullptr, "CreateEvent: %lu", GetLastError()))
+    return verdict();
+  command = "\"" + std::string(executable) + "\" --keyed-crash " +
+            std::to_string(reinterpret_cast<uintptr_t>(inherited)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(taken)) + " " +
+            std::to_string(reinterpret_cast<uintptr_t>(die));
+  PROCESS_INFORMATION crash_child{};
+  if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                               &crash_child), "CreateProcess: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(crash_child.hThread);
+  CloseHandle(inherited);
+  if (!expect(WaitForSingleObject(taken, wait_ms) == WAIT_OBJECT_0, "the crashing child did not take the mutex")) {
+    TerminateProcess(crash_child.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(taken);
+  // an owner that still exists, however far away, is not an abandoned one
+  expect(crash_mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "a live owner's mutex read as abandoned");
+  if (!expect(!!SetEvent(die), "SetEvent: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(die);
+  if (!expect(WaitForSingleObject(crash_child.hProcess, 60000) == WAIT_OBJECT_0, "the crashing child did not exit")) {
+    TerminateProcess(crash_child.hProcess, 1);
+    return verdict();
+  }
+  GetExitCodeProcess(crash_child.hProcess, &code);
+  CloseHandle(crash_child.hProcess);
+  step("the child died owning the mutex without unwinding anything, so the mutex is abandoned");
+  for (unsigned attempt = 0; attempt < 2; attempt++) {
+    expect(crash_mutex->AcquireSync(0, 0) == WAIT_ABANDONED, "the killed owner did not abandon the mutex");
+    expect(crash_mutex->ReleaseSync(0) == DXGI_ERROR_INVALID_CALL, "the abandoned mutex released without ownership");
+  }
+  crash_mutex.Reset();
+  crash_resource.Reset();
+  expect(crash_texture.Reset() == 0, "the keyed texture retained an extra reference");
+
   step("shared texture, marshalled legacy handle, its lifetime outlives its creator");
   D3D11_TEXTURE2D_DESC shared_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                    D3D11_BIND_SHADER_RESOURCE, 0, D3D11_RESOURCE_MISC_SHARED};
@@ -360,6 +583,299 @@ parent() {
   ComPtr<ID3D11Texture2D> dead;
   HRESULT hr = device->OpenSharedResource(legacy, IID_PPV_ARGS(&dead));
   expect(FAILED(hr) && !dead, "the released sharing chain kept its handle valid, hr %#lx", hr);
+
+  step("an NT handle kept while every resource of its share goes carries the mutex it was made with");
+  D3D11_TEXTURE2D_DESC late_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                  D3D11_BIND_SHADER_RESOURCE, 0,
+                                  D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
+  ComPtr<ID3D11Texture2D> late_texture;
+  CHECK(device->CreateTexture2D(&late_desc, nullptr, &late_texture));
+  ComPtr<IDXGIResource1> late_resource;
+  CHECK(late_texture.As(&late_resource));
+  ComPtr<IDXGIKeyedMutex> late_mutex;
+  CHECK(late_texture.As(&late_mutex));
+  write_update(context.Get(), late_texture.Get(), pattern(11));
+  if (!expect(drained(device.Get(), context.Get()), "the late texture's bytes did not land"))
+    return 1;
+  if (!expect(late_mutex->AcquireSync(0, wait_ms) == S_OK, "the late texture's mutex did not take its initial key"))
+    return 1;
+  // the share is left released at a key of its own, which is the mutex a later open has to come back with
+  if (!expect(late_mutex->ReleaseSync(late_key) == S_OK, "the late texture's mutex did not release its key"))
+    return 1;
+  HANDLE kept = nullptr;
+  CHECK(late_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                          &kept));
+  // every resource of the share goes, and the handle is all that is left of it
+  late_mutex.Reset();
+  late_resource.Reset();
+  expect(late_texture.Reset() == 0, "the late texture retained an extra reference");
+  {
+    second_device other;
+    if (!expect(other.open(), "a second device could not be made"))
+      return verdict();
+    ComPtr<ID3D11Texture2D> reopened;
+    expect(SUCCEEDED(other.device1->OpenSharedResource1(kept, IID_PPV_ARGS(&reopened))),
+           "the kept handle no longer opened a texture once every resource of the share went");
+    // the rest of this step says what the reopened texture has to be, so it only runs on one that opened
+    if (reopened) {
+      ComPtr<IDXGIKeyedMutex> reopened_mutex;
+      expect(SUCCEEDED(reopened.As(&reopened_mutex)), "the reopened texture has no mutex");
+      if (reopened_mutex) {
+        // a mutex that came back fresh is free with the initial key, and one that came back as its share's is not
+        expect(reopened_mutex->AcquireSync(0, 0) == WAIT_TIMEOUT,
+               "the reopened texture's mutex took the initial key, so it came back fresh");
+        expect(reopened_mutex->AcquireSync(late_key, wait_ms) == S_OK,
+               "the reopened texture's mutex lost the key it had");
+        // handed on at the key it was taken at, so the child that opens the handle next finds the same one
+        expect(reopened_mutex->ReleaseSync(late_key) == S_OK, "the reopened texture's mutex could not release");
+        reopened_mutex.Reset();
+      }
+      expect(contents(other.device.Get(), other.context.Get(), reopened.Get()) == pattern(11),
+             "the reopened texture's bytes changed");
+      expect(reopened.Reset() == 0, "the reopened texture retained an extra reference");
+    }
+  }
+  // and the same handle in a process of its own, which never held a resource of the share either
+  {
+    HANDLE inherited = nullptr;
+    if (!expect(!!DuplicateHandle(GetCurrentProcess(), kept, GetCurrentProcess(), &inherited, 0, TRUE,
+                                  DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
+      return verdict();
+    std::string command = "\"" + std::string(executable) + "\" --late " +
+                          std::to_string(reinterpret_cast<uintptr_t>(inherited));
+    STARTUPINFOA startup{sizeof(startup)};
+    PROCESS_INFORMATION child{};
+    if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                                 &child), "CreateProcess: %lu", GetLastError()))
+      return verdict();
+    CloseHandle(child.hThread);
+    CloseHandle(inherited);
+    if (!expect(WaitForSingleObject(child.hProcess, 60000) == WAIT_OBJECT_0, "the late child did not exit")) {
+      TerminateProcess(child.hProcess, 1);
+      return verdict();
+    }
+    DWORD late_code = 1;
+    GetExitCodeProcess(child.hProcess, &late_code);
+    CloseHandle(child.hProcess);
+    expect(late_code == 0, "the late child exited %lu", late_code);
+  }
+  CloseHandle(kept);
+
+  step("a name a share published is a name no other share can take");
+  WCHAR published_name[64];
+  share_name(GetCurrentProcessId(), L"", published_name);
+  D3D11_TEXTURE2D_DESC named_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                   D3D11_BIND_SHADER_RESOURCE, 0,
+                                   D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
+  ComPtr<ID3D11Texture2D> named_texture;
+  CHECK(device->CreateTexture2D(&named_desc, nullptr, &named_texture));
+  ComPtr<IDXGIResource1> named_resource;
+  CHECK(named_texture.As(&named_resource));
+  ComPtr<IDXGIKeyedMutex> named_mutex;
+  CHECK(named_texture.As(&named_mutex));
+  write_update(context.Get(), named_texture.Get(), pattern(21));
+  if (!expect(drained(device.Get(), context.Get()), "the named texture's bytes did not land"))
+    return 1;
+  if (!expect(named_mutex->AcquireSync(0, wait_ms) == S_OK, "the named texture's mutex did not take its initial key"))
+    return 1;
+  if (!expect(named_mutex->ReleaseSync(named_key) == S_OK, "the named texture's mutex did not release its key"))
+    return 1;
+  SECURITY_ATTRIBUTES named_attributes{sizeof(named_attributes), nullptr, TRUE};
+  HANDLE named = nullptr;
+  CHECK(named_resource->CreateSharedHandle(
+      &named_attributes, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, published_name, &named
+  ));
+  {
+    ComPtr<ID3D11Texture2D> clash_texture;
+    CHECK(device->CreateTexture2D(&named_desc, nullptr, &clash_texture));
+    ComPtr<IDXGIResource1> clash_resource;
+    CHECK(clash_texture.As(&clash_resource));
+    HANDLE clash = nullptr;
+    HRESULT clash_hr = clash_resource->CreateSharedHandle(
+        nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, published_name, &clash
+    );
+    expect(clash_hr == DXGI_ERROR_NAME_ALREADY_EXISTS && !clash, "a name in use was published twice, hr %#lx",
+           clash_hr);
+    clash_resource.Reset();
+    expect(clash_texture.Reset() == 0, "the clashing texture retained an extra reference");
+    DWORD flags = 0;
+    expect(!!GetHandleInformation(named, &flags) && (flags & HANDLE_FLAG_INHERIT),
+           "the published handle did not inherit as it was asked to");
+  }
+
+  step("a named handle publishes its name, so a device and a process of its own open the texture by it");
+  {
+    second_device other;
+    if (!expect(other.open(), "a second device could not be made"))
+      return verdict();
+    ComPtr<ID3D11Texture2D> opened;
+    expect(SUCCEEDED(other.device1->OpenSharedResourceByName(
+               published_name, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&opened)
+           )),
+           "the name a share published did not open on another device");
+    if (opened) {
+      ComPtr<IDXGIKeyedMutex> opened_mutex;
+      expect(SUCCEEDED(opened.As(&opened_mutex)), "the named open has no mutex");
+      if (opened_mutex) {
+        expect(opened_mutex->AcquireSync(0, 0) == WAIT_TIMEOUT,
+               "the named open took the initial key, so it came back fresh");
+        expect(opened_mutex->AcquireSync(named_key, wait_ms) == S_OK, "the named open lost the key the share had");
+        // handed on at the key it was taken at, so the child that opens the name next finds the same one
+        expect(opened_mutex->ReleaseSync(named_key) == S_OK, "the named open could not release the mutex");
+        opened_mutex.Reset();
+      }
+      expect(contents(other.device.Get(), other.context.Get(), opened.Get()) == pattern(21),
+             "the named open's bytes changed");
+      expect(opened.Reset() == 0, "the named open retained an extra reference");
+    }
+    WCHAR nobody[64];
+    share_name(GetCurrentProcessId() + 1, L"_nobody", nobody);
+    ComPtr<ID3D11Texture2D> nothing;
+    expect(FAILED(other.device1->OpenSharedResourceByName(
+               nobody, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&nothing)
+           )),
+           "a name nothing published opened a texture");
+  }
+  {
+    std::string command = "\"" + std::string(executable) + "\" --named " +
+                          std::to_string((unsigned long)GetCurrentProcessId());
+    STARTUPINFOA startup{sizeof(startup)};
+    PROCESS_INFORMATION child{};
+    if (!expect(!!CreateProcessA(executable, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                                 &child), "CreateProcess: %lu", GetLastError()))
+      return verdict();
+    CloseHandle(child.hThread);
+    if (!expect(WaitForSingleObject(child.hProcess, 60000) == WAIT_OBJECT_0, "the named child did not exit")) {
+      TerminateProcess(child.hProcess, 1);
+      return verdict();
+    }
+    DWORD named_code = 1;
+    GetExitCodeProcess(child.hProcess, &named_code);
+    CloseHandle(child.hProcess);
+    expect(named_code == 0, "the named child exited %lu", named_code);
+  }
+  named_mutex.Reset();
+  named_resource.Reset();
+  expect(named_texture.Reset() == 0, "the named texture retained an extra reference");
+  CloseHandle(named);
+
+  step("a share published for reading is opened for reading and refused for writing");
+  WCHAR read_name[64];
+  share_name(GetCurrentProcessId(), L"_read", read_name);
+  D3D11_TEXTURE2D_DESC read_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                  D3D11_BIND_SHADER_RESOURCE, 0,
+                                  D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
+  ComPtr<ID3D11Texture2D> read_texture;
+  CHECK(device->CreateTexture2D(&read_desc, nullptr, &read_texture));
+  ComPtr<IDXGIResource1> read_resource;
+  CHECK(read_texture.As(&read_resource));
+  write_update(context.Get(), read_texture.Get(), pattern(31));
+  if (!expect(drained(device.Get(), context.Get()), "the read-only texture's bytes did not land"))
+    return 1;
+  HANDLE read_handle = nullptr;
+  CHECK(read_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, read_name, &read_handle));
+  {
+    second_device other;
+    if (!expect(other.open(), "a second device could not be made"))
+      return verdict();
+    ComPtr<ID3D11Texture2D> refused;
+    HRESULT refused_hr = other.device1->OpenSharedResourceByName(
+        read_name, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&refused)
+    );
+    expect(refused_hr == E_ACCESSDENIED && !refused, "a share published for reading opened for writing, hr %#lx",
+           refused_hr);
+    ComPtr<ID3D11Texture2D> allowed;
+    expect(SUCCEEDED(other.device1->OpenSharedResourceByName(read_name, DXGI_SHARED_RESOURCE_READ,
+                                                             IID_PPV_ARGS(&allowed))),
+           "a share published for reading did not open for reading");
+    if (allowed) {
+      expect(contents(other.device.Get(), other.context.Get(), allowed.Get()) == pattern(31),
+             "the reading open's bytes changed");
+      expect(allowed.Reset() == 0, "the reading open retained an extra reference");
+    }
+  }
+  CloseHandle(read_handle);
+  read_resource.Reset();
+  expect(read_texture.Reset() == 0, "the read-only texture retained an extra reference");
+
+  step("a published name outlives its creator: a peer's resource keeps it open");
+  WCHAR held_name[64];
+  share_name(GetCurrentProcessId(), L"_held", held_name);
+  ComPtr<ID3D11Texture2D> held_texture;
+  CHECK(device->CreateTexture2D(&named_desc, nullptr, &held_texture));
+  ComPtr<IDXGIResource1> held_resource;
+  CHECK(held_texture.As(&held_resource));
+  ComPtr<IDXGIKeyedMutex> held_mutex;
+  CHECK(held_texture.As(&held_mutex));
+  write_update(context.Get(), held_texture.Get(), pattern(41));
+  if (!expect(drained(device.Get(), context.Get()), "the held texture's bytes did not land"))
+    return 1;
+  if (!expect(held_mutex->AcquireSync(0, wait_ms) == S_OK, "the held texture's mutex did not take its initial key"))
+    return 1;
+  if (!expect(held_mutex->ReleaseSync(held_key) == S_OK, "the held texture's mutex did not release its key"))
+    return 1;
+  HANDLE held = nullptr;
+  CHECK(held_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, held_name,
+                                          &held));
+  HANDLE holder_ready = CreateEventA(&named_attributes, FALSE, FALSE, nullptr);
+  HANDLE holder_go = CreateEventA(&named_attributes, FALSE, FALSE, nullptr);
+  if (!expect(holder_ready != nullptr && holder_go != nullptr, "CreateEvent: %lu", GetLastError()))
+    return verdict();
+  std::string holder_command = "\"" + std::string(executable) + "\" --named-hold " +
+                               std::to_string((unsigned long)GetCurrentProcessId()) + " " +
+                               std::to_string(reinterpret_cast<uintptr_t>(holder_ready)) + " " +
+                               std::to_string(reinterpret_cast<uintptr_t>(holder_go));
+  PROCESS_INFORMATION holder{};
+  if (!expect(!!CreateProcessA(executable, holder_command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup,
+                               &holder), "CreateProcess: %lu", GetLastError()))
+    return verdict();
+  CloseHandle(holder.hThread);
+  if (!expect(WaitForSingleObject(holder_ready, wait_ms) == WAIT_OBJECT_0, "the holding child did not open the name")) {
+    TerminateProcess(holder.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(holder_ready);
+  // the creator now lets every resource of the share go, so only the peer's resource holds the name
+  held_mutex.Reset();
+  held_resource.Reset();
+  expect(held_texture.Reset() == 0, "the held texture retained an extra reference");
+  CloseHandle(held);
+  {
+    second_device other;
+    if (!expect(other.open(), "a second device could not be made"))
+      return verdict();
+    ComPtr<ID3D11Texture2D> late_named;
+    expect(SUCCEEDED(other.device1->OpenSharedResourceByName(
+               held_name, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&late_named)
+           )),
+           "the name died with the creator even though a peer held a resource of the share");
+    if (late_named) {
+      ComPtr<IDXGIKeyedMutex> late_named_mutex;
+      expect(SUCCEEDED(late_named.As(&late_named_mutex)), "the name-open has no mutex");
+      if (late_named_mutex) {
+        expect(late_named_mutex->AcquireSync(held_key, wait_ms) == S_OK,
+               "the name-open lost the key the share had");
+        expect(late_named_mutex->ReleaseSync(held_key) == S_OK, "the name-open could not release the mutex");
+        late_named_mutex.Reset();
+      }
+      expect(contents(other.device.Get(), other.context.Get(), late_named.Get()) == pattern(41),
+             "the name-open's bytes changed");
+      expect(late_named.Reset() == 0, "the name-open retained an extra reference");
+    }
+  }
+  if (!expect(!!SetEvent(holder_go), "SetEvent: %lu", GetLastError())) {
+    TerminateProcess(holder.hProcess, 1);
+    return verdict();
+  }
+  CloseHandle(holder_go);
+  if (!expect(WaitForSingleObject(holder.hProcess, 60000) == WAIT_OBJECT_0, "the holding child did not exit")) {
+    TerminateProcess(holder.hProcess, 1);
+    return verdict();
+  }
+  DWORD held_code = 1;
+  GetExitCodeProcess(holder.hProcess, &held_code);
+  CloseHandle(holder.hProcess);
+  expect(held_code == 0, "the holding child exited %lu", held_code);
   return verdict();
 }
 
@@ -367,7 +883,15 @@ int
 main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[1], "--keyed"))
     return child_keyed(argv);
+  if (argc > 4 && !strcmp(argv[1], "--keyed-crash"))
+    return child_keyed_crash(argv);
   if (argc > 2 && !strcmp(argv[1], "--shared"))
     return child_shared(argv);
+  if (argc > 2 && !strcmp(argv[1], "--late"))
+    return child_late(argv);
+  if (argc > 2 && !strcmp(argv[1], "--named"))
+    return child_named(argv);
+  if (argc > 4 && !strcmp(argv[1], "--named-hold"))
+    return child_named_hold(argv);
   return parent();
 }
