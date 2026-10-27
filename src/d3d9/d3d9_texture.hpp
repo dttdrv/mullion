@@ -14,8 +14,8 @@ extern const IID IID_IMTLD3D9Texture;
 // what the device asks a texture for: the view a draw samples it through, and whether its bytes are the CPU's (a
 // managed texture's are, and a lock of one marks it for the upload its unlock does)
 struct IMTLD3D9Texture {
-  virtual ULONG AddRef() = 0;
-  virtual ULONG Release() = 0;
+  virtual ULONG STDMETHODCALLTYPE AddRef() = 0;
+  virtual ULONG STDMETHODCALLTYPE Release() = 0;
   virtual ID3D11ShaderResourceView *view() = 0;
   virtual bool managed() = 0;
 };

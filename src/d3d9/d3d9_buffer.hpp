@@ -11,8 +11,8 @@ extern const IID IID_IMTLD3D9Buffer;
 
 // what the device asks a buffer for: the D3D11 buffer under it, how many bytes it has, and what it was made as
 struct IMTLD3D9Buffer {
-  virtual ULONG AddRef() = 0;
-  virtual ULONG Release() = 0;
+  virtual ULONG STDMETHODCALLTYPE AddRef() = 0;
+  virtual ULONG STDMETHODCALLTYPE Release() = 0;
   virtual ID3D11Buffer *buffer() = 0;
   virtual UINT size() = 0;
   virtual DWORD usage() = 0;
