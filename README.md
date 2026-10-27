@@ -19,7 +19,7 @@ Both columns were measured on the same Mac. The God of War numbers are premature
 | ![Black Myth: Wukong benchmark result on Mullion](docs/wukong-mullion.jpg) | ![The same benchmark on D3DMetal](docs/wukong-d3dmetal.jpg) |
 | ![God of War Ragnarök on Mullion](docs/gow-mullion.jpg) | ![The same place on D3DMetal](docs/gow-d3dmetal.jpg) |
 
-Direct3D 12 is supported at feature level 12_0 with shader models up to 6.7, including ray tracing at tier 1.1, mesh and amplification shaders, tessellation, geometry shaders, stream output, sampler feedback, reserved resources, pipeline libraries and planar video formats, and D3D11On12. Direct3D 10 and 11 are supported at feature level 11_1. Next for Direct3D 12 are feature level 12_1, a Metal 4 backend, and more work on performance and reliability.
+Direct3D 12 is supported at feature level 12_2 with shader models up to 6.7, including ray tracing at tier 1.1, mesh and amplification shaders, tessellation, geometry shaders, stream output, sampler feedback, reserved resources, pipeline libraries and planar video formats, conservative rasterization, tiled resources tier 3, variable rate shading at tier 2, and D3D11On12. Direct3D 10 and 11 are supported at feature level 11_1. Next for Direct3D 12 are feature level 12_1, a Metal 4 backend, and more work on performance and reliability.
 
 ## Requirements
 
