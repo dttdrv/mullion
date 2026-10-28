@@ -23,7 +23,11 @@
 static const UINT width = 64, height = 1;
 static const UINT bytes = width * height * 4;
 static const UINT64 probe_salt = 0x5a5a5a5a5a5a5a5aULL;
+// a released key is acquired at once, so `wait_ms` only has to outlast a loaded machine; a child process starts Wine
+// and a Metal device before it can answer at all, which is a process's time and not a key's (d3d11_shared_fence
+// budgets a child the same way), and a fork copies this process's own budget for the same waits
 static const DWORD wait_ms = 10000;
+static const DWORD process_ms = 60000;
 // the key a share is left at when its creator keeps nothing but the handle, and the keys a named share is left at
 static const UINT64 late_key = 11, named_key = 23, held_key = 33;
 
@@ -437,7 +441,7 @@ parent() {
     return verdict();
   CloseHandle(child.hThread);
   CloseHandle(duplicate);
-  if (!expect(WaitForSingleObject(ready, wait_ms) == WAIT_OBJECT_0, "the keyed child did not open the texture")) {
+  if (!expect(WaitForSingleObject(ready, process_ms) == WAIT_OBJECT_0, "the keyed child did not open the texture")) {
     TerminateProcess(child.hProcess, 1);
     return verdict();
   }
@@ -496,7 +500,7 @@ parent() {
     return verdict();
   CloseHandle(crash_child.hThread);
   CloseHandle(inherited);
-  if (!expect(WaitForSingleObject(taken, wait_ms) == WAIT_OBJECT_0, "the crashing child did not take the mutex")) {
+  if (!expect(WaitForSingleObject(taken, process_ms) == WAIT_OBJECT_0, "the crashing child did not take the mutex")) {
     TerminateProcess(crash_child.hProcess, 1);
     return verdict();
   }
@@ -554,7 +558,7 @@ parent() {
                                &shared_child), "CreateProcess: %lu", GetLastError()))
     return verdict();
   CloseHandle(shared_child.hThread);
-  if (!expect(WaitForSingleObject(ready, wait_ms) == WAIT_OBJECT_0, "the shared child did not open the texture")) {
+  if (!expect(WaitForSingleObject(ready, process_ms) == WAIT_OBJECT_0, "the shared child did not open the texture")) {
     TerminateProcess(shared_child.hProcess, 1);
     return verdict();
   }
@@ -830,7 +834,7 @@ parent() {
                                &holder), "CreateProcess: %lu", GetLastError()))
     return verdict();
   CloseHandle(holder.hThread);
-  if (!expect(WaitForSingleObject(holder_ready, wait_ms) == WAIT_OBJECT_0, "the holding child did not open the name")) {
+  if (!expect(WaitForSingleObject(holder_ready, process_ms) == WAIT_OBJECT_0, "the holding child did not open the name")) {
     TerminateProcess(holder.hProcess, 1);
     return verdict();
   }
