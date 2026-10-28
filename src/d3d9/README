@@ -159,7 +159,8 @@ sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and 
 # What is not there yet, and is refused rather than pretended
   * anything that makes a resource or shader this build does not have (cube and volume textures, scratch-pool or
     dynamic textures, vertex shaders and pixel shaders): E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so
-    once
+    once. `SetVertexShader(NULL)` and `SetPixelShader(NULL)` answer S_OK, as D3D9 does: they choose the fixed-function
+    pipeline, which is the only one this milestone has
   * a vertex format other than D3DFVF_XYZRHW | D3DFVF_DIFFUSE, with or without one set of texture coordinates:
     D3DERR_INVALIDCALL, and the device keeps the format it had, so a frame is not drawn with a transform nobody asked
     for
@@ -178,3 +179,12 @@ sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and 
     D3DERR_INVALIDCALL
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
   * GetAvailableTextureMem answers 0: nothing has measured what the Metal device's textures take
+
+# Seeing what a game asked for
+Every call this layer refuses says so once, in the library's log, with what it was asked for: the format, the shader
+version, the state, and the call itself. A game that stops at one of them names what to implement next instead of
+leaving its HRESULT to guess, which is how this layer is grown against real titles.
+
+A build writes that log where `MULLION_LOG_PATH` names a directory, as `<the game's executable>_mullion.log`; without
+it the lines go to Wine's console. `MULLION_LOG_LEVEL` chooses how much is kept ("info" by default, "warn" for the
+refusals alone). Both are the environment's, so a bottle's environment is where they are set for a title.

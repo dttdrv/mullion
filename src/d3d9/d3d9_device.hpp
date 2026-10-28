@@ -55,7 +55,11 @@ public:
 
   // not measured yet: nothing has asked this build how much memory the Metal
   // device's textures take
-  UINT STDMETHODCALLTYPE GetAvailableTextureMem() override { return 0; }
+  UINT STDMETHODCALLTYPE GetAvailableTextureMem() override {
+    ERR_ONCE("D3D9: GetAvailableTextureMem answers 0: nothing has asked this build how much memory the Metal "
+             "device's textures take.");
+    return 0;
+  }
 
   HRESULT STDMETHODCALLTYPE GetDirect3D(IDirect3D9 **direct3d) override {
     if (!direct3d)
@@ -177,6 +181,7 @@ public:
   WINBOOL STDMETHODCALLTYPE ShowCursor(WINBOOL bShow) override { return FALSE; }
   HRESULT STDMETHODCALLTYPE CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *pPresentationParameters,
                                                       IDirect3DSwapChain9 **pSwapChain) override {
+    ERR_ONCE("D3D9: a second swap chain is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE SetDialogBoxMode(WINBOOL bEnableDialogs) override { return D3DERR_INVALIDCALL; }
@@ -188,10 +193,12 @@ public:
                                                 D3DFORMAT Format, D3DPOOL Pool,
                                                 IDirect3DVolumeTexture9 **ppVolumeTexture,
                                                 HANDLE *pSharedHandle) override {
+    ERR_ONCE("D3D9: a volume texture is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
                                               IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle) override {
+    ERR_ONCE("D3D9: a cube texture is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf, D3DPOOL pool,
@@ -201,18 +208,22 @@ public:
                                               IDirect3DIndexBuffer9 **index_buffer, HANDLE *shared_handle) override;
   HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect,
                                           IDirect3DSurface9 *dst_surface, const POINT *dst_point) override {
+    ERR_ONCE("D3D9: UpdateSurface is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
                                           IDirect3DBaseTexture9 *pDestinationTexture) override {
+    ERR_ONCE("D3D9: UpdateTexture is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect,
                                         IDirect3DSurface9 *dst_surface, const RECT *dst_rect,
                                         D3DTEXTUREFILTERTYPE filter) override {
+    ERR_ONCE("D3D9: StretchRect is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override {
+    ERR_ONCE("D3D9: ColorFill is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
@@ -227,31 +238,62 @@ public:
   HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9 *surface) override;
   HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9 **surface) override;
   HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
+    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *pMatrix) override {
+    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
+    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9 *viewport) override;
   HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9 *viewport) override;
-  HRESULT STDMETHODCALLTYPE SetMaterial(const D3DMATERIAL9 *material) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetMaterial(D3DMATERIAL9 *pMaterial) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetLight(DWORD index, const D3DLIGHT9 *light) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetLight(DWORD Index, D3DLIGHT9 *) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE LightEnable(DWORD Index, WINBOOL Enable) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, WINBOOL *pEnable) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD index, const float *plane) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetMaterial(const D3DMATERIAL9 *material) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a material has nothing to set.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE GetMaterial(D3DMATERIAL9 *pMaterial) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a material has nothing to read.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE SetLight(DWORD index, const D3DLIGHT9 *light) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a light has nothing to set.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE GetLight(DWORD Index, D3DLIGHT9 *) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a light has nothing to read.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE LightEnable(DWORD Index, WINBOOL Enable) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a light cannot be turned on.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, WINBOOL *pEnable) override {
+    ERR_ONCE("D3D9: lighting is not implemented yet, so a light's state has nothing to read.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD index, const float *plane) override {
+    ERR_ONCE("D3D9: a clip plane is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD Index, float *pPlane) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE state, DWORD value) override;
   HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) override;
   HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) override {
+    ERR_ONCE("D3D9: a state block is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
-  HRESULT STDMETHODCALLTYPE BeginStateBlock() override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9 **ppSB) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE BeginStateBlock() override {
+    ERR_ONCE("D3D9: a state block is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9 **ppSB) override {
+    ERR_ONCE("D3D9: a state block is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE SetClipStatus(const D3DCLIPSTATUS9 *clip_status) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetClipStatus(D3DCLIPSTATUS9 *pClipStatus) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetTexture(DWORD Stage, IDirect3DBaseTexture9 **ppTexture) override;
@@ -260,7 +302,10 @@ public:
   HRESULT STDMETHODCALLTYPE SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) override;
   HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD *pValue) override;
   HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) override;
-  HRESULT STDMETHODCALLTYPE ValidateDevice(DWORD *pNumPasses) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE ValidateDevice(DWORD *pNumPasses) override {
+    ERR_ONCE("D3D9: ValidateDevice is not implemented yet: the device answers no pass count.");
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE SetPaletteEntries(UINT palette_idx, const PALETTEENTRY *entries) override {
     return D3DERR_INVALIDCALL;
   }
@@ -269,7 +314,10 @@ public:
   }
   HRESULT STDMETHODCALLTYPE SetCurrentTexturePalette(UINT PaletteNumber) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetCurrentTexturePalette(UINT *PaletteNumber) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *rect) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *rect) override {
+    ERR_ONCE("D3D9: a scissor rectangle is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
   HRESULT STDMETHODCALLTYPE GetScissorRect(RECT *pRect) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetSoftwareVertexProcessing(WINBOOL bSoftware) override { return D3DERR_INVALIDCALL; }
   WINBOOL STDMETHODCALLTYPE GetSoftwareVertexProcessing() override { return FALSE; }
@@ -291,13 +339,16 @@ public:
   HRESULT STDMETHODCALLTYPE ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount,
                                             IDirect3DVertexBuffer9 *pDestBuffer,
                                             IDirect3DVertexDeclaration9 *pVertexDecl, DWORD Flags) override {
+    ERR_ONCE("D3D9: ProcessVertices is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9 *elements,
                                                     IDirect3DVertexDeclaration9 **declaration) override {
+    ERR_ONCE("D3D9: a vertex declaration is not implemented yet: only SetFVF's XYZRHW vertices are drawn.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) override {
+    ERR_ONCE("D3D9: a vertex declaration is not implemented yet: only SetFVF's XYZRHW vertices are drawn.");
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9 **ppDecl) override {
@@ -306,9 +357,17 @@ public:
   HRESULT STDMETHODCALLTYPE SetFVF(DWORD fvf) override;
   HRESULT STDMETHODCALLTYPE GetFVF(DWORD *fvf) override;
   HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader) override {
+    ERR_ONCE("D3D9: a vertex shader is not implemented yet: the device draws only its own fixed-function vertex "
+             "shader, so VertexShaderVersion is 0 and a game that asks for one has to fall back.");
     return D3DERR_INVALIDCALL;
   }
-  HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9 *pShader) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9 *pShader) override {
+    if (pShader) {
+      ERR_ONCE("D3D9: a vertex shader is not implemented yet, so only the null shader can be set.");
+      return D3DERR_INVALIDCALL;
+    }
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9 **ppShader) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT reg_idx, const float *data, UINT count) override {
     return D3DERR_INVALIDCALL;
@@ -342,9 +401,17 @@ public:
   HRESULT STDMETHODCALLTYPE SetIndices(IDirect3DIndexBuffer9 *indices) override;
   HRESULT STDMETHODCALLTYPE GetIndices(IDirect3DIndexBuffer9 **indices) override;
   HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader) override {
+    ERR_ONCE("D3D9: a pixel shader is not implemented yet: the device draws only its own fixed-function pixel "
+             "shaders, so PixelShaderVersion is 0 and a game that asks for one has to fall back.");
     return D3DERR_INVALIDCALL;
   }
-  HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9 *pShader) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9 *pShader) override {
+    if (pShader) {
+      ERR_ONCE("D3D9: a pixel shader is not implemented yet, so only the null shader can be set.");
+      return D3DERR_INVALIDCALL;
+    }
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9 **ppShader) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT reg_idx, const float *data, UINT count) override {
     return D3DERR_INVALIDCALL;
