@@ -23,7 +23,11 @@
 int
 main(int argc, char **argv) {
   const UINT64 initial = UINT64(std::numeric_limits<UINT>::max()) + 1;
-  const DWORD wait_ms = 1000;
+  // a fence's Signal is seen at once, so this only has to outlast a loaded machine; a child process starts Wine and a
+  // Metal device before it can answer at all, which is seconds, not a fence's time (d3d11_shared_texture_crossprocess
+  // budgets a child the same way)
+  const DWORD fence_ms = 5000;
+  const DWORD process_ms = 60000;
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   ComPtr<ID3D11Device5> device5;
@@ -51,7 +55,7 @@ main(int argc, char **argv) {
     if (!expect(!!SetEvent(ready), "SetEvent: %lu", GetLastError()))
       ExitProcess(1);
     CloseHandle(ready);
-    if (!expect(WaitForSingleObject(completed, wait_ms) == WAIT_OBJECT_0, "child fence did not complete"))
+    if (!expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "child fence did not complete"))
       ExitProcess(1);
     expect(fence->GetCompletedValue() == initial + 2, "child completed value is %llu", fence->GetCompletedValue());
     CloseHandle(completed);
@@ -111,17 +115,17 @@ main(int argc, char **argv) {
     CHECK(receiver->SetEventOnCompletion(initial + 1, completed));
     expect(WaitForSingleObject(completed, 0) == WAIT_TIMEOUT, "completion event was set before Signal");
     CHECK(context4->Signal(sender.Get(), initial + 1));
-    if (!expect(WaitForSingleObject(completed, wait_ms) == WAIT_OBJECT_0, "receiver did not see Signal"))
+    if (!expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "receiver did not see Signal"))
       ExitProcess(1);
     expect(receiver->GetCompletedValue() == initial + 1, "receiver value is %llu", receiver->GetCompletedValue());
     CHECK(sender->SetEventOnCompletion(initial + 2, completed));
     CHECK(other4->Wait(receiver.Get(), initial + 1));
     CHECK(other4->Signal(receiver.Get(), initial + 2));
-    if (!expect(WaitForSingleObject(completed, wait_ms) == WAIT_OBJECT_0, "sender did not see the return Signal"))
+    if (!expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "sender did not see the return Signal"))
       ExitProcess(1);
     expect(sender->GetCompletedValue() == initial + 2, "sender value is %llu", sender->GetCompletedValue());
     CHECK(receiver->SetEventOnCompletion(initial + 1, completed));
-    if (!expect(WaitForSingleObject(completed, wait_ms) == WAIT_OBJECT_0, "already completed value did not set event"))
+    if (!expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "already completed value did not set event"))
       ExitProcess(1);
     CloseHandle(duplicate);
     expect(FAILED(device5->OpenSharedFence(duplicate, IID_PPV_ARGS(&invalid))), "closed handle opened as a fence");
@@ -170,14 +174,14 @@ main(int argc, char **argv) {
   CloseHandle(child.hThread);
   CloseHandle(duplicate);
   CHECK(sender->SetEventOnCompletion(initial + 2, completed));
-  bool opened = expect(WaitForSingleObject(ready, wait_ms) == WAIT_OBJECT_0, "child did not open the shared fence");
+  bool opened = expect(WaitForSingleObject(ready, process_ms) == WAIT_OBJECT_0, "child did not open the shared fence");
   if (opened) {
     CHECK(context4->Signal(sender.Get(), initial + 1));
-    expect(WaitForSingleObject(completed, wait_ms) == WAIT_OBJECT_0, "parent did not see the child's Signal");
+    expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "parent did not see the child's Signal");
   }
-  if (!expect(WaitForSingleObject(child.hProcess, wait_ms) == WAIT_OBJECT_0, "child did not exit")) {
+  if (!expect(WaitForSingleObject(child.hProcess, process_ms) == WAIT_OBJECT_0, "child did not exit")) {
     expect(!!TerminateProcess(child.hProcess, 1), "TerminateProcess: %lu", GetLastError());
-    expect(WaitForSingleObject(child.hProcess, wait_ms) == WAIT_OBJECT_0, "child did not terminate");
+    expect(WaitForSingleObject(child.hProcess, process_ms) == WAIT_OBJECT_0, "child did not terminate");
   }
   DWORD code = 1;
   GetExitCodeProcess(child.hProcess, &code);
