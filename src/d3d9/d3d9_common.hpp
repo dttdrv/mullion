@@ -80,24 +80,6 @@ inline DXGI_FORMAT to_dxgi_depth_format(D3DFORMAT format) {
   }
 }
 
-// the D3D9 format a DXGI format is read back as
-inline D3DFORMAT from_dxgi_format(DXGI_FORMAT format) {
-  switch (format) {
-  case DXGI_FORMAT_B8G8R8A8_UNORM:
-    return D3DFMT_X8R8G8B8;
-  case DXGI_FORMAT_R10G10B10A2_UNORM:
-    return D3DFMT_A2R10G10B10;
-  case DXGI_FORMAT_B5G6R5_UNORM:
-    return D3DFMT_R5G6B5;
-  case DXGI_FORMAT_R16G16B16A16_FLOAT:
-    return D3DFMT_A16B16G16R16F;
-  case DXGI_FORMAT_R32_FLOAT:
-    return D3DFMT_R32F;
-  default:
-    return D3DFMT_UNKNOWN;
-  }
-}
-
 // how many refreshes a presentation waits for: D3DPRESENT_INTERVAL_IMMEDIATE
 // shows a frame at once, the count of D3DPRESENT_INTERVAL_ONE to FOUR waits for
 // that many, and the default is one (IDXGISwapChain::Present's SyncInterval)
