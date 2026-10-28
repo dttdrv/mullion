@@ -2,6 +2,7 @@
 // states this fixed-function path can honour (d3d9_state.cpp turns their values into the D3D11 state objects a draw
 // binds), the depth-stencil surfaces, the render targets, and the viewport a draw is placed and clipped by.
 #include "d3d9_device.hpp"
+#include <vector>
 
 namespace mullion::d3d9 {
 
@@ -24,29 +25,81 @@ MTLD3D9Device::device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IM
   return S_OK;
 }
 
+// a clear of the whole target or of the rectangles the call names, as D3D9's is: `count` rectangles of `rects`, each
+// clamped to the target, and a rectangle that names no pixel clears none. no rectangles at all is the whole of it.
+// colour and depth have a D3D11 clear of a part of a view (ID3D11DeviceContext1::ClearView); the stencil of part of a
+// surface has none, so a rectangle's stencil bits are left as they were and the log says so, rather than the whole
+// surface's being cleared as if the call had named no rectangle.
 HRESULT
 MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float depth, DWORD stencil) {
   if (!(flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
+  if (count && !rects)
+    return D3DERR_INVALIDCALL;
 
   HRESULT hr = ensure_render_target();
   if (FAILED(hr))
     return hr;
-  if (count && rects) {
-    ERR_ONCE("D3D9: clearing part of a surface is not implemented yet; the whole of it is cleared.");
+
+  // the rectangles, clamped to the target: a right or bottom edge past it is the target's own
+  std::vector<D3D11_RECT> regions;
+  if (count) {
+    regions.reserve(count);
+    for (DWORD at = 0; at < count; at++) {
+      const int64_t left = std::max<int64_t>(rects[at].x1, 0), top = std::max<int64_t>(rects[at].y1, 0);
+      const int64_t right = std::min<int64_t>(rects[at].x2, target_width_);
+      const int64_t bottom = std::min<int64_t>(rects[at].y2, target_height_);
+      if (right <= left || bottom <= top)
+        continue;
+      regions.push_back(D3D11_RECT{(LONG)left, (LONG)top, (LONG)right, (LONG)bottom});
+    }
+    // every named rectangle was empty: there is nothing to clear, and the target is as the call found it
+    if (regions.empty())
+      return S_OK;
   }
+  const UINT region_count = (UINT)regions.size();
+  const D3D11_RECT *region_data = regions.empty() ? nullptr : regions.data();
+
   if (flags & D3DCLEAR_TARGET) {
     const float rgba[4] = {channel(colour, 16), channel(colour, 8), channel(colour, 0), channel(colour, 24)};
-    context_->ClearRenderTargetView(current_target_view_.Get(), rgba);
+    if (region_count && context1_)
+      context1_->ClearView(current_target_view_.Get(), rgba, region_data, region_count);
+    else
+      context_->ClearRenderTargetView(current_target_view_.Get(), rgba);
   }
   // a device made without a depth-stencil surface has nothing to clear of one, as D3D9's has not
-  UINT surfaces = 0;
-  if ((flags & D3DCLEAR_ZBUFFER) && depth_stencil_view_)
-    surfaces |= D3D11_CLEAR_DEPTH;
-  if ((flags & D3DCLEAR_STENCIL) && depth_stencil_view_)
-    surfaces |= D3D11_CLEAR_STENCIL;
-  if (surfaces)
-    context_->ClearDepthStencilView(depth_stencil_view_.Get(), surfaces, depth, (UINT8)stencil);
+  if (depth_stencil_view_) {
+    const bool clear_depth = (flags & D3DCLEAR_ZBUFFER) != 0;
+    const bool clear_stencil = (flags & D3DCLEAR_STENCIL) != 0;
+    if (!region_count) {
+      UINT surfaces = 0;
+      if (clear_depth)
+        surfaces |= D3D11_CLEAR_DEPTH;
+      if (clear_stencil)
+        surfaces |= D3D11_CLEAR_STENCIL;
+      if (surfaces)
+        context_->ClearDepthStencilView(depth_stencil_view_.Get(), surfaces, depth, (UINT8)stencil);
+    } else if (clear_depth || clear_stencil) {
+      // the backend's clear of part of a depth-stencil view is not rect-accurate yet: asking it for one clears the whole
+      // of it, which would erase depth the caller asked to keep. so this clear's colour rectangles are cleared and its
+      // depth and stencil are left as they were, with the log saying so
+      ERR_ONCE("D3D9: clearing the depth or stencil of part of a surface is not implemented yet: this clear's "
+               "rectangles clear its colour and leave its depth and stencil as they were.");
+    }
+  }
+  return S_OK;
+}
+
+// whether the device can draw with the state it has, and in how many passes: the fixed-function path draws every state
+// it accepts in one, and a device with no target to draw into cannot draw at all
+HRESULT
+MTLD3D9Device::ValidateDevice(DWORD *passes) {
+  if (!passes)
+    return D3DERR_INVALIDCALL;
+  HRESULT hr = ensure_render_target();
+  if (FAILED(hr))
+    return D3DERR_INVALIDCALL;
+  *passes = 1;
   return S_OK;
 }
 

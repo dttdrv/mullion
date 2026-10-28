@@ -4,6 +4,7 @@
 // class itself d3d9_device.hpp's.
 #include "d3d9_device.hpp"
 #include <algorithm>
+#include <dxgi1_4.h>
 
 namespace mullion::d3d9 {
 
@@ -21,6 +22,9 @@ MTLD3D9Device::init(IDXGIFactory2 *factory) {
     ERR("D3D9: no D3D11 device over the adapter: 0x", std::hex, hr);
     return D3DERR_NOTAVAILABLE;
   }
+  // the same context as the one that clears a part of a view; a context that is not the 11.1 one keeps every clear
+  // whole, which is what the clears below fall back to
+  context_.As(&context1_);
 
   // the fixed-function path a device draws through, made once with the device: a device without it can clear and
   // present, but not draw, and this milestone's device draws
@@ -164,6 +168,20 @@ MTLD3D9Device::display_mode(D3DDISPLAYMODE *mode) {
   if (!mode)
     return D3DERR_INVALIDCALL;
   return direct3d_->GetAdapterDisplayMode(adapter_ordinal_, mode);
+}
+
+// the working set the Metal device recommends less what its textures have already taken (IDXGIAdapter3::QueryVideoMemoryInfo,
+// which is the same answer D3D12's drivers give): D3D9's own drivers answer this question with the memory their
+// allocations may still take, which is what a title reads to choose its texture sizes
+UINT
+MTLD3D9Device::GetAvailableTextureMem() {
+  ComPtr<IDXGIAdapter3> adapter3;
+  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+  if (FAILED(adapter_.As(&adapter3)) ||
+      FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+    return 0;
+  const uint64_t free = info.Budget > info.CurrentUsage ? info.Budget - info.CurrentUsage : 0;
+  return (UINT)std::min<uint64_t>(free, UINT_MAX);
 }
 
 HRESULT

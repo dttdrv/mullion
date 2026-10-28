@@ -4,6 +4,11 @@
 //   hands it back, and depth testing is what it does (a nearer triangle wins over a farther one on a custom target too).
 // - CreateRenderTarget makes a surface SetRenderTarget takes: Clear and the draws go to it, and the back buffer keeps
 //   what it had; SetRenderTarget back to the back buffer puts the draws there and leaves the custom target alone.
+// - Clear clears the rectangles it is given and nothing else (Microsoft Learn, IDirect3DDevice9::Clear), a rectangle of
+//   no pixels clears none, and a count with no rectangles at all is D3DERR_INVALIDCALL; a clear of part of a
+//   depth-stencil surface leaves depth as it was rather than clearing the whole of it.
+// - ValidateDevice answers a pass count for drawable state, and GetAvailableTextureMem answers memory a title can size
+//   its textures against.
 // - SetViewport places and clips the draw: a triangle larger than the viewport is drawn inside it and not outside, and
 //   the vertex map follows the viewport's origin, so a pixel keeps the place it names.
 // - what cannot be a target (a depth surface, a target index but 0, no surface at all), what does not match it (a depth
@@ -87,6 +92,15 @@ main() {
   // the triangles are wound counter-clockwise on the screen, which D3D9's default cull mode culls
   CHECK(device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE));
 
+  // what a title reads before it draws: the passes its state takes, and the memory textures may still take
+  DWORD passes = 0;
+  CHECK(device->ValidateDevice(&passes));
+  expect(passes == 1, "ValidateDevice did not answer a pass count for drawable state");
+  expect(device->ValidateDevice(nullptr) == D3DERR_INVALIDCALL, "ValidateDevice took no place to write");
+  expect(device->GetAvailableTextureMem() > 0, "GetAvailableTextureMem answered no memory at all");
+  printf("device: ValidateDevice answers %lu pass, GetAvailableTextureMem answers %lu bytes\n", (unsigned long)passes,
+         (unsigned long)device->GetAvailableTextureMem());
+
   // the default target, a depth surface for it, and the surfaces frames are read back into
   ComPtr<IDirect3DSurface9> back_buffer;
   CHECK(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back_buffer));
@@ -94,6 +108,9 @@ main() {
   CHECK(device->CreateDepthStencilSurface(client, client, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &depth,
                                           nullptr));
   CHECK(device->SetDepthStencilSurface(depth.Get()));
+  // the chain was made without an automatic depth-stencil surface, so depth testing starts off (D3DRS_ZENABLE): the
+  // depth checks below ask for it, as a title that makes its own depth surface does
+  CHECK(device->SetRenderState(D3DRS_ZENABLE, TRUE));
   ComPtr<IDirect3DSurface9> current_depth;
   CHECK(device->GetDepthStencilSurface(&current_depth));
   expect(current_depth.Get() == depth.Get(), "GetDepthStencilSurface did not return the surface that was set");
@@ -144,6 +161,26 @@ main() {
   CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 255), 1.0f, 0));
   expect(pixel_of(render_target.Get(), readback96.Get(), 40, 40) == 0x0000FF, "Clear did not clear the custom target");
   expect(back_pixel(40, 40) == (kClear & 0x00FFFFFF), "Clear of the custom target cleared the back buffer");
+
+  // Clear clears the rectangles it is given and leaves the rest of the target as it was (Microsoft Learn,
+  // IDirect3DDevice9::Clear: "the rectangles to be cleared"); a rectangle of no pixels clears none, and a count with no
+  // rectangles at all is refused
+  const D3DRECT corner[1] = {{0, 0, 32, 32}};
+  CHECK(device->Clear(1, corner, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 255, 0), 1.0f, 0));
+  expect(pixel_of(render_target.Get(), readback96.Get(), 16, 16) == 0x00FF00,
+         "Clear did not clear the rectangle it was given");
+  expect(pixel_of(render_target.Get(), readback96.Get(), 64, 64) == 0x0000FF,
+         "Clear of a rectangle cleared a pixel outside it");
+  const D3DRECT empty[1] = {{40, 40, 40, 60}};
+  CHECK(device->Clear(1, empty, D3DCLEAR_TARGET, D3DCOLOR_XRGB(255, 0, 0), 1.0f, 0));
+  expect(pixel_of(render_target.Get(), readback96.Get(), 40, 40) == 0x0000FF,
+         "a rectangle that names no pixel cleared one");
+  expect(device->Clear(1, nullptr, D3DCLEAR_TARGET, kClear, 1.0f, 0) == D3DERR_INVALIDCALL,
+         "a count of rectangles with none was taken");
+  printf("target: a 32 by 32 rect clear reads %06lx inside it and %06lx outside\n",
+         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 16, 16),
+         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 64, 64));
+  CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 255), 1.0f, 0));
 
   // a target brings its own viewport: D3D9 places the viewport on the target SetRenderTarget set, so a draw with no
   // SetViewport since covers the new target rather than the old target's place in it
@@ -238,6 +275,21 @@ main() {
          "depth on the custom target did not keep the near triangle");
   printf("target: depth on the custom target reads %06lx at 40,40\n",
          (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 40, 40));
+
+  // a clear of part of a depth-stencil surface leaves depth as it was rather than clearing the whole of it behind the
+  // caller's back (the log says so): the far triangle still loses to the near one after one
+  const D3DRECT right_half[1] = {{48, 0, 96, 96}};
+  expect(device->Clear(1, right_half, D3DCLEAR_ZBUFFER, kClear, 1.0f, 0) == S_OK,
+         "a clear of part of the depth surface was refused");
+  PreTransformedVertex far_again[3];
+  triangle_at(20.0f, 20.0f, 60.0f, 0.75f, D3DCOLOR_XRGB(255, 0, 0), far_again);
+  draw(far_again);
+  expect(pixel_of(render_target.Get(), readback96.Get(), 30, 30) == 0x00FF00 &&
+             pixel_of(render_target.Get(), readback96.Get(), 60, 30) == 0x00FF00,
+         "a clear of part of the depth surface changed the depth of the whole of it");
+  printf("target: after a clear of the right half's depth, 30,30 reads %06lx and 60,30 reads %06lx\n",
+         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 30, 30),
+         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 60, 30));
 
   // a viewport that names no pixels, or lies outside the target, is refused and the device keeps the one it had
   expect(device->SetViewport(nullptr) == D3DERR_INVALIDCALL, "SetViewport took no viewport");

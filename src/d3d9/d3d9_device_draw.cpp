@@ -55,6 +55,14 @@ MTLD3D9Device::topology_of(D3DPRIMITIVETYPE type) {
 // binds
 HRESULT
 MTLD3D9Device::prepare_draw() {
+  // a game's shader draws through the d3dbc-to-DXBC translator, which is not in this build yet: the draw is refused
+  // rather than drawn with the fixed-function pipeline the game did not ask for
+  if (vertex_shader_ || pixel_shader_) {
+    ERR_ONCE("D3D9: a game's own shader cannot draw yet: the translator that turns its d3dbc program into the DXBC "
+             "this build's D3D11 device compiles is not here, so the draw is refused instead of drawn with the "
+             "fixed-function pipeline.");
+    return D3DERR_INVALIDCALL;
+  }
   if (!FixedFunctionPipeline::supports(fvf_))
     return D3DERR_INVALIDCALL;
   HRESULT hr = ensure_render_target();

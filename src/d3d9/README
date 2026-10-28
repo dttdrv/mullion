@@ -76,7 +76,13 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
     AutoDepthStencilFormat at device creation, so a game that asked for depth has it from its first frame.
   * Clear with D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER and D3DCLEAR_STENCIL: the colour of the target being drawn into, and
     the depth and stencil of the surface set. A colour clear leaves depth as it was, and only D3DCLEAR_ZBUFFER resets it.
-    The stencil is cleared with the depth, though no draw this milestone makes tests it yet.
+    The stencil is cleared with the depth, though no draw this milestone makes tests it yet. A clear of rects clears the
+    colour of each of them (clamped to the target, and a rect that names no pixel clears none), and leaves depth and
+    stencil as they were, with the library saying so once: this backend's clear of part of a depth-stencil view is not
+    rect-accurate yet.
+  * ValidateDevice answers one pass for state it can draw with, and GetAvailableTextureMem answers what the Metal
+    device recommends it may still take (IDXGIAdapter3::QueryVideoMemoryInfo: budget less what its textures have
+    taken), which is the figure a title reads to size its textures.
   * CreateRenderTarget, SetRenderTarget (target 0; a target index but 0, a null surface and a depth surface are
     refused) and GetRenderTarget: Clear and the draws go to the target set, and the back buffer keeps what it had until
     SetRenderTarget names it again. A target brings its own viewport: setting one places the viewport on the whole of
@@ -174,11 +180,11 @@ sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and 
     this build makes a managed texture's levels with D3D11's own generator
   * a render target or a depth-stencil surface with more than one sample, and a render target the CPU locks:
     D3DERR_NOTAVAILABLE or D3DERR_INVALIDCALL rather than a target that is not what it says
-  * clearing part of a surface rather than all of it (the whole one is cleared, said once)
+  * clearing the depth or stencil of part of a surface (the colour of its rects is cleared, and its depth and stencil
+    are left as they were, said once)
   * the second and further texture stages and samplers, lights, vertex declarations, state blocks, queries:
     D3DERR_INVALIDCALL
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
-  * GetAvailableTextureMem answers 0: nothing has measured what the Metal device's textures take
 
 # Seeing what a game asked for
 Every call this layer refuses says so once, in the library's log, with what it was asked for: the format, the shader

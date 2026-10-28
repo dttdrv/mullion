@@ -7,7 +7,9 @@
 #include "d3d9_buffer.hpp"
 #include "d3d9_common.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_shader.hpp"
 #include "d3d9_state.hpp"
+#include <array>
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
 #include "d3d9_texture.hpp"
@@ -53,13 +55,9 @@ public:
   // the device's own
   HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override { return S_OK; }
 
-  // not measured yet: nothing has asked this build how much memory the Metal
-  // device's textures take
-  UINT STDMETHODCALLTYPE GetAvailableTextureMem() override {
-    ERR_ONCE("D3D9: GetAvailableTextureMem answers 0: nothing has asked this build how much memory the Metal "
-             "device's textures take.");
-    return 0;
-  }
+  // what the Metal device has left of the working set it recommends: the textures this device allocates live there, so
+  // it is the answer D3D9's own drivers give for the same question
+  UINT STDMETHODCALLTYPE GetAvailableTextureMem() override;
 
   HRESULT STDMETHODCALLTYPE GetDirect3D(IDirect3D9 **direct3d) override {
     if (!direct3d)
@@ -302,10 +300,7 @@ public:
   HRESULT STDMETHODCALLTYPE SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) override;
   HRESULT STDMETHODCALLTYPE GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD *pValue) override;
   HRESULT STDMETHODCALLTYPE SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) override;
-  HRESULT STDMETHODCALLTYPE ValidateDevice(DWORD *pNumPasses) override {
-    ERR_ONCE("D3D9: ValidateDevice is not implemented yet: the device answers no pass count.");
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE ValidateDevice(DWORD *pNumPasses) override;
   HRESULT STDMETHODCALLTYPE SetPaletteEntries(UINT palette_idx, const PALETTEENTRY *entries) override {
     return D3DERR_INVALIDCALL;
   }
@@ -356,40 +351,15 @@ public:
   }
   HRESULT STDMETHODCALLTYPE SetFVF(DWORD fvf) override;
   HRESULT STDMETHODCALLTYPE GetFVF(DWORD *fvf) override;
-  HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader) override {
-    ERR_ONCE("D3D9: a vertex shader is not implemented yet: the device draws only its own fixed-function vertex "
-             "shader, so VertexShaderVersion is 0 and a game that asks for one has to fall back.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9 *pShader) override {
-    if (pShader) {
-      ERR_ONCE("D3D9: a vertex shader is not implemented yet, so only the null shader can be set.");
-      return D3DERR_INVALIDCALL;
-    }
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9 **ppShader) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT reg_idx, const float *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT StartRegister, float *pConstantData,
-                                                     UINT Vector4fCount) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT reg_idx, const int *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantI(UINT StartRegister, int *pConstantData,
-                                                     UINT Vector4iCount) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT reg_idx, const WINBOOL *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantB(UINT StartRegister, WINBOOL *pConstantData,
-                                                     UINT BoolCount) override {
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader) override;
+  HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9 *shader) override;
+  HRESULT STDMETHODCALLTYPE GetVertexShader(IDirect3DVertexShader9 **shader) override;
+  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(UINT start, const float *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantF(UINT start, float *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(UINT start, const int *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantI(UINT start, int *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(UINT start, const WINBOOL *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetVertexShaderConstantB(UINT start, WINBOOL *data, UINT count) override;
   HRESULT STDMETHODCALLTYPE SetStreamSource(
       UINT stream, IDirect3DVertexBuffer9 *buffer, UINT offset, UINT stride
   ) override;
@@ -400,40 +370,15 @@ public:
   HRESULT STDMETHODCALLTYPE GetStreamSourceFreq(UINT stream, UINT *setting) override;
   HRESULT STDMETHODCALLTYPE SetIndices(IDirect3DIndexBuffer9 *indices) override;
   HRESULT STDMETHODCALLTYPE GetIndices(IDirect3DIndexBuffer9 **indices) override;
-  HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader) override {
-    ERR_ONCE("D3D9: a pixel shader is not implemented yet: the device draws only its own fixed-function pixel "
-             "shaders, so PixelShaderVersion is 0 and a game that asks for one has to fall back.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9 *pShader) override {
-    if (pShader) {
-      ERR_ONCE("D3D9: a pixel shader is not implemented yet, so only the null shader can be set.");
-      return D3DERR_INVALIDCALL;
-    }
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9 **ppShader) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT reg_idx, const float *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT StartRegister, float *pConstantData,
-                                                    UINT Vector4fCount) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT reg_idx, const int *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantI(UINT StartRegister, int *pConstantData,
-                                                    UINT Vector4iCount) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT reg_idx, const WINBOOL *data, UINT count) override {
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantB(UINT StartRegister, WINBOOL *pConstantData,
-                                                    UINT BoolCount) override {
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 **shader) override;
+  HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9 *shader) override;
+  HRESULT STDMETHODCALLTYPE GetPixelShader(IDirect3DPixelShader9 **shader) override;
+  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(UINT start, const float *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantF(UINT start, float *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(UINT start, const int *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantI(UINT start, int *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(UINT start, const WINBOOL *data, UINT count) override;
+  HRESULT STDMETHODCALLTYPE GetPixelShaderConstantB(UINT start, WINBOOL *data, UINT count) override;
   HRESULT STDMETHODCALLTYPE DrawRectPatch(UINT handle, const float *segment_count,
                                           const D3DRECTPATCH_INFO *patch_info) override {
     return D3DERR_INVALIDCALL;
@@ -476,6 +421,9 @@ private:
 
   ComPtr<ID3D11Device> d3d11_device_;
   ComPtr<ID3D11DeviceContext> context_;
+  // the same context, as the one that clears a part of a view (ID3D11DeviceContext1::ClearView): D3D11's own
+  // ClearRenderTargetView and ClearDepthStencilView clear the whole of it
+  ComPtr<ID3D11DeviceContext1> context1_;
   ComPtr<IDXGISwapChain1> swapchain_;
   ComPtr<MTLD3D9SwapChain> swap_chain_;
 
@@ -513,6 +461,17 @@ private:
   ComPtr<IMTLD3D9Texture> texture_source_;
   SamplerState9 sampler_state_;
   TextureStageState9 texture_stage_;
+
+  // the shaders a game made and set, and the constants it set for them: D3D9's tables are 256 float4s, 16 int4s and
+  // 16 bools for a vertex shader, and the same for a pixel shader (IDirect3DDevice9::Set*ShaderConstant*)
+  ComPtr<IDirect3DVertexShader9> vertex_shader_;
+  ComPtr<IDirect3DPixelShader9> pixel_shader_;
+  std::array<float, 256 * 4> vertex_constants_f_{};
+  std::array<int32_t, 16 * 4> vertex_constants_i_{};
+  std::array<WINBOOL, 16> vertex_constants_b_{};
+  std::array<float, 256 * 4> pixel_constants_f_{};
+  std::array<int32_t, 16 * 4> pixel_constants_i_{};
+  std::array<WINBOOL, 16> pixel_constants_b_{};
 
   // what every draw needs: the chain's back buffer as it is now, and the fixed-function shaders over it
   HRESULT prepare_draw();

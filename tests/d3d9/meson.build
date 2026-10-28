@@ -26,3 +26,9 @@ test('d3d9_targets', executable('d3d9_targets', ['d3d9_targets.cpp'], dependenci
 # operations, arguments and alpha op, the sampler's addressing and filters, and what the device refuses
 test('d3d9_texture', executable('d3d9_texture', ['d3d9_texture.cpp'], dependencies : d3d9_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# a game's own shader: the program it is made from and handed back, the stage that keeps it, its constant tables, the
+# programs and constants the device refuses, and the draw it cannot make until the d3dbc translator lands
+d3d9_shader_deps = d3d9_test_deps + [cpp.find_library('d3dcompiler_47')]
+test('d3d9_shader', executable('d3d9_shader', ['d3d9_shader.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

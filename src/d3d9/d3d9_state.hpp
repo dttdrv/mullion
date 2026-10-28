@@ -32,7 +32,8 @@ public:
 private:
   // what D3D9's device starts with (the defaults D3DRENDERSTATETYPE names for each of these states). ZENABLE starts
   // TRUE only for a device whose chain made an automatic depth-stencil surface, which the device sets when it makes
-  // one; a device made without EnableAutoDepthStencil starts with depth testing off, as D3D9's does.
+  // one; a device made without EnableAutoDepthStencil starts with depth testing off, as D3D9's does (Microsoft Learn,
+  // D3DRS_ZENABLE: "D3DZB_TRUE if a depth stencil was created along with the swap chain ... and D3DZB_FALSE otherwise").
   DWORD z_enable_ = FALSE;
   DWORD z_write_enable_ = TRUE;
   DWORD z_func_ = D3DCMP_LESSEQUAL;
