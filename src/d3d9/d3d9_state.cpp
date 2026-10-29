@@ -100,10 +100,24 @@ RenderState::supported(D3DRENDERSTATETYPE state) {
   case D3DRS_BLENDOP:
   case D3DRS_COLORWRITEENABLE:
   case D3DRS_TEXTUREFACTOR:
+  case D3DRS_ALPHATESTENABLE:
+  case D3DRS_ALPHAFUNC:
+  case D3DRS_ALPHAREF:
     return true;
   default:
     return false;
   }
+}
+
+const D3DRENDERSTATETYPE *
+RenderState::all_states(UINT &count) {
+  static const D3DRENDERSTATETYPE states[] = {
+      D3DRS_ZENABLE,     D3DRS_ZWRITEENABLE,  D3DRS_ZFUNC,           D3DRS_CULLMODE,          D3DRS_FILLMODE,
+      D3DRS_SHADEMODE,   D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND,      D3DRS_DESTBLEND,         D3DRS_BLENDOP,
+      D3DRS_COLORWRITEENABLE, D3DRS_TEXTUREFACTOR, D3DRS_ALPHATESTENABLE, D3DRS_ALPHAFUNC,     D3DRS_ALPHAREF,
+  };
+  count = (UINT)(sizeof(states) / sizeof(states[0]));
+  return states;
 }
 
 bool
@@ -112,9 +126,14 @@ RenderState::usable_value(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_ZENABLE:
   case D3DRS_ZWRITEENABLE:
   case D3DRS_ALPHABLENDENABLE:
+  case D3DRS_ALPHATESTENABLE:
     return value == TRUE || value == FALSE;
   case D3DRS_ZFUNC:
+  case D3DRS_ALPHAFUNC:
     return value >= D3DCMP_NEVER && value <= D3DCMP_ALWAYS;
+  case D3DRS_ALPHAREF:
+    // D3D9's reference is an 8-bit alpha in a DWORD, and a value past it is the low eight bits D3D9 compares
+    return true;
   case D3DRS_CULLMODE:
     return value >= D3DCULL_NONE && value <= D3DCULL_CCW;
   case D3DRS_FILLMODE:
@@ -191,6 +210,15 @@ RenderState::set(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_TEXTUREFACTOR:
     texture_factor_ = value;
     break;
+  case D3DRS_ALPHATESTENABLE:
+    alpha_test_enable_ = value;
+    break;
+  case D3DRS_ALPHAFUNC:
+    alpha_func_ = value;
+    break;
+  case D3DRS_ALPHAREF:
+    alpha_ref_ = value & 0xFF;
+    break;
   default:
     return D3DERR_INVALIDCALL;
   }
@@ -237,6 +265,15 @@ RenderState::get(D3DRENDERSTATETYPE state, DWORD *value) const {
     break;
   case D3DRS_TEXTUREFACTOR:
     *value = texture_factor_;
+    break;
+  case D3DRS_ALPHATESTENABLE:
+    *value = alpha_test_enable_;
+    break;
+  case D3DRS_ALPHAFUNC:
+    *value = alpha_func_;
+    break;
+  case D3DRS_ALPHAREF:
+    *value = alpha_ref_;
     break;
   default:
     return D3DERR_INVALIDCALL;

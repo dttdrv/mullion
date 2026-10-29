@@ -7,8 +7,10 @@
 #include "d3d9_buffer.hpp"
 #include "d3d9_common.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_query.hpp"
 #include "d3d9_shader.hpp"
 #include "d3d9_state.hpp"
+#include "d3d9_state_block.hpp"
 #include "d3d9_vertex_declaration.hpp"
 #include <array>
 #include "d3d9_surface.hpp"
@@ -19,6 +21,9 @@ namespace mullion::d3d9 {
 
 class MTLD3D9Device final : private Object9, public IDirect3DDevice9, public IMTLD3D9PresentSource {
 public:
+  // the texture stages, and so the samplers, a draw samples: D3D9's eight (the caps' MaxSimultaneousTextures)
+  static constexpr UINT kTextureStages = 8;
+
   MTLD3D9Device(IDirect3D9 *direct3d, ComPtr<IDXGIAdapter1> adapter, UINT adapter_ordinal, const D3DCAPS9 &caps,
                 HWND window, DWORD behavior_flags, const D3DPRESENT_PARAMETERS &present)
       : direct3d_(direct3d), adapter_(std::move(adapter)), adapter_ordinal_(adapter_ordinal), caps_(caps),
@@ -281,18 +286,9 @@ public:
   HRESULT STDMETHODCALLTYPE GetClipPlane(DWORD Index, float *pPlane) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE SetRenderState(D3DRENDERSTATETYPE state, DWORD value) override;
   HRESULT STDMETHODCALLTYPE GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) override;
-  HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) override {
-    ERR_ONCE("D3D9: a state block is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE BeginStateBlock() override {
-    ERR_ONCE("D3D9: a state block is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9 **ppSB) override {
-    ERR_ONCE("D3D9: a state block is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) override;
+  HRESULT STDMETHODCALLTYPE BeginStateBlock() override;
+  HRESULT STDMETHODCALLTYPE EndStateBlock(IDirect3DStateBlock9 **ppSB) override;
   HRESULT STDMETHODCALLTYPE SetClipStatus(const D3DCLIPSTATUS9 *clip_status) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetClipStatus(D3DCLIPSTATUS9 *pClipStatus) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetTexture(DWORD Stage, IDirect3DBaseTexture9 **ppTexture) override;
@@ -329,9 +325,7 @@ public:
   ) override;
   HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE primitive_type, UINT min_vertex_idx,
                                                    UINT vertex_count, UINT primitive_count, const void *index_data,
-                                                   D3DFORMAT index_format, const void *data, UINT stride) override {
-    return D3DERR_INVALIDCALL;
-  }
+                                                   D3DFORMAT index_format, const void *data, UINT stride) override;
   HRESULT STDMETHODCALLTYPE ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount,
                                             IDirect3DVertexBuffer9 *pDestBuffer,
                                             IDirect3DVertexDeclaration9 *pVertexDecl, DWORD Flags) override {
@@ -381,8 +375,12 @@ public:
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE DeletePatch(UINT Handle) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) override {
-    return D3DERR_INVALIDCALL;
+  HRESULT STDMETHODCALLTYPE CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) override;
+
+  // whether the device is recording a state block (BeginStateBlock until EndStateBlock), which a block's Capture and
+  // Apply refuse, as D3D9's do
+  bool state_block_recording() const {
+    return recording_;
   }
 
 private:
@@ -449,11 +447,13 @@ private:
   ComPtr<IMTLD3D9Buffer> index_buffer_;
   ComPtr<ID3D11Buffer> up_scratch_;
   UINT up_scratch_size_ = 0;
+  // the indices of a DrawIndexedPrimitiveUP, staged the same way as its vertices
+  ComPtr<ID3D11Buffer> up_index_scratch_;
+  UINT up_index_scratch_size_ = 0;
 
-  // the texture stages a draw samples: D3D9's eight, each with the texture SetTexture set and the sampler that stage's
-  // sampler states make (the caps' MaxSimultaneousTextures), and the one fixed-function stage whose operations the
-  // textured path performs (MaxTextureBlendStages), which is stage 0's (d3d9_device_texture.cpp)
-  static constexpr UINT kTextureStages = 8;
+  // the texture stages a draw samples, each with the texture SetTexture set and the sampler that stage's sampler states
+  // make (the caps' MaxSimultaneousTextures), and the one fixed-function stage whose operations the textured path
+  // performs (MaxTextureBlendStages), which is stage 0's (d3d9_device_texture.cpp)
   ComPtr<IDirect3DBaseTexture9> textures_[kTextureStages];
   ComPtr<IMTLD3D9Texture> texture_sources_[kTextureStages];
   SamplerState9 sampler_states_[kTextureStages];
@@ -478,6 +478,12 @@ private:
   // the D3D11 constant buffers the tables are read from, three a stage
   ComPtr<ID3D11Buffer> vs_constants_f_, vs_constants_i_, vs_constants_b_;
   ComPtr<ID3D11Buffer> ps_constants_f_, ps_constants_i_, ps_constants_b_;
+
+  // the states a state block records: every call a block of that kind carries adds its state while the device is in
+  // BeginStateBlock's recording mode (d3d9_state_block.cpp)
+  void record(StateKey key);
+  bool recording_ = false;
+  std::vector<StateKey> recorded_keys_;
 
   // what every draw needs: the chain's back buffer as it is now, and the fixed-function shaders over it
   HRESULT prepare_draw();

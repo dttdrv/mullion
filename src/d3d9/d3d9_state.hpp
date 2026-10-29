@@ -15,6 +15,8 @@ public:
   // whether the device takes this state at all, and whether this value of it is one a draw can honour
   static bool supported(D3DRENDERSTATETYPE state);
   static bool usable_value(D3DRENDERSTATETYPE state, DWORD value);
+  // every state the device takes, which is what a state block enumerates
+  static const D3DRENDERSTATETYPE *all_states(UINT &count);
 
   HRESULT set(D3DRENDERSTATETYPE state, DWORD value);
   HRESULT get(D3DRENDERSTATETYPE state, DWORD *value) const;
@@ -27,6 +29,18 @@ public:
   // the colour a texture stage's D3DTA_TFACTOR argument names, as D3D9's D3DCOLOR is
   DWORD texture_factor() const {
     return texture_factor_;
+  }
+  // D3D9's alpha test, which a pixel shader carries: it compares the alpha the program writes with D3DRS_ALPHAREF using
+  // D3DRS_ALPHAFUNC, and a pixel that fails is not written (Microsoft Learn, D3DRS_ALPHATESTENABLE). the three states
+  // are these, and the test is the pixel program's (d3d9_shader_translator.cpp puts it in the program)
+  bool alpha_test_enabled() const {
+    return alpha_test_enable_ != FALSE;
+  }
+  DWORD alpha_func() const {
+    return alpha_func_;
+  }
+  DWORD alpha_ref() const {
+    return alpha_ref_;
   }
 
 private:
@@ -46,6 +60,10 @@ private:
   DWORD blend_op_ = D3DBLENDOP_ADD;
   DWORD colour_write_enable_ = 0xF;
   DWORD texture_factor_ = 0xFFFFFFFF;
+  // D3D9's defaults for the alpha test: off, always passing, reference 0
+  DWORD alpha_test_enable_ = FALSE;
+  DWORD alpha_func_ = D3DCMP_ALWAYS;
+  DWORD alpha_ref_ = 0;
 
   // the objects the values made, and whether one of them is out of date
   ComPtr<ID3D11RasterizerState> rasterizer_;

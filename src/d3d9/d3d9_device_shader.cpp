@@ -70,6 +70,8 @@ MTLD3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *declaration) {
   if (!declaration) {
     declaration_.Reset();
     declaration_inputs_.Reset();
+    if (recording_)
+      record(StateKey{StateKey::Declaration, 0, 0});
     return S_OK;
   }
   ComPtr<IMTLD3D9VertexDeclaration> ours;
@@ -81,6 +83,8 @@ MTLD3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *declaration) {
   declaration_inputs_ = ours;
   // a declaration and an FVF are exclusive, as D3D9's are: the last one set is the draw's
   fvf_ = 0;
+  if (recording_)
+    record(StateKey{StateKey::Declaration, 0, 0});
   return S_OK;
 }
 

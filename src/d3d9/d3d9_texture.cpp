@@ -503,6 +503,17 @@ SamplerState9::state(ID3D11Device *device) {
   return sampler_.Get();
 }
 
+const D3DSAMPLERSTATETYPE *
+SamplerState9::all_types(UINT &count) {
+  static const D3DSAMPLERSTATETYPE types[] = {
+      D3DSAMP_MINFILTER,   D3DSAMP_MAGFILTER,  D3DSAMP_MIPFILTER,    D3DSAMP_ADDRESSU,    D3DSAMP_ADDRESSV,
+      D3DSAMP_ADDRESSW,    D3DSAMP_MAXANISOTROPY, D3DSAMP_MIPMAPLODBIAS, D3DSAMP_MAXMIPLEVEL, D3DSAMP_BORDERCOLOR,
+      D3DSAMP_SRGBTEXTURE, D3DSAMP_ELEMENTINDEX, D3DSAMP_DMAPOFFSET,
+  };
+  count = (UINT)(sizeof(types) / sizeof(types[0]));
+  return types;
+}
+
 bool
 TextureStageState9::supported(D3DTEXTURESTAGESTATETYPE type) {
   switch (type) {
@@ -519,6 +530,16 @@ TextureStageState9::supported(D3DTEXTURESTAGESTATETYPE type) {
   default:
     return false;
   }
+}
+
+const D3DTEXTURESTAGESTATETYPE *
+TextureStageState9::all_types(UINT &count) {
+  static const D3DTEXTURESTAGESTATETYPE types[] = {
+      D3DTSS_COLOROP,       D3DTSS_COLORARG1,  D3DTSS_COLORARG2,          D3DTSS_ALPHAOP,   D3DTSS_ALPHAARG1,
+      D3DTSS_ALPHAARG2,     D3DTSS_TEXCOORDINDEX, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTSS_RESULTARG,
+  };
+  count = (UINT)(sizeof(types) / sizeof(types[0]));
+  return types;
 }
 
 bool

@@ -178,6 +178,8 @@ MTLD3D9Device::SetFVF(DWORD fvf) {
   // an FVF and a declaration are exclusive, as D3D9's are: the last one set is the draw's
   declaration_.Reset();
   declaration_inputs_.Reset();
+  if (recording_)
+    record(StateKey{StateKey::FVF, 0, 0});
   return S_OK;
 }
 
@@ -200,6 +202,8 @@ MTLD3D9Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer9 *buffer, UINT
     stream_buffer_.Reset();
     stream_offset_ = 0;
     stream_stride_ = 0;
+    if (recording_)
+      record(StateKey{StateKey::Stream, stream, 0});
     return S_OK;
   }
 
@@ -211,6 +215,8 @@ MTLD3D9Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer9 *buffer, UINT
   stream_buffer_ = ours;
   stream_offset_ = offset;
   stream_stride_ = stride;
+  if (recording_)
+    record(StateKey{StateKey::Stream, stream, 0});
   return S_OK;
 }
 
@@ -245,6 +251,8 @@ MTLD3D9Device::SetIndices(IDirect3DIndexBuffer9 *indices) {
   if (!indices) {
     indices_.Reset();
     index_buffer_.Reset();
+    if (recording_)
+      record(StateKey{StateKey::Indices, 0, 0});
     return S_OK;
   }
   ComPtr<IMTLD3D9Buffer> ours;
@@ -252,6 +260,8 @@ MTLD3D9Device::SetIndices(IDirect3DIndexBuffer9 *indices) {
     return D3DERR_INVALIDCALL;
   indices_ = indices;
   index_buffer_ = ours;
+  if (recording_)
+    record(StateKey{StateKey::Indices, 0, 0});
   return S_OK;
 }
 
@@ -372,6 +382,89 @@ MTLD3D9Device::DrawPrimitiveUP(
   context_->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
   context_->IASetPrimitiveTopology(topology_of(type));
   context_->Draw(count, 0);
+  return S_OK;
+}
+
+// a draw whose vertices and indices both come from the CPU: D3D9's DrawIndexedPrimitiveUP reads index_data and data as
+// they are, with no stream or index buffer bound, so the two arrays are staged into buffers of this device's and drawn
+// as a DrawIndexedPrimitive of them would be (the indices of the array address the vertices of the array, from vertex
+// 0, which is why the draw's base vertex is 0)
+HRESULT
+MTLD3D9Device::DrawIndexedPrimitiveUP(
+    D3DPRIMITIVETYPE type, UINT min_vertex_idx, UINT vertex_count, UINT primitive_count, const void *index_data,
+    D3DFORMAT index_format, const void *data, UINT stride
+) {
+  UINT count = 0;
+  if (!topology_count(type, primitive_count, count))
+    return D3DERR_INVALIDCALL;
+  if (!primitive_count)
+    return S_OK;
+  if (!index_data || !data || !stride)
+    return D3DERR_INVALIDCALL;
+  if (index_format != D3DFMT_INDEX16 && index_format != D3DFMT_INDEX32)
+    return D3DERR_INVALIDCALL;
+  if (!vertex_shader_ && !pixel_shader_ &&
+      (!FixedFunctionPipeline::supports(fvf_) || stride != FixedFunctionPipeline::stride(fvf_)))
+    return D3DERR_INVALIDCALL;
+  if ((vertex_shader_ || pixel_shader_) && (!vertex_shader_ || !pixel_shader_ || !declaration_inputs_))
+    return D3DERR_INVALIDCALL;
+  // the vertices the indices can name: D3D9 asks for at least MinVertexIndex + NumVertices of them
+  const uint64_t vertices = (uint64_t)min_vertex_idx + vertex_count;
+  if (!vertex_count || !vertices)
+    return D3DERR_INVALIDCALL;
+
+  const UINT index_size = index_format == D3DFMT_INDEX32 ? 4 : 2;
+  const uint64_t vertex_bytes = vertices * stride;
+  const uint64_t index_bytes = (uint64_t)count * index_size;
+  if (vertex_bytes > UINT_MAX || index_bytes > UINT_MAX)
+    return D3DERR_INVALIDCALL;
+
+  if (!up_scratch_ || up_scratch_size_ < vertex_bytes) {
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = (UINT)std::max<uint64_t>(vertex_bytes, 1024);
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ComPtr<ID3D11Buffer> scratch;
+    if (FAILED(d3d11_device_->CreateBuffer(&desc, nullptr, &scratch)))
+      return D3DERR_INVALIDCALL;
+    up_scratch_ = scratch;
+    up_scratch_size_ = desc.ByteWidth;
+  }
+  if (!up_index_scratch_ || up_index_scratch_size_ < index_bytes) {
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = (UINT)std::max<uint64_t>(index_bytes, 256);
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ComPtr<ID3D11Buffer> scratch;
+    if (FAILED(d3d11_device_->CreateBuffer(&desc, nullptr, &scratch)))
+      return D3DERR_INVALIDCALL;
+    up_index_scratch_ = scratch;
+    up_index_scratch_size_ = desc.ByteWidth;
+  }
+
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  if (FAILED(context_->Map(up_scratch_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    return D3DERR_INVALIDCALL;
+  memcpy(mapped.pData, data, (size_t)vertex_bytes);
+  context_->Unmap(up_scratch_.Get(), 0);
+  if (FAILED(context_->Map(up_index_scratch_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    return D3DERR_INVALIDCALL;
+  memcpy(mapped.pData, index_data, (size_t)index_bytes);
+  context_->Unmap(up_index_scratch_.Get(), 0);
+
+  HRESULT hr = prepare_draw();
+  if (FAILED(hr))
+    return hr;
+  ID3D11Buffer *buffer = up_scratch_.Get();
+  UINT offset = 0;
+  context_->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
+  context_->IASetIndexBuffer(
+      up_index_scratch_.Get(), index_format == D3DFMT_INDEX32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, 0
+  );
+  context_->IASetPrimitiveTopology(topology_of(type));
+  context_->DrawIndexed(count, 0, 0);
   return S_OK;
 }
 

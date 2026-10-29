@@ -290,6 +290,8 @@ MTLD3D9Device::SetViewport(const D3DVIEWPORT9 *viewport) {
     return D3DERR_INVALIDCALL;
   }
   viewport_ = *viewport;
+  if (recording_)
+    record(StateKey{StateKey::Viewport, 0, 0});
   return S_OK;
 }
 
@@ -311,7 +313,10 @@ MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE state, DWORD value) {
     ERR_ONCE("D3D9: render state {} cannot take {}; the device keeps the value it had.", (int)state, value);
     return D3DERR_INVALIDCALL;
   }
-  return render_state_.set(state, value);
+  const HRESULT hr = render_state_.set(state, value);
+  if (SUCCEEDED(hr) && recording_)
+    record(StateKey{StateKey::Render, (UINT)state, 0});
+  return hr;
 }
 
 HRESULT
@@ -319,6 +324,74 @@ MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) {
   if (!value || !RenderState::supported(state))
     return D3DERR_INVALIDCALL;
   return render_state_.get(state, value);
+}
+
+// the state a block being recorded carries: every setter that succeeds while the device is in recording mode adds its
+// state here, once (a state set twice is one state, with the second value, which the block reads from the device)
+void
+MTLD3D9Device::record(StateKey key) {
+  for (const StateKey &recorded : recorded_keys_)
+    if (recorded == key)
+      return;
+  recorded_keys_.push_back(key);
+}
+
+// a block of the state `type` names, captured now: D3D9's CreateStateBlock captures as it makes the block
+HRESULT
+MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9 **block) {
+  if (!block)
+    return D3DERR_INVALIDCALL;
+  *block = nullptr;
+  if (type != D3DSBT_ALL && type != D3DSBT_PIXELSTATE && type != D3DSBT_VERTEXSTATE)
+    return D3DERR_INVALIDCALL;
+  if (recording_) {
+    ERR_ONCE("D3D9: a state block cannot be captured while the device is recording one (BeginStateBlock).");
+    return D3DERR_INVALIDCALL;
+  }
+  ComPtr<MTLD3D9StateBlock> result;
+  result.Attach(new MTLD3D9StateBlock(this, type));
+  const HRESULT hr = result->capture_all();
+  if (FAILED(hr))
+    return hr;
+  *block = result.Detach();
+  return S_OK;
+}
+
+// D3D9's BeginStateBlock/EndStateBlock: the device records the states the calls between them set, and hands back a
+// block of them. the calls still change the device as they always do, which is what D3D9's recording mode does
+HRESULT
+MTLD3D9Device::BeginStateBlock() {
+  if (recording_)
+    return D3DERR_INVALIDCALL;
+  recording_ = true;
+  recorded_keys_.clear();
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **block) {
+  if (!block)
+    return D3DERR_INVALIDCALL;
+  *block = nullptr;
+  if (!recording_)
+    return D3DERR_INVALIDCALL;
+  recording_ = false;
+  std::vector<StateKey> keys = std::move(recorded_keys_);
+  recorded_keys_.clear();
+  ComPtr<MTLD3D9StateBlock> result;
+  result.Attach(new MTLD3D9StateBlock(this, D3DSBT_ALL));
+  const HRESULT hr = result->capture_recorded(keys);
+  if (FAILED(hr))
+    return hr;
+  *block = result.Detach();
+  return S_OK;
+}
+
+// an event query, whose GetData says the GPU has finished what was issued before it: the call a title makes at the end
+// of its frame and waits on (d3d9_query.cpp)
+HRESULT
+MTLD3D9Device::CreateQuery(D3DQUERYTYPE type, IDirect3DQuery9 **query) {
+  return MTLD3D9Query::create(this, d3d11_device_.Get(), context_.Get(), type, query);
 }
 
 } // namespace mullion::d3d9

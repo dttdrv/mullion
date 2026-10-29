@@ -316,6 +316,8 @@ MTLD3D9Device::CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9
 HRESULT
 MTLD3D9Device::SetVertexShader(IDirect3DVertexShader9 *shader) {
   vertex_shader_ = shader;
+  if (recording_)
+    record(StateKey{StateKey::VertexShader, 0, 0});
   return S_OK;
 }
 
@@ -335,6 +337,8 @@ MTLD3D9Device::SetVertexShaderConstantF(UINT start, const float *data, UINT coun
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&vertex_constants_f_[start * 4], data, (size_t)count * 4 * sizeof(float));
+  if (count && recording_)
+    record(StateKey{StateKey::VertexConstantF, start, count});
   return S_OK;
 }
 
@@ -353,6 +357,8 @@ MTLD3D9Device::SetVertexShaderConstantI(UINT start, const int *data, UINT count)
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&vertex_constants_i_[start * 4], data, (size_t)count * 4 * sizeof(int));
+  if (count && recording_)
+    record(StateKey{StateKey::VertexConstantI, start, count});
   return S_OK;
 }
 
@@ -371,6 +377,8 @@ MTLD3D9Device::SetVertexShaderConstantB(UINT start, const WINBOOL *data, UINT co
     return D3DERR_INVALIDCALL;
   for (UINT at = 0; at < count; at++)
     vertex_constants_b_[start + at] = data[at] ? TRUE : FALSE;
+  if (count && recording_)
+    record(StateKey{StateKey::VertexConstantB, start, count});
   return S_OK;
 }
 
@@ -402,6 +410,8 @@ MTLD3D9Device::CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 *
 HRESULT
 MTLD3D9Device::SetPixelShader(IDirect3DPixelShader9 *shader) {
   pixel_shader_ = shader;
+  if (recording_)
+    record(StateKey{StateKey::PixelShader, 0, 0});
   return S_OK;
 }
 
@@ -421,6 +431,8 @@ MTLD3D9Device::SetPixelShaderConstantF(UINT start, const float *data, UINT count
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&pixel_constants_f_[start * 4], data, (size_t)count * 4 * sizeof(float));
+  if (count && recording_)
+    record(StateKey{StateKey::PixelConstantF, start, count});
   return S_OK;
 }
 
@@ -439,6 +451,8 @@ MTLD3D9Device::SetPixelShaderConstantI(UINT start, const int *data, UINT count) 
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&pixel_constants_i_[start * 4], data, (size_t)count * 4 * sizeof(int));
+  if (count && recording_)
+    record(StateKey{StateKey::PixelConstantI, start, count});
   return S_OK;
 }
 
@@ -457,6 +471,8 @@ MTLD3D9Device::SetPixelShaderConstantB(UINT start, const WINBOOL *data, UINT cou
     return D3DERR_INVALIDCALL;
   for (UINT at = 0; at < count; at++)
     pixel_constants_b_[start + at] = data[at] ? TRUE : FALSE;
+  if (count && recording_)
+    record(StateKey{StateKey::PixelConstantB, start, count});
   return S_OK;
 }
 

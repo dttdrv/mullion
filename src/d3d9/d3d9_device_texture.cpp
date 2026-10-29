@@ -150,6 +150,8 @@ MTLD3D9Device::SetTexture(DWORD stage, IDirect3DBaseTexture9 *texture) {
   if (!texture) {
     textures_[stage].Reset();
     texture_sources_[stage].Reset();
+    if (recording_)
+      record(StateKey{StateKey::Texture, stage, 0});
     return S_OK;
   }
 
@@ -158,6 +160,8 @@ MTLD3D9Device::SetTexture(DWORD stage, IDirect3DBaseTexture9 *texture) {
     return D3DERR_INVALIDCALL;
   textures_[stage] = texture;
   texture_sources_[stage] = ours;
+  if (recording_)
+    record(StateKey{StateKey::Texture, stage, 0});
   return S_OK;
 }
 
@@ -210,7 +214,10 @@ MTLD3D9Device::SetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD va
              " is refused.");
     return D3DERR_INVALIDCALL;
   }
-  return sampler_states_[sampler].set(type, value);
+  const HRESULT hr = sampler_states_[sampler].set(type, value);
+  if (SUCCEEDED(hr) && recording_)
+    record(StateKey{StateKey::Sampler, sampler, (UINT)type});
+  return hr;
 }
 
 HRESULT
@@ -229,7 +236,10 @@ MTLD3D9Device::SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, 
              "'s operations are refused.");
     return D3DERR_INVALIDCALL;
   }
-  return texture_stage_.set(type, value);
+  const HRESULT hr = texture_stage_.set(type, value);
+  if (SUCCEEDED(hr) && recording_)
+    record(StateKey{StateKey::TextureStage, 0, (UINT)type});
+  return hr;
 }
 
 HRESULT

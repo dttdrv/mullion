@@ -42,3 +42,8 @@ test('d3d9_shader_draw', executable('d3d9_shader_draw', ['d3d9_shader_draw.cpp']
 # the pixels that tell them apart, a DXT1 texture's blocks, and the texel a stage with no texture samples
 test('d3d9_texture_draw', executable('d3d9_texture_draw', ['d3d9_texture_draw.cpp'], dependencies : d3d9_shader_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# the calls a title makes between its draws: DrawIndexedPrimitiveUP's arrays, the event query a frame waits on, and the
+# state blocks a game saves and restores its state with
+test('d3d9_device_calls', executable('d3d9_device_calls', ['d3d9_device_calls.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

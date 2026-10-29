@@ -295,6 +295,15 @@ public:
     instruction(D3D10_SB_OPCODE_SAMPLE, false, {dest, coord, src_resource(resource), src_sampler(sampler)});
   }
 
+  // the end of a pixel whose value is not zero: what D3D9's texkill is (the pixel is not written, and the target keeps
+  // what it had there)
+  void discard_if_nonzero(const std::vector<DWORD> &value) {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_DISCARD) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH((DWORD)(1 + value.size())) |
+                       ENCODE_D3D10_SB_INSTRUCTION_TEST_BOOLEAN(D3D10_SB_INSTRUCTION_TEST_NONZERO));
+    program_.insert(program_.end(), value.begin(), value.end());
+  }
+
   // ---- instructions ---------------------------------------------------------------------------------------------
   // one instruction: its opcode, whether it saturates its result, and the operands' tokens
   void instruction(

@@ -151,6 +151,8 @@ class SamplerState9 {
 public:
   static bool supported(D3DSAMPLERSTATETYPE type);
   static bool usable_value(D3DSAMPLERSTATETYPE type, DWORD value);
+  // every type the device takes, which is what a state block enumerates
+  static const D3DSAMPLERSTATETYPE *all_types(UINT &count);
 
   HRESULT set(D3DSAMPLERSTATETYPE type, DWORD value);
   HRESULT get(D3DSAMPLERSTATETYPE type, DWORD *value) const;
@@ -180,6 +182,8 @@ class TextureStageState9 {
 public:
   static bool supported(D3DTEXTURESTAGESTATETYPE type);
   static bool usable_value(D3DTEXTURESTAGESTATETYPE type, DWORD value);
+  // every type the device takes, which is what a state block enumerates
+  static const D3DTEXTURESTAGESTATETYPE *all_types(UINT &count);
 
   HRESULT set(D3DTEXTURESTAGESTATETYPE type, DWORD value);
   HRESULT get(D3DTEXTURESTAGESTATETYPE type, DWORD *value) const;
