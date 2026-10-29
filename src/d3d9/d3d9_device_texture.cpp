@@ -138,34 +138,34 @@ MTLD3D9Device::CreateTexture(
   return S_OK;
 }
 
-// the texture stage 0 samples. this build has one stage (its caps say MaxTextureBlendStages and
-// MaxSimultaneousTextures are 1), and D3D9 refuses a stage a device does not have, so every other stage is refused
-// rather than accepted and kept by nobody.
+// the textures a draw samples: D3D9's eight stages (the caps' MaxSimultaneousTextures), each keeping the texture
+// SetTexture set for it, and a stage past them refused as D3D9 refuses one a device does not have
 HRESULT
 MTLD3D9Device::SetTexture(DWORD stage, IDirect3DBaseTexture9 *texture) {
-  if (stage != 0) {
-    ERR_ONCE("D3D9: this device has one texture stage (MaxTextureBlendStages is 1); every other one is refused.");
+  if (stage >= kTextureStages) {
+    ERR_ONCE("D3D9: this device has ", kTextureStages, " texture stages (MaxSimultaneousTextures); stage ", stage,
+             " is refused.");
     return D3DERR_INVALIDCALL;
   }
   if (!texture) {
-    texture_.Reset();
-    texture_source_.Reset();
+    textures_[stage].Reset();
+    texture_sources_[stage].Reset();
     return S_OK;
   }
 
   ComPtr<IMTLD3D9Texture> ours;
   if (FAILED(texture->QueryInterface(IID_IMTLD3D9Texture, reinterpret_cast<void **>(ours.GetAddressOf()))))
     return D3DERR_INVALIDCALL;
-  texture_ = texture;
-  texture_source_ = ours;
+  textures_[stage] = texture;
+  texture_sources_[stage] = ours;
   return S_OK;
 }
 
 HRESULT
 MTLD3D9Device::GetTexture(DWORD stage, IDirect3DBaseTexture9 **texture) {
-  if (stage != 0 || !texture)
+  if (stage >= kTextureStages || !texture)
     return D3DERR_INVALIDCALL;
-  *texture = texture_.Get();
+  *texture = textures_[stage].Get();
   if (*texture)
     (*texture)->AddRef();
   return S_OK;
@@ -201,26 +201,32 @@ MTLD3D9Device::ensure_default_texture() {
   return S_OK;
 }
 
+// a sampler is a stage's: D3D9's stage # samples through sampler #, and the device has one sampler for each of its
+// eight stages
 HRESULT
 MTLD3D9Device::SetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value) {
-  if (sampler != 0) {
-    ERR_ONCE("D3D9: this device has one sampler (MaxSimultaneousTextures is 1); every other one is refused.");
+  if (sampler >= kTextureStages) {
+    ERR_ONCE("D3D9: this device has ", kTextureStages, " samplers (MaxSimultaneousTextures); sampler ", sampler,
+             " is refused.");
     return D3DERR_INVALIDCALL;
   }
-  return sampler_state_.set(type, value);
+  return sampler_states_[sampler].set(type, value);
 }
 
 HRESULT
 MTLD3D9Device::GetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD *value) {
-  if (sampler != 0 || !value)
+  if (sampler >= kTextureStages || !value)
     return D3DERR_INVALIDCALL;
-  return sampler_state_.get(type, value);
+  return sampler_states_[sampler].get(type, value);
 }
 
+// the fixed-function blender has one stage (the caps' MaxTextureBlendStages): stage 0's operations are the ones the
+// textured pixel shader performs, so another stage's are refused rather than kept by nobody
 HRESULT
 MTLD3D9Device::SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) {
   if (stage != 0) {
-    ERR_ONCE("D3D9: this device has one texture stage (MaxTextureBlendStages is 1); every other one is refused.");
+    ERR_ONCE("D3D9: this device's fixed-function blender has one stage (MaxTextureBlendStages is 1); stage ", stage,
+             "'s operations are refused.");
     return D3DERR_INVALIDCALL;
   }
   return texture_stage_.set(type, value);

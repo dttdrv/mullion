@@ -25,6 +25,9 @@ constexpr UINT kBoolConstants = 16;
 constexpr UINT kFloatSlot = 0;
 constexpr UINT kIntSlot = 1;
 constexpr UINT kBoolSlot = 2;
+// the texture stages, and so the samplers, a pixel shader's program may sample (D3D9's eight: the device's caps say
+// MaxSimultaneousTextures is eight)
+constexpr UINT kSamplers = 8;
 
 // the SM5 output slots a D3D9 vertex shader's outputs are written as: position first, then fog and point size, the
 // colours and the texture coordinates
@@ -202,7 +205,7 @@ public:
     out.dxbc = writer_->container();
     out.inputs = inputs_;
     out.outputs = outputs_;
-    out.samples = samples_;
+    out.samples = sampled_ != 0;
     return true;
   }
 
@@ -277,19 +280,20 @@ private:
         return false;
       }
     } else if (register_param.regtype == D3DSPR_SAMPLER) {
-      // `dcl_2d s#`: the sampler a texld reads, and the dimension it reads its texture as. this build has one texture
-      // stage (its caps say so), so it has one sampler, and a 2D texture is the one it samples
+      // `dcl_2d s#`: the sampler a texld reads, and the dimension it reads its texture as. D3D9's stage # is both the
+      // texture and the sampler of that number, and this device has the eight stages its caps name
       const UINT dimension = usage_token & D3DSP_TEXTURETYPE_MASK;
       if (dimension != D3DSTT_2D) {
         reason_ = "a sampler of a texture dimension this build does not sample yet (dcl_2d is the one it reads: cube "
                   "and volume textures are not).";
         return false;
       }
-      if (register_param.regnum != 0) {
-        reason_ = "a sampler past s0: this device has one texture stage (MaxSimultaneousTextures is 1)";
+      if (register_param.regnum >= kSamplers) {
+        reason_ = "a sampler past s" + std::to_string(kSamplers - 1) + ": this device has " +
+                  std::to_string(kSamplers) + " texture stages (MaxSimultaneousTextures)";
         return false;
       }
-      sampler_declared_ = true;
+      declared_samplers_ |= 1u << register_param.regnum;
     }
     return true;
   }
@@ -345,17 +349,18 @@ private:
       }
       if (code_.pixel && dest_param.regtype == D3DSPR_COLOROUT && dest_param.regnum < 4)
         uses_colour_out_[dest_param.regnum] = true;
-      // a texld samples the sampler its third parameter names, which is the one stage this build has
+      // a texld samples the sampler its third parameter names, which is the stage whose texture it reads
       if (code_.pixel && opcode == D3DSIO_TEX) {
         if (length < 3 || source(params[2]).regtype != D3DSPR_SAMPLER) {
           reason_ = "a texld without a sampler (the shader model 2 and 3 form names one: texld r#, t#, s#)";
           return false;
         }
-        if (source(params[2]).regnum != 0) {
-          reason_ = "a texld of a sampler past s0: this device has one texture stage (MaxSimultaneousTextures is 1)";
+        if (source(params[2]).regnum >= kSamplers) {
+          reason_ = "a texld of a sampler past s" + std::to_string(kSamplers - 1) + ": this device has " +
+                    std::to_string(kSamplers) + " texture stages (MaxSimultaneousTextures)";
           return false;
         }
-        samples_ = true;
+        sampled_ |= 1u << source(params[2]).regnum;
       }
       break;
     }
@@ -585,15 +590,18 @@ private:
     writer_->declare_constant_buffer(kIntSlot, kIntConstants);
     writer_->declare_constant_buffer(kBoolSlot, kBoolConstants);
 
-    // what a texture sample reads: the sampler the program declared (`dcl_2d s#`) and the texture stage 0 samples. a
-    // program that samples without declaring one is a program D3D9 refuses, so this refuses to translate it
-    if (samples_) {
-      if (!sampler_declared_) {
-        reason_ = "a texld of a sampler the program does not declare (a pixel shader declares dcl_2d s# first)";
-        return false;
-      }
-      writer_->declare_sampler(0);
-      writer_->declare_texture2d(0);
+    // what a texture sample reads: for each stage it samples, the sampler the program declared (`dcl_2d s#`) and the
+    // texture that stage holds. a program that samples without declaring one is a program D3D9 refuses, so this refuses
+    // to translate it
+    if (sampled_ & ~declared_samplers_) {
+      reason_ = "a texld of a sampler the program does not declare (a pixel shader declares dcl_2d s# first)";
+      return false;
+    }
+    for (UINT stage = 0; stage < kSamplers; stage++) {
+      if (!(sampled_ & (1u << stage)))
+        continue;
+      writer_->declare_sampler(stage);
+      writer_->declare_texture2d(stage);
     }
 
     // the temporary registers the program reads and writes, and two the translation of one instruction into several
@@ -894,7 +902,8 @@ private:
       std::vector<DWORD> coordinate;
       if (!source_at(1, coordinate))
         return false;
-      writer_->sample(dest, coordinate, 0, 0);
+      const UINT stage = source(params[2]).regnum;
+      writer_->sample(dest, coordinate, stage, stage);
       return true;
     }
     case D3DSIO_TEXKILL:
@@ -1064,9 +1073,9 @@ private:
   std::vector<UINT> input_shadow_;
   bool defined_valid_[kFloatConstants] = {};
   float defined_[kFloatConstants][4] = {};
-  // whether the program samples a texture, and whether it declared the sampler it samples through
-  bool samples_ = false;
-  bool sampler_declared_ = false;
+  // the stages the program samples and the samplers it declares, a bit each
+  UINT sampled_ = 0;
+  UINT declared_samplers_ = 0;
   std::map<UINT, UINT> vs_output_slot_;
   std::map<UINT, UINT> vs_output_declared_;
 

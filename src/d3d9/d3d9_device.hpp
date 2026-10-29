@@ -450,11 +450,13 @@ private:
   ComPtr<ID3D11Buffer> up_scratch_;
   UINT up_scratch_size_ = 0;
 
-  // the texture stage 0 samples, the sampler it samples through and the operation the stage performs
-  // (d3d9_device_texture.cpp)
-  ComPtr<IDirect3DBaseTexture9> texture_;
-  ComPtr<IMTLD3D9Texture> texture_source_;
-  SamplerState9 sampler_state_;
+  // the texture stages a draw samples: D3D9's eight, each with the texture SetTexture set and the sampler that stage's
+  // sampler states make (the caps' MaxSimultaneousTextures), and the one fixed-function stage whose operations the
+  // textured path performs (MaxTextureBlendStages), which is stage 0's (d3d9_device_texture.cpp)
+  static constexpr UINT kTextureStages = 8;
+  ComPtr<IDirect3DBaseTexture9> textures_[kTextureStages];
+  ComPtr<IMTLD3D9Texture> texture_sources_[kTextureStages];
+  SamplerState9 sampler_states_[kTextureStages];
   TextureStageState9 texture_stage_;
   // what a stage with no texture samples: D3D9's default texture, one opaque white texel, which a shader's texld reads
   // like any other texture (made the first time a sampling draw needs it)

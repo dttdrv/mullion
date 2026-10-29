@@ -482,10 +482,23 @@ main() {
          "a texture described a level that is not there");
   expect(texture->GetSurfaceLevel(texture->GetLevelCount(), &level) == D3DERR_INVALIDCALL,
          "a texture handed out a surface of a level that is not there");
-  expect(device->SetTexture(1, texture.Get()) == D3DERR_INVALIDCALL, "a texture was set on a stage the device has not");
-  expect(device->GetTexture(1, &set_texture) == D3DERR_INVALIDCALL, "a stage the device has not was read");
-  expect(device->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR) == D3DERR_INVALIDCALL,
+  // the eight stages a shader samples: a second stage keeps its texture and its sampler, and a ninth is refused
+  CHECK(device->SetTexture(1, texture.Get()));
+  CHECK(device->GetTexture(1, &set_texture));
+  expect(set_texture.Get() == texture.Get(), "a second stage did not keep the texture set on it");
+  set_texture.Reset();
+  CHECK(device->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR));
+  DWORD second_filter = 0;
+  CHECK(device->GetSamplerState(1, D3DSAMP_MINFILTER, &second_filter));
+  expect(second_filter == D3DTEXF_LINEAR, "a second sampler did not keep the filter set on it");
+  CHECK(device->SetTexture(1, nullptr));
+  expect(device->SetTexture(8, texture.Get()) == D3DERR_INVALIDCALL, "a texture was set on a stage the device has not");
+  expect(device->GetTexture(8, &set_texture) == D3DERR_INVALIDCALL, "a stage the device has not was read");
+  expect(device->SetSamplerState(8, D3DSAMP_MINFILTER, D3DTEXF_LINEAR) == D3DERR_INVALIDCALL,
          "a sampler state was set on a sampler the device has not");
+  // the fixed-function blender is one stage, so a second stage's operations are refused
+  expect(device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_ADD) == D3DERR_INVALIDCALL,
+         "a texture stage operation was set on a stage the fixed-function blender has not");
   expect(device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_NONE) == D3DERR_INVALIDCALL,
          "a minification filter that is not one is taken");
   expect(device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_BORDER) == D3DERR_INVALIDCALL,

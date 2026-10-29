@@ -114,8 +114,9 @@ shaders draw through, and d3d9_shader_translator.cpp the translation of their pr
 d3d9_device.hpp.
 
 # Milestone 4a (done): textures and the texture stage
-What a draw samples, and the one stage that samples it (this build's caps say MaxTextureBlendStages and
-MaxSimultaneousTextures are 1, so a second stage or sampler is refused rather than kept by nobody):
+What a draw samples: the textures the device holds for eight stages (MaxSimultaneousTextures is 8), the samplers of
+those stages, and the one fixed-function blending stage that is stage 0's (MaxTextureBlendStages is 1, because the
+textured pixel shader performs one stage's operation and no draw blends a second):
 
   * CreateTexture for D3DPOOL_MANAGED and D3DPOOL_DEFAULT textures of the formats d3d9_common.hpp names
     (D3DFMT_A8R8G8B8 and X8R8G8B8 and the handful around them, and the block-compressed DXT1 to DXT5 milestone 5b
@@ -127,8 +128,9 @@ MaxSimultaneousTextures are 1, so a second stage or sampler is refused rather th
     build could fill yet, said once.
   * A texture's level desc is the texture's: its format, its pool (a managed texture's level is managed, a target's is
     default, a readback surface is system memory) and the size the chain halves down to.
-  * SetTexture/GetTexture (stage 0, and the device holds what was set), SetSamplerState/GetSamplerState and
-    SetTextureStageState/GetTextureStageState.
+  * SetTexture/GetTexture for stages 0 to 7 (the device holds what was set for each of them), SetSamplerState and
+    GetSamplerState for those stages' samplers (a sampler is its stage's), and SetTextureStageState/GetTextureStageState
+    for the fixed-function blender's one stage, stage 0's.
   * The stage's operations, as the textured pixel shaders' constants: D3DTOP_DISABLE, SELECTARG1, SELECTARG2, MODULATE,
     ADD and SUBTRACT for the colour op and the alpha op apart, over the arguments D3DTA_TEXTURE, D3DTA_DIFFUSE,
     D3DTA_CURRENT (the vertex colour at stage 0, which is the only stage there is) and D3DTA_TFACTOR, whose colour is
@@ -223,10 +225,12 @@ and 3's texture instruction, which names its sampler) are translated to shader m
   * a stage with no texture samples the default texture, one opaque white texel, which is what D3D9's default texture
     is: the layer makes one and binds it, so a sampling draw with nothing set is a white texel rather than an
     undefined one.
-  * the samplers past s0 are refused: this device has one texture stage, and it says so (caps MaxTextureBlendStages and
-    MaxSimultaneousTextures are 1). Cube and volume samplers (dcl_cube, dcl_volume, dcl_3d) are refused too, as are
-    TEXKILL, TEXLDD, TEXLDL, a vertex shader's TEX (vertex texture fetch) and the texture instructions of shader model
-    1.x, each with the reason in the library's log once.
+  * a program may sample any of the eight stages: `dcl_2d s#` and `texld r#, t#, s#` are that stage's sampler and
+    texture, and a draw binds all eight stages' textures and samplers (each stage's, or the default white texel for a
+    stage with none). A sampler past s7 is refused, as D3D9 refuses a stage the device does not have. Cube and volume
+    samplers (dcl_cube, dcl_volume, dcl_3d) are refused too, as are TEXKILL, TEXLDD, TEXLDL, a vertex shader's TEX
+    (vertex texture fetch) and the texture instructions of shader model 1.x, each with the reason in the library's log
+    once.
   * a compressed texture is the blocks it is stored as: D3DFMT_DXT1, DXT2 and DXT3, DXT4 and DXT5 are D3D11's BC1, BC2
     and BC3, a level's pitch is its blocks' rows (8 or 16 bytes a block), a lock is of whole four-by-four blocks (D3D9
     refuses a rectangle that starts inside one), and a texture of a size that is not whole blocks is refused. Each level
@@ -267,9 +271,9 @@ model 1.x, TEXKILL and the alpha test it serves, TEXLDD and TEXLDL, the rest of 
   * clearing the stencil of part of a surface (its colour and depth are cleared, and its stencil is left as it was,
     said once: this build's ClearView clears depth alone, and a stencil-only clear of part of a view needs a draw that
     writes the stencil)
-  * the second and further texture stages and samplers, lights, vertex declarations, state blocks, queries:
-    D3DERR_INVALIDCALL (a game's shader that samples one is refused at the draw, as it is for a sampler the program does
-    not declare)
+  * the second and further fixed-function blending stages (their operations), lights, vertex declarations, state
+    blocks, queries: D3DERR_INVALIDCALL (a game's own shader may sample all eight stages, which is what the caps'
+    MaxSimultaneousTextures says)
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
 
 # Seeing what a game asked for

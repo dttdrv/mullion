@@ -6,6 +6,8 @@
 // - the components a texture is stored in are the ones a shader reads (A8R8G8B8), and a compressed one (DXT1) is
 //   uploaded as the blocks it is stored as and sampled as the colours they make.
 // - a stage with no texture samples D3D9's default texture, one opaque white texel.
+// - each stage a program samples is that stage's texture: a second stage's texture reaches its own sampler and its own
+//   texel, which a draw that sampled only stage 0 could not say.
 // - both a hand-written ps_2_0 (the tokens of this test, so the translator is proved without a compiler) and one
 //   Microsoft's compiler makes of HLSL at test time draw the same pixels.
 // https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/texld---ps-2-0
@@ -68,6 +70,30 @@ const DWORD kHandPixelShader[] = {
     0x0200001F, 0x90000000, 0xA00F0800, // dcl_2d s0
     0x03000042, 0x800F0000, 0xB0E40000, 0xA0E40800, // texld r0, t0, s0
     0x02000001, 0x800F0800, 0x80E40000, // mov oC0, r0
+    0x0000FFFF, // end
+};
+
+// the same two stages with a second texture stage sampled: the vertex shader writes the coordinate to both texture
+// coordinate registers, and the pixel shader samples s0 and s1 and multiplies what they hold
+const DWORD kTwoStageVertexShader[] = {
+    0xFFFE0200, // vs_2_0
+    0x0200001F, 0x00000000, 0x900F0000, // dcl_position v0
+    0x0200001F, 0x00000005, 0x900F0001, // dcl_texcoord0 v1
+    0x02000001, 0xC00F0000, 0x90E40000, // mov oPos, v0
+    0x02000001, 0xE00F0000, 0x90E40001, // mov oT0, v1
+    0x02000001, 0xE00F0001, 0x90E40001, // mov oT1, v1
+    0x0000FFFF, // end
+};
+
+const DWORD kTwoStagePixelShader[] = {
+    0xFFFF0200, // ps_2_0
+    0x0200001F, 0x80000000, 0xB0030000, // dcl t0
+    0x0200001F, 0x80000000, 0xB0030001, // dcl t1
+    0x0200001F, 0x90000000, 0xA00F0800, // dcl_2d s0
+    0x0200001F, 0x90000000, 0xA00F0801, // dcl_2d s1
+    0x03000042, 0x800F0000, 0xB0E40000, 0xA0E40800, // texld r0, t0, s0
+    0x03000042, 0x800F0001, 0xB0E40001, 0xA0E40801, // texld r1, t1, s1
+    0x03000005, 0x800F0800, 0x80E40000, 0x80E40001, // mul oC0, r0, r1
     0x0000FFFF, // end
 };
 
@@ -260,6 +286,58 @@ main() {
   printf("probe: wrap 27,30=%06lx 36,30=%06lx\n", (unsigned long)pixel(27, 30), (unsigned long)pixel(36, 30));
   expect(pixel(27, 30) == kColumnPixels[3], "a wrapped coordinate outside the texture did not repeat it");
   expect(pixel(36, 30) == kColumnPixels[0], "a wrapped coordinate inside the texture took another texel");
+
+  // ---- a second stage: its own texture, its own sampler -----------------------------------------------------------
+  ComPtr<IDirect3DTexture9> second;
+  CHECK(device->CreateTexture(4, 4, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &second, nullptr));
+  {
+    // a grey that halves every channel it multiplies, so a frame says whether the second stage sampled it at all
+    D3DLOCKED_RECT locked{};
+    CHECK(second->LockRect(0, &locked, nullptr, 0));
+    for (UINT y = 0; y < 4; y++) {
+      DWORD *row = (DWORD *)((char *)locked.pBits + (size_t)y * locked.Pitch);
+      for (UINT x = 0; x < 4; x++)
+        row[x] = D3DCOLOR_XRGB(0x80, 0x80, 0x80);
+    }
+    CHECK(second->UnlockRect(0));
+  }
+  ComPtr<IDirect3DVertexShader9> two_stage_vertex;
+  ComPtr<IDirect3DPixelShader9> two_stage_pixel;
+  CHECK(device->CreateVertexShader(kTwoStageVertexShader, &two_stage_vertex));
+  CHECK(device->CreatePixelShader(kTwoStagePixelShader, &two_stage_pixel));
+  CHECK(device->SetVertexShader(two_stage_vertex.Get()));
+  CHECK(device->SetPixelShader(two_stage_pixel.Get()));
+  CHECK(device->SetTexture(0, texture.Get()));
+  CHECK(device->SetTexture(1, second.Get()));
+  hr = draw_quad(0.0f, 0.0f, 1.0f, 1.0f);
+  expect(SUCCEEDED(hr), "a draw sampling a second stage was refused");
+  printf("probe: two stages 8,30=%06lx 24,30=%06lx 56,30=%06lx\n", (unsigned long)pixel(8, 30),
+         (unsigned long)pixel(24, 30), (unsigned long)pixel(56, 30));
+  {
+    // the columns halved by the second stage's grey, which is what a draw that read only stage 0 could not draw
+    auto halved = [](DWORD got, DWORD column) {
+      auto within = [](DWORD a, DWORD b) {
+        const int difference = (int)(a & 0xFF) - (int)(b & 0xFF);
+        return difference >= -2 && difference <= 2;
+      };
+      return within(got >> 16, column >> 16) && within(got >> 8, column >> 8) && within(got, column);
+    };
+    // a channel halved, each on its own (the packed word shifted would move bits from one channel into the next)
+    auto half = [](DWORD colour) {
+      return (((colour >> 16) & 0xFF) / 2) << 16 | (((colour >> 8) & 0xFF) / 2) << 8 | ((colour & 0xFF) / 2);
+    };
+    expect(halved(pixel(8, 30), half(kColumnPixels[0])), "the first stage's column is not what the two sampled");
+    expect(halved(pixel(24, 30), half(kColumnPixels[1])), "the second stage did not halve the first stage's green");
+  }
+  // and the same draw with the second stage empty: the default white texel leaves the first stage's colour alone
+  CHECK(device->SetTexture(1, nullptr));
+  hr = draw_quad(0.0f, 0.0f, 1.0f, 1.0f);
+  expect(SUCCEEDED(hr), "a draw whose second stage is empty was refused");
+  printf("probe: one stage set 8,30=%06lx\n", (unsigned long)pixel(8, 30));
+  expect(pixel(8, 30) == kColumnPixels[0], "an empty second stage did not sample the default white texel");
+  CHECK(device->SetTexture(1, nullptr));
+  CHECK(device->SetVertexShader(vertex_shader.Get()));
+  CHECK(device->SetPixelShader(pixel_shader.Get()));
 
   // ---- Microsoft's compiler's programs draw the same pixels -------------------------------------------------------
   ComPtr<ID3DBlob> vertex_code = compile(kVertexHlsl, "vs_2_0");

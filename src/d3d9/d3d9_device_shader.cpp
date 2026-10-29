@@ -217,25 +217,26 @@ MTLD3D9Device::prepare_shader_draw() {
   context_->VSSetShader(vertex_shader.Get(), nullptr, 0);
   context_->PSSetShader(pixel_shader.Get(), nullptr, 0);
 
-  // the texture a sampling pixel shader reads: stage 0's, or the default texture a stage with none has, sampled
-  // through the sampler the sampler states make (both are bound to the registers the translated program declares)
+  // the textures a sampling pixel shader reads: each stage's texture, or the default texture a stage with none has,
+  // sampled through the sampler that stage's sampler states make. a program names a sampler by its stage's number
+  // (`dcl_2d s#` and `texld r#, t#, s#`), and both are bound to the registers it declared
   if (pixel->samples()) {
-    ID3D11ShaderResourceView *view = nullptr;
-    if (texture_source_)
-      view = texture_source_->view();
-    else {
-      hr = ensure_default_texture();
-      if (FAILED(hr))
-        return hr;
-      view = default_texture_view_.Get();
+    hr = ensure_default_texture();
+    if (FAILED(hr))
+      return hr;
+    ID3D11ShaderResourceView *views[kTextureStages] = {};
+    ID3D11SamplerState *samplers[kTextureStages] = {};
+    for (UINT stage = 0; stage < kTextureStages; stage++) {
+      views[stage] = texture_sources_[stage] ? texture_sources_[stage]->view() : default_texture_view_.Get();
+      samplers[stage] = sampler_states_[stage].state(d3d11_device_.Get());
+      if (!samplers[stage]) {
+        ERR_ONCE("D3D9: the sampler state stage ", stage, " holds makes no D3D11 sampler, so a sampling draw has "
+                 "none.");
+        return D3DERR_INVALIDCALL;
+      }
     }
-    ID3D11SamplerState *sampler = sampler_state_.state(d3d11_device_.Get());
-    if (!sampler) {
-      ERR_ONCE("D3D9: the sampler state this device holds makes no D3D11 sampler, so a sampling draw has none.");
-      return D3DERR_INVALIDCALL;
-    }
-    context_->PSSetShaderResources(0, 1, &view);
-    context_->PSSetSamplers(0, 1, &sampler);
+    context_->PSSetShaderResources(0, kTextureStages, views);
+    context_->PSSetSamplers(0, kTextureStages, samplers);
   }
   ID3D11Buffer *vertex_buffers[3] = {vs_constants_f_.Get(), vs_constants_i_.Get(), vs_constants_b_.Get()};
   context_->VSSetConstantBuffers(0, 3, vertex_buffers);

@@ -73,12 +73,13 @@ MTLD3D9Device::prepare_draw() {
     return D3DERR_INVALIDCALL;
   // what the texture stage does for this draw: a format with texture coordinates draws through it, and a stage whose
   // first colour argument is the texture is not processed at all while no texture is bound (Microsoft Learn, Texture
-  // Blending), which is what the untextured shaders already draw -- the vertex colour, colour and alpha both
+  // Blending), which is what the untextured shaders already draw -- the vertex colour, colour and alpha both. the
+  // fixed-function blender has one stage, which is stage 0's
   FixedFunctionSampling sampling{};
   const FixedFunctionSampling *bound = nullptr;
-  if (FixedFunctionPipeline::textured(fvf_) && (texture_source_ || !texture_stage_.skipped_without_texture())) {
-    sampling.texture = texture_source_ ? texture_source_->view() : nullptr;
-    sampling.sampler = sampler_state_.state(d3d11_device_.Get());
+  if (FixedFunctionPipeline::textured(fvf_) && (texture_sources_[0] || !texture_stage_.skipped_without_texture())) {
+    sampling.texture = texture_sources_[0] ? texture_sources_[0]->view() : nullptr;
+    sampling.sampler = sampler_states_[0].state(d3d11_device_.Get());
     if (!sampling.sampler)
       return D3DERR_INVALIDCALL;
     texture_stage_.constants(sampling.ops, sampling.args);

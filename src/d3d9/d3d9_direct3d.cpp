@@ -58,8 +58,10 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   caps.MaxStreams = 1;
   caps.MaxVertexIndex = 0xFFFFFF;
   caps.MaxPrimitiveCount = 0x555555;
+  // the fixed-function blender has one stage (its pixel shader is one texture's operation); a game's own shader samples
+  // eight textures, one an interface's stage with its own sampler
   caps.MaxTextureBlendStages = 1;
-  caps.MaxSimultaneousTextures = 1;
+  caps.MaxSimultaneousTextures = 8;
   caps.MaxPointSize = 1.0f;
   caps.NumSimultaneousRTs = 1;
   caps.VertexShaderVersion = 0;
