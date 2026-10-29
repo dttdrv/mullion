@@ -32,6 +32,8 @@ MTLD3D9Device::device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IM
 // surface's being cleared as if the call had named no rectangle (the rest of d3d9_device_targets.cpp's Clear).
 HRESULT
 MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float depth, DWORD stencil) {
+  if (HRESULT lost = lost_reason(); FAILED(lost))
+    return lost;
   if (!(flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
   if (count && !rects)
@@ -142,6 +144,9 @@ MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3D
     ERR_ONCE("D3D9: a render target whose bytes the CPU locks is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
+  // a target is a default-pool resource of the device the frames failed on, and a Reset replaces that device
+  if (HRESULT lost = lost_reason(); FAILED(lost))
+    return lost;
   const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
   if (dxgi_format == DXGI_FORMAT_UNKNOWN)
     return D3DERR_INVALIDCALL;
@@ -160,9 +165,9 @@ MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3D
     return D3DERR_INVALIDCALL;
 
   ComPtr<MTLD3D9Surface> result;
-  result.Attach(
-      new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, D3DPOOL_DEFAULT, false, context_)
-  );
+  result.Attach(new MTLD3D9Surface(
+      static_cast<IDirect3DDevice9 *>(this), texture, format, D3DPOOL_DEFAULT, false, context_, D3DUSAGE_RENDERTARGET
+  ));
   *surface = result.Detach();
   return S_OK;
 }
@@ -175,6 +180,8 @@ MTLD3D9Device::CreateDepthStencilSurface(UINT width, UINT height, D3DFORMAT form
   *surface = nullptr;
   if (multisample != D3DMULTISAMPLE_NONE)
     return D3DERR_NOTAVAILABLE;
+  if (HRESULT lost = lost_reason(); FAILED(lost))
+    return lost;
   const DXGI_FORMAT dxgi_format = to_dxgi_depth_format(format);
   if (dxgi_format == DXGI_FORMAT_UNKNOWN) {
     ERR_ONCE("D3D9: this build has no depth-stencil surface of that format.");
@@ -195,9 +202,9 @@ MTLD3D9Device::CreateDepthStencilSurface(UINT width, UINT height, D3DFORMAT form
     return D3DERR_INVALIDCALL;
 
   ComPtr<MTLD3D9Surface> result;
-  result.Attach(
-      new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, D3DPOOL_DEFAULT, false, context_, true)
-  );
+  result.Attach(new MTLD3D9Surface(
+      static_cast<IDirect3DDevice9 *>(this), texture, format, D3DPOOL_DEFAULT, false, context_, D3DUSAGE_DEPTHSTENCIL, true
+  ));
   *surface = result.Detach();
   return S_OK;
 }
@@ -214,6 +221,10 @@ MTLD3D9Device::SetRenderTarget(DWORD index, IDirect3DSurface9 *surface) {
 
   D3D11_TEXTURE2D_DESC desc, depth_desc;
   ours->texture()->GetDesc(&desc);
+  // a target's own level: a level of a texture is as large as the chain has it, not the texture's top level
+  const UINT level = ours->level();
+  const UINT target_width = std::max(1u, desc.Width >> level);
+  const UINT target_height = std::max(1u, desc.Height >> level);
   if (depth_stencil_) {
     depth_stencil_->texture()->GetDesc(&depth_desc);
     if (depth_desc.Width != desc.Width || depth_desc.Height != desc.Height) {
@@ -222,17 +233,25 @@ MTLD3D9Device::SetRenderTarget(DWORD index, IDirect3DSurface9 *surface) {
     }
   }
 
+  // the view of that level, not of the top one: a render target of a mipmapped texture draws into the level its surface
+  // is, at the level's size
+  D3D11_RENDER_TARGET_VIEW_DESC view_desc{};
+  view_desc.Format = desc.Format;
+  view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+  view_desc.Texture2D.MipSlice = level;
   ComPtr<ID3D11RenderTargetView> view;
-  if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), nullptr, &view)))
+  if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), &view_desc, &view)))
     return D3DERR_INVALIDCALL;
   current_target_ = surface;
   current_target_view_ = view;
-  target_width_ = desc.Width;
-  target_height_ = desc.Height;
+  target_width_ = target_width;
+  target_height_ = target_height;
+  // the new target is the whole of its own scissor until the application sets one for it
+  scissor_rect_ = RECT{0, 0, (LONG)target_width, (LONG)target_height};
   // a target brings its own viewport: D3D9 places it on the target SetRenderTarget set (Wine's
   // device_reset_viewport_state, dlls/d3d9/device.c), so a game that switches targets and draws without another
   // SetViewport draws over the new target rather than over the old one's place in it
-  viewport_ = D3DVIEWPORT9{0, 0, desc.Width, desc.Height, 0.0f, 1.0f};
+  viewport_ = D3DVIEWPORT9{0, 0, target_width, target_height, 0.0f, 1.0f};
   return S_OK;
 }
 
@@ -304,6 +323,97 @@ MTLD3D9Device::GetViewport(D3DVIEWPORT9 *viewport) {
 }
 
 HRESULT
+MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) {
+  if (!matrix)
+    return D3DERR_INVALIDCALL;
+  D3DMATRIX *slot = state_.transform(state);
+  if (!slot) {
+    ERR_ONCE("D3D9: only the world, view and projection transforms are kept: this build performs no vertex blending "
+             "and no texture coordinate transform, so that transform would be one no draw reads.");
+    return D3DERR_INVALIDCALL;
+  }
+  *slot = *matrix;
+  if (recording_)
+    record(StateKey{StateKey::Transform, (UINT)state, 0});
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::GetTransform(D3DTRANSFORMSTATETYPE state, D3DMATRIX *matrix) {
+  if (!matrix)
+    return D3DERR_INVALIDCALL;
+  const D3DMATRIX *slot = state_.transform(state);
+  if (!slot) {
+    ERR_ONCE("D3D9: only the world, view and projection transforms are kept: that one has no value to give.");
+    return D3DERR_INVALIDCALL;
+  }
+  *matrix = *slot;
+  return S_OK;
+}
+
+// D3D9's world * matrix: the device's matrix and the one given are multiplied, so a vertex is transformed by both, the
+// device's first (IDirect3DDevice9::MultiplyTransform, "this method multiplies the world matrix by the specified
+// matrix"). The transform is a row vector's, so the product is the device's matrix times the given one.
+HRESULT
+MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) {
+  if (!matrix)
+    return D3DERR_INVALIDCALL;
+  if (!state_.transform(state)) {
+    ERR_ONCE("D3D9: only the world, view and projection transforms are kept: that one has nothing to multiply.");
+    return D3DERR_INVALIDCALL;
+  }
+  state_.multiply(state, *matrix);
+  if (recording_)
+    record(StateKey{StateKey::Transform, (UINT)state, 0});
+  return S_OK;
+}
+
+// D3D9's scissor rectangle: the part of the target D3DRS_SCISSORTESTENABLE clips every draw to. It cannot name a pixel
+// outside the target, which is the only validity D3D9 gives it; an empty rectangle clips everything (Microsoft Learn,
+// IDirect3DDevice9::SetScissorRect).
+HRESULT
+MTLD3D9Device::SetScissorRect(const RECT *rect) {
+  if (!rect)
+    return D3DERR_INVALIDCALL;
+  HRESULT hr = ensure_render_target();
+  if (FAILED(hr))
+    return hr;
+  if (rect->left < 0 || rect->top < 0 || rect->right < rect->left || rect->bottom < rect->top ||
+      rect->right > (LONG)target_width_ || rect->bottom > (LONG)target_height_) {
+    ERR_ONCE("D3D9: that scissor rectangle is not one of the target's; the device keeps the one it had.");
+    return D3DERR_INVALIDCALL;
+  }
+  scissor_rect_ = *rect;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::GetScissorRect(RECT *rect) {
+  if (!rect)
+    return D3DERR_INVALIDCALL;
+  *rect = scissor_rect_;
+  return S_OK;
+}
+
+// the rectangle a draw is clipped to: the viewport, narrowed by the scissor rectangle while D3DRS_SCISSORTESTENABLE is on.
+// D3D11's scissor is what performs both clips, since a viewport there places a draw but does not clip it.
+RECT
+MTLD3D9Device::clip_rect() const {
+  RECT clip{(LONG)viewport_.X, (LONG)viewport_.Y, (LONG)(viewport_.X + viewport_.Width),
+            (LONG)(viewport_.Y + viewport_.Height)};
+  if (!state_.render().scissor_test_enabled())
+    return clip;
+  clip.left = std::max(clip.left, scissor_rect_.left);
+  clip.top = std::max(clip.top, scissor_rect_.top);
+  clip.right = std::min(clip.right, scissor_rect_.right);
+  clip.bottom = std::min(clip.bottom, scissor_rect_.bottom);
+  // an empty intersection is an empty rectangle at its left/top corner: D3D11 refuses one whose right is before its left
+  clip.right = std::max(clip.right, clip.left);
+  clip.bottom = std::max(clip.bottom, clip.top);
+  return clip;
+}
+
+HRESULT
 MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE state, DWORD value) {
   if (!RenderState::supported(state)) {
     ERR_ONCE("D3D9: render state {} is not honored yet; the call is refused rather than ignored.", (int)state);
@@ -313,7 +423,7 @@ MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE state, DWORD value) {
     ERR_ONCE("D3D9: render state {} cannot take {}; the device keeps the value it had.", (int)state, value);
     return D3DERR_INVALIDCALL;
   }
-  const HRESULT hr = render_state_.set(state, value);
+  const HRESULT hr = state_.render().set(state, value);
   if (SUCCEEDED(hr) && recording_)
     record(StateKey{StateKey::Render, (UINT)state, 0});
   return hr;
@@ -323,7 +433,7 @@ HRESULT
 MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE state, DWORD *value) {
   if (!value || !RenderState::supported(state))
     return D3DERR_INVALIDCALL;
-  return render_state_.get(state, value);
+  return state_.render().get(state, value);
 }
 
 // the state a block being recorded carries: every setter that succeeds while the device is in recording mode adds its

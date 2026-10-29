@@ -63,7 +63,7 @@ MTLD3D9VertexBuffer::MTLD3D9VertexBuffer(
     IDirect3DDevice9 *device, ComPtr<ID3D11Buffer> buffer, const ComPtr<ID3D11DeviceContext> &context, UINT size,
     DWORD usage, D3DPOOL pool, DWORD fvf
 )
-    : device_(device), fvf_(fvf), pool_(pool),
+    : device_(device), device_ref_(device), fvf_(fvf), pool_(pool),
       storage_(std::move(buffer), context, size, usage, D3DFMT_VERTEXDATA) {}
 
 HRESULT STDMETHODCALLTYPE
@@ -92,18 +92,18 @@ MTLD3D9VertexBuffer::GetDevice(IDirect3DDevice9 **device) {
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9VertexBuffer::SetPrivateData(REFGUID, const void *, DWORD, DWORD) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9VertexBuffer::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9VertexBuffer::GetPrivateData(REFGUID, void *, DWORD *) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9VertexBuffer::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9VertexBuffer::FreePrivateData(REFGUID) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9VertexBuffer::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
 }
 
 DWORD STDMETHODCALLTYPE
@@ -141,7 +141,7 @@ MTLD3D9IndexBuffer::MTLD3D9IndexBuffer(
     IDirect3DDevice9 *device, ComPtr<ID3D11Buffer> buffer, const ComPtr<ID3D11DeviceContext> &context, UINT size,
     DWORD usage, D3DPOOL pool, D3DFORMAT format
 )
-    : device_(device), pool_(pool), storage_(std::move(buffer), context, size, usage, format) {}
+    : device_(device), device_ref_(device), pool_(pool), storage_(std::move(buffer), context, size, usage, format) {}
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::QueryInterface(REFIID riid, void **object) {
@@ -169,18 +169,18 @@ MTLD3D9IndexBuffer::GetDevice(IDirect3DDevice9 **device) {
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9IndexBuffer::SetPrivateData(REFGUID, const void *, DWORD, DWORD) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9IndexBuffer::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9IndexBuffer::GetPrivateData(REFGUID, void *, DWORD *) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9IndexBuffer::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9IndexBuffer::FreePrivateData(REFGUID) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9IndexBuffer::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
 }
 
 DWORD STDMETHODCALLTYPE

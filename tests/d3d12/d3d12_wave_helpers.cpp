@@ -220,6 +220,12 @@ main(int argc, char **argv) {
         std::array<UINT, 4> mask{};
         for (auto [l, i] : lanes)
           total += i + 1, mask[l / 32] |= UINT(1) << (l % 32);
+        // the wave reads its leader from the lowest lane that takes part: a broadcast from lane 0 would read a helper
+        // lane's value where the wave's first lanes are helpers, and that pixel reports no lane at all
+        auto leader = std::find_if(lanes.begin(), lanes.end(), [&](auto &lane) { return lane.second == head; });
+        expect(leader != lanes.end() && leader->first == lanes.begin()->first,
+               "wave %u reads its leader from lane %u, and its lowest lane is %u",
+               head, leader == lanes.end() ? ~0u : leader->first, lanes.begin()->first);
         for (auto [l, i] : lanes) {
           auto r = row(i);
           UINT helper_flags = 0;

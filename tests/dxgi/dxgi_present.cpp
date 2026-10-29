@@ -29,7 +29,7 @@ main() {
   if (!expect(window != nullptr, "CreateWindow: %lu", GetLastError()))
     return verdict();
   UpdateWindow(window);
-  for (UINT api : {10u, 101u, 11u, 12u}) {
+  for (UINT api : dxgi_apis()) {
     DxgiDevice device;
     CHECK(device.create(api));
     for (auto effect :

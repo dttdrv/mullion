@@ -8,6 +8,9 @@ namespace mullion::d3d9 {
 
 const IID IID_IMTLD3D9StateBlock = {0x8b0c3e52, 0x16a4, 0x4c7b, {0x9a, 0x11, 0x3f, 0x68, 0x2c, 0x55, 0xd0, 0x87}};
 
+MTLD3D9StateBlock::MTLD3D9StateBlock(MTLD3D9Device *device, D3DSTATEBLOCKTYPE type)
+    : device_(device), device_ref_(static_cast<IDirect3DDevice9 *>(device)), type_(type) {}
+
 namespace {
 
 // whether a render state is pixel state, vertex state, or both, as D3D9's three lists name them (Microsoft Learn,
@@ -98,6 +101,19 @@ MTLD3D9StateBlock::capture_all() {
     keys_.push_back(StateKey{StateKey::PixelConstantB, 0, 16});
   }
   if (vertex) {
+    // D3D9's vertex state is the one the transforms belong to (Microsoft Learn, "Saving Vertex State with a
+    // StateBlock"): the world matrix a draw is transformed by, the view and the projection
+    keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_WORLD, 0});
+    keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_VIEW, 0});
+    keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_PROJECTION, 0});
+    // D3D9's vertex state is the one the lights and the material belong to as well: the eight lights, which of them is
+    // enabled, and the material a lit vertex's reflectances come from. at least one light is always enabled, which is
+    // what makes their enables part of the state (Microsoft Learn, "Saving Vertex State with a StateBlock")
+    keys_.push_back(StateKey{StateKey::Material, 0, 0});
+    for (UINT at = 0; at < Lights::kMax; at++) {
+      keys_.push_back(StateKey{StateKey::Light, at, 0});
+      keys_.push_back(StateKey{StateKey::LightEnable, at, 0});
+    }
     keys_.push_back(StateKey{StateKey::VertexShader, 0, 0});
     keys_.push_back(StateKey{StateKey::VertexConstantF, 0, 256});
     keys_.push_back(StateKey{StateKey::VertexConstantI, 0, 16});
@@ -212,6 +228,14 @@ MTLD3D9StateBlock::read(const StateKey &key, StateValue &value) {
     return vertex ? device->GetVertexShaderConstantB(key.index, value.flag_range.data(), count)
                   : device->GetPixelShaderConstantB(key.index, value.flag_range.data(), count);
   }
+  case StateKey::Transform:
+    return device->GetTransform((D3DTRANSFORMSTATETYPE)key.index, &value.matrix);
+  case StateKey::Light:
+    return device->GetLight(key.index, &value.light);
+  case StateKey::LightEnable:
+    return device->GetLightEnable(key.index, &value.enabled);
+  case StateKey::Material:
+    return device->GetMaterial(&value.material);
   case StateKey::FVF:
     return device->GetFVF(&value.value);
   case StateKey::Declaration: {
@@ -266,6 +290,14 @@ MTLD3D9StateBlock::write(const StateKey &key, const StateValue &value) {
     return device->SetPixelShaderConstantI(key.index, value.int_range.data(), key.index2);
   case StateKey::PixelConstantB:
     return device->SetPixelShaderConstantB(key.index, value.flag_range.data(), key.index2);
+  case StateKey::Transform:
+    return device->SetTransform((D3DTRANSFORMSTATETYPE)key.index, &value.matrix);
+  case StateKey::Light:
+    return device->SetLight(key.index, &value.light);
+  case StateKey::LightEnable:
+    return device->LightEnable(key.index, value.enabled);
+  case StateKey::Material:
+    return device->SetMaterial(&value.material);
   case StateKey::FVF:
     return device->SetFVF(value.value);
   case StateKey::Declaration:

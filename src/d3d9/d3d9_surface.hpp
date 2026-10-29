@@ -16,6 +16,8 @@ struct IMTLD3D9Surface {
   virtual ID3D11Texture2D *texture() = 0;
   virtual bool lockable() = 0;
   virtual bool depth_stencil() = 0;
+  // which level of the texture under it this surface is: a read back of it copies that level, not level 0
+  virtual UINT level() = 0;
 };
 
 // the interface id of IMTLD3D9Surface, compared in QueryInterface
@@ -33,9 +35,12 @@ extern const IID IID_IMTLD3D9LockTarget;
 
 class MTLD3D9Surface final : private Object9, public IDirect3DSurface9, public IMTLD3D9Surface {
 public:
+  // `usage` is what the surface's description says it is for (a render target, a depth-stencil surface, or nothing),
+  // which is the usage the resource it came from was made with
   MTLD3D9Surface(IDirect3DDevice9 *device, const ComPtr<ID3D11Texture2D> &texture, D3DFORMAT format, D3DPOOL pool,
-                 bool lockable, const ComPtr<ID3D11DeviceContext> &context, bool depth_stencil = false,
-                 IMTLD3D9LockTarget *lock_target = nullptr, UINT level = 0);
+                 bool lockable, const ComPtr<ID3D11DeviceContext> &context, DWORD usage = 0,
+                 bool depth_stencil = false, IMTLD3D9LockTarget *lock_target = nullptr, UINT level = 0,
+                 IUnknown *container = nullptr);
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -46,6 +51,12 @@ public:
   ID3D11Texture2D *texture() override { return texture_.Get(); }
   bool lockable() override { return lockable_; }
   bool depth_stencil() override { return depth_stencil_; }
+  UINT level() override { return level_; }
+
+  // the references an application holds on the surface, apart from the device's: Reset needs them released
+  ULONG public_references() const {
+    return Object9::public_references();
+  }
 
   // IDirect3DResource9
   HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
@@ -66,14 +77,19 @@ public:
   HRESULT STDMETHODCALLTYPE ReleaseDC(HDC dc) override;
 
 private:
-  // the device the surface was made by: it owns the surface, so this is not a
-  // reference (a cycle), and GetDevice hands one out as D3D9's contract has it
+  // the device the surface was made by, held through a private reference (DeviceChildRef) so a surface kept after the
+  // application released its device still has one to answer GetDevice with
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
+  // the texture whose level this is (or the swap chain whose back buffer it is): what GetContainer names, held so the
+  // texture cannot be freed while one of its levels is alive
+  ComPtr<IUnknown> container_;
   ComPtr<ID3D11Texture2D> texture_;
   ComPtr<ID3D11DeviceContext> context_;
   D3DSURFACE_DESC desc_{};
   bool lockable_ = false;
   bool depth_stencil_ = false;
+  PrivateData9 private_data_;
   D3D11_MAPPED_SUBRESOURCE mapped_{};
   bool mapped_valid_ = false;
   // the texture this surface is a level of, when its bytes are that texture's (not a staging texture's)

@@ -4,8 +4,9 @@
 // "Saving Vertex State ...") -- with the values they had when the block was made, when Capture re-read them, or when
 // BeginStateBlock/EndStateBlock recorded them. what this build's device holds is what a block carries: the render,
 // texture stage and sampler states it honours, the eight stages' textures, the shaders and their constant tables, the
-// FVF or declaration, the stream source, the indices and the viewport. the state it has no use for yet (lights,
-// transforms, materials, clip planes, a scissor rectangle) is neither saved nor restored, and Apply leaves it alone.
+// world, view and projection transforms, the eight lights with their enables and the material, the FVF or declaration,
+// the stream source, the indices and the viewport. the state it has no use for yet (clip planes, a scissor rectangle) is
+// neither saved nor restored, and Apply leaves it alone.
 #pragma once
 #include "d3d9_common.hpp"
 #include <vector>
@@ -30,6 +31,10 @@ struct StateKey {
     PixelConstantF,
     PixelConstantI,
     PixelConstantB,
+    Transform,
+    Light,
+    LightEnable,
+    Material,
     FVF,
     Declaration,
     Stream,
@@ -54,6 +59,10 @@ struct StateValue {
   WINBOOL flags[4] = {};
   ComPtr<IUnknown> object;
   D3DVIEWPORT9 viewport{};
+  D3DMATRIX matrix{};
+  D3DLIGHT9 light{};
+  D3DMATERIAL9 material{};
+  WINBOOL enabled = FALSE;
   UINT offset = 0;
   UINT stride = 0;
   // a constant range's data, which is longer than four components when several registers were set at once
@@ -64,7 +73,7 @@ struct StateValue {
 
 class MTLD3D9StateBlock final : private Object9, public IDirect3DStateBlock9 {
 public:
-  MTLD3D9StateBlock(MTLD3D9Device *device, D3DSTATEBLOCKTYPE type) : device_(device), type_(type) {}
+  MTLD3D9StateBlock(MTLD3D9Device *device, D3DSTATEBLOCKTYPE type);
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -87,9 +96,10 @@ private:
   // the device set back to one state's value
   HRESULT write(const StateKey &key, const StateValue &value);
 
-  // the device that made the block owns it, so this is not a reference (a cycle); GetDevice hands one out as D3D9's
-  // contract has it
+  // the device that made the block is held through a private reference (DeviceChildRef), so a block kept after the
+  // application released its device still has one to answer GetDevice with
   MTLD3D9Device *device_ = nullptr;
+  DeviceChildRef device_ref_;
   D3DSTATEBLOCKTYPE type_ = D3DSBT_ALL;
   std::vector<StateKey> keys_;
   std::vector<StateValue> values_;

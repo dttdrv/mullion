@@ -1994,6 +1994,73 @@ convert_dxil(
     ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
     return simd("simd_prefix_exclusive_sum", ir.getInt32Ty(), {ir.getInt32(1)}, ir.getInt32Ty());
   };
+  // the lanes a wave operation is over. Metal's simd-group operations take the whole group, a helper's lanes included,
+  // and D3D's take the wave's active ones, so every operation that counts lanes asks this object instead of deciding
+  // for itself which lanes those are
+  struct WaveLanes {
+    decltype(simd) &simd;
+    decltype(move) &move;
+    IRBuilder<> &ir;
+    llvm::Module &module;
+    const bool helpers_take_part;
+
+    WaveLanes(decltype(simd) &simd, decltype(move) &move, IRBuilder<> &ir, llvm::Module &module, bool pixel_shader,
+              bool helper_waves)
+        : simd(simd), move(move), ir(ir), module(module), helpers_take_part(!pixel_shader || helper_waves) {}
+
+    Value *
+    is_helper() const {
+      return simd("simd_is_helper_thread", ir.getInt1Ty(), {}, ir.getInt1Ty());
+    }
+    // the participating lanes, or null when every lane of the group takes part. a helper cannot be told from the lanes
+    // a divergent branch left out by a ballot alone: simd_ballot's mask is the group's, whose bits are the lanes whose
+    // predicate holds, so the predicate is the one that says a lane takes part
+    Value *
+    mask() const {
+      if (helpers_take_part)
+        return nullptr;
+      return simd("simd_ballot", ir.getInt64Ty(), {ir.CreateNot(is_helper())}, ir.getInt64Ty());
+    }
+    // `ballot` without the helper lanes' bits
+    Value *
+    only(Value *ballot) const {
+      auto lanes = mask();
+      return lanes ? ir.CreateAnd(ballot, lanes) : ballot;
+    }
+    // whether this lane takes part, for an operation over the lanes' predicates: a helper's must not decide an any, an
+    // all, or an all-equal
+    Value *
+    participates() const {
+      if (helpers_take_part)
+        return ir.getTrue();
+      return ir.CreateNot(is_helper());
+    }
+    // the value the lowest participating lane holds: Metal's simd_broadcast_first reads the group's lowest lane, a
+    // helper's where the wave's first lanes are helpers, and a waterfall loop that reads its count that way never
+    // leaves. a group of helpers alone has no participating lane, and D3D leaves the result undefined there, so it
+    // reads the group's
+    Value *
+    first(Value *v) const {
+      auto lanes = mask();
+      if (!lanes)
+        return move("simd_broadcast_first", v, {});
+      auto ctz = module.getOrInsertFunction(
+          "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
+      );
+      auto at = ir.CreateSelect(
+          ir.CreateICmpEQ(lanes, ir.getInt64(0)), ir.getInt64(0), ir.CreateCall(ctz, {lanes, ir.getFalse()})
+      );
+      return move("simd_broadcast", v, {ir.CreateTrunc(at, ir.getInt16Ty())});
+    }
+    // `v` on the participating lanes, `helper` on the others
+    Value *
+    on_lanes(Value *v, Value *helper) const {
+      return helpers_take_part ? v : ir.CreateSelect(participates(), v, helper);
+    }
+  };
+  // a pixel shader's helper lanes take no part in its wave operations unless its waveops-include-helper-lanes says so
+  // (HLSL_SM_6_7_Wave_Ops_Include_Helper_Lanes); every lane of any other stage's group does
+  const WaveLanes wave(simd, move, ir, ctx.module, ctx.shader_type == D3D10_SB_PIXEL_SHADER, helper_waves);
   // compute shaders differentiate across their quads (lanes x, then y): coarsely from the quad's first lane, finely
   // along this lane's row or column
   auto quad_derivative = [&](Value *v, bool y, bool fine) {
@@ -2221,9 +2288,8 @@ convert_dxil(
   // these for 32 bits and less, without groups; the rest walk the lanes
   auto reduce = [&](const std::string &name, Value *v, Signedness sign, bool prefix, Combine combine, Value *identity,
                     Value *group = nullptr) -> Value * {
-    // Metal's half sums count the helper lanes a branch leaves out; given the identity, they add nothing
-    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves && v->getType()->isHalfTy())
-      v = ir.CreateSelect(simd("simd_is_helper_thread", ir.getInt1Ty(), {}), identity, v);
+    // Metal's sums count the helper lanes a branch leaves out; given the identity, they add nothing
+    v = wave.on_lanes(v, identity);
     if (v->getType()->getPrimitiveSizeInBits() != 64 && !group)
       return simd(prefix ? "simd_prefix_exclusive_" + name : "simd_" + name, v->getType(), {v}, v->getType(), sign);
     auto lane = prefix ? lane_index() : nullptr;
@@ -2384,13 +2450,13 @@ convert_dxil(
       ret = ctx.resource.patch_id;
       break;
     case WaveIsFirstLane: {
-      // the lowest lane of the ballot: simd_is_first can take a helper lane, which the branch around it left out
+      // the lowest lane that takes part: simd_is_first can take a helper lane, which takes no part
       auto ctz = ctx.module.getOrInsertFunction(
           "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
       );
-      auto mask = simd("simd_ballot", ir.getInt64Ty(), {ir.getTrue()}, ir.getInt64Ty());
+      auto lanes = wave.only(simd("simd_ballot", ir.getInt64Ty(), {ir.getTrue()}, ir.getInt64Ty()));
       ret = ir.CreateICmpEQ(
-          ir.CreateZExtOrTrunc(lane_index(), ir.getInt64Ty()), ir.CreateCall(ctz, {mask, ir.getFalse()})
+          ir.CreateZExtOrTrunc(lane_index(), ir.getInt64Ty()), ir.CreateCall(ctz, {lanes, ir.getFalse()})
       );
       break;
     }
@@ -2401,17 +2467,23 @@ convert_dxil(
       ret = lane_count();
       break;
     case WaveAnyTrue:
-    case WaveAllTrue:
-      ret = simd(op == WaveAnyTrue ? "simd_any" : "simd_all", ir.getInt1Ty(), {a(1)});
+    case WaveAllTrue: {
+      // a helper's predicate is neither a yes nor a no: it is left out of the any by being no, and out of the all by
+      // being yes
+      bool any = op == WaveAnyTrue;
+      auto participates = wave.participates();
+      auto vote = any ? ir.CreateAnd(a(1), participates) : ir.CreateOr(a(1), ir.CreateNot(participates));
+      ret = simd(any ? "simd_any" : "simd_all", ir.getInt1Ty(), {vote});
       break;
+    }
     case WaveActiveAllEqual: {
-      auto first = move("simd_broadcast_first", a(1), {});
+      auto first = wave.first(a(1));
       auto equal = a(1)->getType()->isFPOrFPVectorTy() ? ir.CreateFCmpOEQ(a(1), first) : ir.CreateICmpEQ(a(1), first);
-      ret = simd("simd_all", ir.getInt1Ty(), {equal});
+      ret = simd("simd_all", ir.getInt1Ty(), {ir.CreateOr(equal, ir.CreateNot(wave.participates()))});
       break;
     }
     case WaveActiveBallot:
-      ret = mask_words(simd("simd_ballot", ir.getInt64Ty(), {a(1)}, ir.getInt64Ty()), ty);
+      ret = mask_words(wave.only(simd("simd_ballot", ir.getInt64Ty(), {a(1)}, ir.getInt64Ty())), ty);
       break;
     case WaveMatch: {
       // the lanes whose value has the same bits, so each lane matches itself
@@ -2426,14 +2498,14 @@ convert_dxil(
           },
           [&](Value *x, Value *y) { return ir.CreateOr(x, y); }
       );
-      ret = mask_words(mask, ty);
+      ret = mask_words(wave.only(mask), ty);
       break;
     }
     case WaveReadLaneAt:
       ret = move("simd_shuffle", a(1), {i16(a(2))});
       break;
     case WaveReadLaneFirst:
-      ret = move("simd_broadcast_first", a(1), {});
+      ret = wave.first(a(1));
       break;
     case QuadReadLaneAt:
       ret = move("quad_shuffle", a(1), {i16(a(2))});
@@ -2525,7 +2597,7 @@ convert_dxil(
       // the set bits of the lanes before this one in its mask
       auto before =
           ir.CreateSub(ir.CreateShl(ir.getInt64(1), ir.CreateZExt(lane_index(), ir.getInt64Ty())), ir.getInt64(1));
-      auto set = simd("simd_ballot", ir.getInt64Ty(), {a(1)}, ir.getInt64Ty());
+      auto set = wave.only(simd("simd_ballot", ir.getInt64Ty(), {a(1)}, ir.getInt64Ty()));
       auto counted = ir.CreateAnd(ir.CreateAnd(set, lane_mask(call, 2)), before);
       ret = ir.CreateTrunc(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, counted), ir.getInt32Ty());
       break;

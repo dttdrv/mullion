@@ -20,6 +20,14 @@ foreach part : ['creation', 'wrapped', 'wait', 'unwrap', 'swapchain', 'lifetime'
          env : ['MULLION_SHADER_CACHE=0'], timeout : 600)
   endforeach
 endif
+# the removal reason a device keeps and the event a registration gives: the second run makes the run's first command
+# buffer a failed one (MULLION_D3D11_FAULT_DEVICE), so the removal path runs without a GPU fault
+d3d11_device_removal = executable('d3d11_device_removal', ['d3d11_device_removal.cpp'],
+                                  dependencies : d3d11_test_deps)
+test('d3d11_device_removal', d3d11_device_removal, env : ['MULLION_SHADER_CACHE=0'], timeout : 300)
+test('d3d11_device_removal_lost', d3d11_device_removal,
+     env : ['MULLION_SHADER_CACHE=0', 'MULLION_D3D11_FAULT_DEVICE=1'], timeout : 300)
+
 # no test: the runner's way to see where the threads of a test that outlived its time are
 # workloads tests/held.py profiles
 executable('d3d11_held', 'd3d11_held.cpp', dependencies : d3d11_test_deps)

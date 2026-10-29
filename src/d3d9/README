@@ -3,6 +3,34 @@ Direct3D 9, being implemented.
 The plan's Phase 3 is D3D9 on the pieces D3D11 already has: a D3D9 device over this build's D3D11 device, its chains
 over DXGI's presenter, and draws through airconv, so a D3D9 game reaches Metal by the same road a D3D11 one does.
 
+# How the source is organised
+One owner per concern, so that a change to a draw's behaviour lands in one file rather than three:
+
+  * d3d9_device.hpp and d3d9_device.cpp: the device object itself -- its interfaces, the Direct3D 11 device under it, the
+    chain a frame presents through, the back buffer, and the CPU surfaces a frame is read back into.
+  * d3d9_device_state.hpp and d3d9_device_state.cpp: the state a draw is made from, in one object -- the render states,
+    the world, view and projection transforms with their composition, and the eight lights with their enables and the
+    material. A Reset is that object's reset, and a state block captures and restores it through the device's calls. A
+    draw asks it for what it needs (the composed matrix, the lit constants) instead of assembling it from members.
+  * d3d9_fixed_function.hpp and d3d9_fixed_function.cpp: the fixed-function pipeline -- the shaders, input layouts and
+    constant buffers of the formats this build transforms, and the binding of them for one `FixedFunctionDraw`
+    description. The pipeline is the only code that touches those Direct3D 11 objects.
+  * d3d9_device_draw.cpp: the draws -- validation (formats, ranges, caps, the alpha test this build cannot do), the
+    primitives and indices, staging a `_UP` draw, and issuing the draw. It works out *what* a draw is (a
+    `FixedFunctionDraw`, or a game's own programs) and the pipeline binds it; it does not choose a blob or map a buffer.
+  * d3d9_device_targets.cpp: render targets, depth-stencil surfaces, the viewport and the scissor rectangle, and the
+    device's render-state and transform entry points, which delegate to the state above.
+  * d3d9_device_shader.cpp: a draw through a game's own shaders -- the vertex declaration, the translated programs and
+    the constant tables they read.
+  * d3d9_device_texture.cpp and d3d9_texture.cpp: the textures a draw samples and the stage that samples them;
+    d3d9_device_transfer.cpp the copies between surfaces.
+  * d3d9_state.cpp, d3d9_lights.cpp and d3d9_state_block.cpp: the parts of the state large enough to be their own
+    translation unit. They are owned by `DeviceState` and the device interface, not by the device object.
+
+The rule a later milestone follows: a new fixed-function format is a `FixedFunctionDraw` field and a blob, not a change
+to the draw path; a new piece of state is a `DeviceState` member with a render state beside it, not a device member; a new
+draw is validation plus one `prepare_draw()` call.
+
 # Milestone 1 (done): the device and presentation
 What a build with -Denable_d3d9=true makes (the option is off by default, so a contributor who does not ask for D3D9
 gets the build they had):
@@ -36,8 +64,9 @@ What a build of this milestone draws, over the D3D11 device and draw path D3D11 
     buffer under each is dynamic, which the D3D11 core only maps for a whole-buffer discard, so the wrapper keeps the
     buffer's bytes and Unlock uploads them: a lock that does not discard keeps what was there, as D3D9's does.
   * SetFVF with D3DFVF_XYZRHW | D3DFVF_DIFFUSE, a vertex already in screen space with a colour. Any other format is
-    D3DERR_INVALIDCALL and the device keeps the format it had (tests/d3d9/d3d9_triangle.cpp checks that with
-    D3DFVF_XYZ, which needs the world transform this milestone does not do).
+    D3DERR_INVALIDCALL and the device keeps the format it had (tests/d3d9/d3d9_triangle.cpp checks that with a format
+    that carries a normal). D3DFVF_XYZ, the vertex the device transforms, is milestone C's (below): the same pixel
+    path, with the world, view and projection in front of it.
   * SetStreamSource (stream 0, an offset and a stride) and SetStreamSourceFreq (1, no instancing), SetIndices.
   * DrawPrimitive, DrawIndexedPrimitive and DrawPrimitiveUP, all three through shaders of the library's own (a vertex
     shader that maps the screen-space vertex through the viewport constant, and a pixel shader that writes the vertex
@@ -64,7 +93,7 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
     ZWRITEENABLE, ZFUNC, CULLMODE, FILLMODE (D3DFILL_SOLID and D3DFILL_WIREFRAME; D3DFILL_POINT has no D3D11 fill
     mode and is refused as a value), SHADEMODE (D3DSHADE_GOURAUD and D3DSHADE_FLAT, which is its own pixel shader with
     a nointerpolation colour; D3DSHADE_PHONG is refused), D3DRS_ALPHABLENDENABLE, SRCBLEND, DESTBLEND, BLENDOP and
-    COLORWRITEENABLE. A state this build has no meaning for (lighting, fog, stencil state, scissor) is
+    COLORWRITEENABLE and SCISSORTESTENABLE. A state this build has no meaning for (fog, stencil state) is
     D3DERR_INVALIDCALL, said once, and a value that cannot be honoured is refused the same way; either leaves the
     device with the value it had, so a frame is never drawn under a state nobody asked for. The values a device
     starts with are the ones D3DRENDERSTATETYPE documents: CULLMODE D3DCULL_CCW, SRCBLEND D3DBLEND_ONE, DESTBLEND
@@ -96,6 +125,10 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
   * SetViewport and GetViewport: the viewport places the vertex map (its origin and size) and is the draw's clip
     rectangle (D3D11's scissor), so a pixel outside it is not drawn whatever the triangle covers; a viewport of no size,
     outside the target, or with its depths outside 0 to 1 is refused and the device keeps the one it had.
+  * SetScissorRect and GetScissorRect: while D3DRS_SCISSORTESTENABLE is on, every draw is clipped to the rectangle
+    intersected with the viewport (one D3D11 scissor performs both clips). The rectangle cannot name a pixel outside
+    the target (D3DERR_INVALIDCALL, the device keeping the one it had), an empty rectangle clips everything, and the
+    device starts with the whole target. A new target is the whole of its own scissor until the application sets one.
 
 tests/d3d9/d3d9_states.cpp is the state test: the defaults a device starts with, two triangles at different depths in
 both drawing orders, depth off, depth writes off, ZFUNC, a colour clear against a depth clear, both cull windings with
@@ -114,6 +147,69 @@ targets and viewport, d3d9_device_draw.cpp the buffers and draws, d3d9_device_sh
 shaders draw through, d3d9_state_block.cpp the state blocks, d3d9_query.cpp the queries, and d3d9_shader_translator.cpp
 the translation of their programs, over the class in d3d9_device.hpp.
 
+# Milestone 3b (done): Reset
+A windowed chain resized and reformatted again, which a game does when its window changes size or it returns from a
+level:
+
+  * Reset takes the BackBufferWidth, BackBufferHeight, BackBufferFormat, BackBufferCount, EnableAutoDepthStencil and
+    AutoDepthStencilFormat of the parameters and resizes the implicit chain to them: D3DFMT_UNKNOWN keeps the format
+    the chain had (the desktop's for a windowed chain), and a width or height of zero is the window's client area. The
+    back buffer, the viewport and the swap chain's own present parameters are the new values.
+  * the structure reports what D3D9's does when the call returns: BackBufferCount, BackBufferWidth and
+    BackBufferHeight as zero and BackBufferFormat as D3DFMT_UNKNOWN, so a game that keeps it queries the chain again.
+  * a reference the application still holds on the implicit back buffer or on a depth-stencil surface is
+    D3DERR_INVALIDCALL, as D3D9's Reset requires those released; the chain is as it was. A multi-sampled chain, a swap
+    effect other than D3DSWAPEFFECT_DISCARD and a format this build has none of are refused the same way, and are said
+    once in the library's log. A fullscreen chain is not implemented: this build presents to a window.
+  * all state is lost: the render states, the texture stages and samplers are the defaults, and the streams, indices,
+    declaration, shaders set, textures and constants are unbound. The shader objects a game made survive, as D3D9's do,
+    and a game sets its FVF, streams and shaders again before its next draw. A chain with EnableAutoDepthStencil gets a
+    depth-stencil surface of the new size and depth testing on again.
+
+tests/d3d9/d3d9_reset.cpp is the test: a live back buffer, a live depth surface and a fullscreen or multi-sampled chain
+refused and the chain unchanged; a 0x0 UNKNOWN reset to the client area and the chain's format read back; the viewport,
+swap chain parameters and automatic depth surface of the new size; the state the reset lost; and the clear that reads
+back at the new size. tests/d3d9/d3d9_draw_contract.cpp draws after a Reset with its FVF and stream set again.
+
+# Milestone A (done): the lost device and the road back
+The cooperative level a device reports once the frames it drew failed, and the Reset that recovers it:
+
+  * TestCooperativeLevel is D3DERR_DEVICENOTRESET once the Direct3D 11 device under this one was removed (a device that
+    can be reset, which this build's can: Reset makes a new Direct3D 11 device), and S_OK while it is not.
+  * the calls that draw or present answer D3DERR_DEVICELOST rather than drawing into a device that is gone: BeginScene,
+    Clear, DrawPrimitive, DrawIndexedPrimitive, DrawPrimitiveUP, DrawIndexedPrimitiveUP and Present. EndScene still ends
+    the scene it was in. A default-pool resource is refused with D3DERR_DEVICELOST as well, since the device that would
+    own it is the one a Reset replaces; a managed texture is the CPU's and is made as it always is.
+  * the removal is the Direct3D 11 device's: the first command buffer error of the queue is the reason the device keeps,
+    and the event ID3D11Device4::RegisterDeviceRemovedEvent gave is signaled with it.
+  * Reset is the road back. On a lost device it releases the failed Direct3D 11 device with everything the device held on
+    it (the chain, the views, the constant and scratch buffers and the fixed-function state objects), makes a new device
+    over the same adapter with a new chain over the same window, resets the state, and re-acquires the back buffer and
+    the automatic depth-stencil surface. The present parameters are checked before any of that, so a Reset that names a
+    window that is not one, a fullscreen chain, a multi-sampled chain or another swap effect is D3DERR_INVALIDCALL and
+    leaves the device lost. Should the new device or its chain not be made, Reset answers D3DERR_DEVICENOTRESET and the
+    device stays lost rather than reporting a recovery it did not make.
+  * what a Reset keeps is the managed pool and its contents (IDirect3DDevice9::Reset: "D3DPOOL_MANAGED resources ... are
+    not affected by a device reset"): a managed texture registers itself with its device, and a Reset puts its authored
+    levels, compressed chains included, back onto the new device, so a draw after the Reset samples the pixels the game
+    wrote before it. The default pool is not rebuilt: D3D9 has the application release it before a Reset, and a stale
+    resource is not silently made again as something the application did not make.
+  * the state a live Reset loses is lost here too, and the caller's present parameters report the fields D3DFMT_UNKNOWN
+    and zero as D3D9's do.
+
+Limits, stated rather than papered over: a surface taken from a managed texture with GetSurfaceLevel before a Reset still
+addresses the texture the old device had (take it again after the Reset); an application's own default-pool render target
+is not rebuilt; and the fullscreen and multi-sampled chains of a live Reset are still not implemented.
+
+tests/d3d9/d3d9_lifecycle.cpp runs three times. Live: the level is S_OK and a frame draws and presents. Lost
+(MULLION_D3D11_FAULT_DEVICE=1): every drawing call answers D3DERR_DEVICELOST and the level says D3DERR_DEVICENOTRESET.
+--reset (MULLION_D3D11_FAULT_DEVICE=4): the whole sequence a title runs — a managed texture written on a live device, the
+frames failing, a default-pool texture and a draw refused, a Reset naming the wrong window refused with the level
+unchanged, the Reset that recovers, D3DERR_INVALIDCALL for the state it lost, and a frame drawn again that reads back the
+managed texture's pixels and presents. No GPU fault is needed: the facility makes the run's Nth completed command buffer
+a failed one, which is the state a fault leaves the device in (tests/d3d11/d3d11_device_removal.cpp is the Direct3D 11
+contract itself).
+
 # Milestone 4a (done): textures and the texture stage
 What a draw samples: the textures the device holds for eight stages (MaxSimultaneousTextures is 8), the samplers of
 those stages, and the one fixed-function blending stage that is stage 0's (MaxTextureBlendStages is 1, because the
@@ -122,11 +218,14 @@ textured pixel shader performs one stage's operation and no draw blends a second
   * CreateTexture for D3DPOOL_MANAGED and D3DPOOL_DEFAULT textures of the formats d3d9_common.hpp names
     (D3DFMT_A8R8G8B8 and X8R8G8B8 and the handful around them, and the block-compressed DXT1 to DXT5 milestone 5b
     samples), with the levels asked for or (none asked for) the whole
-    chain down to one texel, and GetLevelCount, GetLevelDesc and GetSurfaceLevel. A managed texture's level 0 is the CPU's: LockRect writes it and
-    UnlockRect uploads it and makes the levels below it out of it (their own GenerateMipSubLevels makes them again).
-    A level of a texture is a surface of the device, and a lock of that level through the texture or through the
-    surface is the same lock (IMTLD3D9LockTarget). A default-pool texture is made with the one level nothing in this
-    build could fill yet, said once.
+    chain down to one texel, and GetLevelCount, GetLevelDesc and GetSurfaceLevel. A managed texture's levels are the
+    CPU's: LockRect writes a level and UnlockRect uploads it, and the levels below level 0 are the ones the game
+    authored until GenerateMipSubLevels asks the device to make them from level 0. Unlocking does not generate them:
+    D3DPOOL_MANAGED is not D3DUSAGE_AUTOGENMIPMAP, and a read-only lock changes nothing. A level of a texture is a
+    surface of the device, and a lock of that level through the texture or through the surface is the same lock
+    (IMTLD3D9LockTarget). A default-pool texture is made with the chain its size has, whose levels UpdateTexture and
+    a render-target draw fill (milestone 4c). A D3DUSAGE_RENDERTARGET texture is a default-pool texture with a render
+    target view of each level, and a D3DUSAGE_DYNAMIC texture is one whose levels are the CPU's to stream into.
   * A texture's level desc is the texture's: its format, its pool (a managed texture's level is managed, a target's is
     default, a readback surface is system memory) and the size the chain halves down to.
   * SetTexture/GetTexture for stages 0 to 7 (the device holds what was set for each of them), SetSamplerState and
@@ -146,10 +245,11 @@ textured pixel shader performs one stage's operation and no draw blends a second
   * What D3D9 says about a stage with no texture: a stage whose first colour argument is D3DTA_TEXTURE is not processed
     at all while no texture is bound, which for stage 0 is the vertex colour the frame already carries, and a texture
     argument in any other place samples a white texel (1, 1, 1, 1).
-  * What a texture call refuses, with D3D9's code: a usage flag (dynamic, render target, automatic mipmaps), a
-    system-memory or scratch pool, a level count past the chain, a format this build has none of, a texture of no
-    pixels, a fourth level of a size that has three, a lock of a texture whose bytes are not the CPU's, a second lock of
-    the same texture, an unlock of a level that is not the locked one, and a stage or sampler the device has not.
+  * What a texture call refuses, with D3D9's code: a usage flag other than render target and dynamic (automatic
+    mipmaps), a system-memory or scratch pool, a level count past the chain, a format this build has none of, a texture
+    of no pixels, a fourth level of a size that has three, a lock of a texture whose bytes are not the CPU's, a second
+    lock of the same texture, an unlock of a level that is not the locked one, and a stage or sampler the device has
+    not.
 
 tests/d3d9/d3d9_texture.cpp is the test of this milestone: an 8 by 8 texture written through its top level, whose four
 quadrants are four texels of different colours (a pixel says which part of the texture it sampled) and whose last texel
@@ -160,12 +260,112 @@ wrapping sampler repeating the texture against a clamping one holding its edge, 
 same texels, and SHADEMODE (a FLAT draw takes one vertex's colour for the whole triangle, a GOURAUD one interpolates;
 the test's triangle carries three colours so the two are not the same frame).
 
+# Milestone 4c (done): the copies outside a draw
+What a game makes of its surfaces between draws, each with D3D9's rules (tests/d3d9/d3d9_transfer.cpp):
+
+  * CreateOffscreenPlainSurface for a system-memory surface (the CPU's, a readback's destination) and a default-pool one
+    (the device's, a copy's source or destination and a ColorFill's target).
+  * ColorFill of a default-pool surface, whole or in the rectangles named: a system-memory surface is refused, and a
+    rectangle that names no pixel fills none.
+  * StretchRect of the same size, with the source and destination rectangles, their offsets and the refusal of a copy
+    that overlaps itself on one surface. A stretched copy, a format conversion and a system-memory destination are
+    refused rather than copied as an unscaled one or the wrong format.
+  * UpdateSurface: a system-memory rectangle written into a default-pool surface at a point, with no stretch and no
+    conversion, through the row pitch the lock reports.
+  * UpdateTexture: a managed texture's levels copied into a default-pool texture of the same format, size and level
+    count, each level as the application authored it. A different level count, a default-pool source, a managed
+    destination and one texture as both are refused.
+  * A D3DUSAGE_RENDERTARGET texture: SetRenderTarget takes a level of it, a draw and a Clear reach that level at its own
+    size (the view is the level's, not the top one's), and GetRenderTargetData reads the level back. A render-target
+    texture in another pool, or one that is also dynamic, is refused.
+  * A D3DUSAGE_DYNAMIC texture: LockRect with DISCARD (the level is scratch) or NOOVERWRITE (the pixels outside the
+    rectangle are kept), UnlockRect uploading the level the application wrote, and READONLY refused as D3D9 refuses it
+    for a dynamic texture. D3D11 maps a texture only with WRITE_DISCARD, so the level is authored on the CPU and
+    uploaded, which is what keeps a NOOVERWRITE lock's other pixels.
+
+# Milestone C-1 (done): the fixed-function transform
+A D3DFVF_XYZ vertex is the one the device transforms: its position is in the space the world matrix reads, and the
+device's world, view and projection take it to a clip position, which the rasterizer divides by w and maps through the
+viewport (Microsoft Learn, "Transforms": v' = v * World * View * Projection; D3DVIEWPORT9).
+
+  * SetTransform, GetTransform and MultiplyTransform for D3DTS_WORLD, D3DTS_VIEW and D3DTS_PROJECTION. They start
+    identity, a Reset puts them back there, a null matrix is D3DERR_INVALIDCALL, and a transform this build does not
+    read is refused rather than kept by nobody: D3D9's other 255 world matrices (which are vertex blending's, and this
+    build blends no vertices) and the texture coordinate transforms (D3DTS_TEXTURE0 and up, which the one-stage
+    texture blender does not perform). MultiplyTransform multiplies the matrix the device holds by the one given, the
+    device's first, as D3D9's does. A state block of the vertex kind (and of all state) carries the three.
+  * The draw composes world * view * projection when one of them changes rather than at every draw, and binds it at b0
+    for the transform's own vertex shader, which multiplies the vertex by it: the divide by w, the viewport's
+    rectangle and its MinZ..MaxZ range are the rasterizer's, from the viewport the draw binds, exactly as they are for
+    a game's own vertex shader. The shaders are compiled offline from the source in
+    tests/d3d9/fixed_function_shaders.cpp and carried as bytes in src/d3d9/d3d9_transform_shaders.hpp, so no shader is
+    compiled at run time; the matrix is declared row_major, so the constant buffer holds what a D3DMATRIX holds.
+  * D3DFVF_XYZ | D3DFVF_DIFFUSE and D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1 draw through it, with the same colour and
+    texture stage as the screen-space formats: the textured variant of the transform's shader carries the coordinates
+    where the stage's pixel shader samples them.
+
+What is not there yet, and is refused: the vertex blending whose world matrices are not kept, and the texture
+coordinate transforms. tests/d3d9/d3d9_transform.cpp is the test:
+an XYZ triangle under identity puts the same pixels on the frame as the equivalent XYZRHW one, every pixel compared; a
+world translation of 0.5 moves the geometry exactly 16 pixels; a scale of 0.5 halves it about the origin; a rotation of
+90 degrees turns it a quarter turn; a projection whose w is 2 halves the geometry's distance from the centre, which is
+the divide and not merely a non-black frame; the viewport's 0.75..1.0 depth range keeps the nearer of two triangles in
+front; and the transform state round-trips, composes in D3D9's order, survives a Reset and a state block.
+
+# Milestone C-2 (done): fixed-function lighting
+The lit vertex path, as D3D9's fixed function has it (Microsoft Learn, "Mathematics of Direct3D Lighting"):
+
+  * D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE (and the same with one set of texture coordinates) draws as a
+    transformed vertex does, and its colour is the device's D3DRS_AMBIENT plus the material's Emissive, plus for every
+    enabled light the material's Ambient times the light's Ambient and, through the vertex's normal, the material's
+    Diffuse times the light's Diffuse times max(0, n . L) times the light's attenuation and — while
+    D3DRS_SPECULARENABLE is TRUE — the material's Specular times the light's Specular
+    times max(0, n . H)^material.Power. H is the half vector between L and the eye, which is the world position the
+    view matrix puts at its own origin. A directional light's L is the negation of its Direction (it points at the
+    light); a point light's is its Position less the vertex, its attenuation is 1 / (A0 + A1 d + A2 d^2), and it
+    contributes nothing past its Range.
+  * SetLight, GetLight, LightEnable and GetLightEnable keep D3D9's eight lights (D3DCAPS9::MaxActiveLights) and an index
+    past them is D3DERR_INVALIDCALL, as is a null light or output; SetMaterial and GetMaterial keep the one material, and
+    the device's own starts as D3D9's does (diffuse white, the rest nothing), with every light disabled.
+  * D3DRS_LIGHTING FALSE draws the vertex's own colour, D3DRS_NORMALIZENORMALS renormalises the transformed normal,
+    and D3DRS_COLORVERTEX with D3DRS_AMBIENTMATERIALSOURCE or D3DRS_DIFFUSEMATERIALSOURCE set to D3DMCS_COLOR1 takes
+    those two reflectances from the vertex's diffuse colour (D3DMCS_COLOR2 needs a vertex specular colour, which the
+    formats this build draws do not carry).
+  * the normal is turned by the inverse transpose of the world matrix (the upper 3 by 3, with the identity standing in
+    when the world has no inverse), and the lighting is computed per vertex, as D3D9's fixed function does: the
+    rasterizer interpolates the four vertices' colours.
+  * the whole of it — the material, the eight lights with their enables, the global ambient, the eye, the specular power
+    and the state flags — is one constant buffer at b1 (src/d3d9/d3d9_lights.hpp's LightConstants), written once per
+    lit draw; the vertex shader that reads it is compiled offline from the source in tests/d3d9/fixed_function_shaders.cpp
+    with the transform's, and carried as bytes in src/d3d9/d3d9_lighting_shaders.hpp. Every field is a float4 or a
+    float4x4 so that the C structure and the shader's cbuffer agree without packing rules between them. The eight lights
+    are spelled out one expansion each rather than looped over, because the HLSL compiler the blobs are generated with
+    implements no loop unrolling and a constant buffer read has to be at a constant offset: the loop form does not
+    compile at all, so the header can only be regenerated from the expanded source (the commands are at the top of the
+    generator). A light that is off is skipped rather than multiplied by zero: the seven lights a device has and a game
+    never set have no attenuation and no Range, and a term of theirs can be infinite, which times an `enabled` of zero
+    is a NaN that poisons the sum of the enabled ones -- the frame then lights the face at one edge and fades it across
+    the rest, which is what tests/d3d9/d3d9_lighting.cpp's full-face check reads.
+  * a vertex-state block (and an all-state block) carries the eight lights, which of them is enabled, and the material,
+    as D3D9's does; a recorded one records SetLight, LightEnable and SetMaterial as they are called.
+
+The lights a lit draw reads are D3DLIGHT_POINT and D3DLIGHT_DIRECTIONAL. A D3DLIGHT_SPOT is kept and round-trips, and
+the shader carries its cone (Theta, Phi and Falloff), but no check yet proves a spot light's intensity and neither
+D3DRS_FOG* nor multiple texture stages are lit by this stage. tests/d3d9/d3d9_lighting.cpp is the test: the state D3D9
+starts with; lighting off drawing the vertex's colour; the global ambient alone, a directional light's diffuse alone, and
+the two added; a light pointing away contributing nothing; a light turned 90 degrees lighting the face whose normal
+points at it and not the other; a point light's attenuation at d = 1 and d = 2 with Attenuation1, with Attenuation2 alone
+and with Attenuation0 alone, and its Range cutting it off; the material's emissive; the specular term only while
+D3DRS_SPECULARENABLE is TRUE; LightEnable and GetLightEnable; two lights adding; D3DRS_COLORVERTEX taking the diffuse from
+the vertex; the four calls' round-trips, null pointers and an index past MaxActiveLights; and a vertex-state block
+restoring the light, its enable and the material.
+
 # Milestone 4b: the rest of what a game draws with
-The rest of the fixed-function pipeline and the resources around it, still over D3D11: the world/view/projection
-transform for D3DFVF_XYZ vertices, lighting and the texture-coordinate formats, the remaining texture features a game
-asks for (a second and further stages, D3DUSAGE_DYNAMIC and D3DUSAGE_RENDERTARGET textures, cube and volume textures,
-D3DXFill-style level writing) and the rest of the render states (lighting, fog, stencil operations, point fill,
-scissor). Vertex declarations are milestone 5a's, DrawIndexedPrimitiveUP, state blocks and event queries are 5c's, and
+The rest of the fixed-function pipeline and the resources around it, still over D3D11: the texture coordinate formats,
+the remaining texture features a game asks for (a second and further stages, cube and volume textures, D3DXFill-style
+level writing; dynamic and render-target textures are 4c's) and the rest of the render states (fog, stencil
+operations, point fill). The world, view and projection transform is C-1's and the lit vertex path is C-2's, above.
+Vertex declarations are milestone 5a's, DrawIndexedPrimitiveUP, state blocks and event queries are 5c's, and
 the alpha test is 5c's for a game's own pixel shader (the fixed-function path still has none).
 
 # Milestone 5a (done): the draw a game's own shaders make
@@ -290,20 +490,23 @@ a negative coordinate, and a program drawn with and without the alpha test, each
 survived.
 
 # What is not there yet, and is refused rather than pretended
-  * anything that makes a resource this build does not have (cube and volume textures, scratch-pool or dynamic
-    textures): E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so once. `SetVertexShader(NULL)` and
+  * anything that makes a resource this build does not have (cube and volume textures, scratch-pool textures): E_NOTIMPL
+    or D3DERR_INVALIDCALL, with the library saying so once. `SetVertexShader(NULL)` and
     `SetPixelShader(NULL)` answer S_OK, as D3D9 does: they choose the fixed-function pipeline, as one of the two stages
     being set chooses the program one
-  * a vertex format other than D3DFVF_XYZRHW | D3DFVF_DIFFUSE, with or without one set of texture coordinates:
-    D3DERR_INVALIDCALL, and the device keeps the format it had, so a frame is not drawn with a transform nobody asked
-    for
+  * a vertex format other than D3DFVF_XYZRHW or D3DFVF_XYZ with D3DFVF_DIFFUSE, with or without D3DFVF_NORMAL and one
+    set of texture coordinates: D3DERR_INVALIDCALL, and the device keeps the format it had, so a frame is not drawn
+    with a transform nobody asked for
+  * a transform other than the world, view and projection matrices: D3DERR_INVALIDCALL, said once (the vertex blending
+    world matrices and the texture coordinate transforms)
   * a render state this milestone has no meaning for, and a value it cannot honour (D3DFILL_POINT, D3DSHADE_PHONG,
     BOTHSRCALPHA, BOTHINVSRCALPHA and the D3DRS_BLENDFACTOR factors): D3DERR_INVALIDCALL, with the device keeping what it had
   * SetLOD beyond the top level: the call answers with the level the texture is on (D3D9's SetLOD answers with the one
     it had) and says once, in the library's log, that the most detailed level is the top one -- the levels below it are
-    made out of it, so a texture is sampled from level 0 whatever it asks for. GetAutoGenFilterType answers D3DTEXF_LINEAR
-    and SetAutoGenFilterType is D3DERR_INVALIDCALL: the automatic mip filter is a D3DUSAGE_AUTOGENMIPMAP texture's, and
-    this build makes a managed texture's levels with D3D11's own generator
+    the game's or made explicitly, and a texture is sampled from level 0 whatever it asks for. GetAutoGenFilterType
+    answers D3DTEXF_LINEAR and SetAutoGenFilterType is D3DERR_INVALIDCALL: the automatic mip filter is a
+    D3DUSAGE_AUTOGENMIPMAP texture's, and this build makes a managed texture's levels only when GenerateMipSubLevels
+    asks it to and the format supports D3D11's generator
   * a render target or a depth-stencil surface with more than one sample, and a render target the CPU locks:
     D3DERR_NOTAVAILABLE or D3DERR_INVALIDCALL rather than a target that is not what it says
   * clearing the stencil of part of a surface (its colour and depth are cleared, and its stencil is left as it was,
@@ -315,7 +518,8 @@ survived.
   * the second and further fixed-function blending stages (their operations) and lights: D3DERR_INVALIDCALL (a game's
     own shader may sample all eight stages, which is what the caps' MaxSimultaneousTextures says); an occlusion,
     timestamp or vertex-cache query: D3DERR_INVALIDCALL rather than a number nothing measured
-  * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
+  * a fullscreen chain, additional swap chains, GetFrontBufferData and CreateAdditionalSwapChain: not implemented
+    (a windowed Reset is milestone 3b's)
 
 # Seeing what a game asked for
 Every call this layer refuses says so once, in the library's log, with what it was asked for: the format, the shader

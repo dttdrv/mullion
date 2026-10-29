@@ -68,8 +68,13 @@ def main(argv=None):
         families = ",".join(re.findall(r"^# family (\S+)", patch.read_text(), re.M) or ["native"])
         names = sorted(declared & {test, test + "_dxil", test + "_dxbc"})
         before = answers / f"{test}-{families}.txt"
-        # by content, not times: a file the last fault changed comes back newer than its objects, so it is rebuilt
-        subprocess.run(["rsync", "-rlpc", "--delete", "--exclude", ".git", f"{SOURCE}/", f"{source}/"], check=True)
+        # by content, not times: a file the last fault changed comes back newer than its objects, so it is rebuilt. the
+        # builds live beside the source, and a fault's own build and answer directories are build directories too: they
+        # are not source, and copying the destination into itself is what that would be
+        subprocess.run(
+            ["rsync", "-rlpc", "--delete", "--exclude", ".git", "--exclude", "/build*/", f"{SOURCE}/", f"{source}/"],
+            check=True,
+        )
         if subprocess.run(["git", "apply", patch.resolve()], cwd=source, capture_output=True).returncode:
             said = "does not apply"
         elif setup(library, faulted, source) or subprocess.run(["ninja", "-C", faulted], capture_output=True).returncode:

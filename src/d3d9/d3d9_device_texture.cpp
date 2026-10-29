@@ -40,8 +40,30 @@ MTLD3D9Device::CreateTexture(
              "build has none of.");
     return D3DERR_INVALIDCALL;
   }
-  if (usage) {
-    ERR_ONCE("D3D9: no texture usage flag (dynamic, render target, automatic mipmaps) is honoured yet.");
+  // a default-pool resource belongs to the device the frames failed on, which a Reset replaces: one made while the
+  // device is lost would be a resource of the device that is gone (IDirect3DDevice9::Reset). A managed texture is the
+  // CPU's and is made as it always is
+  if (pool == D3DPOOL_DEFAULT) {
+    if (HRESULT lost = lost_reason(); FAILED(lost))
+      return lost;
+  }
+  // A render-target texture is one a frame is drawn into and later samples: it is a default-pool resource with a render
+  // target view of each level. A dynamic texture is one the CPU streams into, locked with DISCARD or NOOVERWRITE: it is
+  // a default-pool resource whose levels are mapped for writing. The two cannot be combined, and the other usage flags
+  // are refused rather than kept by nobody (Microsoft Learn, D3DUSAGE_RENDERTARGET, D3DUSAGE_DYNAMIC).
+  if (usage & ~(DWORD)(D3DUSAGE_RENDERTARGET | D3DUSAGE_DYNAMIC)) {
+    ERR_ONCE(
+        "D3D9: texture usage 0x", std::hex, usage, " is not honoured yet (render target and dynamic are)."
+    );
+    return D3DERR_INVALIDCALL;
+  }
+  if (usage && pool != D3DPOOL_DEFAULT) {
+    ERR_ONCE("D3D9: a used texture (render target or dynamic) is a default-pool texture; pool ", (unsigned)pool,
+             " is refused.");
+    return D3DERR_INVALIDCALL;
+  }
+  if ((usage & D3DUSAGE_RENDERTARGET) && (usage & D3DUSAGE_DYNAMIC)) {
+    ERR_ONCE("D3D9: a texture is a render target or dynamic, not both.");
     return D3DERR_INVALIDCALL;
   }
 
@@ -55,13 +77,6 @@ MTLD3D9Device::CreateTexture(
     return D3DERR_INVALIDCALL;
   }
   UINT level_count = levels ? levels : chain;
-  // a default-pool texture's bytes reach it by rendering into it or by a copy from a system-memory texture, and this
-  // build has neither: the level it is made with is the only one that could hold anything
-  if (pool == D3DPOOL_DEFAULT && level_count != 1) {
-    ERR_ONCE("D3D9: a default-pool texture cannot be filled here yet, so only one level is made; a managed texture "
-             "makes its own levels.");
-    return D3DERR_INVALIDCALL;
-  }
 
   D3D11_TEXTURE2D_DESC desc{};
   desc.Width = width;
@@ -70,45 +85,41 @@ MTLD3D9Device::CreateTexture(
   desc.ArraySize = 1;
   desc.Format = dxgi_format;
   desc.SampleDesc.Count = 1;
+  // A dynamic texture's levels are the CPU's and are uploaded on unlock: D3D11 maps a texture with WRITE_DISCARD only,
+  // which would throw away the pixels a NOOVERWRITE lock leaves alone, so the texture is the device's and the bytes
+  // the application writes reach it through the upload (the same rows a map would hand back)
   desc.Usage = D3D11_USAGE_DEFAULT;
   desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-  // a managed texture's levels below the top one are made out of it, which D3D11 generates them through a render
-  // target view of the whole chain. a compressed format's levels are the blocks the game uploads itself (D3D11 makes
-  // no level of a compressed texture out of another), so its chain is made whole and each level is uploaded as it is
-  // locked; a format this device makes neither way is made with the one level that can hold anything
-  bool generate_mips = false;
-  if (level_count > 1) {
+  if (usage & D3DUSAGE_RENDERTARGET)
+    desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+  // A managed texture's levels below the top one are made out of it only when the game asks (GenerateMipSubLevels),
+  // which D3D11 does through a render target view of the whole chain; the chain itself is made whether or not this
+  // format can be generated, so the levels the game authored survive and GetLevelCount is the count it asked for. A
+  // compressed format's levels are always the game's own blocks (D3D11 makes no level of a compressed texture out of
+  // another). Nothing reduces the chain to one level behind the game's back.
+  bool can_generate_mips = false;
+  if (level_count > 1 && !(usage & D3DUSAGE_DYNAMIC)) {
     UINT support = 0;
     if (SUCCEEDED(d3d11_device_->CheckFormatSupport(dxgi_format, &support)) &&
         (support & D3D11_FORMAT_SUPPORT_MIP_AUTOGEN)) {
       desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
       desc.MiscFlags |= D3D11_RESOURCE_MISC_GENERATE_MIPS;
-      generate_mips = true;
-    } else if (block_size(format)) {
-      // the chain is the game's to fill (its own blocks), which the locks of each level do
-    } else {
-      ERR_ONCE("D3D9: this device cannot make this format's mip levels, so a texture of it is made with one level.");
-      level_count = 1;
-      desc.MipLevels = 1;
+      can_generate_mips = true;
     }
   }
 
   ComPtr<ID3D11Texture2D> d3d11_texture;
   HRESULT create_hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &d3d11_texture);
-  if (FAILED(create_hr) && desc.MipLevels > 1) {
-    // the levels are the only thing that can be refused for a format this device otherwise makes: a texture of it is
-    // still made, with the one level that can hold anything
-    ERR_ONCE("D3D9: this device makes no mipmapped texture of this format (0x", std::hex, create_hr,
-             "), so a texture of it is made with one level.");
-    desc.MipLevels = 1;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    desc.MiscFlags = 0;
+  if (FAILED(create_hr) && can_generate_mips) {
+    // the format said it can generate mips but the device refuses the render-target binding that needs: the chain is
+    // still the game's, it simply cannot be generated here. The requested level count is kept.
+    desc.BindFlags &= ~D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags &= ~D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    can_generate_mips = false;
     create_hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &d3d11_texture);
-    level_count = 1;
-    generate_mips = false;
   }
   if (FAILED(create_hr)) {
-    ERR("D3D9: no texture of ", width, "x", height, ": 0x", std::hex, create_hr);
+    ERR("D3D9: no texture of ", width, "x", height, " with ", level_count, " levels: 0x", std::hex, create_hr);
     return D3DERR_INVALIDCALL;
   }
 
@@ -120,19 +131,9 @@ MTLD3D9Device::CreateTexture(
 
   ComPtr<MTLD3D9Texture> result;
   result.Attach(new MTLD3D9Texture(
-      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count, generate_mips
+      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count, can_generate_mips,
+      usage
   ));
-
-  std::vector<ComPtr<MTLD3D9Surface>> level_surfaces;
-  for (UINT level = 0; level < level_count; level++) {
-    ComPtr<MTLD3D9Surface> surface;
-    surface.Attach(new MTLD3D9Surface(
-        static_cast<IDirect3DDevice9 *>(this), d3d11_texture, format, pool, false, context_, false,
-        static_cast<IMTLD3D9LockTarget *>(result.Get()), level
-    ));
-    level_surfaces.push_back(surface);
-  }
-  result->set_levels(std::move(level_surfaces));
 
   *texture = result.Detach();
   return S_OK;

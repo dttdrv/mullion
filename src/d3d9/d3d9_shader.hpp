@@ -84,7 +84,8 @@ extern const IID IID_IMTLD3D9PixelShader;
 
 class MTLD3D9VertexShader final : private Object9, public IDirect3DVertexShader9, public IMTLD3D9VertexShader {
 public:
-  MTLD3D9VertexShader(IDirect3DDevice9 *device, ShaderCode code) : device_(device), code_(std::move(code)) {}
+  MTLD3D9VertexShader(IDirect3DDevice9 *device, ShaderCode code)
+      : device_(device), device_ref_(device), code_(std::move(code)) {}
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -104,9 +105,10 @@ public:
   ) override;
 
 private:
-  // the device that made the shader owns it, so this is not a reference (a cycle); GetDevice hands one out as D3D9's
-  // contract has it
+  // the device that made the shader is held through a private reference (DeviceChildRef), so a shader kept after the
+  // application released its device still has one to answer GetDevice with
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
   ShaderCode code_;
 
   // one D3D11 pipeline per vertex declaration a draw has used the shader with
@@ -121,7 +123,8 @@ private:
 
 class MTLD3D9PixelShader final : private Object9, public IDirect3DPixelShader9, public IMTLD3D9PixelShader {
 public:
-  MTLD3D9PixelShader(IDirect3DDevice9 *device, ShaderCode code) : device_(device), code_(std::move(code)) {}
+  MTLD3D9PixelShader(IDirect3DDevice9 *device, ShaderCode code)
+      : device_(device), device_ref_(device), code_(std::move(code)) {}
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -146,6 +149,7 @@ public:
 
 private:
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
   ShaderCode code_;
   // one translated program per alpha test a draw has used it with: the program itself is the same bytes, and the test is
   // the program's end

@@ -1,25 +1,36 @@
 // the Direct3D 9 device this build makes: its interfaces and everything a frame reads. the device's source is split by
 // what a frame needs -- d3d9_device.cpp has the object, its chain, its back buffer and the surfaces a frame is read
-// back into, d3d9_device_targets.cpp the render states, depth-stencil surfaces, render targets and viewport a frame is
-// drawn with and into, d3d9_device_draw.cpp the geometry a draw reads, and d3d9_device_texture.cpp the textures a draw
-// samples with the stage that samples them. nothing else of this build sees the class, only the interfaces it has.
+// back into, d3d9_device_targets.cpp the render targets, depth-stencil surfaces, viewport and scissor rectangle and the
+// render-state and transform entry points, d3d9_device_draw.cpp the draws and what they are made of, and
+// d3d9_device_texture.cpp the textures a draw samples with the stage that samples them. The state those draws read is
+// not a member of this class any more but one object of its own (d3d9_device_state.hpp), and the direct3d 11 objects a
+// fixed-function draw binds are the pipeline's (d3d9_fixed_function.hpp). nothing else of this build sees the class, only
+// the interfaces it has.
 #pragma once
 #include "d3d9_buffer.hpp"
 #include "d3d9_common.hpp"
+#include "d3d9_device_state.hpp"
 #include "d3d9_fixed_function.hpp"
 #include "d3d9_query.hpp"
 #include "d3d9_shader.hpp"
+#include "d3d9_lights.hpp"
 #include "d3d9_state.hpp"
 #include "d3d9_state_block.hpp"
 #include "d3d9_vertex_declaration.hpp"
+#include <algorithm>
 #include <array>
+#include <vector>
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
 #include "d3d9_texture.hpp"
 
 namespace mullion::d3d9 {
 
-class MTLD3D9Device final : private Object9, public IDirect3DDevice9, public IMTLD3D9PresentSource {
+class MTLD3D9Device final : private Object9,
+                          public IDirect3DDevice9,
+                          public IMTLD3D9PresentSource,
+                          public IMTLD3D9DeviceLifetime,
+                          public IMTLD3D9DeviceResources {
 public:
   // the texture stages, and so the samplers, a draw samples: D3D9's eight (the caps' MaxSimultaneousTextures)
   static constexpr UINT kTextureStages = 8;
@@ -42,6 +53,17 @@ public:
       *object = static_cast<IDirect3DDevice9 *>(this);
     } else if (riid == IID_IMTLD3D9PresentSource) {
       *object = static_cast<IMTLD3D9PresentSource *>(this);
+    } else if (riid == IID_IMTLD3D9DeviceLifetime) {
+      // a child's reference, not the application's: it keeps the object alive but does not make the device usable again
+      child_refs_++;
+      *object = static_cast<IMTLD3D9DeviceLifetime *>(this);
+      return S_OK;
+    } else if (riid == IID_IMTLD3D9DeviceResources) {
+      // a registered resource's reference, which is a child's as well (DeviceResourceRef releases it through
+      // release_device_ref)
+      child_refs_++;
+      *object = static_cast<IMTLD3D9DeviceResources *>(this);
+      return S_OK;
     } else {
       return E_NOINTERFACE;
     }
@@ -49,9 +71,44 @@ public:
     return S_OK;
   }
 
-  ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++app_refs_; }
 
-  ULONG STDMETHODCALLTYPE Release() override { return Object9::Release(); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG remaining = app_refs_.load();
+    while (remaining) {
+      if (app_refs_.compare_exchange_weak(remaining, remaining - 1))
+        break;
+    }
+    if (!remaining)
+      return 0;
+    remaining--;
+    if (!remaining) {
+      if (!torn_down_.exchange(true)) {
+        // a temporary child reference keeps the object alive while its children let go of theirs
+        child_refs_++;
+        release_device_children();
+        if (--child_refs_ == 0)
+          delete this;
+      } else if (!child_refs_.load()) {
+        delete this;
+      }
+    }
+    return remaining;
+  }
+
+  // IMTLD3D9DeviceLifetime (and IMTLD3D9DeviceResources): the private reference QueryInterface added
+  void release_device_ref() override {
+    if (--child_refs_ == 0 && !app_refs_.load())
+      delete this;
+  }
+
+  // IMTLD3D9DeviceResources: the resources a Reset rebuilds on the device it makes, which is the managed pool
+  void track_reset_target(IMTLD3D9ResetTarget *target) override {
+    reset_targets_.push_back(target);
+  }
+  void untrack_reset_target(IMTLD3D9ResetTarget *target) override {
+    reset_targets_.erase(std::remove(reset_targets_.begin(), reset_targets_.end(), target), reset_targets_.end());
+  }
 
   // IMTLD3D9PresentSource
   HRESULT present(const RECT *source, const RECT *destination, HWND window, const RGNDATA *dirty, DWORD flags) override;
@@ -59,7 +116,14 @@ public:
   HRESULT display_mode(D3DDISPLAYMODE *mode) override;
 
   // the device's own
-  HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override { return S_OK; }
+  //
+  // D3D9's answer for a device whose frames the GPU failed: lost, and it stays lost until the application resets it.
+  // A lost device is one this build can reset (Reset makes a new Direct3D 11 device), so the level is the resettable
+  // one (D3DERR_DEVICENOTRESET); the calls that draw answer D3DERR_DEVICELOST until it is reset (Microsoft Learn,
+  // IDirect3DDevice9::TestCooperativeLevel)
+  HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override {
+    return FAILED(lost_reason()) ? D3DERR_DEVICENOTRESET : S_OK;
+  }
 
   // what the Metal device has left of the working set it recommends: the textures this device allocates live there, so
   // it is the answer D3D9's own drivers give for the same question
@@ -107,12 +171,12 @@ public:
 
   UINT STDMETHODCALLTYPE GetNumberOfSwapChains() override { return 1; }
 
-  // D3D9 has no state to lose yet: the frames of this milestone are what the
-  // device clears to
-  HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS *) override {
-    ERR_ONCE("D3D9: Reset is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+  // the device's windowed chain, sized and formatted again: the state is lost and the back buffer is the new size, so
+  // a game that changes resolution or alt-tabs draws its next frame at the new size. A device whose frames failed is
+  // made again here, which is the road back from D3DERR_DEVICENOTRESET: the new chain is over a new Direct3D 11 device,
+  // the default pool is gone with the old one, and the managed pool's contents are put onto the new one. a fullscreen
+  // chain is not implemented (src/d3d9/README).
+  HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS *present_parameters) override;
 
   HRESULT STDMETHODCALLTYPE Present(const RECT *source, const RECT *destination, HWND window,
                                     const RGNDATA *dirty) override {
@@ -137,6 +201,8 @@ public:
   // a scene is the device's frames until EndScene: nothing is drawn between
   // them yet, so the device only notes them
   HRESULT STDMETHODCALLTYPE BeginScene() override {
+    if (HRESULT lost = lost_reason(); FAILED(lost))
+      return lost;
     if (in_scene_)
       return D3DERR_INVALIDCALL;
     in_scene_ = true;
@@ -211,25 +277,13 @@ public:
   HRESULT STDMETHODCALLTYPE CreateIndexBuffer(UINT length, DWORD usage, D3DFORMAT format, D3DPOOL pool,
                                               IDirect3DIndexBuffer9 **index_buffer, HANDLE *shared_handle) override;
   HRESULT STDMETHODCALLTYPE UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect,
-                                          IDirect3DSurface9 *dst_surface, const POINT *dst_point) override {
-    ERR_ONCE("D3D9: UpdateSurface is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                          IDirect3DSurface9 *dst_surface, const POINT *dst_point) override;
   HRESULT STDMETHODCALLTYPE UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture,
-                                          IDirect3DBaseTexture9 *pDestinationTexture) override {
-    ERR_ONCE("D3D9: UpdateTexture is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                          IDirect3DBaseTexture9 *pDestinationTexture) override;
   HRESULT STDMETHODCALLTYPE StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect,
                                         IDirect3DSurface9 *dst_surface, const RECT *dst_rect,
-                                        D3DTEXTUREFILTERTYPE filter) override {
-    ERR_ONCE("D3D9: StretchRect is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override {
-    ERR_ONCE("D3D9: ColorFill is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                        D3DTEXTUREFILTERTYPE filter) override;
+  HRESULT STDMETHODCALLTYPE ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR color) override;
   HRESULT STDMETHODCALLTYPE CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
                                                D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
                                                WINBOOL Lockable, IDirect3DSurface9 **ppSurface,
@@ -241,43 +295,38 @@ public:
   HRESULT STDMETHODCALLTYPE SetRenderTarget(DWORD render_target, IDirect3DSurface9 *surface) override;
   HRESULT STDMETHODCALLTYPE SetDepthStencilSurface(IDirect3DSurface9 *surface) override;
   HRESULT STDMETHODCALLTYPE GetDepthStencilSurface(IDirect3DSurface9 **surface) override;
-  HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
-    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *pMatrix) override {
-    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override {
-    ERR_ONCE("D3D9: a transform is not implemented yet: the device draws only vertices already in screen space.");
-    return D3DERR_INVALIDCALL;
-  }
+  HRESULT STDMETHODCALLTYPE SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override;
+  HRESULT STDMETHODCALLTYPE GetTransform(D3DTRANSFORMSTATETYPE state, D3DMATRIX *matrix) override;
+  HRESULT STDMETHODCALLTYPE MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) override;
   HRESULT STDMETHODCALLTYPE SetViewport(const D3DVIEWPORT9 *viewport) override;
   HRESULT STDMETHODCALLTYPE GetViewport(D3DVIEWPORT9 *viewport) override;
+  // the lights and the material are the device state's (d3d9_device_state.hpp): these calls are the interface over it
   HRESULT STDMETHODCALLTYPE SetMaterial(const D3DMATERIAL9 *material) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a material has nothing to set.");
-    return D3DERR_INVALIDCALL;
+    const HRESULT hr = state_.lights().set_material(material);
+    if (SUCCEEDED(hr) && recording_)
+      record(StateKey{StateKey::Material, 0, 0});
+    return hr;
   }
   HRESULT STDMETHODCALLTYPE GetMaterial(D3DMATERIAL9 *pMaterial) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a material has nothing to read.");
-    return D3DERR_INVALIDCALL;
+    return state_.lights().get_material(pMaterial);
   }
   HRESULT STDMETHODCALLTYPE SetLight(DWORD index, const D3DLIGHT9 *light) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a light has nothing to set.");
-    return D3DERR_INVALIDCALL;
+    const HRESULT hr = state_.lights().set_light(index, light);
+    if (SUCCEEDED(hr) && recording_)
+      record(StateKey{StateKey::Light, index, 0});
+    return hr;
   }
-  HRESULT STDMETHODCALLTYPE GetLight(DWORD Index, D3DLIGHT9 *) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a light has nothing to read.");
-    return D3DERR_INVALIDCALL;
+  HRESULT STDMETHODCALLTYPE GetLight(DWORD Index, D3DLIGHT9 *light) override {
+    return state_.lights().get_light(Index, light);
   }
   HRESULT STDMETHODCALLTYPE LightEnable(DWORD Index, WINBOOL Enable) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a light cannot be turned on.");
-    return D3DERR_INVALIDCALL;
+    const HRESULT hr = state_.lights().enable_light(Index, Enable);
+    if (SUCCEEDED(hr) && recording_)
+      record(StateKey{StateKey::LightEnable, Index, 0});
+    return hr;
   }
   HRESULT STDMETHODCALLTYPE GetLightEnable(DWORD Index, WINBOOL *pEnable) override {
-    ERR_ONCE("D3D9: lighting is not implemented yet, so a light's state has nothing to read.");
-    return D3DERR_INVALIDCALL;
+    return state_.lights().get_light_enable(Index, pEnable);
   }
   HRESULT STDMETHODCALLTYPE SetClipPlane(DWORD index, const float *plane) override {
     ERR_ONCE("D3D9: a clip plane is not implemented yet.");
@@ -306,11 +355,8 @@ public:
   }
   HRESULT STDMETHODCALLTYPE SetCurrentTexturePalette(UINT PaletteNumber) override { return D3DERR_INVALIDCALL; }
   HRESULT STDMETHODCALLTYPE GetCurrentTexturePalette(UINT *PaletteNumber) override { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *rect) override {
-    ERR_ONCE("D3D9: a scissor rectangle is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetScissorRect(RECT *pRect) override { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *rect) override;
+  HRESULT STDMETHODCALLTYPE GetScissorRect(RECT *pRect) override;
   HRESULT STDMETHODCALLTYPE SetSoftwareVertexProcessing(WINBOOL bSoftware) override { return D3DERR_INVALIDCALL; }
   WINBOOL STDMETHODCALLTYPE GetSoftwareVertexProcessing() override { return FALSE; }
   HRESULT STDMETHODCALLTYPE SetNPatchMode(float nSegments) override { return D3DERR_INVALIDCALL; }
@@ -384,6 +430,29 @@ public:
   }
 
 private:
+  // Let go of the children the device owned, so their private references can run down; the object stays alive while
+  // any child still holds one, and that child can still name a valid device. The D3D11 device, context and DXGI chain
+  // stay: they hold no D3D9 reference, and a retained swap chain's calls reach the device through them.
+  void release_device_children();
+  std::atomic<ULONG> app_refs_{1};
+  std::atomic<ULONG> child_refs_{0};
+  std::atomic<bool> torn_down_{false};
+
+  // the state a Reset loses: the bindings, the shaders set, the textures, the constants, the render states and the
+  // texture stages go back to the defaults a device is made with. the shader objects an application made survive, as
+  // D3D9's do; they are only unbound here.
+  void reset_state();
+  // the chain the device presents through, over the device it has: a Reset that recreates the device makes a new one,
+  // and the chain object an application may still hold answers the same device's frames through it
+  HRESULT create_chain(IDXGIFactory2 *factory);
+  // the device once its chain is the present parameters': the state is lost, the viewport and the scissor rectangle are
+  // the whole of the new frame, a chain with an automatic depth-stencil surface gets one of the new size, and the
+  // caller's parameters report the fields D3D9 says a reset leaves to be queried again
+  HRESULT finish_reset(D3DPRESENT_PARAMETERS *parameters);
+  // a lost device's Reset: the failed Direct3D 11 device and everything the device held on it are released, a new one
+  // is made over the same adapter with the same chain, and the managed pool's contents are put back on it. The caller
+  // has already checked the present parameters and set present_
+  HRESULT recreate_after_loss();
   // the back buffer of the frame being drawn: taken from the chain once, and the same buffer from then on. a flip
   // model chain turns its buffers over at every Present, but it does so by giving the buffers' storage to the next
   // buffer's object, so this device's view and surface of buffer 0 address whatever the next frame is drawn into (the
@@ -392,6 +461,9 @@ private:
   HRESULT ensure_back_buffer();
   // the frame's target: the back buffer until SetRenderTarget names another one
   HRESULT ensure_render_target();
+  // D3DERR_DEVICELOST while the D3D11 device under this one is removed, S_OK otherwise: the calls that draw or present
+  // answer it, and TestCooperativeLevel is it
+  HRESULT lost_reason() const;
   // a surface of this device's, of the kind a target or a depth-stencil surface has to be; reached through
   // QueryInterface, so a surface of someone else's is refused rather than misread
   HRESULT device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IMTLD3D9Surface **out);
@@ -410,6 +482,9 @@ private:
   D3DPRESENT_PARAMETERS present_{};
   UINT width_ = 0, height_ = 0;
 
+  // the factory the device makes its chain through: a Reset that recreates the device makes a new chain, since a DXGI
+  // chain belongs to the device that made it
+  ComPtr<IDXGIFactory2> factory_;
   ComPtr<ID3D11Device> d3d11_device_;
   ComPtr<ID3D11DeviceContext> context_;
   // the same context, as the one that clears a part of a view (ID3D11DeviceContext1::ClearView): D3D11's own
@@ -417,6 +492,9 @@ private:
   ComPtr<ID3D11DeviceContext1> context1_;
   ComPtr<IDXGISwapChain1> swapchain_;
   ComPtr<MTLD3D9SwapChain> swap_chain_;
+  // the resources a Reset rebuilds on the device it makes (the managed pool): each registers itself when it is made and
+  // unregisters itself when it is destroyed (d3d9_texture.cpp)
+  std::vector<IMTLD3D9ResetTarget *> reset_targets_;
 
   ComPtr<ID3D11Texture2D> back_buffer_texture_;
   ComPtr<ID3D11RenderTargetView> render_target_;
@@ -431,7 +509,15 @@ private:
   ComPtr<MTLD3D9Surface> depth_stencil_;
   ComPtr<ID3D11DepthStencilView> depth_stencil_view_;
   D3DVIEWPORT9 viewport_{};
-  RenderState render_state_;
+  // the application's scissor rectangle, which D3DRS_SCISSORTESTENABLE clips a draw to: the intersection of it and the
+  // viewport is the draw's clip rectangle (IDirect3DDevice9::SetScissorRect)
+  RECT scissor_rect_{};
+  // the clip rectangle a draw runs under: the viewport, narrowed by the scissor rectangle while the scissor test is on
+  RECT clip_rect() const;
+  // the state a draw is made from: the render states, the world, view and projection transforms with their composition,
+  // and the eight lights with their enables and the material. One object, one owner (d3d9_device_state.hpp); a Reset
+  // is its reset, and a state block captures and restores it through the interface above
+  DeviceState state_;
 
   // the fixed-function path, and the state a draw reads: the FVF or the declaration, one stream source and the
   // indices (SetStreamSourceFreq is 1, no instancing)
@@ -487,8 +573,12 @@ private:
   bool recording_ = false;
   std::vector<StateKey> recorded_keys_;
 
-  // what every draw needs: the chain's back buffer as it is now, and the fixed-function shaders over it
+  // what every draw needs: the chain's back buffer as it is now, and the pipeline that draws it
   HRESULT prepare_draw();
+  // the fixed-function draw over it: what the draw is, from the device state, handed to the pipeline that binds it
+  // (d3d9_fixed_function.hpp); the draw path issues it and validates it, and nothing here touches a D3D11 object of the
+  // pipeline's
+  HRESULT prepare_fixed_function_draw();
   // the draw a game's own shaders make: the vertex declaration's layout, the translated programs, the constant tables
   // a draw uploads, and the texture stage 0 samples when the pixel shader samples it (d3d9_device_shader.cpp)
   HRESULT prepare_shader_draw();
@@ -498,6 +588,12 @@ private:
   void bind_viewport_state();
   // the vertices or indices a primitive count is made of, with whether this milestone draws the topology at all
   static bool topology_count(D3DPRIMITIVETYPE type, UINT primitive_count, UINT &count);
+  // whether a primitive count is within D3DCAPS9::MaxPrimitiveCount
+  bool primitive_count_fits(UINT primitive_count) const;
+  // the state a _UP draw leaves behind: D3D9's DrawPrimitiveUP and DrawIndexedPrimitiveUP clear stream 0, and the
+  // indexed one clears the index buffer too (d3d9_device_draw.cpp)
+  void unbind_stream_source();
+  void unbind_indices();
   static D3D11_PRIMITIVE_TOPOLOGY topology_of(D3DPRIMITIVETYPE type);
   HRESULT draw_vertices(
       D3DPRIMITIVETYPE type, UINT primitive_count, UINT count, UINT start_vertex, ID3D11Buffer *buffer, UINT stride,

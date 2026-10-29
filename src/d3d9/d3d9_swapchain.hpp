@@ -39,9 +39,17 @@ public:
   HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
   HRESULT STDMETHODCALLTYPE GetPresentParameters(D3DPRESENT_PARAMETERS *parameters) override;
 
+  // the parameters a Reset of the device's implicit chain leaves it with: the same object answers them, since an
+  // application may keep the chain it asked for
+  void set_present_parameters(const D3DPRESENT_PARAMETERS &parameters) {
+    parameters_ = parameters;
+  }
+
 private:
-  // the device owns its chains, so this is not a reference
+  // the device owns its chains, and the chain holds a private reference on it (DeviceChildRef), so a chain kept after
+  // the application released its device still has one to present and answer GetDevice through
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
   IMTLD3D9PresentSource *source_ = nullptr;
   D3DPRESENT_PARAMETERS parameters_{};
 };

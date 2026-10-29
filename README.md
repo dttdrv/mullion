@@ -49,6 +49,7 @@ The archive has the layout of DXMT's builds (`x86_64-windows` and `x86_64-unix`)
 | `MULLION_LOG_PATH=<directory>` | Writes a log file for each DLL. Attach it to bug reports. |
 | `MULLION_D3D12_METAL4=0` | Keeps Direct3D 12 on Metal 3 on macOS 26. If a game draws differently there than on Metal 3, please report it. |
 | `MULLION_CONFIG="dxgi.customVendorId=106b"` | Reports Apple's vendor ID. By default Mullion reports the GPU's own name with AMD's vendor ID, because some games exit at startup when they do not know the vendor. |
+| `MULLION_D3D11_FAULT_DEVICE=<n>` | A test facility: the run's nth completed command buffer is treated as one the GPU failed (`1` is the first), so the device-removal contract (the reason a device keeps, its removal event, Direct3D 9's cooperative level and the Reset that recovers it) runs without a GPU fault. Not for playing. |
 
 Options can also go in a `mullion.conf` next to the game's executable, or in the file `MULLION_CONFIG_FILE` names. The `mullion.conf` in this repository lists them. The `DXMT_` names and `dxmt.conf` of earlier builds still work.
 

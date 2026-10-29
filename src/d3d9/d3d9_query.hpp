@@ -31,11 +31,12 @@ public:
 
 private:
   MTLD3D9Query(IDirect3DDevice9 *device, ID3D11DeviceContext *context, ID3D11Query *query)
-      : device_(device), context_(context), query_(query) {}
+      : device_(device), device_ref_(device), context_(context), query_(query) {}
 
-  // the device that made the query owns it, so this is not a reference (a cycle); GetDevice hands one out as D3D9's
-  // contract has it
+  // the device that made the query is held through a private reference (DeviceChildRef), so a query kept after the
+  // application released its device still has one to answer GetDevice with
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<ID3D11Query> query_;
   // whether Issue(D3DISSUE_END) has put the query's fence in the stream, which GetData needs: an unissued event query

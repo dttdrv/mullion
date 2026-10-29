@@ -14,7 +14,7 @@ int
 main() {
   ComPtr<IDXGIFactory1> factory;
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
-  for (UINT api : {10u, 101u, 11u, 12u}) {
+  for (UINT api : dxgi_apis()) {
     DxgiDevice device;
     CHECK(device.create(api));
     ComPtr<IDXGIAdapter1> adapter;

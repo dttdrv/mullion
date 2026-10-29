@@ -1,12 +1,12 @@
 # counts each vertex invocation twice when assigning its wave lane index
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -1920,7 +1920,7 @@
+@@ -1992,7 +1992,7 @@
        return ctx.function->getArg(shader->func_signature.DefineInput(air::InputThreadIndexInSIMDGroup{}));
      IRBuilder<>::InsertPointGuard guard(ir);
      ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
 -    return simd("simd_prefix_exclusive_sum", ir.getInt32Ty(), {ir.getInt32(1)}, ir.getInt32Ty());
 +    return simd("simd_prefix_exclusive_sum", ir.getInt32Ty(), {ir.getInt32(2)}, ir.getInt32Ty());
    };
-   // compute shaders differentiate across their quads (lanes x, then y): coarsely from the quad's first lane, finely
-   // along this lane's row or column
+   // the lanes a wave operation is over. Metal's simd-group operations take the whole group, a helper's lanes included,
+   // and D3D's take the wave's active ones, so every operation that counts lanes asks this object instead of deciding

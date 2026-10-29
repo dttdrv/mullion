@@ -47,7 +47,7 @@ to_dxgi_declaration_format(UINT type) {
 }
 
 MTLD3D9VertexDeclaration::MTLD3D9VertexDeclaration(IDirect3DDevice9 *device, std::vector<D3DVERTEXELEMENT9> elements)
-    : device_(device), elements_(std::move(elements)) {
+    : device_(device), device_ref_(device), elements_(std::move(elements)) {
   // the names the layout points at, and then the layout itself: a layout entry holds the pointer, so the strings have
   // to be where they end up before the entries are made
   names_.reserve(elements_.size());

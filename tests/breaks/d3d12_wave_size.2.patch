@@ -1,7 +1,7 @@
 # reports one extra lane for compute waves
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2288,7 +2288,7 @@
+@@ -2464,7 +2464,7 @@
        ret = lane_index();
        break;
      case WaveGetLaneCount:
@@ -9,4 +9,4 @@
 +      ret = ir.CreateAdd(lane_count(), ir.getInt32(1));
        break;
      case WaveAnyTrue:
-     case WaveAllTrue:
+     case WaveAllTrue: {

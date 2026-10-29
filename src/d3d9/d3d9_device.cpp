@@ -8,29 +8,269 @@
 
 namespace mullion::d3d9 {
 
+const IID IID_IMTLD3D9DeviceLifetime = {0x7f2b0a61, 0x4c3d, 0x4c8e, {0x9e, 0x2a, 0x51, 0x3b, 0x77, 0x0f, 0x6d, 0x12}};
+const IID IID_IMTLD3D9DeviceResources = {0x2c8e5a94, 0x1b76, 0x4f0d, {0x83, 0x5a, 0x6d, 0x1c, 0x02, 0x9e, 0x47, 0x51}};
+
+void
+MTLD3D9Device::release_device_children() {
+  stream_source_.Reset();
+  stream_buffer_.Reset();
+  stream_offset_ = 0;
+  stream_stride_ = 0;
+  indices_.Reset();
+  index_buffer_.Reset();
+  vertex_shader_.Reset();
+  pixel_shader_.Reset();
+  declaration_.Reset();
+  declaration_inputs_.Reset();
+  for (auto &texture : textures_)
+    texture.Reset();
+  for (auto &texture : texture_sources_)
+    texture.Reset();
+  depth_stencil_.Reset();
+  depth_stencil_view_.Reset();
+  current_target_.Reset();
+  current_target_view_.Reset();
+  back_buffer_surface_.Reset();
+  render_target_.Reset();
+  back_buffer_texture_.Reset();
+  swap_chain_.Reset();
+  up_scratch_.Reset();
+  up_index_scratch_.Reset();
+  up_scratch_size_ = 0;
+  up_index_scratch_size_ = 0;
+}
+
+// The state a Reset loses (Microsoft Learn, IDirect3DDevice9::Reset: "all state information is lost"): the streams and
+// indices, the shaders set and the declaration, the textures and the texture stages' samplers and operations, the
+// constants, the transforms (which start identity again), and the render states, which go back to the defaults a device
+// is made with. The shader objects an application made are not destroyed: Reset only unbinds them, as D3D9's shaders
+// survive a Reset.
+void
+MTLD3D9Device::reset_state() {
+  stream_source_.Reset();
+  stream_buffer_.Reset();
+  stream_offset_ = 0;
+  stream_stride_ = 0;
+  indices_.Reset();
+  index_buffer_.Reset();
+  up_scratch_.Reset();
+  up_index_scratch_.Reset();
+  up_scratch_size_ = 0;
+  up_index_scratch_size_ = 0;
+  vertex_shader_.Reset();
+  pixel_shader_.Reset();
+  declaration_.Reset();
+  declaration_inputs_.Reset();
+  fvf_ = 0;
+  for (auto &texture : textures_)
+    texture.Reset();
+  for (auto &texture : texture_sources_)
+    texture.Reset();
+  for (auto &sampler : sampler_states_)
+    sampler = SamplerState9();
+  texture_stage_ = TextureStageState9();
+  vertex_constants_f_.fill(0.0f);
+  vertex_constants_i_.fill(0);
+  vertex_constants_b_.fill(0);
+  pixel_constants_f_.fill(0.0f);
+  pixel_constants_i_.fill(0);
+  pixel_constants_b_.fill(0);
+  // the lighting state and the transforms are lost with everything else: the lights, their enables and the material go
+  // back to the defaults a device is made with, and the three matrices to the identity
+  state_.reset();
+  scissor_rect_ = RECT{};
+  in_scene_ = false;
+  recording_ = false;
+  recorded_keys_.clear();
+}
+
+// A windowed chain sized and formatted again. The application has to have let go of the implicit swap chain's back
+// buffer and of any depth-stencil surface it took first, as D3D9 requires ("an application should release any explicit
+// render targets, depth stencil surfaces, additional swap chains, state blocks, and D3DPOOL_DEFAULT resources"); a
+// reference it still holds is refused rather than left addressing storage that is gone.
+//
+// The caller's D3DPRESENT_PARAMETERS reports the new chain as zero in BackBufferCount, BackBufferWidth and
+// BackBufferHeight and D3DFMT_UNKNOWN in BackBufferFormat, as the method documents; the device keeps the values it
+// actually made.
 HRESULT
-MTLD3D9Device::init(IDXGIFactory2 *factory) {
-  const DXGI_FORMAT format = to_dxgi_format(present_.BackBufferFormat);
-  if (format == DXGI_FORMAT_UNKNOWN || !window_ || !present_.Windowed)
+MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *parameters) {
+  if (!parameters)
     return D3DERR_INVALIDCALL;
-  if (present_.MultiSampleType != D3DMULTISAMPLE_NONE)
-    return D3DERR_NOTAVAILABLE;
-
-  HRESULT hr = D3D11CreateDevice(adapter_.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                 nullptr, 0, D3D11_SDK_VERSION, &d3d11_device_, nullptr, &context_);
-  if (FAILED(hr)) {
-    ERR("D3D9: no D3D11 device over the adapter: 0x", std::hex, hr);
-    return D3DERR_NOTAVAILABLE;
+  // a fullscreen chain is a display mode this build has not: it presents only to a window (d3d9_direct3d.cpp's
+  // CheckDeviceType refuses one too), so a Reset into one would be a mode the game did not ask for
+  if (!parameters->Windowed) {
+    ERR_ONCE("D3D9: Reset to a fullscreen chain is not implemented yet: this build presents to a window.");
+    return D3DERR_INVALIDCALL;
   }
-  // the same context as the one that clears a part of a view; a context that is not the 11.1 one keeps every clear
-  // whole, which is what the clears below fall back to
-  context_.As(&context1_);
+  if (parameters->MultiSampleType != D3DMULTISAMPLE_NONE) {
+    ERR_ONCE("D3D9: Reset with a multisampled chain is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  // the flip model chain this device makes is D3DSWAPEFFECT_DISCARD's; a COPY chain's Present leaves the back buffer
+  // as it was, which this device's does not, so it is refused rather than presented as a discard's
+  if (parameters->SwapEffect != D3DSWAPEFFECT_DISCARD) {
+    ERR_ONCE("D3D9: Reset to a swap effect other than D3DSWAPEFFECT_DISCARD is not implemented yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  // the window a windowed chain presents to: the one the parameters name, or the one the device was made with. A window
+  // that is not one is refused, as D3D9 refuses it (IDirect3DDevice9::Reset: "If Windowed is TRUE ... hDeviceWindow must
+  // be a valid window"); presenting to a second window is not this build's yet
+  HWND target_window = parameters->hDeviceWindow ? parameters->hDeviceWindow : window_;
+  if (!IsWindow(target_window)) {
+    ERR_ONCE("D3D9: Reset names a window that is not one.");
+    return D3DERR_INVALIDCALL;
+  }
+  if (target_window != window_) {
+    ERR_ONCE("D3D9: Reset to a window other than the device's is not implemented yet: present to the window the device "
+             "was made with.");
+    return D3DERR_INVALIDCALL;
+  }
+  // nothing to resize, and nothing to make a recovery's chain over: a chain the device was made with, or the one an
+  // earlier failed recovery releases (a lost device is still one a Reset can try again)
+  if (!swapchain_ && !swap_chain_)
+    return D3DERR_INVALIDCALL;
 
-  // the fixed-function path a device draws through, made once with the device: a device without it can clear and
-  // present, but not draw, and this milestone's device draws
-  hr = fixed_function_.initialize(d3d11_device_.Get());
-  if (FAILED(hr))
-    return D3DERR_NOTAVAILABLE;
+  // D3DFMT_UNKNOWN is the desktop's format for a windowed chain; this build's desktop is X8R8G8B8, and a chain that
+  // already had a format keeps it
+  D3DFORMAT format = parameters->BackBufferFormat;
+  if (format == D3DFMT_UNKNOWN)
+    format = present_.BackBufferFormat != D3DFMT_UNKNOWN ? present_.BackBufferFormat : D3DFMT_X8R8G8B8;
+  const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
+  if (dxgi_format == DXGI_FORMAT_UNKNOWN)
+    return D3DERR_INVALIDCALL;
+
+  // a width or height of zero is the window's client area, as CreateDevice's is
+  UINT width = parameters->BackBufferWidth, height = parameters->BackBufferHeight;
+  if (!width || !height) {
+    RECT client{};
+    if (!window_ || !GetClientRect(window_, &client))
+      return D3DERR_INVALIDCALL;
+    if (!width)
+      width = (UINT)(client.right - client.left);
+    if (!height)
+      height = (UINT)(client.bottom - client.top);
+  }
+  if (!width || !height)
+    return D3DERR_INVALIDCALL;
+
+  // A device whose frames failed is the one a Reset replaces, so nothing it holds is the application's to have released
+  // first: the surfaces of the old device are gone with it. A live one keeps the references it has, and an application
+  // reference above them would be left addressing storage the resize replaces
+  const bool lost = FAILED(lost_reason());
+  if (!lost) {
+    const ULONG device_back_buffer_references =
+        back_buffer_surface_
+            ? 1 + (current_target_.Get() == static_cast<IDirect3DSurface9 *>(back_buffer_surface_.Get()) ? 1 : 0)
+            : 0;
+    if (back_buffer_surface_ && back_buffer_surface_->public_references() > device_back_buffer_references) {
+      ERR_ONCE("D3D9: Reset needs every application reference to the implicit swap chain's back buffer released first.");
+      return D3DERR_INVALIDCALL;
+    }
+    if (depth_stencil_ && depth_stencil_->public_references() > 1) {
+      ERR_ONCE("D3D9: Reset needs every application reference to a depth-stencil surface released first.");
+      return D3DERR_INVALIDCALL;
+    }
+  }
+
+  if (lost) {
+    // the chain the parameters describe, over the device the Reset makes: the fields the application left to the window
+    // are the sizes it asked for, and a chain the device already had keeps its format
+    present_ = *parameters;
+    present_.Windowed = TRUE;
+    present_.hDeviceWindow = window_;
+    present_.BackBufferWidth = width;
+    present_.BackBufferHeight = height;
+    present_.BackBufferFormat = format;
+    present_.MultiSampleType = D3DMULTISAMPLE_NONE;
+    present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    const HRESULT recovered = recreate_after_loss();
+    if (FAILED(recovered)) {
+      ERR("D3D9: the device a Reset was to make is not there; the device stays lost (0x", std::hex, recovered, ").");
+      return D3DERR_DEVICENOTRESET;
+    }
+    return finish_reset(parameters);
+  }
+
+  if (!swapchain_)
+    return D3DERR_INVALIDCALL;
+
+  // nothing of the old frame stays bound while the chain replaces its buffers, which is what DXGI's ResizeBuffers needs
+  // (IDXGISwapChain::ResizeBuffers: "release all of its direct and indirect references on the back buffers")
+  context_->Flush();
+  context_->OMSetRenderTargets(0, nullptr, nullptr);
+  current_target_.Reset();
+  current_target_view_.Reset();
+  depth_stencil_.Reset();
+  depth_stencil_view_.Reset();
+  invalidate_back_buffer();
+
+  // a flip model chain has at least two buffers; D3D9's BackBufferCount of zero is one back buffer, which a flip chain
+  // cannot turn between, so the chain keeps the two this build makes
+  const UINT buffer_count = std::max<UINT>(parameters->BackBufferCount, 2);
+  HRESULT hr = swapchain_->ResizeBuffers(buffer_count, width, height, dxgi_format, 0);
+  if (FAILED(hr)) {
+    ERR("D3D9: the chain did not resize: 0x", std::hex, hr);
+    return D3DERR_INVALIDCALL;
+  }
+  DXGI_SWAP_CHAIN_DESC1 created{};
+  swapchain_->GetDesc1(&created);
+  width_ = created.Width;
+  height_ = created.Height;
+
+  present_ = *parameters;
+  present_.Windowed = TRUE;
+  present_.hDeviceWindow = window_;
+  present_.BackBufferWidth = created.Width;
+  present_.BackBufferHeight = created.Height;
+  present_.BackBufferCount = created.BufferCount;
+  present_.BackBufferFormat = format;
+  present_.MultiSampleType = D3DMULTISAMPLE_NONE;
+  present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
+  if (swap_chain_)
+    swap_chain_->set_present_parameters(present_);
+  return finish_reset(parameters);
+}
+
+// What both roads to a new chain leave the device with: the state a Reset loses, the new frame as the whole viewport and
+// scissor rectangle, an automatic depth-stencil surface of the new size (so depth keeps working across a resolution
+// change, or a recovery, without the application making another), and the fields D3D9 leaves to be queried again
+// (Microsoft Learn, IDirect3DDevice9::Reset: "BackBufferCount, BackBufferWidth, and BackBufferHeight are set to zero.
+// BackBufferFormat is set to D3DFMT_UNKNOWN for windowed mode only").
+HRESULT
+MTLD3D9Device::finish_reset(D3DPRESENT_PARAMETERS *parameters) {
+  reset_state();
+  viewport_ = D3DVIEWPORT9{0, 0, width_, height_, 0.0f, 1.0f};
+  scissor_rect_ = RECT{0, 0, (LONG)width_, (LONG)height_};
+  if (present_.EnableAutoDepthStencil) {
+    ComPtr<IDirect3DSurface9> auto_depth;
+    HRESULT hr = CreateDepthStencilSurface(
+        width_, height_, present_.AutoDepthStencilFormat, D3DMULTISAMPLE_NONE, 0, TRUE, &auto_depth, nullptr
+    );
+    if (SUCCEEDED(hr))
+      hr = SetDepthStencilSurface(auto_depth.Get());
+    if (FAILED(hr)) {
+      ERR("D3D9: no automatic depth-stencil surface of format {} for the chain a Reset made: {}",
+          (uint32_t)present_.AutoDepthStencilFormat, (uint32_t)hr);
+      return D3DERR_INVALIDCALL;
+    }
+    state_.render().set(D3DRS_ZENABLE, TRUE);
+  }
+  parameters->BackBufferWidth = 0;
+  parameters->BackBufferHeight = 0;
+  parameters->BackBufferCount = 0;
+  parameters->BackBufferFormat = D3DFMT_UNKNOWN;
+  return S_OK;
+}
+
+// The chain a device presents through, over the device it has now. A DXGI chain belongs to the device that made it, so a
+// Reset that recreates the device makes a new chain; the chain object an application may hold is the same one, and it
+// presents this device's frames through the device it asks (IMTLD3D9PresentSource).
+HRESULT
+MTLD3D9Device::create_chain(IDXGIFactory2 *factory) {
+  const DXGI_FORMAT format = to_dxgi_format(present_.BackBufferFormat);
+  if (format == DXGI_FORMAT_UNKNOWN || !window_ || !present_.Windowed || !factory)
+    return D3DERR_INVALIDCALL;
 
   DXGI_SWAP_CHAIN_DESC1 desc{};
   desc.Width = present_.BackBufferWidth;
@@ -48,7 +288,7 @@ MTLD3D9Device::init(IDXGIFactory2 *factory) {
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   desc.Flags = 0;
 
-  hr = factory->CreateSwapChainForHwnd(d3d11_device_.Get(), window_, &desc, nullptr, nullptr, &swapchain_);
+  HRESULT hr = factory->CreateSwapChainForHwnd(d3d11_device_.Get(), window_, &desc, nullptr, nullptr, &swapchain_);
   if (FAILED(hr)) {
     ERR("D3D9: no swap chain for the window: 0x", std::hex, hr);
     return D3DERR_NOTAVAILABLE;
@@ -63,8 +303,42 @@ MTLD3D9Device::init(IDXGIFactory2 *factory) {
   present_.BackBufferCount = created.BufferCount;
   present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
 
-  swap_chain_.Attach(new MTLD3D9SwapChain(static_cast<IDirect3DDevice9 *>(this),
-                                          static_cast<IMTLD3D9PresentSource *>(this), present_));
+  if (swap_chain_)
+    swap_chain_->set_present_parameters(present_);
+  else
+    swap_chain_.Attach(new MTLD3D9SwapChain(
+        static_cast<IDirect3DDevice9 *>(this), static_cast<IMTLD3D9PresentSource *>(this), present_
+    ));
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::init(IDXGIFactory2 *factory) {
+  if (to_dxgi_format(present_.BackBufferFormat) == DXGI_FORMAT_UNKNOWN || !window_ || !present_.Windowed)
+    return D3DERR_INVALIDCALL;
+  if (present_.MultiSampleType != D3DMULTISAMPLE_NONE)
+    return D3DERR_NOTAVAILABLE;
+
+  factory_ = factory;
+  HRESULT hr = D3D11CreateDevice(adapter_.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                 nullptr, 0, D3D11_SDK_VERSION, &d3d11_device_, nullptr, &context_);
+  if (FAILED(hr)) {
+    ERR("D3D9: no D3D11 device over the adapter: 0x", std::hex, hr);
+    return D3DERR_NOTAVAILABLE;
+  }
+  // the same context as the one that clears a part of a view; a context that is not the 11.1 one keeps every clear
+  // whole, which is what the clears below fall back to
+  context_.As(&context1_);
+
+  // the fixed-function path a device draws through, made once with the device: a device without it can clear and
+  // present, but not draw, and this milestone's device draws
+  hr = fixed_function_.initialize(d3d11_device_.Get());
+  if (FAILED(hr))
+    return D3DERR_NOTAVAILABLE;
+
+  hr = create_chain(factory);
+  if (FAILED(hr))
+    return hr;
 
   // the viewport of a device that has drawn nothing yet is its chain's whole back buffer, as D3D9's is
   viewport_ = D3DVIEWPORT9{0, 0, width_, height_, 0.0f, 1.0f};
@@ -84,8 +358,79 @@ MTLD3D9Device::init(IDXGIFactory2 *factory) {
     }
     // the documented default for D3DRS_ZENABLE follows EnableAutoDepthStencil: a device whose chain made a depth
     // surface starts with depth testing on, and one without starts with it off (the member's own default)
-    render_state_.set(D3DRS_ZENABLE, TRUE);
+    state_.render().set(D3DRS_ZENABLE, TRUE);
   }
+  return S_OK;
+}
+
+// A lost device's Reset: the Direct3D 11 device the frames failed on is released with everything the device held on it,
+// and a new one is made over the same adapter. D3D9's contract for Reset is that "all state information is lost" and
+// that the state-block, default and dynamic pools go with it, while "D3DPOOL_MANAGED resources ... are not affected by a
+// device reset": the state is reset by the caller, and the managed pool's resources are the ones registered with the
+// device, each putting its levels onto the new one.
+//
+// Nothing of the failed device is waited for: what was submitted to a removed device is cancelled by it, and the queue
+// behind it has already reported the fault the device is lost for.
+HRESULT
+MTLD3D9Device::recreate_after_loss() {
+  // every reference the device holds on the old device's objects, before the device itself goes: the frame's views, the
+  // default texture and the constant buffers, the scratch buffers a _UP draw staged into, the state objects and the
+  // shaders the fixed-function path draws with, and the chain
+  invalidate_back_buffer();
+  depth_stencil_.Reset();
+  depth_stencil_view_.Reset();
+  current_target_.Reset();
+  current_target_view_.Reset();
+  target_width_ = target_height_ = 0;
+  default_texture_.Reset();
+  default_texture_view_.Reset();
+  vs_constants_f_.Reset();
+  vs_constants_i_.Reset();
+  vs_constants_b_.Reset();
+  ps_constants_f_.Reset();
+  ps_constants_i_.Reset();
+  ps_constants_b_.Reset();
+  ps_alpha_constants_.Reset();
+  up_scratch_.Reset();
+  up_index_scratch_.Reset();
+  up_scratch_size_ = 0;
+  up_index_scratch_size_ = 0;
+  stream_source_.Reset();
+  stream_buffer_.Reset();
+  indices_.Reset();
+  index_buffer_.Reset();
+  vertex_shader_.Reset();
+  pixel_shader_.Reset();
+  declaration_.Reset();
+  declaration_inputs_.Reset();
+  for (auto &texture : textures_)
+    texture.Reset();
+  for (auto &texture : texture_sources_)
+    texture.Reset();
+  fixed_function_.release_device();
+  swapchain_.Reset();
+  context1_.Reset();
+  context_.Reset();
+  d3d11_device_.Reset();
+
+  HRESULT hr = D3D11CreateDevice(adapter_.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                 nullptr, 0, D3D11_SDK_VERSION, &d3d11_device_, nullptr, &context_);
+  if (FAILED(hr)) {
+    ERR("D3D9: no Direct3D 11 device to reset onto: 0x", std::hex, hr);
+    return D3DERR_NOTAVAILABLE;
+  }
+  context_.As(&context1_);
+  hr = fixed_function_.initialize(d3d11_device_.Get());
+  if (FAILED(hr))
+    return D3DERR_NOTAVAILABLE;
+  hr = create_chain(factory_.Get());
+  if (FAILED(hr))
+    return hr;
+
+  // the managed pool survives: each of its textures puts the levels the game authored back onto the new device. A
+  // texture that could not be rebuilt is reported rather than drawn as something the game did not make
+  for (IMTLD3D9ResetTarget *target : reset_targets_)
+    target->reset_device(d3d11_device_.Get(), context_);
   return S_OK;
 }
 
@@ -109,8 +454,11 @@ MTLD3D9Device::ensure_back_buffer() {
 
   back_buffer_texture_ = buffer;
   render_target_ = view;
-  back_buffer_surface_.Attach(new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), back_buffer_texture_,
-                                                 present_.BackBufferFormat, D3DPOOL_DEFAULT, false, context_));
+  back_buffer_surface_.Attach(new MTLD3D9Surface(
+      static_cast<IDirect3DDevice9 *>(this), back_buffer_texture_, present_.BackBufferFormat, D3DPOOL_DEFAULT, false,
+      context_, 0, false, nullptr, 0,
+      swap_chain_ ? static_cast<IDirect3DSwapChain9 *>(swap_chain_.Get()) : nullptr
+  ));
   return S_OK;
 }
 
@@ -127,13 +475,28 @@ MTLD3D9Device::ensure_render_target() {
   current_target_view_ = render_target_;
   target_width_ = width_;
   target_height_ = height_;
+  // D3D9's scissor starts as the whole target
+  if (!scissor_rect_.right && !scissor_rect_.bottom)
+    scissor_rect_ = RECT{0, 0, (LONG)width_, (LONG)height_};
   return S_OK;
+}
+
+// D3D9's lost device is the removal of the D3D11 device under it: the frames after a failure are not ones to draw or
+// present, and the calls that do answer D3DERR_DEVICELOST until the application resets the device
+// (IDirect3DDevice9::TestCooperativeLevel)
+HRESULT
+MTLD3D9Device::lost_reason() const {
+  if (!d3d11_device_)
+    return S_OK;
+  return FAILED(d3d11_device_->GetDeviceRemovedReason()) ? D3DERR_DEVICELOST : S_OK;
 }
 
 HRESULT
 MTLD3D9Device::present(const RECT *, const RECT *, HWND, const RGNDATA *, DWORD) {
   if (!swapchain_)
     return D3DERR_INVALIDCALL;
+  if (HRESULT lost = lost_reason(); FAILED(lost))
+    return lost;
 
   // what was cleared and drawn into goes to the window before the chain turns
   // over
@@ -221,11 +584,17 @@ MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *render_target, IDirect3DSu
   D3D11_TEXTURE2D_DESC source_desc, target_desc;
   source->texture()->GetDesc(&source_desc);
   target->texture()->GetDesc(&target_desc);
-  if (source_desc.Width != target_desc.Width || source_desc.Height != target_desc.Height ||
+  // a level's size is the texture's shifted down to that level: the destination is that level's size
+  const UINT source_width = std::max(1u, source_desc.Width >> source->level());
+  const UINT source_height = std::max(1u, source_desc.Height >> source->level());
+  if (source_width != target_desc.Width || source_height != target_desc.Height ||
       source_desc.Format != target_desc.Format)
     return D3DERR_INVALIDCALL;
 
-  context_->CopyResource(target->texture(), source->texture());
+  // the surface's own level: a level of a mipmapped texture is read back as that level, not as the top one. the
+  // destination surface is the level's size and format, which is what a subresource copy needs (Microsoft Learn,
+  // ID3D11DeviceContext::CopySubresourceRegion)
+  context_->CopySubresourceRegion(target->texture(), 0, 0, 0, 0, source->texture(), source->level(), nullptr);
   return S_OK;
 }
 
@@ -235,10 +604,16 @@ MTLD3D9Device::CreateOffscreenPlainSurface(UINT width, UINT height, D3DFORMAT fo
   if (!surface || shared_handle)
     return D3DERR_INVALIDCALL;
   *surface = nullptr;
-  // a default pool surface is a texture a device may draw into, which this
-  // milestone has none of: the surfaces a frame is read back into are the CPU's
-  if (pool != D3DPOOL_SYSTEMMEM)
+  // a system-memory surface is the CPU's, and a default one is the device's: a render target ColorFill fills, or the
+  // destination StretchRect and UpdateSurface write. A default surface takes a render target view when its format can,
+  // which is what ColorFill needs (an offscreen surface of a compressed format has none and is only a copy's source).
+  if (pool != D3DPOOL_SYSTEMMEM && pool != D3DPOOL_DEFAULT)
     return D3DERR_INVALIDCALL;
+  // a default-pool surface is the device's, and the device the frames failed on is replaced by a Reset
+  if (pool == D3DPOOL_DEFAULT) {
+    if (HRESULT lost = lost_reason(); FAILED(lost))
+      return lost;
+  }
   const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
   if (dxgi_format == DXGI_FORMAT_UNKNOWN || !width || !height)
     return D3DERR_INVALIDCALL;
@@ -250,16 +625,30 @@ MTLD3D9Device::CreateOffscreenPlainSurface(UINT width, UINT height, D3DFORMAT fo
   desc.ArraySize = 1;
   desc.Format = dxgi_format;
   desc.SampleDesc.Count = 1;
-  desc.Usage = D3D11_USAGE_STAGING;
-  desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+  if (pool == D3DPOOL_SYSTEMMEM) {
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+  } else {
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+  }
   ComPtr<ID3D11Texture2D> texture;
-  if (FAILED(d3d11_device_->CreateTexture2D(&desc, nullptr, &texture)))
+  HRESULT hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &texture);
+  if (FAILED(hr) && pool == D3DPOOL_DEFAULT) {
+    // the format takes no render target view: the surface is a copy's source or destination, not a fill's
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &texture);
+    if (FAILED(hr)) {
+      desc.BindFlags = 0;
+      hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &texture);
+    }
+  }
+  if (FAILED(hr))
     return D3DERR_INVALIDCALL;
 
   ComPtr<MTLD3D9Surface> result;
-  result.Attach(
-      new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, D3DPOOL_SYSTEMMEM, true, context_)
-  );
+  result.Attach(new MTLD3D9Surface(static_cast<IDirect3DDevice9 *>(this), texture, format, pool,
+                                   pool == D3DPOOL_SYSTEMMEM, context_, 0));
   *surface = result.Detach();
   return S_OK;
 }

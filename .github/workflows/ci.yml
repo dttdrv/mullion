@@ -521,7 +521,7 @@ jobs:
 
       - name: Build with tests
         run: |
-          meson setup --cross-file build-win64.txt -Denable_tests=true -Db_ndebug=false -Dnative_llvm_path="${{ vars.MULLION_LLVM }}" -Dwine_install_path="${{ vars.MULLION_WINE }}" build --buildtype release
+          meson setup --cross-file build-win64.txt -Denable_tests=true -Denable_d3d9=true -Db_ndebug=false -Dnative_llvm_path="${{ vars.MULLION_LLVM }}" -Dwine_install_path="${{ vars.MULLION_WINE }}" build --buildtype release
           meson compile -C build
 
       # as the GPU itself and as an M3's, the families the preview supports, under Metal's validation
@@ -539,6 +539,158 @@ jobs:
           path: |
             build/meson-logs/tests
             build/meson-logs/benchmarks
+
+  # the 32-bit runtime, which needs a Wine that loads a 32-bit Windows half through an i386 unix half. named apart from
+  # the host above because a merged-64-bit Wine answers the 64-bit tests alone.
+  test-gpu-x86-d3d9:
+    if: vars.MULLION_WINE_X86 != ''
+    runs-on: [self-hosted, macOS, ARM64]
+    env:
+      MULLION_TEST_LOCK: ${{ runner.temp }}/mullion-gpu.lock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      # the host supplies i686-w64-mingw32-gcc, as the release jobs' mingw-w64 does; the cross file names it
+      - name: Build WoW64 with tests
+        run: |
+          meson setup --cross-file build-win32.txt -Denable_tests=true -Denable_d3d9=true -Db_ndebug=false -Dnative_llvm_path="${{ vars.MULLION_LLVM }}" -Dwine_install_path="${{ vars.MULLION_WINE_X86 }}" build32 --buildtype release
+          meson compile -C build32
+
+      # one inventory, at one bitness: another --build supplies a fallback library, not another architecture's tests.
+      # the prefix is run.py's default, tests-prefix inside the build, since this host's 32-bit prefix is its own.
+      - name: D3D9 tests
+        run: python3 tests/run.py --build build32 --wine "${{ vars.MULLION_WINE_X86 }}" --family native --validate d3d9_
+
+      - name: Test evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gpu-tests-x86
+          path: build32/meson-logs/tests
+
+  # D3D9's own release artifacts, for the two Windows architectures, apart from the default release: the option is off
+  # by default (meson.options), and these name what they carry
+  build-clang-release-x86_64-windows-cross-d3d9:
+    runs-on: macos-15
+    needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Restore Wine Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
+          path: ./toolchains/wine
+
+      - name: Restore LLVM-MinGW Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
+
+      - name: Restore LLVM Darwin Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          path: ./toolchains/llvm-darwin
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 --break-system-packages
+
+      - name: Build
+        run: |
+          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          meson setup --cross-file build-win64.txt -Denable_d3d9=true -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
+          meson compile -C build
+          meson install -C build
+
+      - name: Verify the archive carries the D3D9 library
+        run: test -f install/x86_64-windows/d3d9.dll
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-release-x86_64-windows-cross-d3d9
+          path: install
+
+  build-clang-release-x86-windows-cross-d3d9:
+    runs-on: macos-15
+    needs: [setup-wine, setup-llvm-mingw]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Restore Wine Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
+          path: ./toolchains/wine
+
+      - name: Restore LLVM-MinGW Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 --break-system-packages
+
+      - name: Build WoW64
+        run: |
+          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          meson setup --cross-file build-win32.txt -Denable_d3d9=true -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
+          meson compile -C build
+          meson install -C build
+
+      - name: Verify the archive carries the 32-bit D3D9 library
+        run: test -f install/i386-windows/d3d9.dll
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-release-x86-windows-cross-d3d9
+          path: install
+
+  package-d3d9:
+    runs-on: macos-15
+    needs: [build-clang-release-x86_64-windows-cross-d3d9, build-clang-release-x86-windows-cross-d3d9]
+    env:
+      PACKAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
+    steps:
+      - name: Download Win64 D3D9 Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: clang-release-x86_64-windows-cross-d3d9
+          path: ./combined/${{ env.PACKAGE_TAG }}
+
+      - name: Download Win32 D3D9 Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: clang-release-x86-windows-cross-d3d9
+          path: ./combined/${{ env.PACKAGE_TAG }}
+
+      - name: Create Tarball
+        run: tar -czf mullion-d3d9-${{ env.PACKAGE_TAG }}.tar.gz -C ./combined --exclude='*.a' ${{ env.PACKAGE_TAG }}
+
+      - name: Upload Combined Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: mullion-d3d9-${{ env.PACKAGE_TAG }}
+          path: mullion-d3d9-${{ env.PACKAGE_TAG }}.tar.gz
 
   build-clang-release-x86-windows-cross:
     runs-on: macos-15

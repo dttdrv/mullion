@@ -78,6 +78,20 @@ def builtin(pe):
         return file.read(16) == b"Wine builtin DLL"
 
 
+def compilers(prefix):
+    """the Windows shader compilers the tests load, from the project's pinned copies (README.md) into the prefix: a
+    prefix that falls back on Wine's own d3dcompiler answers `D3DCompile` with vkd3d-shader, which compiles some
+    Microsoft-profile programs differently, so a test of 'Microsoft's compiler' would measure another compiler"""
+    source = Path(__file__).resolve().parents[1] / "toolchains" / "shadercompilers"
+    windows = prefix / "drive_c" / "windows" / "system32"
+    installed = []
+    for name in ("d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll"):
+        if (source / name).is_file():
+            shutil.copy2(source / name, windows / name)
+            installed.append(name)
+    return installed
+
+
 def install(wine, prefix, unix, pe):
     windows = prefix / "drive_c" / "windows"
     for path in pe.values():
@@ -453,6 +467,9 @@ def environment(args):
                    env=base, stdin=subprocess.DEVNULL, check=True)
     if not args.no_install:
         install(wine, prefix, unix, pe)
+        installed = compilers(prefix)
+        if installed:
+            print("shader compilers: " + ", ".join(installed) + f" in {prefix}")
     WHERE.update(tool=[binary, *sorted(path for build in builds for path in build.glob("tests/*/where.exe"))][:2],
                  files={path.name.lower(): path for path in pe.values()},
                  symbolizer=Path(shutil.which(compiler(builds)[0])).resolve().parent / "llvm-symbolizer")

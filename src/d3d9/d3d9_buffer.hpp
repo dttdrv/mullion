@@ -102,6 +102,8 @@ public:
 
 private:
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
+  PrivateData9 private_data_;
   DWORD fvf_ = 0;
   D3DPOOL pool_ = D3DPOOL_DEFAULT;
   Buffer9Storage storage_;
@@ -154,6 +156,8 @@ public:
 
 private:
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
+  PrivateData9 private_data_;
   D3DPOOL pool_ = D3DPOOL_DEFAULT;
   Buffer9Storage storage_;
 };

@@ -12,8 +12,12 @@
 //   D3DRS_TEXTUREFACTOR, and the alpha op on its own), the sampler's addressing does (WRAP against CLAMP), and a stage
 //   whose first colour argument is the texture is not processed at all while no texture is bound, which is the vertex
 //   colour; a stage that names the texture in another argument samples white.
-// - what the device refuses, with D3D9's code and the last good value kept: a texture usage flag, a system-memory pool,
-//   a level count past the chain, a format this build has none of, a default-pool texture with more than one level, a
+// - a default-pool texture is made with the whole chain the size has (UpdateTexture fills its levels; a managed
+//   texture's levels are the CPU's), and its levels are not the CPU's to lock.
+// - a render-target texture is made in the default pool with a render target view per level, and says so in each
+//   level's description; a render-target texture in another pool and a usage this build has not are refused.
+// - what the device refuses, with D3D9's code and the last good value kept: a system-memory pool,
+//   a level count past the chain, a format this build has none of, a
 //   lock of a texture whose bytes are not the CPU's, a level that is not there, a stage or sampler the device does not
 //   have, a sampler or stage state (or value) this build has no meaning for, a lock of a level that is not the locked
 //   one, and an FVF with more than one set of texture coordinates.
@@ -452,8 +456,18 @@ main() {
 
   // what the device refuses, and what it keeps
   ComPtr<IDirect3DTexture9> refused;
-  expect(device->CreateTexture(kTextureSize, kTextureSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
-                               &refused, nullptr) == D3DERR_INVALIDCALL,
+  ComPtr<IDirect3DTexture9> render_target_texture;
+  CHECK(device->CreateTexture(kTextureSize, kTextureSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                              &render_target_texture, nullptr));
+  D3DSURFACE_DESC render_target_desc{};
+  expect(SUCCEEDED(render_target_texture->GetLevelDesc(0, &render_target_desc)) &&
+             (render_target_desc.Usage & D3DUSAGE_RENDERTARGET) && render_target_desc.Pool == D3DPOOL_DEFAULT,
+         "a render-target texture's level is not a default-pool render target");
+  expect(device->CreateTexture(kTextureSize, kTextureSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+                               D3DPOOL_MANAGED, &refused, nullptr) == D3DERR_INVALIDCALL,
+         "a render-target texture in a managed pool is taken");
+  expect(device->CreateTexture(kTextureSize, kTextureSize, 1, D3DUSAGE_AUTOGENMIPMAP, D3DFMT_A8R8G8B8,
+                               D3DPOOL_DEFAULT, &refused, nullptr) == D3DERR_INVALIDCALL,
          "a texture usage flag this build has not is taken");
   expect(device->CreateTexture(kTextureSize, kTextureSize, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &refused,
                                nullptr) == D3DERR_INVALIDCALL,
@@ -470,9 +484,17 @@ main() {
   ComPtr<IDirect3DTexture9> default_pool;
   CHECK(device->CreateTexture(kTextureSize, kTextureSize, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &default_pool,
                               nullptr));
-  expect(device->CreateTexture(kTextureSize, kTextureSize, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &refused, nullptr) ==
-             D3DERR_INVALIDCALL,
-         "a default-pool texture whose levels nothing can fill is taken");
+  // a default-pool texture is the whole chain its size has, as D3D9's is: UpdateTexture fills its levels, and
+  // GetLevelCount is the count the size implies
+  ComPtr<IDirect3DTexture9> default_chain;
+  CHECK(device->CreateTexture(kTextureSize, kTextureSize, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &default_chain,
+                              nullptr));
+  expect(default_chain->GetLevelCount() == 4, "a default-pool texture did not keep the chain its size has");
+  D3DSURFACE_DESC smallest{};
+  expect(SUCCEEDED(default_chain->GetLevelDesc(3, &smallest)) && smallest.Width == 1 && smallest.Height == 1,
+         "a default-pool texture's last level is not one texel");
+  expect(default_chain->LockRect(0, &locked, nullptr, 0) == D3DERR_INVALIDCALL,
+         "a default-pool texture's level took a lock");
   expect(default_pool->LockRect(0, &locked, nullptr, 0) == D3DERR_INVALIDCALL,
          "a texture whose bytes are not the CPU's took a lock");
   expect(default_pool->UnlockRect(0) == D3DERR_INVALIDCALL, "a texture unlocked a level it never locked");

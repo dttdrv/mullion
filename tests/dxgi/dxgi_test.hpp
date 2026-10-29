@@ -1,17 +1,34 @@
 // the same DXGI contract is reached with a D3D10/11 device or a D3D12 direct
-// queue.
+// queue. A build without D3D12 (x86, or -Denable_d3d12=false) compiles the
+// D3D12 half out, so the D3D10/11 contracts still run there.
 #pragma once
 #include "../d3d12/d3d12_test.hpp"
 #include <d3d10_1.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>
+#include <span>
+
+// the APIs a DXGI test loops over: D3D12's direct queue is only reached when the build has D3D12. The array is
+// static, so the span does not point at a function-local temporary (an initializer_list returned by value does).
+inline std::span<const UINT>
+dxgi_apis() {
+  static constexpr UINT apis[] = {10u, 101u, 11u
+#ifdef MULLION_TEST_NO_D3D12
+  };
+#else
+                                  , 12u};
+#endif
+  return apis;
+}
 
 struct DxgiDevice {
   ComPtr<ID3D10Device> d10;
   ComPtr<ID3D11Device> d11;
   ComPtr<ID3D11DeviceContext> immediate, deferred;
+#ifndef MULLION_TEST_NO_D3D12
   ComPtr<ID3D12Device> d12;
   ComPtr<ID3D12CommandQueue> queue;
+#endif
   ComPtr<IUnknown> input;
 
   HRESULT
@@ -50,6 +67,9 @@ struct DxgiDevice {
       hr = d11->CreateDeferredContext(0, &deferred);
       return FAILED(hr) ? hr : d11.As(&input);
     }
+#ifdef MULLION_TEST_NO_D3D12
+    return E_INVALIDARG;
+#else
     if (api != 12)
       return E_INVALIDARG;
     hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d12));
@@ -58,10 +78,12 @@ struct DxgiDevice {
     D3D12_COMMAND_QUEUE_DESC desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
     hr = d12->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue));
     return FAILED(hr) ? hr : queue.As(&input);
+#endif
   }
 
   HRESULT
   idle() {
+#ifndef MULLION_TEST_NO_D3D12
     if (d12) {
       ComPtr<ID3D12CommandAllocator> allocator;
       ComPtr<ID3D12GraphicsCommandList> list;
@@ -71,6 +93,7 @@ struct DxgiDevice {
       hr = d12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list));
       return FAILED(hr) ? hr : submit(d12.Get(), queue.Get(), list.Get());
     }
+#endif
     // staging Map waits for CPU-coherent retirement, including GDI presentation
     // callbacks; EVENT queries do not.
     const UINT value = 0x12345678;

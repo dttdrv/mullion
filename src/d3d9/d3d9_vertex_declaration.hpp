@@ -44,8 +44,9 @@ public:
   const std::vector<D3D11_INPUT_ELEMENT_DESC> &layout() override { return layout_; }
 
 private:
-  // the device that made the declaration owns it, so this is not a reference (a cycle)
+  // the device that made the declaration is held through a private reference (DeviceChildRef)
   IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
   std::vector<D3DVERTEXELEMENT9> elements_;
   std::vector<VertexInput> inputs_;
   // the semantic names the layout points into, and the layout itself

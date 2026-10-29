@@ -180,10 +180,17 @@ int main(int argc, char **argv) {
   // the surface a frame is read back into
   ComPtr<IDirect3DSurface9> readback;
   CHECK(device->CreateOffscreenPlainSurface(client, client, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &readback, nullptr));
+  // a default-pool offscreen surface is one the device makes (the fills and copies d3d9_transfer.cpp certifies)
   ComPtr<IDirect3DSurface9> pool_surface;
-  expect(device->CreateOffscreenPlainSurface(16, 16, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &pool_surface, nullptr) ==
-             D3DERR_INVALIDCALL,
-         "a default pool surface is reported as one this build makes");
+  expect(SUCCEEDED(device->CreateOffscreenPlainSurface(16, 16, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &pool_surface,
+                                                       nullptr)) &&
+             pool_surface,
+         "a default pool surface is not made");
+  if (pool_surface) {
+    D3DSURFACE_DESC pool_desc{};
+    expect(SUCCEEDED(pool_surface->GetDesc(&pool_desc)) && pool_desc.Pool == D3DPOOL_DEFAULT,
+           "a default pool surface is not default-pool");
+  }
 
   const D3DCOLOR colours[4] = {D3DCOLOR_XRGB(255, 0, 0), D3DCOLOR_XRGB(0, 255, 0), D3DCOLOR_XRGB(0, 0, 255),
                                D3DCOLOR_XRGB(255, 255, 0)};

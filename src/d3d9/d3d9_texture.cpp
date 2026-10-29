@@ -103,14 +103,17 @@ argument_of(DWORD argument) {
 
 Texture9Storage::Texture9Storage(
     ComPtr<ID3D11Texture2D> texture, const ComPtr<ID3D11ShaderResourceView> &view,
-    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool generate_mips
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool can_generate_mips, bool dynamic
 )
-    : texture_(std::move(texture)), view_(view), context_(context), pixel_bytes_(pixel_size(format)),
-      block_bytes_(block_size(format)), generate_mips_(generate_mips) {
-  D3D11_TEXTURE2D_DESC desc{};
-  texture_->GetDesc(&desc);
-  // a texture whose bytes are not the CPU's has none to keep: a lock of it is refused rather than answered with bytes
-  // that would never reach the texture
+    : texture_(std::move(texture)), view_(view), context_(context), lockable_(lockable), dynamic_(dynamic),
+      pixel_bytes_(pixel_size(format)), block_bytes_(block_size(format)), can_generate_mips_(can_generate_mips) {
+  texture_->GetDesc(&desc_);
+  const D3D11_TEXTURE2D_DESC &desc = desc_;
+  level_count_ = desc.MipLevels;
+  // A texture whose bytes are not the CPU's has none to keep: a lock of it is refused rather than answered with bytes
+  // that would never reach the texture. A dynamic texture's levels are the CPU's too: D3D11 maps a texture with
+  // WRITE_DISCARD only, so the level is authored here and uploaded, which is what its NOOVERWRITE lock needs to keep
+  // the pixels outside the rectangle it writes.
   if (!lockable)
     return;
   levels_.resize(desc.MipLevels);
@@ -132,17 +135,24 @@ Texture9Storage::Texture9Storage(
   }
 }
 
-// a managed texture's lock, as D3D9's contract has it: one level at a time, a rect inside the level, and no discard or
-// no-overwrite flag (those are a dynamic buffer's), READONLY an allowed one
+// A texture's lock, as D3D9's contract has it: one level at a time and a rect inside the level. A managed texture's
+// bytes are the CPU's copy, and READONLY is allowed on them. A dynamic texture's level is the application's to write:
+// DISCARD hands back the level as scratch, NOOVERWRITE promises not to write pixels the GPU may still read (so the
+// level's other bytes are kept), and READONLY is refused because the bytes written are the texture's (Microsoft Learn,
+// D3D9 lock flags).
 HRESULT
 Texture9Storage::lock(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWORD flags) {
   if (!locked)
     return D3DERR_INVALIDCALL;
   locked->Pitch = 0;
   locked->pBits = nullptr;
-  if (level >= levels_.size() || locked_level_ != kNoLevel)
+  if (level >= level_count_ || locked_level_ != kNoLevel)
     return D3DERR_INVALIDCALL;
-  if (flags & ~(DWORD)(D3DLOCK_READONLY | D3DLOCK_NOSYSLOCK))
+  const DWORD dynamic_allowed = D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE | D3DLOCK_NOSYSLOCK;
+  const DWORD allowed = dynamic_ ? dynamic_allowed : (D3DLOCK_READONLY | D3DLOCK_NOSYSLOCK);
+  if (flags & ~allowed)
+    return D3DERR_INVALIDCALL;
+  if (dynamic_ && (flags & D3DLOCK_DISCARD) && (flags & D3DLOCK_NOOVERWRITE))
     return D3DERR_INVALIDCALL;
 
   Level &one = levels_[level];
@@ -166,8 +176,9 @@ Texture9Storage::lock(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWOR
   return S_OK;
 }
 
-// what a lock's bytes become: the level's contents, uploaded into the texture, and the levels below the top one made
-// out of it when it was the top one that was written (D3D9's managed textures mipmap themselves)
+// What a lock's bytes become: the level's contents, uploaded into the texture. A managed texture's lower levels are the
+// ones the game authored, not a chain made again from the top level: D3DPOOL_MANAGED is not D3DUSAGE_AUTOGENMIPMAP, and
+// Wine's d3d9 uploads a managed texture's lock without generating mips (Microsoft Learn, D3DPOOL; Wine dlls/d3d9).
 HRESULT
 Texture9Storage::unlock() {
   if (locked_level_ == kNoLevel)
@@ -177,11 +188,40 @@ Texture9Storage::unlock() {
   locked_level_ = kNoLevel;
   read_only_ = false;
 
-  const Level &one = levels_[level];
-  if (!read_only)
+  if (!read_only) {
+    const Level &one = levels_[level];
     context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, 0);
-  if (level == 0 && levels_.size() > 1 && generate_mips_)
-    return generate_mips();
+  }
+  return S_OK;
+}
+
+// The texture again, on the device a Reset made: the same description, the same levels, and the CPU's copy of each of
+// them uploaded, so a managed texture samples the pixels the game authored before the device was lost. A level that was
+// locked when the device failed is uploaded as the bytes the lock holds.
+HRESULT
+Texture9Storage::reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) {
+  if (!device)
+    return D3DERR_INVALIDCALL;
+  ComPtr<ID3D11Texture2D> texture;
+  HRESULT hr = device->CreateTexture2D(&desc_, nullptr, &texture);
+  if (FAILED(hr)) {
+    ERR("D3D9: a texture of the size and format it had is not made on the device a Reset made: 0x", std::hex, hr);
+    return D3DERR_INVALIDCALL;
+  }
+  ComPtr<ID3D11ShaderResourceView> view;
+  hr = device->CreateShaderResourceView(texture.Get(), nullptr, &view);
+  if (FAILED(hr)) {
+    ERR("D3D9: the view of a texture a Reset rebuilt is not there: 0x", std::hex, hr);
+    return D3DERR_INVALIDCALL;
+  }
+  texture_ = texture;
+  view_ = view;
+  context_ = context;
+  for (UINT level = 0; level < levels_.size(); level++) {
+    const Level &one = levels_[level];
+    if (!one.bytes.empty())
+      context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, 0);
+  }
   return S_OK;
 }
 
@@ -189,17 +229,84 @@ HRESULT
 Texture9Storage::generate_mips() {
   if (!view_ || levels_.size() < 2)
     return S_OK;
+  if (!can_generate_mips_)
+    return D3DERR_NOTAVAILABLE;
   context_->GenerateMips(view_.Get());
+  // the generated levels are the GPU's; a later lock reads the CPU's bytes, so the chain is copied back now
+  return refresh_cpu_levels();
+}
+
+// The generated chain is read back through a staging texture: the copy waits for the device's work, so the bytes are the
+// ones the draws that follow would sample. Only a managed texture has CPU bytes to refresh.
+HRESULT
+Texture9Storage::refresh_cpu_levels() {
+  if (levels_.empty())
+    return S_OK;
+
+  ComPtr<ID3D11Device> device;
+  texture_->GetDevice(&device);
+  D3D11_TEXTURE2D_DESC desc{};
+  texture_->GetDesc(&desc);
+  D3D11_TEXTURE2D_DESC staging_desc = desc;
+  staging_desc.Usage = D3D11_USAGE_STAGING;
+  staging_desc.BindFlags = 0;
+  staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  staging_desc.MiscFlags = 0;
+
+  ComPtr<ID3D11Texture2D> staging;
+  if (!device || FAILED(device->CreateTexture2D(&staging_desc, nullptr, &staging))) {
+    ERR_ONCE("D3D9: the generated mip chain has no staging texture to read back through.");
+    return D3DERR_INVALIDCALL;
+  }
+  context_->CopyResource(staging.Get(), texture_.Get());
+
+  for (UINT level = 0; level < levels_.size(); level++) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(staging.Get(), level, D3D11_MAP_READ, 0, &mapped))) {
+      ERR_ONCE("D3D9: a generated mip level could not be mapped for read back.");
+      return D3DERR_INVALIDCALL;
+    }
+    Level &one = levels_[level];
+    const size_t row_bytes = std::min<size_t>(one.pitch, mapped.RowPitch);
+    const size_t rows = one.pitch ? one.bytes.size() / one.pitch : 0;
+    for (size_t row = 0; row < rows; row++)
+      memcpy(one.bytes.data() + row * one.pitch, (const char *)mapped.pData + row * mapped.RowPitch, row_bytes);
+    context_->Unmap(staging.Get(), level);
+  }
   return S_OK;
 }
 
 MTLD3D9Texture::MTLD3D9Texture(
     IDirect3DDevice9 *device, ComPtr<ID3D11Texture2D> texture, ComPtr<ID3D11ShaderResourceView> view,
-    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, bool generate_mips
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, bool can_generate_mips,
+    DWORD usage
 )
-    : device_(device), texture_(std::move(texture)), view_(std::move(view)),
-      storage_(texture_, view_, context, format, pool == D3DPOOL_MANAGED, generate_mips), format_(format),
-      pool_(pool), levels_count_(levels) {}
+    : device_(device), device_ref_(device), texture_(std::move(texture)), view_(std::move(view)),
+      storage_(
+          texture_, view_, context, format, pool == D3DPOOL_MANAGED || (usage & D3DUSAGE_DYNAMIC) != 0,
+          can_generate_mips, (usage & D3DUSAGE_DYNAMIC) != 0
+      ),
+      format_(format), pool_(pool), usage_(usage), levels_count_(levels) {
+  // the managed pool is the one a Reset keeps, so a managed texture is the one the device rebuilds on the device it
+  // makes; every other pool is the old device's (d3d9_device.cpp's Reset)
+  if (pool_ == D3DPOOL_MANAGED)
+    resources_.attach(device, this);
+}
+
+void
+MTLD3D9Texture::reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) {
+  if (pool_ != D3DPOOL_MANAGED || !device)
+    return;
+  if (FAILED(storage_.reset_device(device, context))) {
+    ERR_ONCE("D3D9: a managed texture did not survive the device a Reset made: a draw that samples it reads a texture "
+             "the old device has.");
+    return;
+  }
+  // the texture and the view a draw samples are the new device's, and so are the levels of a lock taken after the
+  // Reset; a level surface the application took before it still says what the texture it came from says
+  texture_ = storage_.texture();
+  view_ = storage_.view();
+}
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::QueryInterface(REFIID riid, void **object) {
@@ -231,18 +338,18 @@ MTLD3D9Texture::GetDevice(IDirect3DDevice9 **device) {
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Texture::SetPrivateData(REFGUID, const void *, DWORD, DWORD) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9Texture::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Texture::GetPrivateData(REFGUID, void *, DWORD *) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9Texture::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Texture::FreePrivateData(REFGUID) {
-  return D3DERR_INVALIDCALL;
+MTLD3D9Texture::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
 }
 
 DWORD STDMETHODCALLTYPE
@@ -302,35 +409,50 @@ MTLD3D9Texture::GenerateMipSubLevels() {
     ERR_ONCE("D3D9: the mip levels of a texture are its device's, which this build makes for a managed texture.");
     return;
   }
-  storage_.generate_mips();
+  if (storage_.generate_mips() == D3DERR_NOTAVAILABLE) {
+    ERR_ONCE("D3D9: this texture's format has no generated mip levels (its levels are the game's own blocks).");
+  }
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetLevelDesc(UINT level, D3DSURFACE_DESC *desc) {
-  if (level >= levels_.size() || !desc)
+  if (level >= levels_count_ || !desc)
     return D3DERR_INVALIDCALL;
-  return levels_[level]->GetDesc(desc);
+  D3D11_TEXTURE2D_DESC texture_desc{};
+  texture_->GetDesc(&texture_desc);
+  *desc = to_surface_desc(texture_desc, format_, pool_, level);
+  desc->Usage = usage_;
+  return S_OK;
 }
 
+// A level's surface names this texture as its container and holds a reference on it, so the surface can outlive the
+// application's texture reference and its lock still reaches the texture's storage. The texture does not hold its
+// surfaces (that would be the other half of a reference cycle); each call makes one with its own reference, as the
+// application's owns the reference GetSurfaceLevel hands back.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetSurfaceLevel(UINT level, IDirect3DSurface9 **surface_level) {
-  if (level >= levels_.size() || !surface_level)
+  if (level >= levels_count_ || !surface_level)
     return D3DERR_INVALIDCALL;
-  *surface_level = levels_[level].Get();
-  (*surface_level)->AddRef();
+  *surface_level = nullptr;
+  ComPtr<MTLD3D9Surface> surface;
+  surface.Attach(new MTLD3D9Surface(
+      device_, texture_, format_, pool_, false, storage_.context(), usage_, false,
+      static_cast<IMTLD3D9LockTarget *>(this), level, static_cast<IDirect3DBaseTexture9 *>(this)
+  ));
+  *surface_level = surface.Detach();
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::LockRect(UINT level, D3DLOCKED_RECT *locked, const RECT *rect, DWORD flags) {
-  if (!managed())
+  if (!storage_.lockable())
     return D3DERR_INVALIDCALL;
   return storage_.lock(level, rect, locked, flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::UnlockRect(UINT level) {
-  if (!managed())
+  if (!storage_.lockable())
     return D3DERR_INVALIDCALL;
   if (!storage_.locked() || level != storage_.locked_level())
     return D3DERR_INVALIDCALL;

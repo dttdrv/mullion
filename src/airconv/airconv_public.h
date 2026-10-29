@@ -6,7 +6,10 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 83
+// 84: WaveReadLaneFirst and WaveActiveAllEqual read the lowest lane that takes part in the wave operation rather than
+// the simd group's lane 0, which is a helper lane where a wave's first lanes are helpers. a shader with either lowers
+// differently, so the AIR 83 cached is not this build's.
+#define AIRCONV_VERSION 84
 
 #ifdef __cplusplus
 #include <string>

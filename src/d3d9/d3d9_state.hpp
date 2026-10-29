@@ -2,7 +2,10 @@
 // is not one of these is refused by the device rather than kept by nobody, and a value this build cannot turn into
 // D3D11 state is refused too, so a frame is never drawn with a state its application did not ask for (src/d3d9/README).
 // D3DRS_TEXTUREFACTOR is here as a value a texture stage's argument can name (d3d9_texture.hpp), not as D3D11 state:
-// it reaches a draw through the textured pixel shader's constants.
+// it reaches a draw through the textured pixel shader's constants. The lighting states are the same kind of value:
+// D3DRS_LIGHTING, D3DRS_SPECULARENABLE, D3DRS_AMBIENT, D3DRS_NORMALIZENORMALS, D3DRS_COLORVERTEX and the two material
+// sources a lit vertex's reflectances can come from are read by the lit vertex shader's constants (d3d9_lights.hpp), not
+// by a D3D11 state object.
 #pragma once
 #include "d3d9_common.hpp"
 
@@ -42,6 +45,34 @@ public:
   DWORD alpha_ref() const {
     return alpha_ref_;
   }
+  // D3DRS_SCISSORTESTENABLE, which clips every draw to the device's scissor rectangle (IDirect3DDevice9::SetScissorRect)
+  bool scissor_test_enabled() const {
+    return scissor_test_enable_ != FALSE;
+  }
+  // the lighting states a lit vertex reads (d3d9_lights.cpp): whether lighting is on at all, whether the specular term is
+  // added, whether a transformed normal is renormalised, the device's ambient colour, and whether the material's diffuse
+  // and ambient reflectances come from the vertex's colour (D3DRS_COLORVERTEX with each source's D3DMCS value)
+  bool lighting_enabled() const {
+    return lighting_ != FALSE;
+  }
+  bool specular_enabled() const {
+    return specular_enable_ != FALSE;
+  }
+  bool normalize_normals() const {
+    return normalize_normals_ != FALSE;
+  }
+  bool colour_vertex() const {
+    return colour_vertex_ != FALSE;
+  }
+  DWORD ambient() const {
+    return ambient_;
+  }
+  DWORD diffuse_source() const {
+    return diffuse_source_;
+  }
+  DWORD ambient_source() const {
+    return ambient_source_;
+  }
 
 private:
   // what D3D9's device starts with (the defaults D3DRENDERSTATETYPE names for each of these states). ZENABLE starts
@@ -64,6 +95,16 @@ private:
   DWORD alpha_test_enable_ = FALSE;
   DWORD alpha_func_ = D3DCMP_ALWAYS;
   DWORD alpha_ref_ = 0;
+  DWORD scissor_test_enable_ = FALSE;
+  // D3D9's documented defaults: lighting on, the specular term off, no ambient, normals as the game gives them, and the
+  // material's diffuse and ambient taken from the vertex's colour when it carries one
+  DWORD lighting_ = TRUE;
+  DWORD specular_enable_ = FALSE;
+  DWORD ambient_ = 0;
+  DWORD normalize_normals_ = FALSE;
+  DWORD colour_vertex_ = TRUE;
+  DWORD diffuse_source_ = D3DMCS_COLOR1;
+  DWORD ambient_source_ = D3DMCS_COLOR1;
 
   // the objects the values made, and whether one of them is out of date
   ComPtr<ID3D11RasterizerState> rasterizer_;

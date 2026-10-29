@@ -103,6 +103,14 @@ RenderState::supported(D3DRENDERSTATETYPE state) {
   case D3DRS_ALPHATESTENABLE:
   case D3DRS_ALPHAFUNC:
   case D3DRS_ALPHAREF:
+  case D3DRS_SCISSORTESTENABLE:
+  case D3DRS_LIGHTING:
+  case D3DRS_SPECULARENABLE:
+  case D3DRS_AMBIENT:
+  case D3DRS_NORMALIZENORMALS:
+  case D3DRS_COLORVERTEX:
+  case D3DRS_DIFFUSEMATERIALSOURCE:
+  case D3DRS_AMBIENTMATERIALSOURCE:
     return true;
   default:
     return false;
@@ -115,6 +123,8 @@ RenderState::all_states(UINT &count) {
       D3DRS_ZENABLE,     D3DRS_ZWRITEENABLE,  D3DRS_ZFUNC,           D3DRS_CULLMODE,          D3DRS_FILLMODE,
       D3DRS_SHADEMODE,   D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND,      D3DRS_DESTBLEND,         D3DRS_BLENDOP,
       D3DRS_COLORWRITEENABLE, D3DRS_TEXTUREFACTOR, D3DRS_ALPHATESTENABLE, D3DRS_ALPHAFUNC,     D3DRS_ALPHAREF,
+      D3DRS_SCISSORTESTENABLE, D3DRS_LIGHTING, D3DRS_SPECULARENABLE, D3DRS_AMBIENT, D3DRS_NORMALIZENORMALS,
+      D3DRS_COLORVERTEX, D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_AMBIENTMATERIALSOURCE,
   };
   count = (UINT)(sizeof(states) / sizeof(states[0]));
   return states;
@@ -127,7 +137,19 @@ RenderState::usable_value(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_ZWRITEENABLE:
   case D3DRS_ALPHABLENDENABLE:
   case D3DRS_ALPHATESTENABLE:
+  case D3DRS_SCISSORTESTENABLE:
+  case D3DRS_LIGHTING:
+  case D3DRS_SPECULARENABLE:
+  case D3DRS_NORMALIZENORMALS:
+  case D3DRS_COLORVERTEX:
     return value == TRUE || value == FALSE;
+  case D3DRS_AMBIENT:
+    return true; // every DWORD is a colour, alpha and all
+  case D3DRS_DIFFUSEMATERIALSOURCE:
+  case D3DRS_AMBIENTMATERIALSOURCE:
+    // the material's own value, or the vertex's first colour: D3DMCS_COLOR2 is a second vertex colour, and the lit
+    // formats this build draws carry none, so asking a draw for it is refused rather than shaded with something else
+    return value == D3DMCS_MATERIAL || value == D3DMCS_COLOR1;
   case D3DRS_ZFUNC:
   case D3DRS_ALPHAFUNC:
     return value >= D3DCMP_NEVER && value <= D3DCMP_ALWAYS;
@@ -219,6 +241,30 @@ RenderState::set(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_ALPHAREF:
     alpha_ref_ = value & 0xFF;
     break;
+  case D3DRS_SCISSORTESTENABLE:
+    scissor_test_enable_ = value;
+    break;
+  case D3DRS_LIGHTING:
+    lighting_ = value;
+    break;
+  case D3DRS_SPECULARENABLE:
+    specular_enable_ = value;
+    break;
+  case D3DRS_AMBIENT:
+    ambient_ = value;
+    break;
+  case D3DRS_NORMALIZENORMALS:
+    normalize_normals_ = value;
+    break;
+  case D3DRS_COLORVERTEX:
+    colour_vertex_ = value;
+    break;
+  case D3DRS_DIFFUSEMATERIALSOURCE:
+    diffuse_source_ = value;
+    break;
+  case D3DRS_AMBIENTMATERIALSOURCE:
+    ambient_source_ = value;
+    break;
   default:
     return D3DERR_INVALIDCALL;
   }
@@ -274,6 +320,30 @@ RenderState::get(D3DRENDERSTATETYPE state, DWORD *value) const {
     break;
   case D3DRS_ALPHAREF:
     *value = alpha_ref_;
+    break;
+  case D3DRS_SCISSORTESTENABLE:
+    *value = scissor_test_enable_;
+    break;
+  case D3DRS_LIGHTING:
+    *value = lighting_;
+    break;
+  case D3DRS_SPECULARENABLE:
+    *value = specular_enable_;
+    break;
+  case D3DRS_AMBIENT:
+    *value = ambient_;
+    break;
+  case D3DRS_NORMALIZENORMALS:
+    *value = normalize_normals_;
+    break;
+  case D3DRS_COLORVERTEX:
+    *value = colour_vertex_;
+    break;
+  case D3DRS_DIFFUSEMATERIALSOURCE:
+    *value = diffuse_source_;
+    break;
+  case D3DRS_AMBIENTMATERIALSOURCE:
+    *value = ambient_source_;
     break;
   default:
     return D3DERR_INVALIDCALL;

@@ -72,9 +72,13 @@ MTLD3D9Query::Issue(DWORD flags) {
 // D3D9's GetData: S_OK and a nonzero flag once the GPU has finished what was issued before the query, S_FALSE while it
 // has not. D3DGETDATA_FLUSH flushes what is queued before the check, which is the flag a game passes when it is about to
 // wait on the answer.
+//
+// pData may be NULL only when dwSize is 0, and a zero dwSize is a status poll that writes nothing (Microsoft Learn). The
+// query stays issued after a successful read: D3D9 lets a game read a completed event query repeatedly, and only Issue
+// starts a new one.
 HRESULT
 MTLD3D9Query::GetData(void *data, DWORD size, DWORD flags) {
-  if (!data || size != GetDataSize() || (flags & ~(DWORD)D3DGETDATA_FLUSH))
+  if ((!data && size) || (size && size != GetDataSize()) || (flags & ~(DWORD)D3DGETDATA_FLUSH))
     return D3DERR_INVALIDCALL;
   if (!issued_)
     return D3DERR_INVALIDCALL;
@@ -86,11 +90,14 @@ MTLD3D9Query::GetData(void *data, DWORD size, DWORD flags) {
       query_.Get(), &signalled, sizeof(signalled),
       flags & D3DGETDATA_FLUSH ? 0u : (UINT)D3D11_ASYNC_GETDATA_DONOTFLUSH
   );
-  if (hr != S_OK)
+  if (hr == S_FALSE)
     return S_FALSE;
-  // D3D9's event query ends where it was issued: it has to be issued again before it can be waited on again
-  issued_ = false;
-  *(WINBOOL *)data = signalled ? TRUE : FALSE;
+  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+    return D3DERR_DEVICELOST;
+  if (FAILED(hr))
+    return hr;
+  if (data && size)
+    *(WINBOOL *)data = signalled ? TRUE : FALSE;
   return S_OK;
 }
 

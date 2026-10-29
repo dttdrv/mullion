@@ -6,7 +6,7 @@ const IID IID_IMTLD3D9PresentSource = {0x9d0f1c62, 0x3b57, 0x4c8e, {0x8a, 0x41, 
 
 MTLD3D9SwapChain::MTLD3D9SwapChain(IDirect3DDevice9 *device, IMTLD3D9PresentSource *source,
                                    const D3DPRESENT_PARAMETERS &parameters)
-    : device_(device), source_(source), parameters_(parameters) {}
+    : device_(device), device_ref_(device), source_(source), parameters_(parameters) {}
 
 HRESULT STDMETHODCALLTYPE MTLD3D9SwapChain::QueryInterface(REFIID riid, void **object) {
   if (!object)

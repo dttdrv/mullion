@@ -1,0 +1,12 @@
+# the wave's first lane is the simd group's lowest, a helper lane where the wave starts with helpers
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2041,7 +2041,7 @@
+     // reads the group's
+     Value *
+     first(Value *v) const {
+-      auto lanes = mask();
++      Value *lanes = ir.getInt64(1); // the group's lowest lane, a helper lane included
+       if (!lanes)
+         return move("simd_broadcast_first", v, {});
+       auto ctz = module.getOrInsertFunction(

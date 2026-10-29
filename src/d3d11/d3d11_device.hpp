@@ -71,6 +71,12 @@ public:
 
   virtual unsigned int GetDirectXVersion() = 0;
 
+  // A command buffer the GPU failed, or a Metal error the device cannot continue after: the first reason is the one the
+  // device keeps, and every registration hears of it (ID3D11Device4::RegisterDeviceRemovedEvent)
+  virtual void STDMETHODCALLTYPE LoseDevice(HRESULT Reason) = 0;
+  // the reason the device was removed, S_OK while it is not: the queue's fault, or the one LoseDevice was given
+  virtual HRESULT STDMETHODCALLTYPE DeviceRemovalReason() = 0;
+
   d3d11_device_mutex mutex;
   bool shares_with_d3d12 = false;
 };

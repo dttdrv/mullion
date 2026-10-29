@@ -233,10 +233,10 @@ main() {
            inside_x, inside_y, (unsigned long)drawn, (unsigned long)(colour & 0x00FFFFFF));
   }
 
-  // what this milestone cannot transform is refused rather than drawn wrong: D3DFVF_XYZ without the reciprocal w is a
-  // world transform the fixed-function path does not do yet, and the last format that worked stays the device's
-  expect(device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE) == D3DERR_INVALIDCALL,
-         "a vertex format this milestone cannot transform is taken");
+  // a vertex format this build cannot draw is refused rather than drawn wrong, and the last format that worked stays
+  // the device's: two sets of texture coordinates are more than the one stage this build's blender has reads
+  expect(device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2) == D3DERR_INVALIDCALL,
+         "a vertex format this build cannot draw is taken");
   CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET, clear, 1.0f, 0));
   PreTransformedVertex vertices[3];
   triangle_at(20.0f, 20.0f, 100.0f, D3DCOLOR_XRGB(0, 255, 255), vertices);

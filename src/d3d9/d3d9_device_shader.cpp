@@ -13,15 +13,6 @@ constexpr UINT kFloatConstants = 256;
 constexpr UINT kIntConstants = 16;
 constexpr UINT kBoolConstants = 16;
 
-// D3D9's end-of-declaration marker, which is not the end of an array (D3DDECL_END() is a brace initialiser, which a
-// value's type cannot be given in C++)
-D3DVERTEXELEMENT9 end_of_declaration() {
-  D3DVERTEXELEMENT9 element{};
-  element.Stream = 0xFF;
-  element.Type = D3DDECLTYPE_UNUSED;
-  return element;
-}
-
 } // namespace
 
 HRESULT
@@ -156,7 +147,7 @@ MTLD3D9Device::upload_shader_constants() {
     hr = upload(ps_constants_b_.Get(), pixel_constants_b_.data(), (UINT)(pixel_constants_b_.size() * sizeof(WINBOOL)));
   if (SUCCEEDED(hr)) {
     // D3DRS_ALPHAREF as the 0-to-255 value D3D9's comparison is in, which is what the program reads
-    const float alpha[4] = {(float)render_state_.alpha_ref(), 0.0f, 0.0f, 0.0f};
+    const float alpha[4] = {(float)state_.render().alpha_ref(), 0.0f, 0.0f, 0.0f};
     hr = upload(ps_alpha_constants_.Get(), alpha, sizeof(alpha));
   }
   return hr;
@@ -168,8 +159,9 @@ MTLD3D9Device::bind_viewport_state() {
   D3D11_VIEWPORT viewport{(float)viewport_.X, (float)viewport_.Y, (float)viewport_.Width,
                           (float)viewport_.Height, viewport_.MinZ,          viewport_.MaxZ};
   context_->RSSetViewports(1, &viewport);
-  const D3D11_RECT clip{(LONG)viewport_.X, (LONG)viewport_.Y, (LONG)(viewport_.X + viewport_.Width),
-                        (LONG)(viewport_.Y + viewport_.Height)};
+  // the viewport clips the draw, narrowed by the scissor rectangle while the scissor test is on (d3d9_device_targets.cpp)
+  const RECT rect = clip_rect();
+  const D3D11_RECT clip{rect.left, rect.top, rect.right, rect.bottom};
   context_->RSSetScissorRects(1, &clip);
 }
 
@@ -199,8 +191,8 @@ MTLD3D9Device::prepare_shader_draw() {
     return D3DERR_INVALIDCALL;
   ComPtr<ID3D11PixelShader> pixel_shader;
   AlphaTest alpha;
-  alpha.enabled = render_state_.alpha_test_enabled();
-  alpha.func = render_state_.alpha_func();
+  alpha.enabled = state_.render().alpha_test_enabled();
+  alpha.func = state_.render().alpha_func();
   HRESULT hr = pixel->compiled(d3d11_device_.Get(), alpha, &pixel_shader);
   if (FAILED(hr))
     return hr;

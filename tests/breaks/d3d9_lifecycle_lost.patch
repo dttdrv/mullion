@@ -1,0 +1,16 @@
+# the lost device's cooperative level is D3DERR_DEVICELOST again, which does not say it can be reset
+--- a/src/d3d9/d3d9_device.hpp
++++ b/src/d3d9/d3d9_device.hpp
+@@ -115,11 +115,9 @@
+   // D3D9's answer for a device whose frames the GPU failed: lost, and it stays lost until the application resets it.
+   // A lost device is one this build can reset (Reset makes a new Direct3D 11 device), so the level is the resettable
+   // one (D3DERR_DEVICENOTRESET); the calls that draw answer D3DERR_DEVICELOST until it is reset (Microsoft Learn,
+   // IDirect3DDevice9::TestCooperativeLevel)
+-  HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override {
+-    return FAILED(lost_reason()) ? D3DERR_DEVICENOTRESET : S_OK;
+-  }
++  HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override { return lost_reason(); }
+ 
+   // what the Metal device has left of the working set it recommends: the textures this device allocates live there, so
+   // it is the answer D3D9's own drivers give for the same question
+   UINT STDMETHODCALLTYPE GetAvailableTextureMem() override;

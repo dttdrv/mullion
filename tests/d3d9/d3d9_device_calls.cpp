@@ -5,6 +5,8 @@
 // - a D3DQUERYTYPE_EVENT query is signalled once the GPU has finished everything issued before it: GetData says
 //   S_FALSE while it has not and S_OK with a nonzero flag once it has, an unissued query has nothing to wait for, and
 //   D3DISSUE_BEGIN is refused (an event query ends where it is issued).
+// - GetData(NULL, 0, flags) polls the status (Microsoft Learn: pData may be NULL when dwSize is 0), and a query that
+//   has signalled stays readable until it is issued again; it does not lose its result after one read.
 // - a state block carries the state its kind names, and Apply puts it back: CreateStateBlock captures as it makes the
 //   block, Capture re-reads the states the block carries, BeginStateBlock/EndStateBlock record only the states the
 //   calls between them set, and a draw after Apply is drawn with the restored state.
@@ -111,6 +113,25 @@ main() {
   {
     Vertex vertices[4];
     quad(vertices, D3DCOLOR_XRGB(255, 255, 255));
+    // the bindings a DrawIndexedPrimitiveUP must clear: an ordinary stream and index buffer are set before it, so
+    // the check after the call can tell a cleared binding from one that was never set
+    ComPtr<IDirect3DVertexBuffer9> bound_vertices;
+    CHECK(device->CreateVertexBuffer(sizeof(vertices), 0, D3DFVF_XYZRHW | D3DFVF_DIFFUSE, D3DPOOL_DEFAULT,
+                                     &bound_vertices, nullptr));
+    void *bound_vertex_data = nullptr;
+    CHECK(bound_vertices->Lock(0, 0, &bound_vertex_data, 0));
+    memcpy(bound_vertex_data, vertices, sizeof(vertices));
+    CHECK(bound_vertices->Unlock());
+    CHECK(device->SetStreamSource(0, bound_vertices.Get(), 0, sizeof(Vertex)));
+    const WORD bound_indices[6] = {0, 1, 2, 2, 1, 3};
+    ComPtr<IDirect3DIndexBuffer9> bound_index_buffer;
+    CHECK(device->CreateIndexBuffer(sizeof(bound_indices), 0, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &bound_index_buffer,
+                                    nullptr));
+    void *bound_index_data = nullptr;
+    CHECK(bound_index_buffer->Lock(0, 0, &bound_index_data, 0));
+    memcpy(bound_index_data, bound_indices, sizeof(bound_indices));
+    CHECK(bound_index_buffer->Unlock());
+    CHECK(device->SetIndices(bound_index_buffer.Get()));
     const WORD indices16[6] = {0, 1, 2, 2, 1, 3};
     const DWORD indices32[6] = {0, 1, 2, 2, 1, 3};
     for (int format = 0; format < 2; format++) {
@@ -129,6 +150,19 @@ main() {
       expect(pixel(32, 32) == 0x00FFFFFF, format ? "a 32-bit indexed quad did not draw its vertices"
                                                  : "a 16-bit indexed quad did not draw its vertices");
       expect(pixel(2, 2) == 0x00FFFFFF, "the indexed quad did not cover the frame");
+    }
+    // Following any DrawIndexedPrimitiveUP call, stream 0 and the index buffer are NULL (Microsoft Learn,
+    // IDirect3DDevice9::DrawIndexedPrimitiveUP), so an ordinary draw has neither until they are set again.
+    {
+      ComPtr<IDirect3DVertexBuffer9> stream;
+      ComPtr<IDirect3DIndexBuffer9> indices_now;
+      UINT offset = 1, stride = 1;
+      expect(SUCCEEDED(device->GetStreamSource(0, &stream, &offset, &stride)) && !stream && offset == 0 && stride == 0,
+             "DrawIndexedPrimitiveUP did not clear stream 0");
+      expect(SUCCEEDED(device->GetIndices(&indices_now)) && !indices_now,
+             "DrawIndexedPrimitiveUP did not clear the index buffer");
+      expect(device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, 0, 2) == D3DERR_INVALIDCALL,
+             "a draw after DrawIndexedPrimitiveUP used the buffers it should have cleared");
     }
     // the vertices are the array's from vertex 0 whatever MinVertexIndex says, which is what the indices address
     Vertex offset_vertices[6] = {};
@@ -187,6 +221,10 @@ main() {
     CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(Vertex)));
     CHECK(device->EndScene());
     CHECK(query->Issue(D3DISSUE_END));
+    // a status poll with no data and no size is a successful call whether or not the GPU has finished (Microsoft
+    // Learn: pData may be NULL when dwSize is 0); the earlier read above expected it to fail, which it must not
+    HRESULT polled = query->GetData(nullptr, 0, 0);
+    expect(polled == S_OK || polled == S_FALSE, "a null-data status poll was not a query status");
     HRESULT got = S_FALSE;
     for (int attempt = 0; attempt < 500 && got == S_FALSE; attempt++) {
       got = query->GetData(&signalled, sizeof(signalled), D3DGETDATA_FLUSH);
@@ -196,21 +234,34 @@ main() {
     expect(got == S_OK, "an issued event query never signalled");
     if (got == S_OK)
       expect(signalled != FALSE, "an event query signalled with a zero flag");
-    // D3D9's event query ends where it was issued: it is issued again before it can be waited on again
-    expect(query->GetData(&signalled, sizeof(signalled), 0) == D3DERR_INVALIDCALL,
-           "a signalled event query answered GetData again without a new Issue");
+    // a signalled query stays signalled until it is issued again: every read answers S_OK, with or without FLUSH,
+    // with or without a data pointer
+    expect(query->GetData(nullptr, 0, 0) == S_OK, "a signalled event query lost its result on a null-data poll");
+    expect(query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_OK,
+           "a signalled event query lost its result on a null-data FLUSH poll");
+    expect(query->GetData(&signalled, 0, 0) == S_OK,
+           "a signalled event query refused a zero-size read with a data pointer");
+    signalled = FALSE;
+    expect(query->GetData(&signalled, sizeof(signalled), 0) == S_OK && signalled != FALSE,
+           "a signalled event query refused a repeated read");
+    // and what GetData refuses: a data pointer with a size, a size that is not the query's, and an unknown flag
+    expect(query->GetData(nullptr, sizeof(signalled), 0) == D3DERR_INVALIDCALL,
+           "an event query took a null data pointer with a non-zero size");
+    expect(query->GetData(&signalled, sizeof(signalled) - 1, 0) == D3DERR_INVALIDCALL,
+           "an event query answered GetData with a size that is not its data's");
+    expect(query->GetData(nullptr, 0, 0x80000000u) == D3DERR_INVALIDCALL,
+           "an event query took an unknown GetData flag");
+    // reissuing re-arms it, and the new result is read the same way
     CHECK(query->Issue(D3DISSUE_END));
     got = S_FALSE;
     for (int attempt = 0; attempt < 500 && got == S_FALSE; attempt++) {
-      got = query->GetData(&signalled, sizeof(signalled), D3DGETDATA_FLUSH);
+      got = query->GetData(nullptr, 0, D3DGETDATA_FLUSH);
       if (got == S_FALSE)
         Sleep(10);
     }
     expect(got == S_OK, "a re-issued event query never signalled");
-    // and what GetData refuses
-    expect(query->Issue(D3DISSUE_END) == S_OK, "an event query did not take a second end");
-    expect(query->GetData(&signalled, sizeof(signalled) - 1, 0) == D3DERR_INVALIDCALL,
-           "an event query answered GetData with a size that is not its data's");
+    expect(query->GetData(&signalled, sizeof(signalled), D3DGETDATA_FLUSH) == S_OK,
+           "a re-issued event query refused its result");
 
     // the query types that need a pass of their own are refused rather than answered with a number nothing measured
     ComPtr<IDirect3DQuery9> occlusion;

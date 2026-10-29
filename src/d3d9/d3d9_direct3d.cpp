@@ -4,6 +4,7 @@
 // texture size is Metal's own limit as the D3D11 feature level over it carries
 // it.
 #include "d3d9_direct3d.hpp"
+#include "d3d9_lights.hpp"
 #include "d3d9_device.hpp"
 #include <cwchar>
 
@@ -27,9 +28,8 @@ UINT max_texture_size(D3D_FEATURE_LEVEL level) {
 // what a device of this build can do: be a HAL, present to a window, move a
 // frame's bytes between its back buffer and the CPU's memory, draw with the
 // fixed-function pipeline's pre-transformed vertices under the render states
-// and into the targets it has, and sample one texture stage. no shaders of a
-// game's, no lights, no transform of its own, no cube or volume texture
-// (src/d3d9/README)
+// and into the targets it has, sample one texture stage, and light a vertex with D3D9's eight lights and its material
+// (it has no game's own shaders, no fog and no cube or volume texture: src/d3d9/README)
 D3DCAPS9
 caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   D3DCAPS9 caps{};
@@ -44,8 +44,9 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   caps.MaxTextureAspectRatio = caps.MaxTextureWidth;
   caps.MaxAnisotropy = 16;
   caps.RasterCaps = D3DPRASTERCAPS_ANISOTROPY;
-  // a texture holds an alpha channel, and a managed one has mip levels, which the
-  // device makes out of the level above (d3d9_device_texture.cpp)
+  // a texture holds an alpha channel, and a texture of this build has mip levels: the ones the game authored, or the
+  // ones GenerateMipSubLevels makes out of the level above when the format supports D3D11's generator
+  // (d3d9_device_texture.cpp, d3d9_texture.cpp)
   caps.TextureCaps = D3DPTEXTURECAPS_ALPHA | D3DPTEXTURECAPS_MIPMAP;
   caps.TextureFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MINFANISOTROPIC |
                            D3DPTFILTERCAPS_MAGFPOINT | D3DPTFILTERCAPS_MAGFLINEAR | D3DPTFILTERCAPS_MAGFANISOTROPIC |
@@ -63,6 +64,10 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   caps.MaxTextureBlendStages = 1;
   caps.MaxSimultaneousTextures = 8;
   caps.MaxPointSize = 1.0f;
+  // the eight lights D3D9's fixed-function path has, which is the index SetLight, GetLight, LightEnable and
+  // GetLightEnable are refused past (d3d9_lights.hpp): the lit vertex shader computes ambient, directional, point (with
+  // the documented attenuation and Range) and spot (with its cone) lights
+  caps.MaxActiveLights = Lights::kMax;
   caps.NumSimultaneousRTs = 1;
   // the shader models this build's translator certifies: the programs of these versions (and the vertex shaders below
   // their version) are translated, and a program of a higher one is refused by CreateVertexShader/CreatePixelShader, so a
