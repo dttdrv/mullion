@@ -9,6 +9,7 @@
 #include "d3d9_fixed_function.hpp"
 #include "d3d9_shader.hpp"
 #include "d3d9_state.hpp"
+#include "d3d9_vertex_declaration.hpp"
 #include <array>
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
@@ -338,17 +339,9 @@ public:
     return D3DERR_INVALIDCALL;
   }
   HRESULT STDMETHODCALLTYPE CreateVertexDeclaration(const D3DVERTEXELEMENT9 *elements,
-                                                    IDirect3DVertexDeclaration9 **declaration) override {
-    ERR_ONCE("D3D9: a vertex declaration is not implemented yet: only SetFVF's XYZRHW vertices are drawn.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) override {
-    ERR_ONCE("D3D9: a vertex declaration is not implemented yet: only SetFVF's XYZRHW vertices are drawn.");
-    return D3DERR_INVALIDCALL;
-  }
-  HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9 **ppDecl) override {
-    return D3DERR_INVALIDCALL;
-  }
+                                                    IDirect3DVertexDeclaration9 **declaration) override;
+  HRESULT STDMETHODCALLTYPE SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) override;
+  HRESULT STDMETHODCALLTYPE GetVertexDeclaration(IDirect3DVertexDeclaration9 **ppDecl) override;
   HRESULT STDMETHODCALLTYPE SetFVF(DWORD fvf) override;
   HRESULT STDMETHODCALLTYPE GetFVF(DWORD *fvf) override;
   HRESULT STDMETHODCALLTYPE CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9 **shader) override;
@@ -442,10 +435,12 @@ private:
   D3DVIEWPORT9 viewport_{};
   RenderState render_state_;
 
-  // the fixed-function path, and the state a draw reads: the FVF, one stream source and the indices (what this
-  // milestone draws with; SetStreamSourceFreq is 1, no instancing)
+  // the fixed-function path, and the state a draw reads: the FVF or the declaration, one stream source and the
+  // indices (SetStreamSourceFreq is 1, no instancing)
   FixedFunctionPipeline fixed_function_;
   DWORD fvf_ = 0;
+  ComPtr<IDirect3DVertexDeclaration9> declaration_;
+  ComPtr<IMTLD3D9VertexDeclaration> declaration_inputs_;
   ComPtr<IDirect3DVertexBuffer9> stream_source_;
   ComPtr<IMTLD3D9Buffer> stream_buffer_;
   UINT stream_offset_ = 0;
@@ -473,8 +468,19 @@ private:
   std::array<int32_t, 16 * 4> pixel_constants_i_{};
   std::array<WINBOOL, 16> pixel_constants_b_{};
 
+  // the D3D11 constant buffers the tables are read from, three a stage
+  ComPtr<ID3D11Buffer> vs_constants_f_, vs_constants_i_, vs_constants_b_;
+  ComPtr<ID3D11Buffer> ps_constants_f_, ps_constants_i_, ps_constants_b_;
+
   // what every draw needs: the chain's back buffer as it is now, and the fixed-function shaders over it
   HRESULT prepare_draw();
+  // the draw a game's own shaders make: the vertex declaration's layout, the translated programs, and the constant
+  // tables a draw uploads (d3d9_device_draw.cpp)
+  HRESULT prepare_shader_draw();
+  HRESULT ensure_shader_constants();
+  HRESULT upload_shader_constants();
+  // the viewport every draw is placed in and cut by (d3d9_device_shader.cpp)
+  void bind_viewport_state();
   // the vertices or indices a primitive count is made of, with whether this milestone draws the topology at all
   static bool topology_count(D3DPRIMITIVETYPE type, UINT primitive_count, UINT &count);
   static D3D11_PRIMITIVE_TOPOLOGY topology_of(D3DPRIMITIVETYPE type);

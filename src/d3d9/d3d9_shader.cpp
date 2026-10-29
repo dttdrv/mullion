@@ -3,8 +3,15 @@
 // the DXBC an airconv pipeline takes (d3d9_shader_translator.hpp).
 #include "d3d9_shader.hpp"
 #include "d3d9_device.hpp"
+#include "d3d9_shader_translator.hpp"
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 namespace mullion::d3d9 {
+
+const IID IID_IMTLD3D9VertexShader = {0x2b6f1c94, 0x4a3d, 0x4f8e, {0x8c, 0x51, 0x9e, 0x62, 0x3a, 0x77, 0x0d, 0x41}};
+const IID IID_IMTLD3D9PixelShader = {0x5d1b8e42, 0x7c96, 0x4a0f, {0x8b, 0x24, 0x6d, 0x51, 0x0c, 0x9f, 0x3e, 0x72}};
 
 namespace {
 
@@ -83,10 +90,92 @@ MTLD3D9VertexShader::QueryInterface(REFIID riid, void **object) {
   *object = nullptr;
   if (riid == IID_IUnknown || riid == __uuidof(IDirect3DVertexShader9)) {
     *object = static_cast<IDirect3DVertexShader9 *>(this);
-    AddRef();
-    return S_OK;
+  } else if (riid == IID_IMTLD3D9VertexShader) {
+    *object = static_cast<IMTLD3D9VertexShader *>(this);
+  } else {
+    return E_NOINTERFACE;
   }
-  return E_NOINTERFACE;
+  AddRef();
+  return S_OK;
+}
+
+// the D3D11 vertex shader and input layout this program draws with through `declaration`: the program is translated
+// against the declaration the first time a draw uses the pair, and the pair is kept for every draw after it
+HRESULT
+MTLD3D9VertexShader::compiled(
+    ID3D11Device *device, const std::vector<D3DVERTEXELEMENT9> &declaration, const std::vector<VertexInput> &inputs,
+    const std::vector<PixelInputSlot> &pixel_inputs, const std::vector<D3D11_INPUT_ELEMENT_DESC> &layout,
+    ID3D11VertexShader **shader, ID3D11InputLayout **input_layout
+) {
+  if (!device || !shader || !input_layout)
+    return D3DERR_INVALIDCALL;
+  *shader = nullptr;
+  *input_layout = nullptr;
+  auto same_slot = [](const PixelInputSlot &a, const PixelInputSlot &b) {
+    return a.index == b.index && a.reg == b.reg && a.semantic == b.semantic;
+  };
+  for (auto &variant : variants_) {
+    if (variant.declaration.size() == declaration.size() &&
+        memcmp(variant.declaration.data(), declaration.data(), declaration.size() * sizeof(D3DVERTEXELEMENT9)) == 0 &&
+        variant.pixel_inputs.size() == pixel_inputs.size() &&
+        std::equal(variant.pixel_inputs.begin(), variant.pixel_inputs.end(), pixel_inputs.begin(), same_slot)) {
+      *shader = variant.shader.Get();
+      (*shader)->AddRef();
+      *input_layout = variant.layout.Get();
+      (*input_layout)->AddRef();
+      return S_OK;
+    }
+  }
+
+  // the pixel shader's inputs, as the registers the two stages link through
+  std::vector<dxbc::SignatureElement> slots;
+  slots.reserve(pixel_inputs.size());
+  for (const auto &input : pixel_inputs) {
+    dxbc::SignatureElement element;
+    element.semantic = input.semantic;
+    element.index = input.index;
+    element.reg = input.reg;
+    slots.push_back(element);
+  }
+
+  TranslatedProgram program;
+  std::string reason;
+  if (!translate_shader(code_, &inputs, &slots, program, reason)) {
+    ERR_ONCE("D3D9: a draw with this vertex shader is refused: ", reason);
+    return D3DERR_INVALIDCALL;
+  }
+
+  if (const char *dump = getenv("MULLION_DXBC_DUMP")) {
+    static unsigned dumped_vs = 0;
+    std::string path = std::string(dump) + "\\vs" + std::to_string(++dumped_vs) + ".bin";
+    if (FILE *file = fopen(path.c_str(), "wb")) {
+      fwrite(program.dxbc.data(), 1, program.dxbc.size() * sizeof(DWORD), file);
+      fclose(file);
+    }
+  }
+
+  Variant variant;
+  variant.declaration = declaration;
+  variant.pixel_inputs = pixel_inputs;
+  HRESULT hr = device->CreateVertexShader(
+      program.dxbc.data(), program.dxbc.size() * sizeof(DWORD), nullptr, &variant.shader
+  );
+  if (SUCCEEDED(hr) && !layout.empty())
+    hr = device->CreateInputLayout(
+        layout.data(), (UINT)layout.size(), program.dxbc.data(), program.dxbc.size() * sizeof(DWORD), &variant.layout
+    );
+  if (FAILED(hr)) {
+    ERR_ONCE("D3D9: the D3D11 device did not take the translated vertex shader: 0x", std::hex, hr);
+    return D3DERR_INVALIDCALL;
+  }
+
+  *shader = variant.shader.Get();
+  (*shader)->AddRef();
+  *input_layout = variant.layout.Get();
+  if (*input_layout)
+    (*input_layout)->AddRef();
+  variants_.push_back(std::move(variant));
+  return S_OK;
 }
 
 HRESULT
@@ -122,10 +211,61 @@ MTLD3D9PixelShader::QueryInterface(REFIID riid, void **object) {
   *object = nullptr;
   if (riid == IID_IUnknown || riid == __uuidof(IDirect3DPixelShader9)) {
     *object = static_cast<IDirect3DPixelShader9 *>(this);
-    AddRef();
-    return S_OK;
+  } else if (riid == IID_IMTLD3D9PixelShader) {
+    *object = static_cast<IMTLD3D9PixelShader *>(this);
+  } else {
+    return E_NOINTERFACE;
   }
-  return E_NOINTERFACE;
+  AddRef();
+  return S_OK;
+}
+
+// the D3D11 pixel shader this program draws through, translated the first time a draw uses it
+HRESULT
+MTLD3D9PixelShader::compiled(ID3D11Device *device, ID3D11PixelShader **shader) {
+  if (!device || !shader)
+    return D3DERR_INVALIDCALL;
+  *shader = nullptr;
+  if (!compiled_) {
+    TranslatedProgram program;
+    std::string reason;
+    if (!translate_shader(code_, nullptr, nullptr, program, reason)) {
+      ERR_ONCE("D3D9: a draw with this pixel shader is refused: ", reason);
+      return D3DERR_INVALIDCALL;
+    }
+    if (const char *dump = getenv("MULLION_DXBC_DUMP")) {
+      static unsigned dumped_ps = 0;
+      std::string path = std::string(dump) + "\\ps" + std::to_string(++dumped_ps) + ".bin";
+      if (FILE *file = fopen(path.c_str(), "wb")) {
+        fwrite(program.dxbc.data(), 1, program.dxbc.size() * sizeof(DWORD), file);
+        fclose(file);
+      }
+    }
+    pixel_inputs_.clear();
+    pixel_inputs_.reserve(program.inputs.size());
+    for (const auto &element : program.inputs) {
+      PixelInputSlot slot;
+      slot.semantic = element.semantic;
+      slot.index = element.index;
+      slot.reg = element.reg;
+      pixel_inputs_.push_back(std::move(slot));
+    }
+    HRESULT hr = device->CreatePixelShader(
+        program.dxbc.data(), program.dxbc.size() * sizeof(DWORD), nullptr, &compiled_
+    );
+    if (FAILED(hr)) {
+      ERR_ONCE("D3D9: the D3D11 device did not take the translated pixel shader: 0x", std::hex, hr);
+      return D3DERR_INVALIDCALL;
+    }
+  }
+  *shader = compiled_.Get();
+  (*shader)->AddRef();
+  return S_OK;
+}
+
+const std::vector<PixelInputSlot> &
+MTLD3D9PixelShader::pixel_inputs() {
+  return pixel_inputs_;
 }
 
 HRESULT

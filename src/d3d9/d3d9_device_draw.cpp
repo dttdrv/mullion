@@ -55,16 +55,6 @@ MTLD3D9Device::topology_of(D3DPRIMITIVETYPE type) {
 // binds
 HRESULT
 MTLD3D9Device::prepare_draw() {
-  // a game's shader draws through the d3dbc-to-DXBC translator, which is not in this build yet: the draw is refused
-  // rather than drawn with the fixed-function pipeline the game did not ask for
-  if (vertex_shader_ || pixel_shader_) {
-    ERR_ONCE("D3D9: a game's own shader cannot draw yet: the translator that turns its d3dbc program into the DXBC "
-             "this build's D3D11 device compiles is not here, so the draw is refused instead of drawn with the "
-             "fixed-function pipeline.");
-    return D3DERR_INVALIDCALL;
-  }
-  if (!FixedFunctionPipeline::supports(fvf_))
-    return D3DERR_INVALIDCALL;
   HRESULT hr = ensure_render_target();
   if (FAILED(hr))
     return hr;
@@ -73,7 +63,14 @@ MTLD3D9Device::prepare_draw() {
   hr = render_state_.apply(d3d11_device_.Get(), context_.Get());
   if (FAILED(hr))
     return hr;
+  bind_viewport_state();
 
+  // a game's own shaders are the pipeline when either stage is one (d3d9_device_shader.cpp)
+  if (vertex_shader_ || pixel_shader_)
+    return prepare_shader_draw();
+
+  if (!FixedFunctionPipeline::supports(fvf_))
+    return D3DERR_INVALIDCALL;
   // what the texture stage does for this draw: a format with texture coordinates draws through it, and a stage whose
   // first colour argument is the texture is not processed at all while no texture is bound (Microsoft Learn, Texture
   // Blending), which is what the untextured shaders already draw -- the vertex colour, colour and alpha both
@@ -177,6 +174,9 @@ MTLD3D9Device::SetFVF(DWORD fvf) {
     return D3DERR_INVALIDCALL;
   }
   fvf_ = fvf;
+  // an FVF and a declaration are exclusive, as D3D9's are: the last one set is the draw's
+  declaration_.Reset();
+  declaration_inputs_.Reset();
   return S_OK;
 }
 
@@ -271,7 +271,8 @@ MTLD3D9Device::DrawPrimitive(D3DPRIMITIVETYPE type, UINT start_vertex, UINT prim
     return D3DERR_INVALIDCALL;
   if (!primitive_count)
     return S_OK;
-  if (!stream_buffer_ || stream_stride_ != FixedFunctionPipeline::stride(fvf_))
+  // a fixed-function draw's stream is the FVF's size; a shader draw reads the stride the stream was set with
+  if (!stream_buffer_ || (!vertex_shader_ && !pixel_shader_ && stream_stride_ != FixedFunctionPipeline::stride(fvf_)))
     return D3DERR_INVALIDCALL;
   // the vertices the draw reads are the stream's, from the offset it was set with
   const uint64_t vertices = (uint64_t)start_vertex + count;
@@ -297,8 +298,8 @@ MTLD3D9Device::DrawIndexedPrimitive(
     return D3DERR_INVALIDCALL;
   if (!primitive_count)
     return S_OK;
-  if (!stream_buffer_ || stream_stride_ != FixedFunctionPipeline::stride(fvf_) || !index_buffer_ || !vertex_count ||
-      min_vertex >= vertex_count)
+  if (!stream_buffer_ || (!vertex_shader_ && !pixel_shader_ && stream_stride_ != FixedFunctionPipeline::stride(fvf_)) ||
+      !index_buffer_ || !vertex_count || min_vertex >= vertex_count)
     return D3DERR_INVALIDCALL;
 
   const UINT index_size = index_buffer_->format() == D3DFMT_INDEX32 ? 4 : 2;
@@ -332,7 +333,12 @@ MTLD3D9Device::DrawPrimitiveUP(
     return D3DERR_INVALIDCALL;
   if (!primitive_count)
     return S_OK;
-  if (!FixedFunctionPipeline::supports(fvf_) || !vertices || stride != FixedFunctionPipeline::stride(fvf_))
+  if (!vertices || !stride)
+    return D3DERR_INVALIDCALL;
+  if (!vertex_shader_ && !pixel_shader_ &&
+      (!FixedFunctionPipeline::supports(fvf_) || stride != FixedFunctionPipeline::stride(fvf_)))
+    return D3DERR_INVALIDCALL;
+  if ((vertex_shader_ || pixel_shader_) && (!vertex_shader_ || !pixel_shader_ || !declaration_inputs_))
     return D3DERR_INVALIDCALL;
 
   const uint64_t bytes = (uint64_t)count * stride;
