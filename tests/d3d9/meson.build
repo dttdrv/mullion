@@ -52,3 +52,8 @@ test('d3d9_device_calls', executable('d3d9_device_calls', ['d3d9_device_calls.cp
 # D3DRS_ALPHAREF, and the fixed-function draw that asks for the test it has none of
 test('d3d9_discard', executable('d3d9_discard', ['d3d9_discard.cpp'], dependencies : d3d9_shader_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# the caps a game plans its shaders from: the shader models the translator certifies, the counters the other tests
+# certify, and the versions refused where a program above them is made
+test('d3d9_caps', executable('d3d9_caps', ['d3d9_caps.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

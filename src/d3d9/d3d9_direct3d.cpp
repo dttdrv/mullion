@@ -64,9 +64,22 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   caps.MaxSimultaneousTextures = 8;
   caps.MaxPointSize = 1.0f;
   caps.NumSimultaneousRTs = 1;
-  caps.VertexShaderVersion = 0;
-  caps.PixelShaderVersion = 0;
-  caps.MaxVertexShaderConst = 0;
+  // the shader models this build's translator certifies: the programs of these versions (and the vertex shaders below
+  // their version) are translated, and a program of a higher one is refused by CreateVertexShader/CreatePixelShader, so a
+  // game that reads these caps and makes a shader of the version they name draws with it (d3d9_shader_translator.cpp).
+  // the constants are D3D9's 256 float registers a stage, and the flow-control caps are 0 because the translator reads
+  // no flow control: a game that asks for it falls back, which is what the caps are for
+  caps.VertexShaderVersion = D3DVS_VERSION(2, 0);
+  caps.PixelShaderVersion = D3DPS_VERSION(2, 0);
+  caps.MaxVertexShaderConst = 256;
+  caps.VS20Caps.NumTemps = 12;
+  caps.VS20Caps.DynamicFlowControlDepth = 0;
+  caps.VS20Caps.StaticFlowControlDepth = 0;
+  caps.VS20Caps.Caps = 0;
+  caps.PS20Caps.NumTemps = 12;
+  caps.PS20Caps.DynamicFlowControlDepth = 0;
+  caps.PS20Caps.StaticFlowControlDepth = 0;
+  caps.PS20Caps.Caps = 0;
   return caps;
 }
 
