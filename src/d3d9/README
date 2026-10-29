@@ -9,8 +9,9 @@ gets the build they had):
 
   * Direct3DCreate9: the IDirect3D9 object over DXGI's adapters, which are this build's Metal devices. Adapter
     identity is DXGI's (the Metal device's name, vendor and device ids); the caps are the ones that adapter's D3D11
-    device has, with the texture size of its feature level. The caps say what is there: a HAL that presents, and no
-    shaders, fixed function pipeline, depth buffer or draw yet.
+    device has, with the texture size of its feature level. The caps then named what the device of that milestone
+    could do (a HAL that presented, and nothing else); each milestone below raised them to what its tests certify, and
+    milestone 5c's test holds the shader versions and stage counts to the ones the device enforces.
   * CreateDevice with D3DDEVTYPE_HAL for a window: a D3D11 device over the same adapter, and the window's implicit
     swap chain through DXGI's factory (a flip model DISCARD chain, at least two buffers).
   * Clear of the back buffer, and Present: what was cleared is shown, four frames in a row
@@ -63,7 +64,7 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
     ZWRITEENABLE, ZFUNC, CULLMODE, FILLMODE (D3DFILL_SOLID and D3DFILL_WIREFRAME; D3DFILL_POINT has no D3D11 fill
     mode and is refused as a value), SHADEMODE (D3DSHADE_GOURAUD and D3DSHADE_FLAT, which is its own pixel shader with
     a nointerpolation colour; D3DSHADE_PHONG is refused), D3DRS_ALPHABLENDENABLE, SRCBLEND, DESTBLEND, BLENDOP and
-    COLORWRITEENABLE. A state this build has no meaning for (lighting, fog, alpha test, stencil state, scissor) is
+    COLORWRITEENABLE. A state this build has no meaning for (lighting, fog, stencil state, scissor) is
     D3DERR_INVALIDCALL, said once, and a value that cannot be honoured is refused the same way; either leaves the
     device with the value it had, so a frame is never drawn under a state nobody asked for. The values a device
     starts with are the ones D3DRENDERSTATETYPE documents: CULLMODE D3DCULL_CCW, SRCBLEND D3DBLEND_ONE, DESTBLEND
@@ -110,8 +111,8 @@ targets, depths and viewports that are refused.
 The device's source is split by what a frame needs: d3d9_device.cpp has the object, its chain, its back buffer and
 the surfaces a frame is read back into, d3d9_device_targets.cpp the render states, depth-stencil surfaces, render
 targets and viewport, d3d9_device_draw.cpp the buffers and draws, d3d9_device_shader.cpp the pipeline a game's own
-shaders draw through, and d3d9_shader_translator.cpp the translation of their programs, over the class in
-d3d9_device.hpp.
+shaders draw through, d3d9_state_block.cpp the state blocks, d3d9_query.cpp the queries, and d3d9_shader_translator.cpp
+the translation of their programs, over the class in d3d9_device.hpp.
 
 # Milestone 4a (done): textures and the texture stage
 What a draw samples: the textures the device holds for eight stages (MaxSimultaneousTextures is 8), the samplers of
@@ -160,17 +161,20 @@ same texels, and SHADEMODE (a FLAT draw takes one vertex's colour for the whole 
 the test's triangle carries three colours so the two are not the same frame).
 
 # Milestone 4b: the rest of what a game draws with
-The rest of the fixed-function pipeline and the resources around it, still over D3D11: vertex declarations and state
-blocks, the world/view/projection transform for D3DFVF_XYZ vertices, lighting and the texture-coordinate formats, the
-remaining texture features a game asks for (a second and further stages, D3DUSAGE_DYNAMIC and D3DUSAGE_RENDERTARGET
-textures, cube and volume textures, D3DXFill-style level writing), the rest of the render states (lighting, fog, alpha
-test, stencil operations, point fill, scissor), DrawIndexedPrimitiveUP, and queries.
+The rest of the fixed-function pipeline and the resources around it, still over D3D11: the world/view/projection
+transform for D3DFVF_XYZ vertices, lighting and the texture-coordinate formats, the remaining texture features a game
+asks for (a second and further stages, D3DUSAGE_DYNAMIC and D3DUSAGE_RENDERTARGET textures, cube and volume textures,
+D3DXFill-style level writing) and the rest of the render states (lighting, fog, stencil operations, point fill,
+scissor). Vertex declarations are milestone 5a's, DrawIndexedPrimitiveUP, state blocks and event queries are 5c's, and
+the alpha test is 5c's for a game's own pixel shader (the fixed-function path still has none).
 
 # Milestone 5a (done): the draw a game's own shaders make
-CreateVertexShader and CreatePixelShader take a Direct3D 9 program (a d3dbc stream of shader model 1.1 to 3.0, whose
-version token is read and whose instructions are read to D3DSIO_END; a stream that is not one is D3DERR_INVALIDCALL, as
-D3D9's is), and GetFunction hands the tokens back. The draw is the game's: both stages are its programs, its
-SetVertexDeclaration says what a vertex is, and its float, integer and boolean constant tables reach the shaders.
+CreateVertexShader and CreatePixelShader take a Direct3D 9 program (a d3dbc stream whose version token is read and
+whose instructions are read to D3DSIO_END; a stream that is not one is D3DERR_INVALIDCALL, as D3D9's is) of the versions
+the caps name: a vertex shader of 1.1 or 2.0 and a pixel shader of 2.0, and a program of a higher model is refused where
+it is made (milestone 5c's caps test holds the two together). GetFunction hands the tokens back. The draw is the game's:
+both stages are its programs, its SetVertexDeclaration says what a vertex is, and its float, integer and boolean
+constant tables reach the shaders.
 
 What the translation (d3d9_shader_translator.cpp) writes is the shader model 5 the D3D11 device this build already has
 compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road a D3D11 game's do:
@@ -194,11 +198,10 @@ compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road 
     M3x3 and M3x2, with all four component masks, swizzles and the negate, absolute and absolute-negate modifiers, on
     temporaries, constants, inputs and outputs.
   * what a draw refuses rather than draws as something else: the texture instructions of shader model 1.x (the texture
-    registers TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX and TEXM3x3TEX sample), TEXKILL, TEXLDD and TEXLDL, a vertex
-    shader's own TEX, relative addressing of the constant tables (c# with an address register, a0), shader model 3's
-    flow control (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, a program past shader model
-    3.0, and a register the eight output registers cannot place. The reason is in the library's log, once, and the draw
-    answers D3DERR_INVALIDCALL.
+    registers TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX and TEXM3x3TEX sample), TEXLDD and TEXLDL, a vertex shader's own
+    TEX, relative addressing of the constant tables (c# with an address register, a0), shader model 3's flow control
+    (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, and a register the eight output registers
+    cannot place. The reason is in the library's log, once, and the draw answers D3DERR_INVALIDCALL.
 
 A translated program can be read back: `MULLION_DXBC_DUMP` names a directory, and every translation is written there
 as `vs1.bin`, `ps1.bin` and so on, which Microsoft's disassembler (d3dcompiler_47) reads as the program it is.
@@ -228,9 +231,8 @@ and 3's texture instruction, which names its sampler) are translated to shader m
   * a program may sample any of the eight stages: `dcl_2d s#` and `texld r#, t#, s#` are that stage's sampler and
     texture, and a draw binds all eight stages' textures and samplers (each stage's, or the default white texel for a
     stage with none). A sampler past s7 is refused, as D3D9 refuses a stage the device does not have. Cube and volume
-    samplers (dcl_cube, dcl_volume, dcl_3d) are refused too, as are TEXKILL, TEXLDD, TEXLDL, a vertex shader's TEX
-    (vertex texture fetch) and the texture instructions of shader model 1.x, each with the reason in the library's log
-    once.
+    samplers (dcl_cube, dcl_volume, dcl_3d) are refused too, as are TEXLDD, TEXLDL, a vertex shader's TEX (vertex
+    texture fetch) and the texture instructions of shader model 1.x, each with the reason in the library's log once.
   * a compressed texture is the blocks it is stored as: D3DFMT_DXT1, DXT2 and DXT3, DXT4 and DXT5 are D3D11's BC1, BC2
     and BC3, a level's pitch is its blocks' rows (8 or 16 bytes a block), a lock is of whole four-by-four blocks (D3D9
     refuses a rectangle that starts inside one), and a texture of a size that is not whole blocks is refused. Each level
@@ -244,11 +246,48 @@ columns under the point filter, the blend of two texels under the linear one at 
 the point filter draws as one of them), a coordinate outside the texture under the clamp mode holding the edge texel
 against the wrap mode repeating it, a DXT1 texture's block drawing its colour0, and an empty stage drawing white.
 
-# Milestone 5c: the rest of the shader path
-Shader model 3's flow control, relative addressing, the fog and point-size outputs into what a frame blends with, the
-second and further samplers (a title's lightmaps and detail maps), the texture registers and instructions of shader
-model 1.x, TEXKILL and the alpha test it serves, TEXLDD and TEXLDL, the rest of the draw calls
-(DrawIndexedPrimitiveUP), queries and occlusion.
+# Milestone 5c (done): the pixels a program kills, and the calls a title makes before it draws
+The alpha test a title draws its sprites with, and the startup calls a title blocks on:
+
+  * texkill is the discard of a pixel whose register has a negative component: the four components are compared with
+    zero, joined, and the pixel discarded, wherever the instruction sits in the program (D3D9 kills the pixel rather
+    than ordering the writes around it, which is what a discard in shader model 5 does too). It reads the register the
+    instruction names, so a pixel shader that kills on one of its inputs declares that input; `dcl t0; texkill t0` is
+    the shape Microsoft's compiler makes of `clip(uv.x)`.
+  * D3DRS_ALPHATESTENABLE, D3DRS_ALPHAFUNC and D3DRS_ALPHAREF are the alpha test on the alpha a game's pixel shader
+    writes. Direct3D 11 has no alpha test of its own, so a pixel shader translated for a draw under the test ends with
+    its comparison against the reference and a discard when it fails: the program's first target is written to a copy
+    the test reads, D3DRS_ALPHAREF reaches it as register b3 (so the same program is drawn with the test and without
+    it), and a test of D3DCMP_ALWAYS passes everything, so it is the program without one. The translation is kept per
+    alpha test a draw has used the program with.
+  * a fixed-function draw under D3DRS_ALPHATESTENABLE with an ALPHAFUNC that can fail is D3DERR_INVALIDCALL, said
+    once: the fixed-function pixel shaders this build carries have no alpha test, and a caption that should be cut out
+    is not drawn as a quad instead. A game's own pixel shader has one, which is the path a title draws its sprites with.
+  * DrawIndexedPrimitiveUP: the vertex and index arrays in memory are staged into the buffers the draw reads (16- and
+    32-bit indices) and the primitives the indices name are drawn through the same path as every other draw; a
+    primitive with no index array, or an index format that is neither, is refused.
+  * a D3DQUERYTYPE_EVENT query: GetData answers S_FALSE while the GPU is still working on what was issued before it
+    and S_OK with a nonzero flag once it is done, which is the wait a title paces a frame with. An unissued query has
+    nothing to wait for, D3DISSUE_BEGIN is refused (an event query ends where it is issued), and an occlusion,
+    timestamp or vertex-cache query is refused rather than answered with a number nothing measured.
+  * CreateStateBlock of D3DSBT_ALL, D3DSBT_PIXELSTATE or D3DSBT_VERTEXSTATE, with Capture, Apply and GetDevice, and
+    BeginStateBlock/EndStateBlock's recording mode: a block carries the values the device holds for the kind of state
+    it names, Capture reads them again, Apply writes them back through the device's own calls, and a block recorded
+    between BeginStateBlock and EndStateBlock carries only the states those calls set. A state the device refuses is
+    refused to the block too.
+  * the caps name the shader models this build certifies: VertexShaderVersion and PixelShaderVersion say vs_2_0 and
+    ps_2_0, MaxVertexShaderConst 256 registers, the flow-control depths 0, MaxSimultaneousTextures 8 and
+    MaxTextureBlendStages 1. CreateVertexShader and CreatePixelShader make a program of those versions and refuse one
+    above them, so the numbers and the device agree. tests/d3d9/d3d9_caps.cpp holds them to it: the numbers on the
+    adapter's caps and the device's, a vs_2_0/ps_2_0 pair drawn and its pixel read back, a vs_3_0 and a ps_3_0 refused
+    where they are made, a ps_1_1 refused too (its registers are not translated yet), and the last stage the caps
+    count accepted while the next one is refused.
+
+tests/d3d9/d3d9_device_calls.cpp is the test of the startup calls: DrawIndexedPrimitiveUP drawing a quad with 16- and
+32-bit indices, an event query waited on until it signals, and a state block captured, changed, applied, and the frame
+after it drawn with the restored state. tests/d3d9/d3d9_discard.cpp is the test of the discards: a program that kills on
+a negative coordinate, and a program drawn with and without the alpha test, each read back to show which half of a quad
+survived.
 
 # What is not there yet, and is refused rather than pretended
   * anything that makes a resource this build does not have (cube and volume textures, scratch-pool or dynamic
@@ -258,7 +297,6 @@ model 1.x, TEXKILL and the alpha test it serves, TEXLDD and TEXLDL, the rest of 
   * a vertex format other than D3DFVF_XYZRHW | D3DFVF_DIFFUSE, with or without one set of texture coordinates:
     D3DERR_INVALIDCALL, and the device keeps the format it had, so a frame is not drawn with a transform nobody asked
     for
-  * DrawIndexedPrimitiveUP: D3DERR_INVALIDCALL (nothing is emitted, so nothing is silently missing from a frame)
   * a render state this milestone has no meaning for, and a value it cannot honour (D3DFILL_POINT, D3DSHADE_PHONG,
     BOTHSRCALPHA, BOTHINVSRCALPHA and the D3DRS_BLENDFACTOR factors): D3DERR_INVALIDCALL, with the device keeping what it had
   * SetLOD beyond the top level: the call answers with the level the texture is on (D3D9's SetLOD answers with the one
@@ -271,9 +309,12 @@ model 1.x, TEXKILL and the alpha test it serves, TEXLDD and TEXLDL, the rest of 
   * clearing the stencil of part of a surface (its colour and depth are cleared, and its stencil is left as it was,
     said once: this build's ClearView clears depth alone, and a stencil-only clear of part of a view needs a draw that
     writes the stencil)
-  * the second and further fixed-function blending stages (their operations), lights, vertex declarations, state
-    blocks, queries: D3DERR_INVALIDCALL (a game's own shader may sample all eight stages, which is what the caps'
-    MaxSimultaneousTextures says)
+  * a fixed-function draw under D3DRS_ALPHATESTENABLE with an ALPHAFUNC that can fail: D3DERR_INVALIDCALL, said once
+    (the fixed-function pixel shaders this build carries have no alpha test; a draw through a game's own pixel shader
+    carries it)
+  * the second and further fixed-function blending stages (their operations) and lights: D3DERR_INVALIDCALL (a game's
+    own shader may sample all eight stages, which is what the caps' MaxSimultaneousTextures says); an occlusion,
+    timestamp or vertex-cache query: D3DERR_INVALIDCALL rather than a number nothing measured
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
 
 # Seeing what a game asked for
