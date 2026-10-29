@@ -276,20 +276,22 @@ main() {
   printf("target: depth on the custom target reads %06lx at 40,40\n",
          (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 40, 40));
 
-  // a clear of part of a depth-stencil surface leaves depth as it was rather than clearing the whole of it behind the
-  // caller's back (the log says so): the far triangle still loses to the near one after one
+  // a clear of part of a depth-stencil surface clears the depth of the rectangle it is given and leaves the rest of it
+  // as it was (Microsoft Learn, IDirect3DDevice9::Clear: "the rectangles to be cleared"): the near triangle's depth of
+  // 0.25 is still there to the left of the rectangle, so the far triangle loses there, and the right of it is depth 1,
+  // so the far triangle draws
   const D3DRECT right_half[1] = {{48, 0, 96, 96}};
   expect(device->Clear(1, right_half, D3DCLEAR_ZBUFFER, kClear, 1.0f, 0) == S_OK,
          "a clear of part of the depth surface was refused");
   PreTransformedVertex far_again[3];
   triangle_at(20.0f, 20.0f, 60.0f, 0.75f, D3DCOLOR_XRGB(255, 0, 0), far_again);
   draw(far_again);
-  expect(pixel_of(render_target.Get(), readback96.Get(), 30, 30) == 0x00FF00 &&
-             pixel_of(render_target.Get(), readback96.Get(), 60, 30) == 0x00FF00,
-         "a clear of part of the depth surface changed the depth of the whole of it");
+  const D3DCOLOR kept = pixel_of(render_target.Get(), readback96.Get(), 30, 30);
+  const D3DCOLOR cleared = pixel_of(render_target.Get(), readback96.Get(), 60, 30);
+  expect(kept == 0x00FF00, "a clear of part of the depth surface changed the depth outside the rectangle it was given");
+  expect(cleared == 0xFF0000, "a clear of part of the depth surface did not clear the depth inside the rectangle");
   printf("target: after a clear of the right half's depth, 30,30 reads %06lx and 60,30 reads %06lx\n",
-         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 30, 30),
-         (unsigned long)pixel_of(render_target.Get(), readback96.Get(), 60, 30));
+         (unsigned long)kept, (unsigned long)cleared);
 
   // a viewport that names no pixels, or lies outside the target, is refused and the device keeps the one it had
   expect(device->SetViewport(nullptr) == D3DERR_INVALIDCALL, "SetViewport took no viewport");

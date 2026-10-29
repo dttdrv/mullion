@@ -29,7 +29,7 @@ MTLD3D9Device::device_surface(IDirect3DSurface9 *surface, bool depth_stencil, IM
 // clamped to the target, and a rectangle that names no pixel clears none. no rectangles at all is the whole of it.
 // colour and depth have a D3D11 clear of a part of a view (ID3D11DeviceContext1::ClearView); the stencil of part of a
 // surface has none, so a rectangle's stencil bits are left as they were and the log says so, rather than the whole
-// surface's being cleared as if the call had named no rectangle.
+// surface's being cleared as if the call had named no rectangle (the rest of d3d9_device_targets.cpp's Clear).
 HRESULT
 MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour, float depth, DWORD stencil) {
   if (!(flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
@@ -80,11 +80,24 @@ MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR co
       if (surfaces)
         context_->ClearDepthStencilView(depth_stencil_view_.Get(), surfaces, depth, (UINT8)stencil);
     } else if (clear_depth || clear_stencil) {
-      // the backend's clear of part of a depth-stencil view is not rect-accurate yet: asking it for one clears the whole
-      // of it, which would erase depth the caller asked to keep. so this clear's colour rectangles are cleared and its
-      // depth and stencil are left as they were, with the log saying so
-      ERR_ONCE("D3D9: clearing the depth or stencil of part of a surface is not implemented yet: this clear's "
-               "rectangles clear its colour and leave its depth and stencil as they were.");
+      // the depth of the rectangles, through the backend's clear of part of a view (ID3D11DeviceContext1::ClearView,
+      // whose depth-stencil branch clears the depth of each rectangle it is given, at the depth it is given)
+      if (clear_depth && context1_) {
+        context1_->ClearView(depth_stencil_view_.Get(), &depth, region_data, region_count);
+      } else if (clear_depth) {
+        {
+          ERR_ONCE("D3D9: clearing the depth of part of a surface needs the context's ClearView, which this device's "
+                   "Direct3D 11 context has not.");
+        }
+      }
+      // a rectangle's stencil has no clear in this build: ClearView's depth-stencil branch clears depth alone, and a
+      // stencil-only clear of part of a view would need a draw that writes the stencil, which this path has no shader
+      // for. so it is left as it was, with the log saying so, rather than the whole surface's being cleared as if the
+      // call had named no rectangle
+      if (clear_stencil) {
+        ERR_ONCE("D3D9: clearing the stencil of part of a surface is not implemented yet: this clear's rectangles clear "
+                 "its colour and depth and leave its stencil as it was.");
+      }
     }
   }
   return S_OK;
