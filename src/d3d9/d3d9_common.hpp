@@ -58,8 +58,34 @@ inline DXGI_FORMAT to_dxgi_format(D3DFORMAT format) {
     return DXGI_FORMAT_R16G16B16A16_FLOAT;
   case D3DFMT_R32F:
     return DXGI_FORMAT_R32_FLOAT;
+  // the DXT formats are the block-compressed ones D3D11 names BC1 to BC3: a game's compressed textures are uploaded as
+  // the blocks they were authored as, and sampled decompressed
+  case D3DFMT_DXT1:
+    return DXGI_FORMAT_BC1_UNORM;
+  case D3DFMT_DXT2:
+  case D3DFMT_DXT3:
+    return DXGI_FORMAT_BC2_UNORM;
+  case D3DFMT_DXT4:
+  case D3DFMT_DXT5:
+    return DXGI_FORMAT_BC3_UNORM;
   default:
     return DXGI_FORMAT_UNKNOWN;
+  }
+}
+
+// how many bytes a four-by-four block of a block-compressed format takes, and 0 for a format that is not one: DXT1's
+// block is two colours and two bits a pixel, the others add the alpha bit masks
+inline UINT block_size(D3DFORMAT format) {
+  switch (format) {
+  case D3DFMT_DXT1:
+    return 8;
+  case D3DFMT_DXT2:
+  case D3DFMT_DXT3:
+  case D3DFMT_DXT4:
+  case D3DFMT_DXT5:
+    return 16;
+  default:
+    return 0;
   }
 }
 

@@ -241,6 +241,7 @@ MTLD3D9PixelShader::compiled(ID3D11Device *device, ID3D11PixelShader **shader) {
         fclose(file);
       }
     }
+    samples_ = program.samples;
     pixel_inputs_.clear();
     pixel_inputs_.reserve(program.inputs.size());
     for (const auto &element : program.inputs) {

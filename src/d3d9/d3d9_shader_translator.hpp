@@ -20,6 +20,8 @@ struct TranslatedProgram {
   std::vector<DWORD> dxbc;
   std::vector<dxbc::SignatureElement> inputs;
   std::vector<dxbc::SignatureElement> outputs;
+  // whether the program samples a texture, which is what tells a draw to bind the stage's texture and sampler
+  bool samples = false;
 };
 
 // translates `code`, whose vertex inputs are `vertex_inputs` for a vertex shader (null for a pixel shader, whose

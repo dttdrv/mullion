@@ -103,9 +103,10 @@ argument_of(DWORD argument) {
 
 Texture9Storage::Texture9Storage(
     ComPtr<ID3D11Texture2D> texture, const ComPtr<ID3D11ShaderResourceView> &view,
-    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool generate_mips
 )
-    : texture_(std::move(texture)), view_(view), context_(context), pixel_bytes_(pixel_size(format)) {
+    : texture_(std::move(texture)), view_(view), context_(context), pixel_bytes_(pixel_size(format)),
+      block_bytes_(block_size(format)), generate_mips_(generate_mips) {
   D3D11_TEXTURE2D_DESC desc{};
   texture_->GetDesc(&desc);
   // a texture whose bytes are not the CPU's has none to keep: a lock of it is refused rather than answered with bytes
@@ -117,6 +118,13 @@ Texture9Storage::Texture9Storage(
     Level &one = levels_[level];
     one.width = std::max(1u, desc.Width >> level);
     one.height = std::max(1u, desc.Height >> level);
+    if (block_bytes_) {
+      // a compressed level is a grid of four-by-four blocks, as many as its size rounds up to, and its rows are the
+      // blocks' rows: the pitch a D3D9 lock of a compressed level reports is the one it is stored with
+      one.pitch = ((one.width + 3) / 4) * block_bytes_;
+      one.bytes.resize((size_t)one.pitch * ((one.height + 3) / 4));
+      continue;
+    }
     // the pitch a D3D9 texture's rows have here: as many bytes as the level's width takes, the way D3D9's own
     // surfaces of a managed texture are laid out
     one.pitch = one.width * pixel_bytes_;
@@ -143,12 +151,16 @@ Texture9Storage::lock(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWOR
     if (rect->left < 0 || rect->top < 0 || rect->right > (LONG)one.width || rect->bottom > (LONG)one.height ||
         rect->right <= rect->left || rect->bottom <= rect->top)
       return D3DERR_INVALIDCALL;
+    // a compressed level is locked by whole blocks: D3D9 refuses a rectangle that starts inside one
+    if (block_bytes_ && ((rect->left & 3) || (rect->top & 3)))
+      return D3DERR_INVALIDCALL;
     left = rect->left;
     top = rect->top;
   }
 
   locked->Pitch = (INT)one.pitch;
-  locked->pBits = one.bytes.data() + (size_t)top * one.pitch + (size_t)left * pixel_bytes_;
+  locked->pBits = one.bytes.data() + (size_t)(block_bytes_ ? top / 4 : top) * one.pitch +
+                  (size_t)(block_bytes_ ? left / 4 : left) * (block_bytes_ ? block_bytes_ : pixel_bytes_);
   locked_level_ = level;
   read_only_ = (flags & D3DLOCK_READONLY) != 0;
   return S_OK;
@@ -168,7 +180,7 @@ Texture9Storage::unlock() {
   const Level &one = levels_[level];
   if (!read_only)
     context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, 0);
-  if (level == 0 && levels_.size() > 1)
+  if (level == 0 && levels_.size() > 1 && generate_mips_)
     return generate_mips();
   return S_OK;
 }
@@ -183,11 +195,11 @@ Texture9Storage::generate_mips() {
 
 MTLD3D9Texture::MTLD3D9Texture(
     IDirect3DDevice9 *device, ComPtr<ID3D11Texture2D> texture, ComPtr<ID3D11ShaderResourceView> view,
-    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, bool generate_mips
 )
     : device_(device), texture_(std::move(texture)), view_(std::move(view)),
-      storage_(texture_, view_, context, format, pool == D3DPOOL_MANAGED), format_(format), pool_(pool),
-      levels_count_(levels) {}
+      storage_(texture_, view_, context, format, pool == D3DPOOL_MANAGED, generate_mips), format_(format),
+      pool_(pool), levels_count_(levels) {}
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::QueryInterface(REFIID riid, void **object) {

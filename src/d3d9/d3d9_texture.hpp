@@ -27,7 +27,7 @@ class Texture9Storage {
 public:
   Texture9Storage(
       ComPtr<ID3D11Texture2D> texture, const ComPtr<ID3D11ShaderResourceView> &view,
-      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable
+      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool generate_mips
   );
 
   HRESULT lock(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWORD flags);
@@ -60,6 +60,10 @@ private:
   UINT locked_level_ = kNoLevel;
   bool read_only_ = false;
   UINT pixel_bytes_ = 0;
+  // how many bytes a four-by-four block of a compressed format takes, 0 for a format stored as pixels
+  UINT block_bytes_ = 0;
+  // whether the levels below the top one are made out of it (a texture this build could give the mip-generating flag)
+  bool generate_mips_ = false;
 };
 
 class MTLD3D9Texture final : private Object9,
@@ -69,7 +73,8 @@ class MTLD3D9Texture final : private Object9,
 public:
   MTLD3D9Texture(
       IDirect3DDevice9 *device, ComPtr<ID3D11Texture2D> texture, ComPtr<ID3D11ShaderResourceView> view,
-      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels
+      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels,
+      bool generate_mips
   );
   // the surfaces of its levels, once the texture is complete (they hold this object as their lock's target)
   void set_levels(std::vector<ComPtr<MTLD3D9Surface>> levels) {

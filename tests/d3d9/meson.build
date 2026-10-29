@@ -37,3 +37,8 @@ test('d3d9_shader', executable('d3d9_shader', ['d3d9_shader.cpp'], dependencies 
 # Microsoft's compile of HLSL) and the pixel shader's draw a triangle whose pixels are read back
 test('d3d9_shader_draw', executable('d3d9_shader_draw', ['d3d9_shader_draw.cpp'], dependencies : d3d9_shader_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# a game's own shaders sampling a texture: the texels a textured quad draws, the sampler's filter and address modes at
+# the pixels that tell them apart, a DXT1 texture's blocks, and the texel a stage with no texture samples
+test('d3d9_texture_draw', executable('d3d9_texture_draw', ['d3d9_texture_draw.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

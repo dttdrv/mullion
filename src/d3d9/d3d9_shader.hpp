@@ -60,6 +60,9 @@ struct IMTLD3D9PixelShader {
   virtual HRESULT compiled(ID3D11Device *device, ID3D11PixelShader **shader) = 0;
   // the registers this shader reads its inputs at, which the vertex shader it draws with writes to
   virtual const std::vector<PixelInputSlot> &pixel_inputs() = 0;
+  // whether the program samples a texture: the draw binds the texture stage 0 holds (and its sampler) only when it
+  // does, so a program that never samples never makes a render target it draws into a shader input too
+  virtual bool samples() = 0;
 };
 
 extern const IID IID_IMTLD3D9VertexShader;
@@ -118,12 +121,16 @@ public:
   // IMTLD3D9PixelShader: the D3D11 pixel shader this program draws through, translated the first time a draw uses it
   HRESULT compiled(ID3D11Device *device, ID3D11PixelShader **shader) override;
   const std::vector<PixelInputSlot> &pixel_inputs() override;
+  bool samples() override {
+    return samples_;
+  }
 
 private:
   IDirect3DDevice9 *device_ = nullptr;
   ShaderCode code_;
   ComPtr<ID3D11PixelShader> compiled_;
   std::vector<PixelInputSlot> pixel_inputs_;
+  bool samples_ = false;
 };
 
 } // namespace mullion::d3d9

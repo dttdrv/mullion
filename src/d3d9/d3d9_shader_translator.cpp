@@ -202,6 +202,7 @@ public:
     out.dxbc = writer_->container();
     out.inputs = inputs_;
     out.outputs = outputs_;
+    out.samples = samples_;
     return true;
   }
 
@@ -275,8 +276,21 @@ private:
         reason_ = "a pixel shader texture coordinate register this build has no place for";
         return false;
       }
+    } else if (register_param.regtype == D3DSPR_SAMPLER) {
+      // `dcl_2d s#`: the sampler a texld reads, and the dimension it reads its texture as. this build has one texture
+      // stage (its caps say so), so it has one sampler, and a 2D texture is the one it samples
+      const UINT dimension = usage_token & D3DSP_TEXTURETYPE_MASK;
+      if (dimension != D3DSTT_2D) {
+        reason_ = "a sampler of a texture dimension this build does not sample yet (dcl_2d is the one it reads: cube "
+                  "and volume textures are not).";
+        return false;
+      }
+      if (register_param.regnum != 0) {
+        reason_ = "a sampler past s0: this device has one texture stage (MaxSimultaneousTextures is 1)";
+        return false;
+      }
+      sampler_declared_ = true;
     }
-    // `dcl_2d s#` and the other sampler declarations name a sampler, which this slice does not translate yet
     return true;
   }
 
@@ -331,6 +345,18 @@ private:
       }
       if (code_.pixel && dest_param.regtype == D3DSPR_COLOROUT && dest_param.regnum < 4)
         uses_colour_out_[dest_param.regnum] = true;
+      // a texld samples the sampler its third parameter names, which is the one stage this build has
+      if (code_.pixel && opcode == D3DSIO_TEX) {
+        if (length < 3 || source(params[2]).regtype != D3DSPR_SAMPLER) {
+          reason_ = "a texld without a sampler (the shader model 2 and 3 form names one: texld r#, t#, s#)";
+          return false;
+        }
+        if (source(params[2]).regnum != 0) {
+          reason_ = "a texld of a sampler past s0: this device has one texture stage (MaxSimultaneousTextures is 1)";
+          return false;
+        }
+        samples_ = true;
+      }
       break;
     }
     }
@@ -343,7 +369,9 @@ private:
         reason_ = "relative constant addressing is not translated yet";
         return false;
       }
-      if (src.regtype == D3DSPR_ADDR) {
+      // register type 3 is the address register in a vertex shader and the texture register t# in a pixel shader, so
+      // only the vertex shader's is what this refuses
+      if (!code_.pixel && src.regtype == D3DSPR_ADDR) {
         reason_ = "the address register is not translated yet";
         return false;
       }
@@ -556,6 +584,17 @@ private:
     writer_->declare_constant_buffer(kFloatSlot, kFloatConstants);
     writer_->declare_constant_buffer(kIntSlot, kIntConstants);
     writer_->declare_constant_buffer(kBoolSlot, kBoolConstants);
+
+    // what a texture sample reads: the sampler the program declared (`dcl_2d s#`) and the texture stage 0 samples. a
+    // program that samples without declaring one is a program D3D9 refuses, so this refuses to translate it
+    if (samples_) {
+      if (!sampler_declared_) {
+        reason_ = "a texld of a sampler the program does not declare (a pixel shader declares dcl_2d s# first)";
+        return false;
+      }
+      writer_->declare_sampler(0);
+      writer_->declare_texture2d(0);
+    }
 
     // the temporary registers the program reads and writes, and two the translation of one instruction into several
     // uses (a matrix multiply writes components in turn, and a comparison is followed by a mask)
@@ -844,15 +883,34 @@ private:
       }
       return true;
     }
-    case D3DSIO_TEX:
+    case D3DSIO_TEX: {
+      // `texld r#, t#, s#`: the texels the texture bound to that sampler holds at the coordinate, which for the 2D
+      // sampler this build has are its first two components (Direct3D 9 reads .xy of a 2D sampler's coordinate)
+      if (!code_.pixel) {
+        reason_ = "a vertex shader's texture sample (vertex texture fetch, texld in shader model 3) is not translated "
+                  "yet";
+        return false;
+      }
+      std::vector<DWORD> coordinate;
+      if (!source_at(1, coordinate))
+        return false;
+      writer_->sample(dest, coordinate, 0, 0);
+      return true;
+    }
     case D3DSIO_TEXKILL:
+      reason_ = "texkill (the discard of a pixel whose coordinate is negative) is not translated yet";
+      return false;
+    case D3DSIO_TEXLDD:
+    case D3DSIO_TEXLDL:
+      reason_ = "texldd and texldl (a sample with explicit derivatives or a level of detail) are not translated yet";
+      return false;
     case D3DSIO_TEXBEM:
     case D3DSIO_TEXBEML:
     case D3DSIO_TEXM3x2TEX:
     case D3DSIO_TEXM3x3TEX:
     case D3DSIO_TEXDP3TEX:
-      reason_ = "texture sampling is not translated yet (it needs the sampler and the resource declarations of shader "
-                "model 2 and later, and the texture registers of 1.x)";
+      reason_ = "the texture instructions of shader model 1.x (texbem, texm3x*tex, texdp3tex) are not translated "
+                "yet";
       return false;
     default:
       reason_ = "an instruction this translator does not read yet (d3dbc opcode " + std::to_string(opcode) + ")";
@@ -1006,6 +1064,9 @@ private:
   std::vector<UINT> input_shadow_;
   bool defined_valid_[kFloatConstants] = {};
   float defined_[kFloatConstants][4] = {};
+  // whether the program samples a texture, and whether it declared the sampler it samples through
+  bool samples_ = false;
+  bool sampler_declared_ = false;
   std::map<UINT, UINT> vs_output_slot_;
   std::map<UINT, UINT> vs_output_declared_;
 

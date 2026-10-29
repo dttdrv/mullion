@@ -27,6 +27,14 @@ MTLD3D9Device::CreateTexture(
     );
     return D3DERR_INVALIDCALL;
   }
+  // a compressed texture is stored as four-by-four blocks, so D3D9 makes only ones whose size is whole blocks
+  if (block_size(format) && ((width & 3) || (height & 3))) {
+    ERR_ONCE(
+        "D3D9: a compressed texture is made of whole four-by-four blocks, so its size is a multiple of four; ", width,
+        "x", height, " is not."
+    );
+    return D3DERR_INVALIDCALL;
+  }
   if (pool != D3DPOOL_DEFAULT && pool != D3DPOOL_MANAGED) {
     ERR_ONCE("D3D9: only a default-pool and a managed texture are made yet: a system-memory texture is a copy this "
              "build has none of.");
@@ -65,13 +73,19 @@ MTLD3D9Device::CreateTexture(
   desc.Usage = D3D11_USAGE_DEFAULT;
   desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
   // a managed texture's levels below the top one are made out of it, which D3D11 generates them through a render
-  // target view of the whole chain
+  // target view of the whole chain. a compressed format's levels are the blocks the game uploads itself (D3D11 makes
+  // no level of a compressed texture out of another), so its chain is made whole and each level is uploaded as it is
+  // locked; a format this device makes neither way is made with the one level that can hold anything
+  bool generate_mips = false;
   if (level_count > 1) {
     UINT support = 0;
     if (SUCCEEDED(d3d11_device_->CheckFormatSupport(dxgi_format, &support)) &&
         (support & D3D11_FORMAT_SUPPORT_MIP_AUTOGEN)) {
       desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
       desc.MiscFlags |= D3D11_RESOURCE_MISC_GENERATE_MIPS;
+      generate_mips = true;
+    } else if (block_size(format)) {
+      // the chain is the game's to fill (its own blocks), which the locks of each level do
     } else {
       ERR_ONCE("D3D9: this device cannot make this format's mip levels, so a texture of it is made with one level.");
       level_count = 1;
@@ -91,6 +105,7 @@ MTLD3D9Device::CreateTexture(
     desc.MiscFlags = 0;
     create_hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &d3d11_texture);
     level_count = 1;
+    generate_mips = false;
   }
   if (FAILED(create_hr)) {
     ERR("D3D9: no texture of ", width, "x", height, ": 0x", std::hex, create_hr);
@@ -105,7 +120,7 @@ MTLD3D9Device::CreateTexture(
 
   ComPtr<MTLD3D9Texture> result;
   result.Attach(new MTLD3D9Texture(
-      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count
+      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count, generate_mips
   ));
 
   std::vector<ComPtr<MTLD3D9Surface>> level_surfaces;
@@ -153,6 +168,36 @@ MTLD3D9Device::GetTexture(DWORD stage, IDirect3DBaseTexture9 **texture) {
   *texture = texture_.Get();
   if (*texture)
     (*texture)->AddRef();
+  return S_OK;
+}
+
+// the texture a stage with none samples: D3D9's default texture is one opaque white texel, which a program that samples
+// an empty stage reads the way it reads any other texture. it is made once and bound as a draw's input when the pixel
+// shader samples and SetTexture has set nothing
+HRESULT
+MTLD3D9Device::ensure_default_texture() {
+  if (default_texture_view_)
+    return S_OK;
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = 1;
+  desc.Height = 1;
+  desc.MipLevels = 1;
+  desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  const DWORD white = 0xFFFFFFFF;
+  D3D11_SUBRESOURCE_DATA data{};
+  data.pSysMem = &white;
+  data.SysMemPitch = sizeof(white);
+  if (FAILED(d3d11_device_->CreateTexture2D(&desc, &data, &default_texture_)) ||
+      FAILED(d3d11_device_->CreateShaderResourceView(default_texture_.Get(), nullptr, &default_texture_view_))) {
+    default_texture_.Reset();
+    default_texture_view_.Reset();
+    ERR_ONCE("D3D9: the default texture (the white texel a stage with no texture samples) is not made.");
+    return D3DERR_INVALIDCALL;
+  }
   return S_OK;
 }
 

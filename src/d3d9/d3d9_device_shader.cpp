@@ -216,6 +216,27 @@ MTLD3D9Device::prepare_shader_draw() {
   context_->IASetInputLayout(layout.Get());
   context_->VSSetShader(vertex_shader.Get(), nullptr, 0);
   context_->PSSetShader(pixel_shader.Get(), nullptr, 0);
+
+  // the texture a sampling pixel shader reads: stage 0's, or the default texture a stage with none has, sampled
+  // through the sampler the sampler states make (both are bound to the registers the translated program declares)
+  if (pixel->samples()) {
+    ID3D11ShaderResourceView *view = nullptr;
+    if (texture_source_)
+      view = texture_source_->view();
+    else {
+      hr = ensure_default_texture();
+      if (FAILED(hr))
+        return hr;
+      view = default_texture_view_.Get();
+    }
+    ID3D11SamplerState *sampler = sampler_state_.state(d3d11_device_.Get());
+    if (!sampler) {
+      ERR_ONCE("D3D9: the sampler state this device holds makes no D3D11 sampler, so a sampling draw has none.");
+      return D3DERR_INVALIDCALL;
+    }
+    context_->PSSetShaderResources(0, 1, &view);
+    context_->PSSetSamplers(0, 1, &sampler);
+  }
   ID3D11Buffer *vertex_buffers[3] = {vs_constants_f_.Get(), vs_constants_i_.Get(), vs_constants_b_.Get()};
   context_->VSSetConstantBuffers(0, 3, vertex_buffers);
   ID3D11Buffer *pixel_buffers[3] = {ps_constants_f_.Get(), ps_constants_i_.Get(), ps_constants_b_.Get()};

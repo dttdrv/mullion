@@ -456,6 +456,11 @@ private:
   ComPtr<IMTLD3D9Texture> texture_source_;
   SamplerState9 sampler_state_;
   TextureStageState9 texture_stage_;
+  // what a stage with no texture samples: D3D9's default texture, one opaque white texel, which a shader's texld reads
+  // like any other texture (made the first time a sampling draw needs it)
+  ComPtr<ID3D11Texture2D> default_texture_;
+  ComPtr<ID3D11ShaderResourceView> default_texture_view_;
+  HRESULT ensure_default_texture();
 
   // the shaders a game made and set, and the constants it set for them: D3D9's tables are 256 float4s, 16 int4s and
   // 16 bools for a vertex shader, and the same for a pixel shader (IDirect3DDevice9::Set*ShaderConstant*)
@@ -474,8 +479,8 @@ private:
 
   // what every draw needs: the chain's back buffer as it is now, and the fixed-function shaders over it
   HRESULT prepare_draw();
-  // the draw a game's own shaders make: the vertex declaration's layout, the translated programs, and the constant
-  // tables a draw uploads (d3d9_device_draw.cpp)
+  // the draw a game's own shaders make: the vertex declaration's layout, the translated programs, the constant tables
+  // a draw uploads, and the texture stage 0 samples when the pixel shader samples it (d3d9_device_shader.cpp)
   HRESULT prepare_shader_draw();
   HRESULT ensure_shader_constants();
   HRESULT upload_shader_constants();

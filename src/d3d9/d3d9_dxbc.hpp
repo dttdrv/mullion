@@ -2,7 +2,8 @@
 // two stages link through, the SHEX token stream this build emits (shader model 5, which is what the D3D11 device under
 // this layer compiles through airconv), and the container that holds them. the token encodings are the format's own,
 // from libs/DXBCParser/d3d12tokenizedprogramformat.hpp; a container needs no RDEF chunk for the shaders this build
-// makes (a d3dbc program's resources and samplers are the instructions' own registers, and this build declares none).
+// makes (a d3dbc program's samplers and textures are the registers its own declarations name, and the resource and
+// sampler declarations this writer emits say which of them the program reads).
 //
 // header only, so the writer can be proved on its own by a test that hands its output straight to a D3D11 device
 // (tests/d3d9/d3d9_dxbc.cpp) before any d3dbc translation is involved.
@@ -110,6 +111,28 @@ inline std::vector<DWORD> src_input(
        reg},
       modifier
   );
+}
+
+// the resource (texture) and sampler a sampling instruction reads: a program's own registers, named by number. both are
+// read with their components in order, as a compiler writes them
+inline std::vector<DWORD> src_resource(UINT reg) {
+  return {detail::operand_token(
+              D3D10_SB_OPERAND_TYPE_RESOURCE,
+              ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(D3D10_SB_OPERAND_4_COMPONENT_SWIZZLE_MODE) |
+                  detail::swizzle_bits(0xE4),
+              D3D10_SB_OPERAND_INDEX_1D
+          ),
+          reg};
+}
+
+inline std::vector<DWORD> src_sampler(UINT reg) {
+  return {detail::operand_token(
+              D3D10_SB_OPERAND_TYPE_SAMPLER,
+              ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(D3D10_SB_OPERAND_4_COMPONENT_SWIZZLE_MODE) |
+                  detail::swizzle_bits(0xE4),
+              D3D10_SB_OPERAND_INDEX_1D
+          ),
+          reg};
 }
 
 // a D3D9 constant register: `slot` is the constant buffer (0 float, 1 integer, 2 boolean), `element` the register
@@ -228,6 +251,31 @@ public:
                                         reg,
                                         name});
   }
+  // the sampler a program samples through (its `s#` register), declared before the instruction that reads it
+  void declare_sampler(UINT reg) {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_DCL_SAMPLER) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(3) |
+                       ENCODE_D3D10_SB_SAMPLER_MODE(D3D10_SB_SAMPLER_MODE_DEFAULT));
+    program_.push_back(detail::operand_token(
+        D3D10_SB_OPERAND_TYPE_SAMPLER, 0, D3D10_SB_OPERAND_INDEX_1D
+    ));
+    program_.push_back(reg);
+  }
+  // the two-dimensional texture a program samples (its `t#` register), whose texels come back as four floats: a
+  // D3D9 texture's components are the format's, and a shader reads them sampled
+  void declare_texture2d(UINT reg) {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_DCL_RESOURCE) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(4) |
+                       ENCODE_D3D10_SB_RESOURCE_DIMENSION(D3D10_SB_RESOURCE_DIMENSION_TEXTURE2D));
+    program_.push_back(detail::operand_token(
+        D3D10_SB_OPERAND_TYPE_RESOURCE, 0, D3D10_SB_OPERAND_INDEX_1D
+    ));
+    program_.push_back(reg);
+    program_.push_back(ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 0) |
+                       ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 1) |
+                       ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 2) |
+                       ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 3));
+  }
   // the constant buffer at `slot`, holding `count` four-component registers, read through immediate indices
   void declare_constant_buffer(UINT slot, UINT count) {
     raw(D3D10_SB_OPCODE_DCL_CONSTANT_BUFFER, {detail::operand_token(
@@ -240,6 +288,11 @@ public:
                                              ),
                                              slot,
                                              count});
+  }
+
+  // a texture sample: the texels the resource holds at the coordinate, read through the sampler
+  void sample(const std::vector<DWORD> &dest, const std::vector<DWORD> &coord, UINT resource, UINT sampler) {
+    instruction(D3D10_SB_OPCODE_SAMPLE, false, {dest, coord, src_resource(resource), src_sampler(sampler)});
   }
 
   // ---- instructions ---------------------------------------------------------------------------------------------

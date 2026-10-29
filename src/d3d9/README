@@ -118,7 +118,8 @@ What a draw samples, and the one stage that samples it (this build's caps say Ma
 MaxSimultaneousTextures are 1, so a second stage or sampler is refused rather than kept by nobody):
 
   * CreateTexture for D3DPOOL_MANAGED and D3DPOOL_DEFAULT textures of the formats d3d9_common.hpp names
-    (D3DFMT_A8R8G8B8 and X8R8G8B8 and the handful around them), with the levels asked for or (none asked for) the whole
+    (D3DFMT_A8R8G8B8 and X8R8G8B8 and the handful around them, and the block-compressed DXT1 to DXT5 milestone 5b
+    samples), with the levels asked for or (none asked for) the whole
     chain down to one texel, and GetLevelCount, GetLevelDesc and GetSurfaceLevel. A managed texture's level 0 is the CPU's: LockRect writes it and
     UnlockRect uploads it and makes the levels below it out of it (their own GenerateMipSubLevels makes them again).
     A level of a texture is a surface of the device, and a lock of that level through the texture or through the
@@ -187,14 +188,15 @@ compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road 
   * the constant tables are the three constant buffers a draw binds (256 float4 registers as CB0, 16 int4 as CB1, 16
     booleans as CB2), and DEF, DEFI and DEFB are the immediates they define.
   * the instructions a game's shaders are made of: MOV, ADD, SUB, MUL, MAD, MIN, MAX, DP3, DP4, FRC, RCP, RSQ, EXP, LOG,
-    ABS, SLT, SGE, LRP, POW, NRM and the matrix multiplies M4x4, M4x3, M3x4, M3x3 and M3x2, with all four component
-    masks, swizzles and the negate, absolute and absolute-negate modifiers, on temporaries, constants, inputs and
-    outputs.
-  * what a draw refuses rather than draws as something else: texture sampling (TEX, TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX,
-    TEXM3x3TEX, TEXKILL), relative addressing of the constant tables (c# with an address register, a0), shader model
-    3's flow control (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, a program past shader
-    model 3.0, and a register the eight output registers cannot place. The reason is in the library's log, once, and
-    the draw answers D3DERR_INVALIDCALL.
+    ABS, SLT, SGE, LRP, POW, NRM, the texture sample TEX (milestone 5b) and the matrix multiplies M4x4, M4x3, M3x4,
+    M3x3 and M3x2, with all four component masks, swizzles and the negate, absolute and absolute-negate modifiers, on
+    temporaries, constants, inputs and outputs.
+  * what a draw refuses rather than draws as something else: the texture instructions of shader model 1.x (the texture
+    registers TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX and TEXM3x3TEX sample), TEXKILL, TEXLDD and TEXLDL, a vertex
+    shader's own TEX, relative addressing of the constant tables (c# with an address register, a0), shader model 3's
+    flow control (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, a program past shader model
+    3.0, and a register the eight output registers cannot place. The reason is in the library's log, once, and the draw
+    answers D3DERR_INVALIDCALL.
 
 A translated program can be read back: `MULLION_DXBC_DUMP` names a directory, and every translation is written there
 as `vs1.bin`, `ps1.bin` and so on, which Microsoft's disassembler (d3dcompiler_47) reads as the program it is.
@@ -203,13 +205,46 @@ tests/d3d9/d3d9_shader_draw.cpp is the test of this milestone: a triangle whose 
 ps_2_0 draw (the tokens are the test's, so the translator is proved without a compiler) and the same two stages as
 Microsoft's compiler makes of HLSL at test time, each read back out of the back buffer: the colour where the triangle
 covers, the clear where it does not, a zero pixel constant making it black, and a zero vertex constant collapsing it. A
-program with texture sampling is refused with D3DERR_INVALIDCALL rather than drawn. tests/d3d9/d3d9_shader.cpp is the
-refusals: a stream that is not a program, a program of another model, a shader with no declaration to read.
+program that samples a sampler this device does not have is refused with D3DERR_INVALIDCALL rather than drawn.
+tests/d3d9/d3d9_shader.cpp is the refusals: a stream that is not a program, a program of another model, a shader with no
+declaration to read.
 
-# Milestone 5b: the rest of the shader path
-Texture sampling (the sampler and resource declarations of shader model 2 and 3, the texture registers of 1.x),
-shader model 3's flow control, relative addressing, the fog and point-size outputs into what a frame blends with, the
-rest of the draw calls (DrawIndexedPrimitiveUP), queries and occlusion.
+# Milestone 5b (done): a game's shader samples a texture
+What a pixel shader's texture sample is, end to end: the program's `dcl_2d s0` and `texld r#, t#, s0` (shader model 2
+and 3's texture instruction, which names its sampler) are translated to shader model 5's `dcl_sampler s0`,
+`dcl_resource_texture2d t0` and `sample`, and the draw binds what they read:
+
+  * the texture `SetTexture(0)` holds is the resource, and the sampler the device's sampler states make
+    (D3DSAMPLERSTATETYPE: the three filters, the address modes and MAXANISOTROPY, as milestone 4a's sampler already
+    built them) is the sampler. Both are bound to the pixel shader's registers 0 and only when the program samples, so a
+    program that does not never makes a render target it draws into a shader input too.
+  * a coordinate is read as a 2D sample does: the sampler's first two components, on the texel grid of the level the
+    filter picks. The texel's four components are its format's, sampled as floats (A8R8G8B8's alpha included).
+  * a stage with no texture samples the default texture, one opaque white texel, which is what D3D9's default texture
+    is: the layer makes one and binds it, so a sampling draw with nothing set is a white texel rather than an
+    undefined one.
+  * the samplers past s0 are refused: this device has one texture stage, and it says so (caps MaxTextureBlendStages and
+    MaxSimultaneousTextures are 1). Cube and volume samplers (dcl_cube, dcl_volume, dcl_3d) are refused too, as are
+    TEXKILL, TEXLDD, TEXLDL, a vertex shader's TEX (vertex texture fetch) and the texture instructions of shader model
+    1.x, each with the reason in the library's log once.
+  * a compressed texture is the blocks it is stored as: D3DFMT_DXT1, DXT2 and DXT3, DXT4 and DXT5 are D3D11's BC1, BC2
+    and BC3, a level's pitch is its blocks' rows (8 or 16 bytes a block), a lock is of whole four-by-four blocks (D3D9
+    refuses a rectangle that starts inside one), and a texture of a size that is not whole blocks is refused. Each level
+    of a compressed texture is the one the game uploads: the chain is made whole and no level is generated out of
+    another (D3D11 makes none of a compressed texture), which is what a title that uploads a DXT chain per level does.
+
+tests/d3d9/d3d9_texture_draw.cpp is the test: a 4 by 4 texture whose four columns are four colours is drawn over the
+whole frame by a hand-written vs_2_0 and ps_2_0 (the tokens are Microsoft's compiler's own for the same program) and by
+that program as Microsoft's compiler makes it of HLSL at test time, and read back out of the back buffer: the four
+columns under the point filter, the blend of two texels under the linear one at the pixel between their centres (which
+the point filter draws as one of them), a coordinate outside the texture under the clamp mode holding the edge texel
+against the wrap mode repeating it, a DXT1 texture's block drawing its colour0, and an empty stage drawing white.
+
+# Milestone 5c: the rest of the shader path
+Shader model 3's flow control, relative addressing, the fog and point-size outputs into what a frame blends with, the
+second and further samplers (a title's lightmaps and detail maps), the texture registers and instructions of shader
+model 1.x, TEXKILL and the alpha test it serves, TEXLDD and TEXLDL, the rest of the draw calls
+(DrawIndexedPrimitiveUP), queries and occlusion.
 
 # What is not there yet, and is refused rather than pretended
   * anything that makes a resource this build does not have (cube and volume textures, scratch-pool or dynamic
@@ -233,7 +268,8 @@ rest of the draw calls (DrawIndexedPrimitiveUP), queries and occlusion.
     said once: this build's ClearView clears depth alone, and a stencil-only clear of part of a view needs a draw that
     writes the stencil)
   * the second and further texture stages and samplers, lights, vertex declarations, state blocks, queries:
-    D3DERR_INVALIDCALL
+    D3DERR_INVALIDCALL (a game's shader that samples one is refused at the draw, as it is for a sampler the program does
+    not declare)
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
 
 # Seeing what a game asked for
