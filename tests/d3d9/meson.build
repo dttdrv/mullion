@@ -32,3 +32,8 @@ test('d3d9_texture', executable('d3d9_texture', ['d3d9_texture.cpp'], dependenci
 d3d9_shader_deps = d3d9_test_deps + [cpp.find_library('d3dcompiler_47')]
 test('d3d9_shader', executable('d3d9_shader', ['d3d9_shader.cpp'], dependencies : d3d9_shader_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# a game's own shaders drawing: a vertex declaration feeds a translated vertex shader, its program (hand-written, and
+# Microsoft's compile of HLSL) and the pixel shader's draw a triangle whose pixels are read back
+test('d3d9_shader_draw', executable('d3d9_shader_draw', ['d3d9_shader_draw.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

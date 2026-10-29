@@ -77,9 +77,12 @@ What a frame is drawn with and into, so that a basic frame is correct rather tha
   * Clear with D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER and D3DCLEAR_STENCIL: the colour of the target being drawn into, and
     the depth and stencil of the surface set. A colour clear leaves depth as it was, and only D3DCLEAR_ZBUFFER resets it.
     The stencil is cleared with the depth, though no draw this milestone makes tests it yet. A clear of rects clears the
-    colour of each of them (clamped to the target, and a rect that names no pixel clears none), and leaves depth and
-    stencil as they were, with the library saying so once: this backend's clear of part of a depth-stencil view is not
-    rect-accurate yet.
+    colour and depth of each of them (clamped to the target, and a rect that names no pixel clears none), the depth
+    through ID3D11DeviceContext1::ClearView, whose depth-stencil branch clears the depth of the rects it is given and
+    nothing else (tests/d3d9/d3d9_targets.cpp draws a far triangle into one half of a cleared rect and a near one
+    outside it, and reads back which of the two won where). A rect's stencil is left as it was, with the library saying
+    so once: ClearView's depth-stencil branch clears depth alone, and a stencil-only clear of part of a view would need
+    a draw that writes the stencil, which this path has no shader for.
   * ValidateDevice answers one pass for state it can draw with, and GetAvailableTextureMem answers what the Metal
     device recommends it may still take (IDXGIAdapter3::QueryVideoMemoryInfo: budget less what its textures have
     taken), which is the figure a title reads to size its textures.
@@ -106,7 +109,9 @@ targets, depths and viewports that are refused.
 
 The device's source is split by what a frame needs: d3d9_device.cpp has the object, its chain, its back buffer and
 the surfaces a frame is read back into, d3d9_device_targets.cpp the render states, depth-stencil surfaces, render
-targets and viewport, and d3d9_device_draw.cpp the buffers and draws, over the class in d3d9_device.hpp.
+targets and viewport, d3d9_device_draw.cpp the buffers and draws, d3d9_device_shader.cpp the pipeline a game's own
+shaders draw through, and d3d9_shader_translator.cpp the translation of their programs, over the class in
+d3d9_device.hpp.
 
 # Milestone 4a (done): textures and the texture stage
 What a draw samples, and the one stage that samples it (this build's caps say MaxTextureBlendStages and
@@ -158,15 +163,59 @@ remaining texture features a game asks for (a second and further stages, D3DUSAG
 textures, cube and volume textures, D3DXFill-style level writing), the rest of the render states (lighting, fog, alpha
 test, stencil operations, point fill, scissor), DrawIndexedPrimitiveUP, and queries.
 
-# Milestone 5: the pipeline a game's shaders run on
-D3D9 vertex and pixel shaders through airconv (SM 1.x to 3.0 are D3D9's, and airconv takes DXBC), constants and
-sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and occlusion.
+# Milestone 5a (done): the draw a game's own shaders make
+CreateVertexShader and CreatePixelShader take a Direct3D 9 program (a d3dbc stream of shader model 1.1 to 3.0, whose
+version token is read and whose instructions are read to D3DSIO_END; a stream that is not one is D3DERR_INVALIDCALL, as
+D3D9's is), and GetFunction hands the tokens back. The draw is the game's: both stages are its programs, its
+SetVertexDeclaration says what a vertex is, and its float, integer and boolean constant tables reach the shaders.
+
+What the translation (d3d9_shader_translator.cpp) writes is the shader model 5 the D3D11 device this build already has
+compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road a D3D11 game's do:
+
+  * the register files the two stages link through, because a compiled program links by register and not by name: o0 is
+    the position (a system value, declared with D3D10_SB_OPCODE_DCL_OUTPUT_SIV, which is what a Metal vertex function's
+    [[position]] comes from), o1 and o2 are the two colours, and o3 to o7 are the texture coordinates. A pixel shader's
+    v0 and v1 are o1 and o2 and its t# is o3 + t#, so a vertex shader writes its outputs where the pixel shader it
+    draws with reads them. Direct3D 11 gives a vertex shader eight output registers, so a program that needs more than
+    the five texture coordinates this leaves is refused rather than written over another output.
+  * a vertex declaration element is an input register: the vertex shader's input signature declares exactly the
+    components its element carries and its layout is the declaration, and the components a vertex does not carry read as
+    D3D9 says they do (w is 1, the rest 0), which the translation completes in a temporary the program reads instead
+    (`mov r1.xyz, v0.xyzx` then `mov r1.w, l(1.000000)`). A vertex shader is translated against the pixel shader it
+    draws with and the declaration the draw reads, and the pair is kept by the shader objects: the draw after it costs
+    a lookup.
+  * the constant tables are the three constant buffers a draw binds (256 float4 registers as CB0, 16 int4 as CB1, 16
+    booleans as CB2), and DEF, DEFI and DEFB are the immediates they define.
+  * the instructions a game's shaders are made of: MOV, ADD, SUB, MUL, MAD, MIN, MAX, DP3, DP4, FRC, RCP, RSQ, EXP, LOG,
+    ABS, SLT, SGE, LRP, POW, NRM and the matrix multiplies M4x4, M4x3, M3x4, M3x3 and M3x2, with all four component
+    masks, swizzles and the negate, absolute and absolute-negate modifiers, on temporaries, constants, inputs and
+    outputs.
+  * what a draw refuses rather than draws as something else: texture sampling (TEX, TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX,
+    TEXM3x3TEX, TEXKILL), relative addressing of the constant tables (c# with an address register, a0), shader model
+    3's flow control (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, a program past shader
+    model 3.0, and a register the eight output registers cannot place. The reason is in the library's log, once, and
+    the draw answers D3DERR_INVALIDCALL.
+
+A translated program can be read back: `MULLION_DXBC_DUMP` names a directory, and every translation is written there
+as `vs1.bin`, `ps1.bin` and so on, which Microsoft's disassembler (d3dcompiler_47) reads as the program it is.
+
+tests/d3d9/d3d9_shader_draw.cpp is the test of this milestone: a triangle whose vertex colour a hand-written vs_2_0 and
+ps_2_0 draw (the tokens are the test's, so the translator is proved without a compiler) and the same two stages as
+Microsoft's compiler makes of HLSL at test time, each read back out of the back buffer: the colour where the triangle
+covers, the clear where it does not, a zero pixel constant making it black, and a zero vertex constant collapsing it. A
+program with texture sampling is refused with D3DERR_INVALIDCALL rather than drawn. tests/d3d9/d3d9_shader.cpp is the
+refusals: a stream that is not a program, a program of another model, a shader with no declaration to read.
+
+# Milestone 5b: the rest of the shader path
+Texture sampling (the sampler and resource declarations of shader model 2 and 3, the texture registers of 1.x),
+shader model 3's flow control, relative addressing, the fog and point-size outputs into what a frame blends with, the
+rest of the draw calls (DrawIndexedPrimitiveUP), queries and occlusion.
 
 # What is not there yet, and is refused rather than pretended
-  * anything that makes a resource or shader this build does not have (cube and volume textures, scratch-pool or
-    dynamic textures, vertex shaders and pixel shaders): E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so
-    once. `SetVertexShader(NULL)` and `SetPixelShader(NULL)` answer S_OK, as D3D9 does: they choose the fixed-function
-    pipeline, which is the only one this milestone has
+  * anything that makes a resource this build does not have (cube and volume textures, scratch-pool or dynamic
+    textures): E_NOTIMPL or D3DERR_INVALIDCALL, with the library saying so once. `SetVertexShader(NULL)` and
+    `SetPixelShader(NULL)` answer S_OK, as D3D9 does: they choose the fixed-function pipeline, as one of the two stages
+    being set chooses the program one
   * a vertex format other than D3DFVF_XYZRHW | D3DFVF_DIFFUSE, with or without one set of texture coordinates:
     D3DERR_INVALIDCALL, and the device keeps the format it had, so a frame is not drawn with a transform nobody asked
     for
@@ -180,8 +229,9 @@ sampler state, the rest of the draw calls (DrawIndexedPrimitiveUP), queries and 
     this build makes a managed texture's levels with D3D11's own generator
   * a render target or a depth-stencil surface with more than one sample, and a render target the CPU locks:
     D3DERR_NOTAVAILABLE or D3DERR_INVALIDCALL rather than a target that is not what it says
-  * clearing the depth or stencil of part of a surface (the colour of its rects is cleared, and its depth and stencil
-    are left as they were, said once)
+  * clearing the stencil of part of a surface (its colour and depth are cleared, and its stencil is left as it was,
+    said once: this build's ClearView clears depth alone, and a stencil-only clear of part of a view needs a draw that
+    writes the stencil)
   * the second and further texture stages and samplers, lights, vertex declarations, state blocks, queries:
     D3DERR_INVALIDCALL
   * Reset, fullscreen chains, additional swap chains, GetFrontBufferData, CreateAdditionalSwapChain: not implemented
