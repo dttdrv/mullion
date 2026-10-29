@@ -24,11 +24,17 @@ constexpr DWORD kShaderVersionMask = 0xFFFF0000;
 constexpr DWORD kOpcodeEnd = 0xFFFF;
 constexpr DWORD kOpcodeComment = 0xFFFE;
 
+// the versions this build makes a shader of, which are the ones its caps name: a vertex shader of 1.1 or 2.0, and a
+// pixel shader of 2.0. a program of a version above them is refused here rather than made and refused at the draw, which
+// is what a device whose caps say 2.0 does (a device that made a 3.0 shader and then could not draw with it would lie to
+// the game twice). a pixel shader of 1.x is refused because the translator does not read the 1.x registers yet
+// (src/d3d9/README), and saying so at creation is better than a draw that fails mid-frame
 bool supported(bool pixel, UINT major, UINT minor) {
+  if (pixel)
+    return major == 2 && minor == 0;
   if (major == 1)
-    return pixel ? minor >= 1 && minor <= 4 : minor == 1;
-  // 2.0 and 3.0 are the same tokens in both stages
-  return (major == 2 || major == 3) && minor == 0;
+    return minor == 1;
+  return major == 2 && minor == 0;
 }
 
 } // namespace
@@ -140,7 +146,7 @@ MTLD3D9VertexShader::compiled(
 
   TranslatedProgram program;
   std::string reason;
-  if (!translate_shader(code_, &inputs, &slots, program, reason)) {
+  if (!translate_shader(code_, &inputs, &slots, nullptr, program, reason)) {
     ERR_ONCE("D3D9: a draw with this vertex shader is refused: ", reason);
     return D3DERR_INVALIDCALL;
   }
@@ -220,47 +226,62 @@ MTLD3D9PixelShader::QueryInterface(REFIID riid, void **object) {
   return S_OK;
 }
 
-// the D3D11 pixel shader this program draws through, translated the first time a draw uses it
+// the D3D11 pixel shader this program draws through with `alpha`, translated the first time a draw uses it with that
+// test (a test that always passes is no test at all, so it is the same program as one translated with none)
 HRESULT
-MTLD3D9PixelShader::compiled(ID3D11Device *device, ID3D11PixelShader **shader) {
+MTLD3D9PixelShader::compiled(ID3D11Device *device, const AlphaTest &alpha, ID3D11PixelShader **shader) {
   if (!device || !shader)
     return D3DERR_INVALIDCALL;
   *shader = nullptr;
-  if (!compiled_) {
-    TranslatedProgram program;
-    std::string reason;
-    if (!translate_shader(code_, nullptr, nullptr, program, reason)) {
-      ERR_ONCE("D3D9: a draw with this pixel shader is refused: ", reason);
-      return D3DERR_INVALIDCALL;
-    }
-    if (const char *dump = getenv("MULLION_DXBC_DUMP")) {
-      static unsigned dumped_ps = 0;
-      std::string path = std::string(dump) + "\\ps" + std::to_string(++dumped_ps) + ".bin";
-      if (FILE *file = fopen(path.c_str(), "wb")) {
-        fwrite(program.dxbc.data(), 1, program.dxbc.size() * sizeof(DWORD), file);
-        fclose(file);
-      }
-    }
-    samples_ = program.samples;
-    pixel_inputs_.clear();
-    pixel_inputs_.reserve(program.inputs.size());
-    for (const auto &element : program.inputs) {
-      PixelInputSlot slot;
-      slot.semantic = element.semantic;
-      slot.index = element.index;
-      slot.reg = element.reg;
-      pixel_inputs_.push_back(std::move(slot));
-    }
-    HRESULT hr = device->CreatePixelShader(
-        program.dxbc.data(), program.dxbc.size() * sizeof(DWORD), nullptr, &compiled_
-    );
-    if (FAILED(hr)) {
-      ERR_ONCE("D3D9: the D3D11 device did not take the translated pixel shader: 0x", std::hex, hr);
-      return D3DERR_INVALIDCALL;
+  // D3DCMP_ALWAYS never fails, so a test with it is the program without one
+  AlphaTest wanted = alpha;
+  if (wanted.func == D3DCMP_ALWAYS)
+    wanted.enabled = false;
+  for (const Variant &variant : variants_) {
+    if (variant.alpha == wanted) {
+      *shader = variant.shader.Get();
+      (*shader)->AddRef();
+      return S_OK;
     }
   }
-  *shader = compiled_.Get();
+
+  TranslatedProgram program;
+  std::string reason;
+  if (!translate_shader(code_, nullptr, nullptr, &wanted, program, reason)) {
+    ERR_ONCE("D3D9: a draw with this pixel shader is refused: ", reason);
+    return D3DERR_INVALIDCALL;
+  }
+  if (const char *dump = getenv("MULLION_DXBC_DUMP")) {
+    static unsigned dumped_ps = 0;
+    std::string path = std::string(dump) + "\\ps" + std::to_string(++dumped_ps) + ".bin";
+    if (FILE *file = fopen(path.c_str(), "wb")) {
+      fwrite(program.dxbc.data(), 1, program.dxbc.size() * sizeof(DWORD), file);
+      fclose(file);
+    }
+  }
+  samples_ = program.samples;
+  alpha_tested_ = wanted.enabled;
+  pixel_inputs_.clear();
+  pixel_inputs_.reserve(program.inputs.size());
+  for (const auto &element : program.inputs) {
+    PixelInputSlot slot;
+    slot.semantic = element.semantic;
+    slot.index = element.index;
+    slot.reg = element.reg;
+    pixel_inputs_.push_back(std::move(slot));
+  }
+  Variant variant;
+  variant.alpha = wanted;
+  HRESULT hr = device->CreatePixelShader(
+      program.dxbc.data(), program.dxbc.size() * sizeof(DWORD), nullptr, &variant.shader
+  );
+  if (FAILED(hr)) {
+    ERR_ONCE("D3D9: the D3D11 device did not take the translated pixel shader: 0x", std::hex, hr);
+    return D3DERR_INVALIDCALL;
+  }
+  *shader = variant.shader.Get();
   (*shader)->AddRef();
+  variants_.push_back(std::move(variant));
   return S_OK;
 }
 
@@ -304,7 +325,8 @@ MTLD3D9Device::CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9
   *shader = nullptr;
   ShaderCode code;
   if (!read_shader_code(byte_code, code) || code.pixel) {
-    ERR_ONCE("D3D9: a vertex shader whose program this build does not read was refused.");
+    ERR_ONCE("D3D9: a vertex shader whose program this build does not read was refused: it reads vs_1_1 and vs_2_0 "
+             "(the versions its caps name).");
     return D3DERR_INVALIDCALL;
   }
   ComPtr<MTLD3D9VertexShader> result;
@@ -398,7 +420,8 @@ MTLD3D9Device::CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 *
   *shader = nullptr;
   ShaderCode code;
   if (!read_shader_code(byte_code, code) || !code.pixel) {
-    ERR_ONCE("D3D9: a pixel shader whose program this build does not read was refused.");
+    ERR_ONCE("D3D9: a pixel shader whose program this build does not read was refused: it reads ps_2_0 (the version "
+             "its caps name); the 1.x registers and the 3.0 programs are not translated yet.");
     return D3DERR_INVALIDCALL;
   }
   ComPtr<MTLD3D9PixelShader> result;

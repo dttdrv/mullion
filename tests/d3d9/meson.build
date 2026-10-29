@@ -47,3 +47,8 @@ test('d3d9_texture_draw', executable('d3d9_texture_draw', ['d3d9_texture_draw.cp
 # state blocks a game saves and restores its state with
 test('d3d9_device_calls', executable('d3d9_device_calls', ['d3d9_device_calls.cpp'], dependencies : d3d9_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# the pixels a program does not write: texkill's negative coordinate, D3DRS_ALPHATESTENABLE's comparison against
+# D3DRS_ALPHAREF, and the fixed-function draw that asks for the test it has none of
+test('d3d9_discard', executable('d3d9_discard', ['d3d9_discard.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

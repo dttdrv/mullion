@@ -71,6 +71,14 @@ MTLD3D9Device::prepare_draw() {
 
   if (!FixedFunctionPipeline::supports(fvf_))
     return D3DERR_INVALIDCALL;
+  // D3D9's alpha test is carried by the pixel program (d3d9_shader_translator.cpp), and the fixed-function pixel shaders
+  // this build carries have none: a fixed-function draw that asks for one is refused rather than drawn without it, so a
+  // caption that should be cut out is never drawn as a quad
+  if (render_state_.alpha_test_enabled() && render_state_.alpha_func() != D3DCMP_ALWAYS) {
+    ERR_ONCE("D3D9: a fixed-function draw under D3DRS_ALPHATESTENABLE is not drawn yet: the fixed-function pixel "
+             "shaders this build carries have no alpha test (a draw through a game's own pixel shader has one).");
+    return D3DERR_INVALIDCALL;
+  }
   // what the texture stage does for this draw: a format with texture coordinates draws through it, and a stage whose
   // first colour argument is the texture is not processed at all while no texture is bound (Microsoft Learn, Texture
   // Blending), which is what the untextured shaders already draw -- the vertex colour, colour and alpha both. the

@@ -122,6 +122,9 @@ MTLD3D9Device::ensure_shader_constants() {
     hr = create(kIntConstants * 4 * sizeof(int32_t), ps_constants_i_);
   if (SUCCEEDED(hr))
     hr = create(kBoolConstants * sizeof(WINBOOL), ps_constants_b_);
+  // the alpha test's reference: one register, which a pixel program with the test reads
+  if (SUCCEEDED(hr))
+    hr = create(4 * sizeof(float), ps_alpha_constants_);
   if (FAILED(hr)) {
     ERR_ONCE("D3D9: the constant buffers a game's shader reads are not made: 0x", std::hex, hr);
   }
@@ -151,6 +154,11 @@ MTLD3D9Device::upload_shader_constants() {
     hr = upload(ps_constants_i_.Get(), pixel_constants_i_.data(), (UINT)(pixel_constants_i_.size() * sizeof(int32_t)));
   if (SUCCEEDED(hr))
     hr = upload(ps_constants_b_.Get(), pixel_constants_b_.data(), (UINT)(pixel_constants_b_.size() * sizeof(WINBOOL)));
+  if (SUCCEEDED(hr)) {
+    // D3DRS_ALPHAREF as the 0-to-255 value D3D9's comparison is in, which is what the program reads
+    const float alpha[4] = {(float)render_state_.alpha_ref(), 0.0f, 0.0f, 0.0f};
+    hr = upload(ps_alpha_constants_.Get(), alpha, sizeof(alpha));
+  }
   return hr;
 }
 
@@ -190,7 +198,10 @@ MTLD3D9Device::prepare_shader_draw() {
       )))
     return D3DERR_INVALIDCALL;
   ComPtr<ID3D11PixelShader> pixel_shader;
-  HRESULT hr = pixel->compiled(d3d11_device_.Get(), &pixel_shader);
+  AlphaTest alpha;
+  alpha.enabled = render_state_.alpha_test_enabled();
+  alpha.func = render_state_.alpha_func();
+  HRESULT hr = pixel->compiled(d3d11_device_.Get(), alpha, &pixel_shader);
   if (FAILED(hr))
     return hr;
 
@@ -244,8 +255,9 @@ MTLD3D9Device::prepare_shader_draw() {
   }
   ID3D11Buffer *vertex_buffers[3] = {vs_constants_f_.Get(), vs_constants_i_.Get(), vs_constants_b_.Get()};
   context_->VSSetConstantBuffers(0, 3, vertex_buffers);
-  ID3D11Buffer *pixel_buffers[3] = {ps_constants_f_.Get(), ps_constants_i_.Get(), ps_constants_b_.Get()};
-  context_->PSSetConstantBuffers(0, 3, pixel_buffers);
+  ID3D11Buffer *pixel_buffers[4] = {
+      ps_constants_f_.Get(), ps_constants_i_.Get(), ps_constants_b_.Get(), ps_alpha_constants_.Get()};
+  context_->PSSetConstantBuffers(0, 4, pixel_buffers);
   return S_OK;
 }
 

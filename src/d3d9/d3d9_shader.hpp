@@ -25,6 +25,19 @@ struct ShaderCode {
 // which CreateVertexShader and CreatePixelShader refuse as D3D9 does
 bool read_shader_code(const DWORD *code, ShaderCode &out);
 
+// D3D9's alpha test as a pixel shader carries it: whether D3DRS_ALPHATESTENABLE is on, and the comparison
+// D3DRS_ALPHAFUNC names. Direct3D 11 has no alpha test of its own, so a program translated with one enabled ends every
+// pixel with the comparison and a discard; the reference (D3DRS_ALPHAREF) is a per-draw value, so the program reads it
+// from a constant buffer of its own (register b3) rather than carrying it
+struct AlphaTest {
+  bool enabled = false;
+  DWORD func = D3DCMP_ALWAYS;
+
+  bool operator==(const AlphaTest &other) const {
+    return enabled == other.enabled && (!enabled || func == other.func);
+  }
+};
+
 // the register a pixel shader reads one of its inputs at: the compiled programs link the two stages by register (a
 // varying is named after its register and component), so a vertex shader has to write each output where the pixel
 // shader it draws with reads it
@@ -53,11 +66,12 @@ struct IMTLD3D9VertexShader {
   ) = 0;
 };
 
-// and what it asks a pixel shader for: the D3D11 pixel shader its program is translated to
+// and what it asks a pixel shader for: the D3D11 pixel shader its program is translated to, for the alpha test the draw
+// is made under (a program with the test is a different program from the same one without it, and both are kept)
 struct IMTLD3D9PixelShader {
   virtual ULONG STDMETHODCALLTYPE AddRef() = 0;
   virtual ULONG STDMETHODCALLTYPE Release() = 0;
-  virtual HRESULT compiled(ID3D11Device *device, ID3D11PixelShader **shader) = 0;
+  virtual HRESULT compiled(ID3D11Device *device, const AlphaTest &alpha, ID3D11PixelShader **shader) = 0;
   // the registers this shader reads its inputs at, which the vertex shader it draws with writes to
   virtual const std::vector<PixelInputSlot> &pixel_inputs() = 0;
   // whether the program samples a texture: the draw binds the texture stage 0 holds (and its sampler) only when it
@@ -119,18 +133,30 @@ public:
   HRESULT STDMETHODCALLTYPE GetFunction(void *data, UINT *size) override;
 
   // IMTLD3D9PixelShader: the D3D11 pixel shader this program draws through, translated the first time a draw uses it
-  HRESULT compiled(ID3D11Device *device, ID3D11PixelShader **shader) override;
+  // with that alpha test, and kept for every draw after it
+  HRESULT compiled(ID3D11Device *device, const AlphaTest &alpha, ID3D11PixelShader **shader) override;
   const std::vector<PixelInputSlot> &pixel_inputs() override;
   bool samples() override {
     return samples_;
+  }
+  // whether a translation of this program carries the alpha test, which is what a draw binds the reference for
+  bool alpha_tested() const {
+    return alpha_tested_;
   }
 
 private:
   IDirect3DDevice9 *device_ = nullptr;
   ShaderCode code_;
-  ComPtr<ID3D11PixelShader> compiled_;
+  // one translated program per alpha test a draw has used it with: the program itself is the same bytes, and the test is
+  // the program's end
+  struct Variant {
+    AlphaTest alpha;
+    ComPtr<ID3D11PixelShader> shader;
+  };
+  std::vector<Variant> variants_;
   std::vector<PixelInputSlot> pixel_inputs_;
   bool samples_ = false;
+  bool alpha_tested_ = false;
 };
 
 } // namespace mullion::d3d9

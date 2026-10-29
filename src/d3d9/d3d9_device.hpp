@@ -475,9 +475,11 @@ private:
   std::array<int32_t, 16 * 4> pixel_constants_i_{};
   std::array<WINBOOL, 16> pixel_constants_b_{};
 
-  // the D3D11 constant buffers the tables are read from, three a stage
+  // the D3D11 constant buffers the tables are read from, three a stage, and the one a pixel program with D3D9's alpha
+  // test reads D3DRS_ALPHAREF from (register b3)
   ComPtr<ID3D11Buffer> vs_constants_f_, vs_constants_i_, vs_constants_b_;
   ComPtr<ID3D11Buffer> ps_constants_f_, ps_constants_i_, ps_constants_b_;
+  ComPtr<ID3D11Buffer> ps_alpha_constants_;
 
   // the states a state block records: every call a block of that kind carries adds its state while the device is in
   // BeginStateBlock's recording mode (d3d9_state_block.cpp)

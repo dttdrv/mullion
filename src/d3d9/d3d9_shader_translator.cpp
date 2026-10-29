@@ -25,6 +25,9 @@ constexpr UINT kBoolConstants = 16;
 constexpr UINT kFloatSlot = 0;
 constexpr UINT kIntSlot = 1;
 constexpr UINT kBoolSlot = 2;
+// and the one the alpha test's reference is read from, which a pixel program with the test carries (D3DRS_ALPHAREF): one
+// register, the reference as a float in 0 to 255 (D3D9 compares an alpha in those units)
+constexpr UINT kAlphaSlot = 3;
 // the texture stages, and so the samplers, a pixel shader's program may sample (D3D9's eight: the device's caps say
 // MaxSimultaneousTextures is eight)
 constexpr UINT kSamplers = 8;
@@ -164,7 +167,7 @@ UINT mask_of_type(UINT type) {
 // the class that translates one program
 class Translator {
 public:
-  Translator(const ShaderCode &code) : code_(code) {}
+  Translator(const ShaderCode &code, const AlphaTest *alpha) : code_(code), alpha_(alpha) {}
 
   bool run(
       const std::vector<VertexInput> *vertex_inputs, const std::vector<dxbc::SignatureElement> *pixel_inputs,
@@ -193,6 +196,11 @@ public:
         return false;
       }
     }
+
+    // D3D9's alpha test is a pixel shader's: its comparison is written into the program's end (emit_body's epilogue), and
+    // a comparison that always passes (D3DCMP_ALWAYS) writes nothing
+    alpha_test_ = code_.pixel && alpha_ && alpha_->enabled;
+    alpha_compare_ = alpha_test_ && alpha_->func != D3DCMP_ALWAYS;
 
     writer_.reset(new dxbc::Writer(code_.pixel ? dxbc::Stage::Pixel : dxbc::Stage::Vertex));
     if (!scan())
@@ -349,6 +357,24 @@ private:
       }
       if (code_.pixel && dest_param.regtype == D3DSPR_COLOROUT && dest_param.regnum < 4)
         uses_colour_out_[dest_param.regnum] = true;
+      // a texkill reads the register its token names (D3D9 ignores the write mask it carries), so a pixel shader that
+      // kills on one of its inputs reads that input
+      if (code_.pixel && opcode == D3DSIO_TEXKILL) {
+        if (dest_param.regtype == D3DSPR_TEXTURE &&
+            !register_input(kSlotTexcoord + dest_param.regnum, "TEXCOORD", dest_param.regnum)) {
+          reason_ = "a texkill of a texture coordinate register this build has no place for";
+          return false;
+        }
+        if (dest_param.regtype == D3DSPR_INPUT && dest_param.regnum > 1) {
+          reason_ = "a texkill of a pixel shader colour input past v1 is not D3D9's, and this build refuses it";
+          return false;
+        }
+        if (dest_param.regtype == D3DSPR_INPUT &&
+            !register_input(kSlotColour + std::min<UINT>(dest_param.regnum, 1), "COLOR", dest_param.regnum)) {
+          reason_ = "a texkill of a pixel shader colour input this build has no place for";
+          return false;
+        }
+      }
       // a texld samples the sampler its third parameter names, which is the stage whose texture it reads
       if (code_.pixel && opcode == D3DSIO_TEX) {
         if (length < 3 || source(params[2]).regtype != D3DSPR_SAMPLER) {
@@ -620,6 +646,15 @@ private:
       }
     }
 
+    // a pixel program that carries D3D9's alpha test writes its first target to a copy of its own: the test compares the
+    // alpha the program ends with, and a shader model 5 output register is written, not read, so the value is held here
+    // until the program's end has tested it (emit_body)
+    colour_shadow_ = UINT_MAX;
+    if (alpha_test_ && uses_colour_out_[0])
+      colour_shadow_ = scratch_++;
+    if (alpha_compare_)
+      writer_->declare_constant_buffer(kAlphaSlot, 1);
+
     // every declaration before the first instruction that uses what it declares, as a program's container has them
     writer_->temps(scratch_ + 1);
     for (const auto &element : inputs_)
@@ -666,7 +701,7 @@ private:
       const DWORD head = tokens[at];
       const UINT opcode = head & 0xFFFF;
       if (opcode == D3DSIO_END)
-        return true;
+        return finish();
       if (opcode == D3DSIO_COMMENT) {
         at += 1 + ((head >> 16) & 0x7FFF);
         continue;
@@ -676,6 +711,63 @@ private:
         return false;
       at += 1 + length;
     }
+    return finish();
+  }
+
+  // the end of a pixel program that carries D3D9's alpha test: its first target's alpha, in the 0-to-255 units
+  // D3DRS_ALPHAREF is, compared with the reference the draw uploads (b3), the pixel discarded when the comparison fails,
+  // and the value written to the target afterwards. D3D9's comparison is on the alpha the program produced; the render
+  // target's own eight-bit quantization happens after the test in D3D9 too, so the floats are what is compared, and an
+  // alpha within a step of the reference is the only place that can differ from an integer comparison
+  bool finish() {
+    if (colour_shadow_ == UINT_MAX)
+      return true;
+    if (alpha_compare_) {
+      writer_->instruction(
+          D3D10_SB_OPCODE_MUL, false,
+          {dxbc::dest_temp(scratch_, 0x1), dxbc::src_temp(colour_shadow_, 0xFFFF), dxbc::src_immediate_value(255.0f)}
+      );
+      // the comparison that fails: D3D9's test passes when ALPHAFUNC compares as true, so the program discards when the
+      // opposite comparison is true. shader model 5 has no greater-than or less-equal instruction (only eq, ne, lt and
+      // ge), so those two are the same comparisons with the operands the other way round
+      D3D10_SB_OPCODE_TYPE failure = D3D10_SB_OPCODE_EQ;
+      bool swapped = false;
+      switch (alpha_->func) {
+      case D3DCMP_LESS:
+        failure = D3D10_SB_OPCODE_GE;
+        break;
+      case D3DCMP_EQUAL:
+        failure = D3D10_SB_OPCODE_NE;
+        break;
+      case D3DCMP_LESSEQUAL:
+        failure = D3D10_SB_OPCODE_LT;
+        swapped = true;
+        break;
+      case D3DCMP_GREATER:
+        failure = D3D10_SB_OPCODE_GE;
+        swapped = true;
+        break;
+      case D3DCMP_NOTEQUAL:
+        failure = D3D10_SB_OPCODE_EQ;
+        break;
+      default: // D3DCMP_GREATEREQUAL
+        failure = D3D10_SB_OPCODE_LT;
+        break;
+      }
+      const std::vector<DWORD> reference = dxbc::src_constant(kAlphaSlot, 0, 0x0000);
+      const std::vector<DWORD> alpha_value = dxbc::src_temp(scratch_, 0x0000);
+      if (alpha_->func == D3DCMP_NEVER) {
+        // never passes: every pixel is discarded, whatever its alpha
+        writer_->discard_if_nonzero(dxbc::src_immediate_value(1.0f));
+      } else {
+        writer_->instruction(
+            failure, false,
+            {dxbc::dest_temp(scratch_, 0x2), swapped ? reference : alpha_value, swapped ? alpha_value : reference}
+        );
+        writer_->discard_if_nonzero(dxbc::src_temp(scratch_, 0x5555));
+      }
+    }
+    writer_->mov(dxbc::dest_output(0, 0xF), dxbc::src_temp(colour_shadow_, 0xE4));
     return true;
   }
 
@@ -704,7 +796,9 @@ private:
       return false;
     }
     std::vector<DWORD> dest;
-    if (!destination_operand(dest_param, dest)) {
+    // texkill's parameter is the register it reads, which D3D9 encodes where a destination would be: it is not written, so
+    // it is not a destination this build needs a slot for
+    if (opcode != D3DSIO_TEXKILL && !destination_operand(dest_param, dest)) {
       reason_ = "an output register this build writes no slot for";
       return false;
     }
@@ -906,9 +1000,43 @@ private:
       writer_->sample(dest, coordinate, stage, stage);
       return true;
     }
-    case D3DSIO_TEXKILL:
-      reason_ = "texkill (the discard of a pixel whose coordinate is negative) is not translated yet";
-      return false;
+    case D3DSIO_TEXKILL: {
+      // D3D9's texkill: the pixel is not written when any of the register's four components is negative (Microsoft Learn,
+      // texkill). Direct3D 11's discard tests a value for zero, so the four comparisons are made here, joined, and the
+      // pixel discarded when one of them failed. D3D9 kills the whole pixel wherever the instruction is, which is also
+      // what a discard in shader model 5 does (the writes around it are masked, not ordered)
+      if (length < 1) {
+        reason_ = "a texkill without a register";
+        return false;
+      }
+      const Param killed = destination(params[0]);
+      for (UINT component = 0; component < 4; component++) {
+        Param read = killed;
+        read.swizzle = component * 0x55; // .xxxx, .yyyy, .zzzz, .wwww
+        read.modifier = kModNone;
+        std::vector<DWORD> value;
+        if (!source_operand(read, value))
+          return false;
+        writer_->instruction(
+            D3D10_SB_OPCODE_LT, false,
+            {dxbc::dest_temp(scratch_, 1 << component), value, dxbc::src_immediate_value(0.0f)}
+        );
+      }
+      writer_->instruction(
+          D3D10_SB_OPCODE_OR, false,
+          {dxbc::dest_temp(scratch_, 0x1), dxbc::src_temp(scratch_, 0x0000), dxbc::src_temp(scratch_, 0x5555)}
+      );
+      writer_->instruction(
+          D3D10_SB_OPCODE_OR, false,
+          {dxbc::dest_temp(scratch_, 0x4), dxbc::src_temp(scratch_, 0xAAAA), dxbc::src_temp(scratch_, 0xFFFF)}
+      );
+      writer_->instruction(
+          D3D10_SB_OPCODE_OR, false,
+          {dxbc::dest_temp(scratch_, 0x1), dxbc::src_temp(scratch_, 0x0000), dxbc::src_temp(scratch_, 0x4444)}
+      );
+      writer_->discard_if_nonzero(dxbc::src_temp(scratch_, 0x0000));
+      return true;
+    }
     case D3DSIO_TEXLDD:
     case D3DSIO_TEXLDL:
       reason_ = "texldd and texldl (a sample with explicit derivatives or a level of detail) are not translated yet";
@@ -945,6 +1073,11 @@ private:
     case D3DSPR_COLOROUT:
       if (p.regnum >= 4)
         return false;
+      // the first target is the alpha test's, so a program that carries one writes the copy it tests (declare)
+      if (p.regnum == 0 && colour_shadow_ != UINT_MAX) {
+        out = dxbc::dest_temp(colour_shadow_, p.mask);
+        return true;
+      }
       out = dxbc::dest_output(p.regnum, p.mask);
       return true;
     default:
@@ -1062,6 +1195,12 @@ private:
   }
 
   const ShaderCode &code_;
+  // D3D9's alpha test, which only a pixel shader carries, and the real it is: whether the first target is written to the
+  // copy the test reads, and whether the comparison is one that can fail (D3DCMP_ALWAYS cannot)
+  const AlphaTest *alpha_ = nullptr;
+  bool alpha_test_ = false;
+  bool alpha_compare_ = false;
+  UINT colour_shadow_ = UINT_MAX;
   const std::vector<VertexInput> *vertex_inputs_ = nullptr;
   // the pixel shader's inputs, when a vertex shader is being translated against the shader it draws with
   const std::vector<dxbc::SignatureElement> *pixel_inputs_of_stage_ = nullptr;
@@ -1109,9 +1248,10 @@ declaration_type_mask(UINT type) {
 bool
 translate_shader(
     const ShaderCode &code, const std::vector<VertexInput> *vertex_inputs,
-    const std::vector<dxbc::SignatureElement> *pixel_inputs, TranslatedProgram &out, std::string &reason
+    const std::vector<dxbc::SignatureElement> *pixel_inputs, const AlphaTest *alpha, TranslatedProgram &out,
+    std::string &reason
 ) {
-  Translator translator(code);
+  Translator translator(code, alpha);
   if (translator.run(vertex_inputs, pixel_inputs, out))
     return true;
   reason = translator.reason();

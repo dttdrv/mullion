@@ -29,9 +29,11 @@ struct TranslatedProgram {
 // `pixel_inputs` is the pixel shader's input signature when a vertex shader is translated against the shader it draws
 // with: the two stages link by register (the compiled programs name a varying after its register and component), so a
 // vertex shader's output is written where the pixel shader reads it. null for a pixel shader's own translation
+// `alpha` is D3D9's alpha test, which only a pixel shader carries: null, or disabled, for a program that has none
 bool translate_shader(
     const ShaderCode &code, const std::vector<VertexInput> *vertex_inputs,
-    const std::vector<dxbc::SignatureElement> *pixel_inputs, TranslatedProgram &out, std::string &reason
+    const std::vector<dxbc::SignatureElement> *pixel_inputs, const AlphaTest *alpha, TranslatedProgram &out,
+    std::string &reason
 );
 
 // the semantic name a D3D9 declaration usage is written as in a signature
