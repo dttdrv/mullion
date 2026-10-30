@@ -142,6 +142,19 @@ main(int argc, char **argv) {
     name += L"ff";
     expect(sender->CreateSharedHandle(nullptr, GENERIC_ALL, name.c_str(), &shared) == DXGI_ERROR_INVALID_CALL,
            "sharing accepted a name longer than MAX_PATH");
+    std::wstring unique = L"Local\\MullionFence" + std::to_wstring(GetCurrentProcessId()) +
+                          std::to_wstring(release_creator);
+    CHECK(sender->CreateSharedHandle(nullptr, GENERIC_ALL, unique.c_str(), &shared));
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, unique.c_str());
+    expect(mapping != nullptr, "OpenFileMappingW did not find the named fence");
+    if (mapping)
+      CloseHandle(mapping);
+    HANDLE collided = nullptr;
+    expect(sender->CreateSharedHandle(nullptr, GENERIC_ALL, unique.c_str(), &collided) == DXGI_ERROR_NAME_ALREADY_EXISTS,
+           "a duplicate fence name was accepted");
+    if (collided)
+      CloseHandle(collided);
+    CloseHandle(shared);
   }
 
   step("cross-process Signal and Wait after creator release");

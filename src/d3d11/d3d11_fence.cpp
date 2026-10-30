@@ -59,11 +59,17 @@ public:
     if (Name && wcslen(Name) > MAX_PATH)
       return DXGI_ERROR_INVALID_CALL;
 
+    // Name is the mapping's name: OpenFileMappingW finds it, as D3D12 shareHandle already names its object
+    // (Microsoft Learn, ID3D11Fence::CreateSharedHandle)
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, const_cast<SECURITY_ATTRIBUTES *>(pAttributes),
-                                        PAGE_READWRITE, 0, sizeof(SharedFenceData), nullptr);
+                                        PAGE_READWRITE, 0, sizeof(SharedFenceData), Name);
     if (!mapping) {
       ERR("D3D11Fence: Failed to create shared handle: ", GetLastError());
       return E_FAIL;
+    }
+    if (Name && GetLastError() == ERROR_ALREADY_EXISTS) {
+      CloseHandle(mapping);
+      return DXGI_ERROR_NAME_ALREADY_EXISTS;
     }
     void *view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedFenceData));
     if (!view) {
