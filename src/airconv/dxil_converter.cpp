@@ -1357,6 +1357,34 @@ convert_dxil(
           inlined = true;
         }
     }
+  // LLVM's integer division and remainder by zero are undefined, as is INT_MIN / -1, and Apple's GPUs give the dividend
+  // for a remainder by zero; D3D's give all ones (DXIL.rst, UDiv), as DXBC's udiv does here. a divisor that may be zero
+  // (or -1, signed) divides as one when it is, and a quotient or remainder by zero is all ones
+  if (start)
+    for (auto &I : make_early_inc_range(instructions(*start))) {
+      auto op = I.getOpcode();
+      bool is_signed = op == llvm::Instruction::SDiv || op == llvm::Instruction::SRem;
+      if (!is_signed && op != llvm::Instruction::UDiv && op != llvm::Instruction::URem)
+        continue;
+      auto dividend = I.getOperand(0), divisor = I.getOperand(1);
+      if (auto known = dyn_cast<ConstantInt>(divisor); known && !known->isZero() && !(is_signed && known->isMinusOne()))
+        continue;
+      auto type = I.getType();
+      IRBuilder<> ir(&I);
+      auto zero = ir.CreateICmpEQ(divisor, Constant::getNullValue(type));
+      Value *one = zero;
+      if (is_signed)
+        one = ir.CreateOr(
+            zero, ir.CreateAnd(
+                      ir.CreateICmpEQ(dividend, ConstantInt::get(type, APInt::getSignedMinValue(type->getScalarSizeInBits()))),
+                      ir.CreateICmpEQ(divisor, Constant::getAllOnesValue(type))
+                  )
+        );
+      I.setOperand(1, ir.CreateSelect(one, ConstantInt::get(type, 1), divisor));
+      ir.SetInsertPoint(I.getNextNode());
+      auto result = ir.CreateSelect(zero, Constant::getAllOnesValue(type), &I);
+      I.replaceUsesWithIf(result, [&](Use &use) { return use.getUser() != result; });
+    }
   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
   // linked in on its own: only this one keeps its body, under a name no other takes, and module variables stay private
   // to it
