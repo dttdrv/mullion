@@ -83,21 +83,43 @@ Converter::LoadOperand(const SrcOperandConstantBuffer &SrcOp, mask_t Mask) {
 llvm::Value *
 Converter::LoadConstantBuffer(const ConstantBufferDescriptor &Buffer, llvm::Value *Row, int Component, mask_t Dwords) {
   auto TyIntVec4 = air.getIntTy(4);
-  llvm::Value *InBounds = nullptr;
-  // rows past the bound buffer's size read 0 (D3D11.3 7.5); root CBVs carry no size
-  if (Buffer.Metadata) {
-    InBounds = ir.CreateICmpULT(Row, ir.CreateTrunc(ir.CreateLShr(Buffer.Metadata, 4), air.getIntTy()));
-    Row = ir.CreateSelect(InBounds, Row, ir.getInt32(0));
+  auto RowPointer = ir.CreateGEP(TyIntVec4, Buffer.Pointer, Row);
+  // rows past the bound buffer's size read 0 (D3D11.3 7.5); root CBVs carry no size. such a row's address is a row of
+  // zeros in the shader's own constant memory: Apple's compiler keeps a constant row's load a uniform load when only
+  // its address is chosen, where choosing the value it loaded (or the row) made each load the threads' own, about 25
+  // times the GPU time of a shader that reads hundreds of constant rows (tests/perf cbv_rows, dttdrv/mullion#32).
+  // MULLION_AIRCONV_SKIP=cbuffer-bounds leaves the check out, to measure what it costs (it is in the shader cache's key)
+  static const bool skip = [] {
+    auto names = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return names && strstr(names, "cbuffer-bounds");
+  }();
+  if (Buffer.Metadata && !skip) {
+    auto InBounds = ir.CreateICmpULT(Row, ir.CreateTrunc(ir.CreateLShr(Buffer.Metadata, 4), air.getIntTy()));
+    RowPointer = ir.CreateSelect(InBounds, RowPointer, ZeroRow());
   }
   auto Load = [&](unsigned Dword) -> llvm::Value * {
-    return ir.CreateLoad(air.getIntTy(), ir.CreateGEP(TyIntVec4, Buffer.Pointer, {Row, ir.getInt32(Dword)}));
+    return ir.CreateLoad(air.getIntTy(), ir.CreateGEP(TyIntVec4, RowPointer, {ir.getInt32(0), ir.getInt32(Dword)}));
   };
   // a row's dwords load one by one, only those read: a vector load reads all four, and costs the shader more
   llvm::Value *Value = Component >= 0 ? Load(Component) : llvm::PoisonValue::get(TyIntVec4);
   for (unsigned i = 0; Component < 0 && i < 4; i++)
     if (Dwords & (1 << i))
       Value = ir.CreateInsertElement(Value, Load(i), i);
-  return InBounds ? ir.CreateSelect(InBounds, Value, llvm::Constant::getNullValue(Value->getType())) : Value;
+  return Value;
+}
+
+llvm::GlobalVariable *
+Converter::ZeroRow() {
+  auto &M = *ir.GetInsertBlock()->getModule();
+  if (auto Zero = M.getGlobalVariable("mullion.zero_row", true))
+    return Zero;
+  auto TyIntVec4 = air.getIntTy(4);
+  auto Zero = new llvm::GlobalVariable(
+      M, TyIntVec4, true, llvm::GlobalValue::InternalLinkage, llvm::Constant::getNullValue(TyIntVec4),
+      "mullion.zero_row", nullptr, llvm::GlobalValue::NotThreadLocal, 2
+  );
+  Zero->setAlignment(llvm::Align(16));
+  return Zero;
 }
 
 llvm::Value *
