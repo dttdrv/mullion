@@ -1,0 +1,11 @@
+# a DEFAULT value is written before the markers given before it, which then overwrite it
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4212,7 +4212,6 @@
+         markers_.push_back({param.Dest, param.Value});
+         continue;
+       }
+-      WriteMarkers();
+       WriteImmediate(param.Dest, &param.Value, sizeof(param.Value));
+     }
+   }

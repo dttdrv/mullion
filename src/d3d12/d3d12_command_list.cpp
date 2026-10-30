@@ -771,6 +771,7 @@ public:
     ResetState(pInitialPipelineState);
     bundle_.clear();
     clears_.clear();
+    markers_.clear();
     plain_pass_ = nullptr;
     overlap_targets_.clear();
     named_.clear();
@@ -831,6 +832,7 @@ public:
   Close() {
     if (encoder_count < std::numeric_limits<size_t>::max())
       return FAIL(E_FAIL);
+    WriteMarkers();
     SumOcclusion();
     SumStatistics();
     EndPredication();
@@ -2752,6 +2754,7 @@ public:
   }
 
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+    WriteMarkers();
     OrderingPoint();
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |
                        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
@@ -4188,9 +4191,34 @@ public:
           recording_error_ = E_INVALIDARG;
           return;
         }
-    // each value is written in order with the list's other work, whatever the marker mode
-    for (auto &param : std::span(pParams, Count))
+    // a DEFAULT value is written in order with the list's other work. a marker (MARKER_IN, MARKER_OUT: written once
+    // the work before has begun, or has completed) waits for the next barrier, DEFAULT write or Close, which write
+    // the markers waiting together: a title writes thousands a frame (dttdrv/mullion#32: Starfield about 5,000), and
+    // a write of its own ends the pass around it. nothing else reads or writes a marker's buffer before then, as that
+    // needs a barrier out of COPY_DEST, which writing one promotes the buffer to
+    for (UINT i = 0; i < Count; i++) {
+      auto &param = pParams[i];
+      if (pModes && pModes[i] != D3D12_WRITEBUFFERIMMEDIATE_MODE_DEFAULT) {
+        markers_.push_back({param.Dest, param.Value});
+        continue;
+      }
+      WriteMarkers();
       WriteImmediate(param.Dest, &param.Value, sizeof(param.Value));
+    }
+  }
+
+  // WriteBufferImmediate's markers that wait, in the order they were given
+  struct Marker {
+    D3D12_GPU_VIRTUAL_ADDRESS address;
+    UINT value;
+  };
+  std::vector<Marker> markers_;
+
+  void
+  WriteMarkers() {
+    for (auto &marker : markers_)
+      WriteImmediate(marker.address, &marker.value, sizeof(marker.value));
+    markers_.clear();
   }
 
   // the buffer and offset a GPU address is in
@@ -4847,6 +4875,7 @@ public:
   // enhanced barriers order work as ResourceBarrier does
   void STDMETHODCALLTYPE
   Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) {
+    WriteMarkers();
     barrier_serial_++;
     OrderingPoint();
     constexpr auto uav = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, draw_writes = uav | D3D12_BARRIER_ACCESS_RENDER_TARGET |
