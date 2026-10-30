@@ -356,8 +356,8 @@ public:
   virtual void ReleasePrivate() = 0;
   // the fence's value from now on, which a shared fence also gives the devices it is shared with
   virtual void Signaled(uint64_t value) = 0;
-  // a shared fence's D3DKMT allocation, which a handle shares; 0 for a fence that is not shared
-  virtual D3DKMT_HANDLE SharedAllocation() = 0;
+  // a new handle that shares the fence (ID3D12Device::CreateSharedHandle); E_INVALIDARG for a fence that is not shared
+  virtual HRESULT CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) = 0;
 };
 
 class MTLD3D12RootSignature : public ID3D12RootSignature {
@@ -599,7 +599,6 @@ public:
 
   virtual WMT::ResidencySet GetGlobalResidencySet() = 0;
   // what shared fences need, made with the first: a D3DKMT device, and a listener for their events
-  virtual D3DKMT_HANDLE GetLocalD3DKMT() = 0;
   virtual EventListener &GetEventListener() = 0;
   // commits the global residency set's changes; queues call it before committing a command buffer
   virtual void CommitResidency() = 0;
@@ -789,9 +788,9 @@ CreateSwapChain(
 HRESULT
 CreateFence(MTLD3D12Device *pDevice, UINT64 InitialValue, D3D12_FENCE_FLAGS Flags, REFIID riid, void **ppFence);
 
-// the fence a handle shares (ID3D12Device::OpenSharedHandle), whose event and D3DKMT allocation openSharedEvent gave
+// the fence a handle shares (ID3D12Device::OpenSharedHandle), whose event and its name openSharedEvent gave
 HRESULT OpenFence(
-    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, D3DKMT_HANDLE Allocation, REFIID riid,
+    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, const char (&MachPortName)[54], REFIID riid,
     void **ppFence
 );
 
