@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
          "the largest texture is not the Metal device's");
   expect((caps.PresentationIntervals & D3DPRESENT_INTERVAL_ONE) != 0, "a frame cannot wait for one refresh");
   // the shader models this build's translator certifies (d3d9_caps.cpp holds the detail)
-  expect(caps.VertexShaderVersion == D3DVS_VERSION(2, 0) && caps.PixelShaderVersion == D3DPS_VERSION(2, 0),
+  expect(caps.VertexShaderVersion == D3DVS_VERSION(3, 0) && caps.PixelShaderVersion == D3DPS_VERSION(3, 0),
          "the shader models the translator certifies are not reported");
 
   D3DDISPLAYMODE mode{};

@@ -4,8 +4,8 @@
 // to the shader function"; IDirect3DDevice9::SetVertexShader: "Sets the current vertex shader"; Set*ShaderConstantF:
 // "Sets a floating-point vertex shader constant". A program of the other stage, one whose version this build does not
 // read, one with no END, and a null pointer are D3DERR_INVALIDCALL, and a constant outside its table is too. A draw
-// with a game's shader is refused, with the code D3D9 names for it, until the translator that turns d3dbc into the
-// DXBC this build's D3D11 device compiles lands -- and clearing the shader draws the fixed-function frame again.
+// with a game's vs_1_1 program that dcls POSITION without a register is still refused at draw; a game's ps_2_0
+// pixel shader draws. Clearing both shaders draws the fixed-function frame again.
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d9/nf-d3d9-idirect3ddevice9-createvertexshader
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d9/nf-d3d9-idirect3ddevice9-createpixelshader
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d9/nf-d3d9-idirect3dvertexshader9-getfunction
@@ -167,8 +167,8 @@ main() {
   expect(device->SetPixelShaderConstantF(256, constants, 1) == D3DERR_INVALIDCALL,
          "a pixel constant past the table was accepted");
 
-  // a draw with a game's shader is refused until the translator lands, and the fixed-function frame draws again
-  // once the shader is cleared
+  // a vs_1_1 program that dcls POSITION without a register is still refused at draw; a ps_2_0 pixel shader draws.
+  // clearing both shaders draws the fixed-function frame again
   struct Vertex {
     float x, y, z, rhw;
     D3DCOLOR colour;
@@ -190,11 +190,11 @@ main() {
   expect(device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1) == S_OK, "the fixed-function draw was refused");
   CHECK(device->SetVertexShader(vertex_shader.Get()));
   expect(device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1) == D3DERR_INVALIDCALL,
-         "a draw with a game's shader was not refused");
+         "a vs_1_1 draw with a POSITION dcl and no register was not refused");
   CHECK(device->SetVertexShader(nullptr));
   CHECK(device->SetPixelShader(pixel_shader.Get()));
-  expect(device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1) == D3DERR_INVALIDCALL,
-         "a draw with a game's pixel shader was not refused");
+  expect(device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1) == S_OK,
+         "a draw with a game's pixel shader was refused");
   CHECK(device->SetPixelShader(nullptr));
   expect(device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1) == S_OK,
          "the fixed-function draw after clearing the shaders was refused");
