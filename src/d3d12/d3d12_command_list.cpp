@@ -3738,8 +3738,12 @@ public:
         allocator_->InvalidateCurrentPass();
       } else if (rays) {
         // each command is a dispatch of the kernel, of the threadgroups the resolver counts for it
-        auto [_, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(IndirectRays), alignof(IndirectRays));
+        auto [records, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(IndirectRays), alignof(IndirectRays));
         cmd->rays = allocator_->gpu_heap_buffer_address_ + at;
+        // the resolver writes the rest of each command's dispatch
+        for (UINT i = 0; i < MaxCommandCount; i++)
+          if (records)
+            static_cast<IndirectRays *>(records)[i].dispatch.atomic_locks = device_->GetAtomicLocks();
         cmd->ray_flags = ray_flags;
         cmd->tgsize_x = device_->GetSIMDWidth();
         for (UINT i = 0; i < MaxCommandCount; i++, at += sizeof(IndirectRays)) {
@@ -4756,6 +4760,7 @@ public:
     };
     if (!BeginRays(dispatch.pipeline_flags))
       return;
+    dispatch.atomic_locks = device_->GetAtomicLocks();
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(dispatch), alignof(SM50_RAY_DISPATCH));
     if (allocator_->records_)
       allocator_->RecordGPUHeap(mapped, sizeof(dispatch), "ray dispatch");

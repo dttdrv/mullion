@@ -282,7 +282,7 @@ int main(int argc, char **argv) {
           (mullion::dxbc::SM50ShaderInternal *)sm50, "shader_main",
           (mullion::dxbc::SM50ShaderInternal *)sm50_hull, Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data
         )) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   } else if (!VertexBeforeHull.getValue().empty()) {
@@ -310,7 +310,7 @@ int main(int argc, char **argv) {
           (mullion::dxbc::SM50ShaderInternal *)sm50_vertex, (mullion::dxbc::SM50ShaderInternal *)sm50,
           "shader_main", Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data
         )) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   } else if (!HullAfterVertex.getValue().empty()) {
@@ -338,7 +338,7 @@ int main(int argc, char **argv) {
           (mullion::dxbc::SM50ShaderInternal *)sm50, (mullion::dxbc::SM50ShaderInternal *)sm50_hull,
           "shader_main", Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data
         )) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   } else if (!VertexBeforeGeometry.getValue().empty()) {
@@ -366,7 +366,7 @@ int main(int argc, char **argv) {
           (mullion::dxbc::SM50ShaderInternal *)sm50, "shader_main",
           (mullion::dxbc::SM50ShaderInternal *)sm50_vertex, Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data
         )) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   } else if (!GeometryAfterVertex.getValue().empty()) {
@@ -394,13 +394,13 @@ int main(int argc, char **argv) {
           (mullion::dxbc::SM50ShaderInternal *)sm50, "shader_main",
           (mullion::dxbc::SM50ShaderInternal *)sm50_geometry, Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data
         )) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   } else {
     if (auto err =
           mullion::dxbc::convertDXBC(sm50, "shader_main", Context, M, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data)) {
-      errs() << err << '\n';
+      errs() << toString(std::move(err)) << '\n';
       return 1;
     }
   }
