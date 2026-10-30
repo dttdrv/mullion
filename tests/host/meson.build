@@ -2,6 +2,10 @@
 test('host_geometry_budget', executable('host_geometry_budget', 'geometry_budget.cpp',
                                       include_directories : mullion_native_include_path,
                                       override_options : ['cpp_std=c++20'], native : true))
+test('host_stream_range', executable('host_stream_range', 'stream_range.cpp',
+                                   override_options : ['cpp_std=c++20'], native : true))
+test('host_typed_window', executable('host_typed_window', 'typed_window.cpp',
+                                   override_options : ['cpp_std=c++20'], native : true))
 test('host_denorm', executable('host_denorm', 'denorm.cpp', include_directories : include_directories('metal'),
                              override_options : ['cpp_std=c++20'], native : true))
 test('host_tessellator',

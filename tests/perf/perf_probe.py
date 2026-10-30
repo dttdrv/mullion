@@ -135,16 +135,26 @@ def cmd_run(args):
             "time": time.strftime("%Y-%m-%d %H:%M:%S"), "scenes": {}}
     for scene in scenes:
         runs = [run_scene(wine, exe, scene, args.frames, args.warmup, env, args.timeout, salt) for _ in range(args.repeat)]
-        good = [r for r in runs if r["ok"]]
-        best = min(good, key=lambda r: r.get("cpu_median", 1e9)) if good else runs[-1]
-        data["scenes"][scene] = best
-        if best["ok"]:
-            extras = " ".join("%s=%.3f" % (k, v) for k, v in best.items()
-                              if k not in ("ok", "wall_s") and not k.startswith(("cpu_", "gpu_")) and isinstance(v, float))
-            print("%-22s cpu %7.3f ms (p95 %7.3f)  gpu %7.3f ms  %s" % (scene, best.get("cpu_median", 0), best.get("cpu_p95", 0),
-                                                                     best.get("gpu_median", 0), extras), flush=True)
+        cpu = [r.get("cpu_median") for r in runs if r.get("ok") and isinstance(r.get("cpu_median"), (int, float))]
+        mean = sum(cpu) / len(cpu) if cpu else None
+        variance = (sum((v - mean) ** 2 for v in cpu) / len(cpu)) if cpu and mean is not None else None
+        data["scenes"][scene] = {
+            "repeats": runs,
+            "ok": any(r.get("ok") for r in runs),
+            "failures": sum(0 if r.get("ok") else 1 for r in runs),
+            "cpu_mean": mean,
+            "cpu_variance": variance,
+            "cpu_median": sorted(cpu)[len(cpu) // 2] if cpu else None,
+            "cpu_min": min(cpu) if cpu else None,
+            "cpu_max": max(cpu) if cpu else None,
+        }
+        row = data["scenes"][scene]
+        if row["ok"]:
+            print("%-22s cpu mean %7.3f ms (median %7.3f, var %7.3f, %u/%u ok)" % (
+                scene, row["cpu_mean"] or 0, row["cpu_median"] or 0, row["cpu_variance"] or 0,
+                args.repeat - row["failures"], args.repeat), flush=True)
         else:
-            print("%-22s FAILED\n%s" % (scene, best.get("log_tail", "")), flush=True)
+            print("%-22s FAILED all %u repeats\n%s" % (scene, args.repeat, runs[-1].get("log_tail", "")), flush=True)
     out = Path(args.out) if args.out else builds[0] / "perf" / f"{args.label}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, indent=1))

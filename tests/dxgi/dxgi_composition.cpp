@@ -12,7 +12,7 @@ int
 main() {
   ComPtr<IDXGIFactory2> factory;
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
-  for (UINT api : {10u, 101u, 11u, 12u}) {
+  for (UINT api : dxgi_apis()) {
     DxgiDevice device;
     CHECK(device.create(api));
     const DXGI_SWAP_CHAIN_DESC1 valid{

@@ -42,7 +42,8 @@ public:
     auto Sampler = GetArgument(Builder, BindingTableIndex, Iter->second.arg_index);
     auto CubeSampler = GetArgument(Builder, BindingTableIndex, Iter->second.arg_cube_index);
     auto Metadata = GetArgument(Builder, BindingTableIndex, Iter->second.arg_metadata_index);
-    return SamplerDescriptor{Sampler, CubeSampler, Metadata};
+    auto Border = GetArgument(Builder, BindingTableIndex, Iter->second.arg_border_index);
+    return SamplerDescriptor{Sampler, CubeSampler, Metadata, Border};
   }
 
   virtual llvm::Optional<TextureDescirptor>

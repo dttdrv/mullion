@@ -130,6 +130,9 @@ public:
   uint64_t chunk_event_id;
   uint64_t frame_;
   uint64_t signal_frame_latency_fence_;
+  // the device was removed when this chunk was submitted: it is neither encoded nor committed, and completes as the
+  // work of a device that is gone does
+  bool refused = false;
   std::function<void()> completed;
   QueryReadbacks readback;
   uint64_t resource_initializer_event_id;
@@ -149,6 +152,7 @@ public:
   void
   reset() noexcept {
     signal_frame_latency_fence_ = ~0ull;
+    refused = false;
     completed = {};
     readback = {};
     list_enc.reset();
@@ -175,6 +179,22 @@ private:
   std::atomic_bool draining_ = false;
   uint64_t drain_last_seq_ = 0;
   bool encoding_cancelled_ = false;
+  // the encode thread's, which is the one that refuses a submission
+  bool refusal_reported_ = false;
+
+  // MULLION_D3D11_FAULT_DEVICE: the tests' way of a fault, a command buffer that completes as one the GPU failed does,
+  // so the removal path runs without a GPU fault. Off unless a run asks for it; its value is the run's completed command
+  // buffer that completes as failed (1 is the first, and 4 leaves three of them whole, so a device can be made resources
+  // on before its frames are lost)
+  const unsigned fault_at_ = [] {
+    const std::string asked = env::getEnvVar("MULLION_D3D11_FAULT_DEVICE");
+    return asked.empty() ? 0u : (unsigned)std::max(1, atoi(asked.c_str()));
+  }();
+  // the completed command buffers of the run, whichever device made them: a fault is taken once
+  static inline std::atomic_uint fault_completions_{0};
+  std::atomic<HRESULT> device_fault_{S_OK};
+  mullion::mutex device_fault_mutex_;
+  std::function<void(HRESULT)> device_fault_callback_;
 
   std::array<CommandChunk, kCommandChunkCount> chunks;
   uint64_t encoder_seq = 1;
@@ -227,6 +247,14 @@ public:
 
   void Shutdown();
   void Drain();
+
+  // A command buffer the GPU failed loses the device: the reason is the first one, and every later completion leaves it
+  // as it was (ID3D12Device::GetDeviceRemovedReason, and D3D11's the same). The API's device tells its application
+  // through the callback, set once, which the device clears before it goes away.
+  void SetDeviceFaultCallback(std::function<void(HRESULT)> &&callback);
+  void ReportDeviceFault(HRESULT reason);
+  HRESULT DeviceFaultReason() const { return device_fault_.load(std::memory_order_acquire); }
+  bool HasDeviceFault() const { return FAILED(DeviceFaultReason()); }
 
   void WaitSharedEvent(WMT::SharedEvent event, uint64_t value) {
     while (event.signaledValue() < value) {
@@ -299,6 +327,13 @@ public:
 
   FrameStatistics& CurrentFrameStatistics() {
     return statistics.at(frame_count);
+  }
+
+  bool
+  PresentWouldBlock() {
+    // whether the next PresentBoundary would wait: after this present, frame_count+1 must fit in max_latency_
+    uint64_t next = frame_count + 1;
+    return next > max_latency_ && frame_latency_fence_.signaledValue() < next - max_latency_;
   }
 
   void

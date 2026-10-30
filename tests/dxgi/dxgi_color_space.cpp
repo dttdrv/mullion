@@ -51,7 +51,7 @@ main() {
     return verdict();
   ComPtr<IDXGIFactory2> factory;
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
-  for (UINT api : {10u, 101u, 11u, 12u})
+  for (UINT api : dxgi_apis())
     for (bool deferred : {false, true}) {
       if (deferred && api != 11)
         continue;

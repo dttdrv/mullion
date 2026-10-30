@@ -291,6 +291,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   encoder_last = nullptr;
   encoder_count_ = 0;
 
+  for (auto &slot : icb_)
+    icb_pool_.push_back(std::move(slot));
   icb_.clear();
   sparse_clear_texels_.clear();
   visibility_.clear();
@@ -365,6 +367,29 @@ MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pC
   return data;
 }
 
+MTLD3D12CommandAllocatorImpl::PooledIcb
+MTLD3D12CommandAllocatorImpl::takeIndirectCommandBuffer(
+    WMTIndirectCommandBufferInfo &info, uint32_t max_count, uint64_t storage
+) {
+  for (size_t i = 0; i < icb_pool_.size(); i++) {
+    if (icb_pool_[i].max_count >= max_count && icb_pool_[i].type == info.type && icb_pool_[i].storage == storage) {
+      PooledIcb slot = std::move(icb_pool_[i]);
+      icb_pool_.erase(i);
+      info.gpu_resource_id = slot.gpu_resource_id;
+      icb_.push_back(slot);
+      return slot;
+    }
+  }
+  PooledIcb slot;
+  slot.icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, max_count, (WMTResourceOptions)storage);
+  slot.max_count = max_count;
+  slot.type = info.type;
+  slot.storage = storage;
+  slot.gpu_resource_id = info.gpu_resource_id;
+  icb_.push_back(slot);
+  return slot;
+}
+
 IndirectComputeCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignature *pCmdSig, MTLD3D12ComputePipelineState *pPSO, size_t MaxCount) {
   WMTIndirectCommandBufferInfo info;
@@ -389,7 +414,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
 
-  auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount, WMTResourceStorageModeShared);
+  auto icb = takeIndirectCommandBuffer(info, (uint32_t)MaxCount, WMTResourceStorageModeShared).icb;
 
   auto &cmd_use_icb = EncodeComputeCommand<wmtcmd_compute_useresource>();
   cmd_use_icb.type = WMTComputeCommandUseResource;
@@ -413,8 +438,6 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   cmd.indirect_buffer = gpu_heap_buffer_;
   cmd.indirect_buffer_offset = reinterpret_cast<char *>(data) - static_cast<char *>(gpu_heap_) +
                                offsetof(IndirectComputeCommandData, execution_range);
-
-  icb_.push_back(std::move(icb));
 
   return data;
 }
@@ -454,7 +477,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   size_t each = !tessellation && pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? kIndexedCommands : 1;
   WMT::Reference<WMT::IndirectCommandBuffer> icb;
   if (!draws)
-    icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount * each, WMTResourceStorageModePrivate);
+    icb = takeIndirectCommandBuffer(info, (uint32_t)(MaxCount * each), WMTResourceStorageModePrivate).icb;
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectRenderCommandData), 16);
   if (records_)
@@ -582,8 +605,6 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd.indirect_command_buffer = icb;
   cmd.indirect_buffer = gpu_heap_buffer_;
   cmd.indirect_buffer_offset = Offset + offsetof(IndirectRenderCommandData, execution_range);
-
-  icb_.push_back(std::move(icb));
 
   return data;
 }

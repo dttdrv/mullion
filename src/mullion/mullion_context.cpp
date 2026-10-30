@@ -395,11 +395,15 @@ ArgumentEncodingContext::encodeShaderResources(
         encoded_buffer[arg.StructurePtrOffset] = dummy_sampler_info_.gpu_resource_id;
         encoded_buffer[arg.StructurePtrOffset + 1] = dummy_sampler_info_.gpu_resource_id;
         encoded_buffer[arg.StructurePtrOffset + 2] = (uint64_t)std::bit_cast<uint32_t>(0.0f);
+        encoded_buffer[arg.StructurePtrOffset + 3] = 0;
         break;
       }
       encoded_buffer[arg.StructurePtrOffset] = sampler->sampler_state_handle;
       encoded_buffer[arg.StructurePtrOffset + 1] = sampler->sampler_state_cube_handle;
       encoded_buffer[arg.StructurePtrOffset + 2] = sampler->metadata;
+      encoded_buffer[arg.StructurePtrOffset + 3] = sampler->border_gpu_address;
+      if (sampler->border_buffer)
+        makeResident<stage, kind>(sampler->border_buffer, GetResidencyMask<kind>(stage, true, false));
       break;
     }
     case SM50BindingType::SRV: {
@@ -842,6 +846,67 @@ ArgumentEncodingContext::startBlitPass() {
 }
 
 void
+ArgumentEncodingContext::splitRenderPass() {
+  assert(encoder_current);
+  assert(encoder_current->type == EncoderType::Render);
+  auto *old = static_cast<RenderEncoderData *>(encoder_current);
+  auto colors = old->colors;
+  auto depth = old->depth;
+  auto stencil = old->stencil;
+  const uint8_t dsv_planar = old->dsv_planar_flags;
+  const uint8_t dsv_readonly = old->dsv_readonly_flags;
+  const uint8_t rt_count = old->render_target_count;
+  const uint32_t width = old->render_target_width;
+  const uint32_t height = old->render_target_height;
+  const uint16_t array_length = old->render_target_array_length;
+  const uint8_t default_samples = old->default_raster_sample_count;
+  const uint8_t center = old->center_samples;
+  const auto tile_key = old->tile_barrier_pso_key;
+  const bool use_geometry = old->use_geometry;
+  const bool use_tessellation = old->use_tessellation;
+  const bool visibility = old->use_visibility_result;
+  const size_t vis_window = old->visibility_result_window;
+  const uint64_t vis_count = old->visibility_result_count;
+  const auto so_count = old->so_count_pso;
+  const uint32_t so_instances = old->so_geometry_instances;
+  const uint32_t mesh_instances = old->geometry_mesh_instances;
+  const auto so_targets = old->so_targets;
+  const auto so_scratch = old->so_scratch;
+  const uint64_t so_scratch_va = old->so_scratch_va;
+  const uint64_t so_scratch_size = old->so_scratch_size;
+  for (auto &color : colors)
+    if (color.attachment)
+      color.load_action = WMTLoadActionLoad;
+  if (depth.attachment)
+    depth.load_action = WMTLoadActionLoad;
+  if (stencil.attachment)
+    stencil.load_action = WMTLoadActionLoad;
+  endPass();
+  auto *next = startRenderPass(dsv_planar, dsv_readonly, rt_count, 0);
+  next->colors = colors;
+  next->depth = depth;
+  next->stencil = stencil;
+  next->render_target_width = width;
+  next->render_target_height = height;
+  next->render_target_array_length = array_length;
+  next->default_raster_sample_count = default_samples;
+  next->center_samples = center;
+  next->tile_barrier_pso_key = tile_key;
+  next->use_geometry = use_geometry;
+  next->use_tessellation = use_tessellation;
+  next->use_visibility_result = visibility;
+  next->visibility_result_window = vis_window;
+  next->visibility_result_count = vis_count;
+  next->so_count_pso = so_count;
+  next->so_geometry_instances = so_instances;
+  next->geometry_mesh_instances = mesh_instances;
+  next->so_targets = so_targets;
+  next->so_scratch = so_scratch;
+  next->so_scratch_va = so_scratch_va;
+  next->so_scratch_size = so_scratch_size;
+}
+
+void
 ArgumentEncodingContext::endPass() {
   assert(encoder_current);
   auto ended = encoder_current;
@@ -1048,12 +1113,7 @@ ArgumentEncodingContext::resolveRenderPassBarrier() {
   assert(encoder_current->type == EncoderType::Render);
   auto &barrier_state = encoder_current->barrier_state;
   if (barrier_state.barrierPreRasterAfterFragmentSet & ~intrapass_barrier_control_bits_) {
-    // TODO(barrier): encoder split
-    WARN("A fragment-vertex barrier is omitted");
-    barrier_state.barrierSet = 0;
-    barrier_state.barrierPreRasterSet = 0;
-    barrier_state.barrierFragmentAfterPreRasterSet = 0;
-    barrier_state.barrierPreRasterAfterFragmentSet = 0;
+    splitRenderPass();
     return;
   }
   // Individual barriers

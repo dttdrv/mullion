@@ -4,6 +4,14 @@
 #ifndef __WINEMETAL_AIRCONV_THUNKS_H
 #define __WINEMETAL_AIRCONV_THUNKS_H
 
+#ifndef STATIC_ASSERT
+#ifdef __cplusplus
+#define STATIC_ASSERT(x) static_assert(x, #x)
+#else
+#define STATIC_ASSERT(x) _Static_assert(x, #x)
+#endif
+#endif
+
 enum airconv_unixcalls {
   unix_sm50_initialize = 74,
   unix_sm50_destroy,
@@ -250,6 +258,13 @@ struct sm50_get_arguments_info_params32 {
 };
 
 COMPATIBLE_STRUCT32(sm50_get_arguments_info_params, 16)
+
+STATIC_ASSERT(offsetof(struct SM50_SHADER_COMPILATION_ARGUMENT_DATA, next) == 0);
+STATIC_ASSERT(offsetof(struct SM50_SHADER_COMPILATION_ARGUMENT_DATA, type) == sizeof(void *));
+STATIC_ASSERT(offsetof(struct SM50_SHADER_MESH_SHADER_DATA, next) == 0);
+STATIC_ASSERT(offsetof(struct SM50_SHADER_MESH_SHADER_DATA, pixel_shader_bytecode) == 2 * sizeof(void *));
+STATIC_ASSERT(offsetof(struct SM50_SHADER_MESH_SHADER_DATA, conservative) == 3 * sizeof(void *));
+STATIC_ASSERT(offsetof(struct SM50_SHADER_LIBRARIES_DATA, next) == 0);
 
 #define UNIX_CALL(code, params) WINE_UNIX_CALL(unix_##code, params)
 

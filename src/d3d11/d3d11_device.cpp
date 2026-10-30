@@ -372,6 +372,36 @@ private:
   UINT64 allowed_ = 0, denied_ = 0, discarded_ = 0;
   BOOL mute_ = FALSE;
 };
+// what a device keeps of its removal: the first reason, and the events registered to hear of it. A registration adds
+// its event here and the removal signals them all, which is what the call's event is for (ID3D11Device4's,
+// RegisterDeviceRemovedEvent: the event is signaled once the device is removed)
+struct DeviceRemoval {
+  void
+  Lose(HRESULT reason) {
+    HRESULT expected = S_OK;
+    if (!reason_.compare_exchange_strong(expected, reason, std::memory_order_acq_rel))
+      return;
+    std::vector<HANDLE> events;
+    {
+      std::lock_guard<mullion::mutex> lock(mutex);
+      for (auto &entry : events_)
+        events.push_back(entry.second);
+    }
+    for (auto event : events)
+      SetEvent(event);
+  }
+
+  HRESULT
+  Reason() const {
+    return reason_.load(std::memory_order_acquire);
+  }
+
+  std::atomic<HRESULT> reason_{S_OK};
+  mullion::mutex mutex;
+  std::vector<std::pair<DWORD, HANDLE>> events_;
+  DWORD next_cookie_ = 1;
+};
+
 class MTLD3D11DeviceImpl final : public MTLD3D11Device, public IMTLD3D11DeviceExt, public IMTLSwapChainFactory {
 friend class MTLD3D11DXGIDevice;
 public:
@@ -398,6 +428,17 @@ public:
       info_queue_ = std::make_unique<D3D11InfoQueue>(container);
     is_traced_ = !!::GetModuleHandle("dxgitrace.dll");
     format_inspector_.Inspect(GetMTLDevice());
+    // a command buffer the GPU failed reaches the device through the queue. the callback holds the removal state
+    // weakly, so a completion after the device is gone finds nothing to tell
+    device_.queue().SetDeviceFaultCallback([state = std::weak_ptr<DeviceRemoval>(removal_)](HRESULT reason) {
+      if (auto removed = state.lock())
+        removed->Lose(reason);
+    });
+  }
+
+  ~MTLD3D11DeviceImpl() {
+    // the queue outlives the device and its finish thread keeps running: it must not call into one that is going away
+    device_.queue().SetDeviceFaultCallback({});
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
@@ -962,9 +1003,16 @@ public:
 
   UINT STDMETHODCALLTYPE GetCreationFlags() override { return feature_flags_ & 0x7fffffff; }
 
-  HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override {
-    // unless we are deal with eGPU, this method should awalys return S_OK?
-    return S_OK;
+  HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override { return DeviceRemovalReason(); }
+
+  void STDMETHODCALLTYPE LoseDevice(HRESULT Reason) override { removal_->Lose(Reason); }
+
+  HRESULT STDMETHODCALLTYPE DeviceRemovalReason() override {
+    // the queue's fault is the device's: it is read here as well as delivered, so a poll sees it whatever the thread's
+    // schedule is
+    if (auto fault = device_.queue().DeviceFaultReason(); FAILED(fault))
+      removal_->Lose(fault);
+    return removal_->Reason();
   }
 
   void STDMETHODCALLTYPE
@@ -1438,12 +1486,28 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE RegisterDeviceRemovedEvent(HANDLE Event,
                                                                DWORD *pCookie) final {
-    // no device to remove
+    if (!Event || !pCookie)
+      return E_INVALIDARG;
+    *pCookie = 0;
+    // a device that is already removed answers the reason it was removed with, and has no removal left to hear of
+    if (HRESULT removed = DeviceRemovalReason(); FAILED(removed))
+      return removed;
+    std::lock_guard<mullion::mutex> lock(removal_->mutex);
+    if (HRESULT removed = removal_->Reason(); FAILED(removed))
+      return removed;
+    *pCookie = removal_->next_cookie_++;
+    removal_->events_.emplace_back(*pCookie, Event);
     return S_OK;
   };
 
   virtual void STDMETHODCALLTYPE UnregisterDeviceRemoved(DWORD Cookie) final {
-    // just do nothing
+    if (!Cookie)
+      return;
+    std::lock_guard<mullion::mutex> lock(removal_->mutex);
+    auto &events = removal_->events_;
+    events.erase(std::remove_if(events.begin(), events.end(),
+                                [&](auto &entry) { return entry.first == Cookie; }),
+                 events.end());
   };
 
   virtual HRESULT STDMETHODCALLTYPE OpenSharedFence(HANDLE Handle, REFIID riid,
@@ -1521,6 +1585,7 @@ private:
   std::unique_ptr<MTLD3D11CommandListPoolBase> commandlist_pool_;
   std::unique_ptr<MTLD3D11PipelineCacheBase> pipeline_cache_;
 
+  std::shared_ptr<DeviceRemoval> removal_ = std::make_shared<DeviceRemoval>();
   Device& device_;
   /** ensure destructor called first */
   std::unique_ptr<MTLD3D11DeviceContextBase> context_;

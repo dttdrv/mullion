@@ -206,8 +206,13 @@ CommandQueue::CommitCurrentChunk() {
   chunk.chunk_event_id = GetNextEventSeqId();
   chunk.frame_ = frame_count;
   chunk.resource_initializer_event_id = initializer.flushToWait();
-  auto& statistics = CurrentFrameStatistics();
-  statistics.command_buffer_count++;
+  // A submission for a device that is gone is refused: the API's removal is the device's, and its work cannot run. What
+  // an application waits on still completes, through the finish thread's completion of the refused chunk (see
+  // CommitChunkInternal and WaitForFinishThread), so a fence or a query the application asked for does not hang.
+  chunk.refused = HasDeviceFault();
+  auto &statistics = CurrentFrameStatistics();
+  if (!chunk.refused)
+    statistics.command_buffer_count++;
   if (profile_) {
     profile_->buffers[chunk_id % kCommandChunkCount].submitted = began;
     if (chunk.signal_frame_latency_fence_ != ~0ull)
@@ -234,6 +239,17 @@ CommandQueue::CommitCurrentChunk() {
 
 void
 CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
+
+  if (chunk.refused) {
+    if (!std::exchange(refusal_reported_, true))
+      WARN("The device was removed (0x", std::hex, DeviceFaultReason(), std::dec,
+           "): its submissions are refused until it is made again");
+    // the finish thread completes what the application waits on, and the chunk's buffers are given back, without a
+    // command buffer of a device that is gone being made or waited for
+    ready_for_commit.fetch_add(1, std::memory_order_release);
+    ready_for_commit.notify_one();
+    return;
+  }
 
   auto pool = WMT::MakeAutoreleasePool();
 
@@ -284,24 +300,54 @@ CommandQueue::EncodingThread() {
   return 0;
 }
 
+void
+CommandQueue::SetDeviceFaultCallback(std::function<void(HRESULT)> &&callback) {
+  std::lock_guard<mullion::mutex> lock(device_fault_mutex_);
+  device_fault_callback_ = std::move(callback);
+}
+
+void
+CommandQueue::ReportDeviceFault(HRESULT reason) {
+  HRESULT expected = S_OK;
+  // the first reason is the device's: later failures leave it as it was (ID3D12Device::GetDeviceRemovedReason's
+  // contract)
+  if (!device_fault_.compare_exchange_strong(expected, reason, std::memory_order_acq_rel))
+    return;
+  std::function<void(HRESULT)> callback;
+  {
+    std::lock_guard<mullion::mutex> lock(device_fault_mutex_);
+    callback = device_fault_callback_;
+  }
+  if (callback)
+    callback(reason);
+}
+
 uint32_t
 CommandQueue::WaitForFinishThread() {
   env::setThreadName("mullion-finish-thread");
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
   uint64_t internal_seq = 1;
-  while (!stopped.load()) {
-    ready_for_commit.wait(internal_seq, std::memory_order_acquire);
-    if (stopped.load())
-      break;
-    auto &chunk = chunks[internal_seq % kCommandChunkCount];
-    if (profile_ || chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+  // what the device's work says of the chunk it was given: what to wait for, what it reported, and the profile of its
+  // passes. a refused chunk has no command buffer at all (CommitChunkInternal makes none), so this is the whole of what
+  // a refusal skips, and it is skipped as one thing
+  auto finish_submitted = [&](CommandChunk &chunk) {
+    if (profile_ || chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled)
       chunk.attached_cmdbuf.waitUntilCompleted();
-    }
     auto completed = profile_ ? diag::Now() : 0;
     FLIGHT("context queue %p: chunk %llu completes, status %llu", this, internal_seq,
            uint64_t(chunk.attached_cmdbuf.status()));
+    // MULLION_D3D11_FAULT_DEVICE: the test's fault, taken by the path a GPU failure takes, so the removal contract is
+    // exercised without a GPU fault. The completed command buffer the variable names is the one, and only that one: a
+    // device a Reset makes after the fault has to be a device whose frames are live again, or the road back could not
+    // be tested
+    if (fault_at_ && !HasDeviceFault() && ++fault_completions_ == fault_at_) {
+      ERR("MULLION_D3D11_FAULT_DEVICE: the run's command buffer ", fault_at_, " (frame ", chunk.frame_,
+          ") is treated as one the GPU failed");
+      ReportDeviceFault(DXGI_ERROR_DEVICE_HUNG);
+    }
     if (chunk.attached_cmdbuf.status() == WMTCommandBufferStatusError) {
       ERR("Device error at frame ", chunk.frame_, ": ", chunk.attached_cmdbuf.error().description().getUTF8String());
+      ReportDeviceFault(DXGI_ERROR_DEVICE_HUNG);
       // the first: Metal fails the command buffers after a fault too
       static bool dumped;
       if (!std::exchange(dumped, true))
@@ -313,36 +359,48 @@ CommandQueue::WaitForFinishThread() {
       }
     }
 
-    if (profile_) {
-      auto &buffer = profile_->buffers[internal_seq % kCommandChunkCount];
-      uint64_t cpu_end, gpu_end;
-      device.sampleTimestamps(cpu_end, gpu_end);
-      std::vector<std::vector<uint64_t>> clocks;
-      for (auto &samples : buffer.samples) {
-        auto &clock = clocks.emplace_back(samples.used, ~uint64_t(0));
-        if (samples.buffer)
-          samples.buffer.resolveCounterRange(0, samples.used, clock.data(), clock.size() * sizeof(uint64_t));
-      }
-      auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
-                              chunk.attached_cmdbuf.gpuStartTime(), chunk.attached_cmdbuf.gpuEndTime(),
-                              buffer.submitted, buffer.passes.size(), buffer.presents, buffer.timestamps);
-      lines += diag::Line("calibration", profile_->id, internal_seq, buffer.cpu_begin, buffer.gpu_begin, cpu_end, gpu_end);
-      for (auto &pass : buffer.passes) {
-        auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, pass.kind, pass.encoding, pass.runs);
-        line.pop_back();
-        for (uint32_t i = 0; i < pass.count; i++)
-          line += str::format('\t', pass.first == ~0u ? ~uint64_t(0) : clocks[pass.buffer][pass.first + i]);
-        lines += line + '\n' + pass.targets;
-        if (!pass.event.empty())
-          lines += diag::Line("event", profile_->id, internal_seq, pass.id, pass.event);
-      }
-      diag::Write(lines);
-      chunk.readback.timestamp.reset();
-      for (auto &samples : buffer.samples)
-        if (samples.buffer)
-          timestamp_samples.Return(std::move(samples.buffer));
-      buffer = {};
+    if (!profile_)
+      return;
+    auto &buffer = profile_->buffers[internal_seq % kCommandChunkCount];
+    uint64_t cpu_end, gpu_end;
+    device.sampleTimestamps(cpu_end, gpu_end);
+    std::vector<std::vector<uint64_t>> clocks;
+    for (auto &samples : buffer.samples) {
+      auto &clock = clocks.emplace_back(samples.used, ~uint64_t(0));
+      if (samples.buffer)
+        samples.buffer.resolveCounterRange(0, samples.used, clock.data(), clock.size() * sizeof(uint64_t));
     }
+    auto lines = diag::Line("cmdbuf", profile_->id, internal_seq, buffer.committed, completed,
+                            chunk.attached_cmdbuf.gpuStartTime(), chunk.attached_cmdbuf.gpuEndTime(), buffer.submitted,
+                            buffer.passes.size(), buffer.presents, buffer.timestamps);
+    lines += diag::Line("calibration", profile_->id, internal_seq, buffer.cpu_begin, buffer.gpu_begin, cpu_end, gpu_end);
+    for (auto &pass : buffer.passes) {
+      auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, pass.kind, pass.encoding, pass.runs);
+      line.pop_back();
+      for (uint32_t i = 0; i < pass.count; i++)
+        line += str::format('\t', pass.first == ~0u ? ~uint64_t(0) : clocks[pass.buffer][pass.first + i]);
+      lines += line + '\n' + pass.targets;
+      if (!pass.event.empty())
+        lines += diag::Line("event", profile_->id, internal_seq, pass.id, pass.event);
+    }
+    diag::Write(lines);
+    chunk.readback.timestamp.reset();
+    for (auto &samples : buffer.samples)
+      if (samples.buffer)
+        timestamp_samples.Return(std::move(samples.buffer));
+    buffer = {};
+  };
+
+  while (!stopped.load()) {
+    ready_for_commit.wait(internal_seq, std::memory_order_acquire);
+    if (stopped.load())
+      break;
+    auto &chunk = chunks[internal_seq % kCommandChunkCount];
+    // the one decision a refusal makes here: a chunk the device's removal refused had no work submitted for it, so
+    // nothing of the device's is awaited or read. everything below is the application's — the callbacks, the fences it
+    // waits on, the blocks the queue returns — and happens either way
+    if (!chunk.refused)
+      finish_submitted(chunk);
 
     uint64_t omitted = 0;
     for (auto word : chunk.readback.omitted)

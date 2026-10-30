@@ -78,6 +78,46 @@ def builtin(pe):
         return file.read(16) == b"Wine builtin DLL"
 
 
+def compilers(prefix):
+    """the Windows shader compilers the tests load, from the project's pinned copies (README.md) into the prefix: a
+    prefix that falls back on Wine's own d3dcompiler answers `D3DCompile` with vkd3d-shader, which compiles some
+    Microsoft-profile programs differently, so a test of 'Microsoft's compiler' would measure another compiler.
+
+    d3dcompiler_47.dll at the toolchain root is PE32+; the PE32 copy is the cab extract under c47/. a 32-bit prefix
+    gets the i386 DLL in system32; a WoW64 prefix gets PE32+ in system32 and i386 in syswow64."""
+    source = Path(__file__).resolve().parents[1] / "toolchains" / "shadercompilers"
+    windows = prefix / "drive_c" / "windows"
+    system32 = windows / "system32"
+    wow64 = windows / "syswow64"
+    installed = []
+    x64 = source / "d3dcompiler_47.dll"
+    x86 = None
+    cab = source / "c47"
+    if cab.is_dir():
+        for candidate in sorted(cab.glob("*")):
+            if candidate.is_file() and machine(candidate) == "i386":
+                x86 = candidate
+                break
+    if wow64.is_dir():
+        if x64.is_file():
+            shutil.copy2(x64, system32 / "d3dcompiler_47.dll")
+            installed.append("d3dcompiler_47.dll")
+        if x86 is not None:
+            shutil.copy2(x86, wow64 / "d3dcompiler_47.dll")
+            installed.append("syswow64/d3dcompiler_47.dll")
+    elif x86 is not None:
+        shutil.copy2(x86, system32 / "d3dcompiler_47.dll")
+        installed.append("d3dcompiler_47.dll")
+    elif x64.is_file():
+        shutil.copy2(x64, system32 / "d3dcompiler_47.dll")
+        installed.append("d3dcompiler_47.dll")
+    for name in ("dxcompiler.dll", "dxil.dll"):
+        if (source / name).is_file():
+            shutil.copy2(source / name, system32 / name)
+            installed.append(name)
+    return installed
+
+
 def install(wine, prefix, unix, pe):
     windows = prefix / "drive_c" / "windows"
     for path in pe.values():
@@ -453,6 +493,9 @@ def environment(args):
                    env=base, stdin=subprocess.DEVNULL, check=True)
     if not args.no_install:
         install(wine, prefix, unix, pe)
+        installed = compilers(prefix)
+        if installed:
+            print("shader compilers: " + ", ".join(installed) + f" in {prefix}")
     WHERE.update(tool=[binary, *sorted(path for build in builds for path in build.glob("tests/*/where.exe"))][:2],
                  files={path.name.lower(): path for path in pe.values()},
                  symbolizer=Path(shutil.which(compiler(builds)[0])).resolve().parent / "llvm-symbolizer")

@@ -6,7 +6,12 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 84
+// 85: SM50 sampler descriptors carry a fourth qword, the GPU address of SM50_SAMPLER_BORDER (0 for Metal's own
+// borders). D3D11 custom BorderColor needs that address as GetSampler's Border; AIR 84 cached shaders omit it.
+// 84: WaveReadLaneFirst and WaveActiveAllEqual read the lowest lane that takes part in the wave operation rather than
+// the simd group's lane 0, which is a helper lane where a wave's first lanes are helpers. a shader with either lowers
+// differently, so the AIR 83 cached is not this build's.
+#define AIRCONV_VERSION 85
 
 #ifdef __cplusplus
 #include <string>
@@ -256,7 +261,8 @@ GetArgumentIndex(SM50BindingType Type, uint32_t SM50BindingSlot) {
   case SM50BindingType::ConstantBuffer:
     return SM50BindingSlot * 2;
   case SM50BindingType::Sampler:
-    return SM50BindingSlot + 32;
+    // sampler, cube sampler, metadata, SM50_SAMPLER_BORDER GPU address
+    return SM50BindingSlot * 4 + 32;
   case SM50BindingType::SRV:
     return SM50BindingSlot * 3 + 128;
   case SM50BindingType::UAV:

@@ -87,10 +87,16 @@ geometry_draw_parts(uint32_t warps, uint32_t instances, uint64_t max) {
 // rectangular parts can leave nearly half their capacity unused at instance boundaries
 inline uint32_t
 indirect_geometry_parts(uint64_t max, uint64_t bound) {
+  if (!max)
+    return 1;
+  // the first oversized draw has no measured bound (1): over-allocate parts so that submission draws instead of
+  // being omitted, then later draws use the grown bound (tests/d3d11/d3d11_geometry_indirect_parts.cpp attempt 0)
+  if (bound <= 1)
+    bound = max * 64;
   if (bound <= max)
     return 1;
   auto capacity = std::max<uint64_t>((max + 1) / 2, 1);
-  return uint32_t(bound / capacity + (bound % capacity != 0));
+  return uint32_t(std::min<uint64_t>(bound / capacity + (bound % capacity != 0), UINT32_MAX));
 }
 
 } // namespace mullion

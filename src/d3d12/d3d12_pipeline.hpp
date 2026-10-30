@@ -89,6 +89,8 @@ struct PipelineStateStream {
   Create(MTLD3D12Device *device, REFIID iid, void **pipeline, const PipelineShaderCache *cached = nullptr) const;
 };
 
+bool SM50ShaderIsInterned(sm50_shader_t shader);
+
 // a pipeline's description with everything it points to, which the application may free once the pipeline is made;
 // null while pipelines made now emulate custom borders (MTLD3D12PipelineState::borderless)
 std::shared_ptr<const PipelineStateStream> Borderless(MTLD3D12Device *device, const PipelineStateStream &stream);
@@ -107,7 +109,7 @@ public:
   }
 
   ~SM50Shader() {
-    if (sm50_shader_)
+    if (sm50_shader_ && !SM50ShaderIsInterned(sm50_shader_))
       SM50Destroy(sm50_shader_);
   }
 };

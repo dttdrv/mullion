@@ -27,9 +27,11 @@ from pathlib import Path
 import run
 
 FLAG = "-fsanitize-coverage=func,trace-pc"
-# the headers whose interfaces count: Direct3D 10 to 12 and DXGI, as C declares their method tables
-HEADERS = ("d3d12.h", "d3d12sdklayers.h", "d3d11_4.h", "d3d11on12.h", "d3d10_1.h", "dxgi1_6.h")
-TABLE = re.compile(r"typedef struct (\w+)Vtbl\s*\{(.*?)\}\s*\1Vtbl;", re.S)
+# the headers whose interfaces count: Direct3D 9 to 12 and DXGI, as C declares their method tables
+HEADERS = ("d3d12.h", "d3d12sdklayers.h", "d3d11_4.h", "d3d11on12.h", "d3d10_1.h", "d3d9.h", "dxgi1_6.h")
+# a method table is declared either as `typedef struct NameVtbl {...} NameVtbl;` (DXGI, D3D10 to 12) or as
+# `struct NameVtbl {...};` (d3d9.h), so both forms count
+TABLE = re.compile(r"(?:typedef\s+)?struct\s+(\w+Vtbl)\s*\{(.*?)\}\s*(?:\w+\s*;)?", re.S)
 # a table's entry, a pointer to a function: "(convention *Name)("
 ENTRY = re.compile(r"\*\s*(\w+)\s*\)\s*\(")
 
@@ -55,6 +57,23 @@ def setup(like, out):
              for path in json.loads(made["properties"].get(kind, "[]").replace("'", '"'))]
     subprocess.run(["meson", "setup", out, source, *files, *(f"-D{k}={v}" for k, v in options.items())], check=True)
     subprocess.run(["ninja", "-C", out], check=True)
+
+
+def image_base(data):
+    """the preferred address of a PE32 or PE32+ image, from its optional header: PE32's ImageBase is four bytes at
+    offset 28, PE32+'s eight bytes at offset 24 (Microsoft PE format; IMAGE_OPTIONAL_HEADER32/64). A malformed or
+    non-PE image raises ValueError rather than reading the PE32+ field out of a PE32 header."""
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError("not an MZ image")
+    header = int.from_bytes(data[0x3C:0x40], "little")
+    if header + 24 + 32 > len(data) or data[header:header + 4] != b"PE\0\0":
+        raise ValueError("no PE signature")
+    magic = int.from_bytes(data[header + 24:header + 26], "little")
+    if magic == 0x10B:
+        return int.from_bytes(data[header + 24 + 28:header + 24 + 32], "little")
+    if magic == 0x20B:
+        return int.from_bytes(data[header + 24 + 24:header + 24 + 32], "little")
+    raise ValueError(f"unknown optional header magic {magic:#x}")
 
 
 def methods(cc):
@@ -87,11 +106,11 @@ def report(build, notes, out):
     unreached, total = [], [0, 0]
     for dll in sorted(run.libraries([build])[1].values()):
         data = dll.read_bytes()
-        header = int.from_bytes(data[0x3C:0x40], "little")
-        # a PE32+ image's preferred address (IMAGE_OPTIONAL_HEADER64.ImageBase), which its symbols' addresses include
-        image_base = int.from_bytes(data[header + 24 + 24:header + 24 + 32], "little")
+        # the image's preferred address, which its symbols' addresses include: PE32 and PE32+ put it in different
+        # places, and a 32-bit library is as much a library's here as a 64-bit one
+        base = image_base(data)
         symbols = subprocess.run([bin / "llvm-nm", "-C", "--defined-only", "-n", dll], capture_output=True, text=True, check=True).stdout
-        functions = [(int(address, 16) - image_base, name) for address, kind, name in
+        functions = [(int(address, 16) - base, name) for address, kind, name in
                      (line.split(" ", 2) for line in symbols.splitlines() if line.count(" ") >= 2) if kind in "Tt"]
         starts = [address for address, _ in functions]
         ran = set()

@@ -32,6 +32,8 @@
 #include <fstream>
 #include <mutex>
 #include <array>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <deque>
 #include <variant>
@@ -268,6 +270,25 @@ MTLD3D12PipelineState::Name(std::initializer_list<D3D12_SHADER_BYTECODE> Shaders
     DumpShaders(Shaders);
 }
 
+namespace {
+
+std::mutex intern_mutex;
+std::unordered_map<std::string, std::pair<sm50_shader_t, MTL_SHADER_REFLECTION>> interned_parses;
+std::unordered_set<uint64_t> interned_ids;
+
+uint64_t
+shader_id(sm50_shader_t shader) {
+  return (uint64_t)shader;
+}
+
+} // namespace
+
+bool
+SM50ShaderIsInterned(sm50_shader_t shader) {
+  std::lock_guard<std::mutex> lock(intern_mutex);
+  return interned_ids.count(shader_id(shader)) != 0;
+}
+
 HRESULT
 MTLD3D12PipelineState::InitializeShader(
     MTLD3D12Device *Device, D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl
@@ -277,14 +298,33 @@ MTLD3D12PipelineState::InitializeShader(
       !ShaderFeaturesSupported(Device, Bytecode.pShaderBytecode, Bytecode.BytecodeLength))
     return FAIL(E_INVALIDARG);
 
+  const auto hash = Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string();
+  {
+    std::lock_guard<std::mutex> lock(intern_mutex);
+    auto it = interned_parses.find(hash);
+    if (it != interned_parses.end()) {
+      *ppShader = it->second.first;
+      if (pRefl)
+        *pRefl = it->second.second;
+      return S_OK;
+    }
+  }
+
   SM50Error error;
-  if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl, &error)) {
+  MTL_SHADER_REFLECTION reflection{};
+  if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl ? pRefl : &reflection, &error)) {
     ERR(
-        "Failed to initialize shader ", Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string(),
+        "Failed to initialize shader ", hash,
         ": ", SM50GetErrorMessageString(error)
     );
     DumpShaders({Bytecode});
     return FAIL(E_INVALIDARG);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(intern_mutex);
+    interned_parses.emplace(hash, std::make_pair(*ppShader, pRefl ? *pRefl : reflection));
+    interned_ids.insert(shader_id(*ppShader));
   }
 
   return S_OK;

@@ -136,7 +136,7 @@ main() {
   );
   if (!expect(window != nullptr, "CreateWindow"))
     return verdict();
-  for (UINT api : {10u, 101u, 11u, 12u}) {
+  for (UINT api : dxgi_apis()) {
     step("D3D%u swap-chain private storage", api);
     DxgiDevice device;
     CHECK(device.create(api));

@@ -136,9 +136,14 @@ private:
   WMT::Reference<WMT::Texture> window_target_;
   struct WindowFrame {
     WMT::Reference<WMT::Buffer> buffer;
-    void *pixels;
-    uint32_t width, height;
-    uint64_t number;
+    void *pixels = nullptr;
+    uint32_t width = 0, height = 0;
+    uint64_t number = 0;
+
+    WindowFrame() = default;
+    WindowFrame(WindowFrame &&other) noexcept;
+    WindowFrame &operator=(WindowFrame &&other) noexcept;
+    ~WindowFrame();
   };
   WMT::Reference<WMT::PresentStatistics> statistics_ = WMT::MakePresentStatistics();
   // the frames encoded

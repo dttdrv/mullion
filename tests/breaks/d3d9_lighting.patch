@@ -1,0 +1,11 @@
+--- a/src/d3d9/d3d9_fixed_function.cpp
++++ b/src/d3d9/d3d9_fixed_function.cpp
+@@ -67,7 +67,7 @@
+ 
+ bool
+ FixedFunctionPipeline::lit(DWORD fvf) {
+-  return fvf == kLitFVF || fvf == kLitTexturedFVF;
++  return false;
+ }
+ 
+ bool

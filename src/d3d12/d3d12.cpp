@@ -17,6 +17,7 @@
  */
 
 #include "d3d12.h"
+#include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
 #include "dxgi_interfaces.h"
@@ -27,6 +28,18 @@
 #include "util_string.hpp"
 #include <algorithm>
 #include <atomic>
+
+#ifndef __ID3D12SDKConfiguration_INTERFACE_DEFINED__
+#define __ID3D12SDKConfiguration_INTERFACE_DEFINED__
+// Agility SDK (#63): D3D12GetInterface(CLSID_D3D12SDKConfiguration) (Microsoft Learn, D3D12GetInterface)
+MIDL_INTERFACE("e9eb5314-2692-4bea-872b-3c135d71eec4")
+ID3D12SDKConfiguration : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE SetSDKVersion(UINT SDKVersion, LPCSTR SDKPath) = 0;
+};
+#endif
+
+static const GUID kCLSID_D3D12SDKConfiguration = {
+    0x7cda6aca, 0xa03e, 0x49c8, {0x94, 0x58, 0x03, 0x34, 0xd2, 0x0e, 0x07, 0xd5}};
 
 namespace mullion {
 
@@ -89,10 +102,36 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
   return ppDevice ? device->QueryInterface(riid, ppDevice) : S_FALSE;
 }
 
+class D3D12SDKConfiguration final : public ComObjectWithInitialRef<ID3D12SDKConfiguration> {
+public:
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override {
+    if (!ppvObject)
+      return E_POINTER;
+    *ppvObject = nullptr;
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12SDKConfiguration)) {
+      *ppvObject = ref(this);
+      return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+
+  // Mullion is the D3D12 implementation: the Agility SDK path is accepted and ignored
+  // (Microsoft Learn, ID3D12SDKConfiguration::SetSDKVersion)
+  HRESULT STDMETHODCALLTYPE SetSDKVersion(UINT, LPCSTR) override { return S_OK; }
+};
+
 extern "C" HRESULT WINAPI
 D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **debug) {
   if (debug)
     *debug = nullptr;
+  if (rcslid == kCLSID_D3D12SDKConfiguration) {
+    if (!debug)
+      return E_POINTER;
+    auto configuration = new D3D12SDKConfiguration();
+    HRESULT hr = configuration->QueryInterface(iid, debug);
+    configuration->Release();
+    return hr;
+  }
   WARN("D3D12GetInterface: Unknown interface query ", mullion::str::format(iid));
   return E_NOINTERFACE;
 }

@@ -20,8 +20,25 @@
 #include "dxbc_converter.hpp"
 #include "shader_common.hpp"
 #include "DXBCParser/ShaderBinary.h"
+#include <cstdio>
 
 namespace mullion::dxbc {
+
+namespace {
+thread_local char read_error[160];
+thread_local bool read_failed = false;
+} // namespace
+
+void
+dxbc_clear_read_error() {
+  read_failed = false;
+  read_error[0] = 0;
+}
+
+const char *
+dxbc_read_error() {
+  return read_failed ? read_error : nullptr;
+}
 
 auto readOperandRelativeIndex(
   const microsoft::D3D10ShaderBinary::COperandIndex &OpIndex, uint32_t phase,
@@ -2125,8 +2142,9 @@ Instruction readInstruction(
     };
   }
   default: {
-    llvm::outs() << "unhandled dxbc instruction " << Inst.OpCode() << "\n";
-    assert(0 && "unhandled dxbc instruction");
+    snprintf(read_error, sizeof(read_error), "unhandled dxbc instruction %u", (unsigned)Inst.OpCode());
+    read_failed = true;
+    return InstNop{};
   }
   }
 };

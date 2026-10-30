@@ -2040,17 +2040,22 @@ _CreateMetalViewFromHWND(void *obj) {
     pfn_macdrv_view_get_metal_layer = dlsym(RTLD_DEFAULT, "macdrv_view_get_metal_layer");
   }
 
+  params->ret_view = NULL_OBJECT_HANDLE;
+  params->ret_layer = NULL_OBJECT_HANDLE;
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
-    macdrv_metal_view view =
-        pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
-    params->ret_view = (obj_handle_t)view;
-    if (view) {
-      params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
+    if (win_data) {
+      macdrv_metal_view view =
+          pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
+      params->ret_view = (obj_handle_t)view;
+      if (view) {
+        params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
+      }
+      pfn_release_win_data(win_data);
     }
-    pfn_release_win_data(win_data);
-  } else if (objc_getClass("WineWindow")) {
+  }
+  if (!params->ret_view && objc_getClass("WineWindow")) {
     // a Wine whose winemac.drv exports nothing (WineHQ's) still has its Cocoa window in the process. the layer is
     // made here and shown later, by the main thread, which this one must not wait for: it may be waiting on us
     MullionMetalHost *host = [[MullionMetalHost alloc] init];
@@ -2373,6 +2378,26 @@ struct SM50_SHADER_ROOT_SIGNATURE_DATA32 {
   uint64_t static_samplers;
 };
 
+struct SM50_SHADER_MESH_SHADER_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t pixel_shader_bytecode;
+  bool conservative;
+  bool amplified;
+  uint32_t triangles;
+  uint32_t slices;
+  uint32_t flat_inputs;
+  uint32_t noperspective_inputs;
+  bool barycentrics;
+};
+
+struct SM50_SHADER_LIBRARIES_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t libraries;
+  uint32_t count;
+};
+
 void
 sm50_compilation_argument32_convert(
     struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *first_arg, struct SM50_SHADER_COMPILATION_ARGUMENT_DATA32 *args32
@@ -2469,14 +2494,39 @@ sm50_compilation_argument32_convert(
       break;
     }
     case SM50_SHADER_MESH_SHADER: {
-      // next, type, then the pixel shader's bytecode
-      uint32_t *src = (void *)args32;
+      struct SM50_SHADER_MESH_SHADER_DATA32 *src = (void *)args32;
       struct SM50_SHADER_MESH_SHADER_DATA *data = calloc(1, sizeof(struct SM50_SHADER_MESH_SHADER_DATA));
+      if (!data) {
+        args32 = NULL;
+        break;
+      }
       last_arg->next = data;
       last_arg = (void *)data;
       last_arg->next = NULL;
-      data->type = args32->type;
-      data->pixel_shader_bytecode = UInt32ToPtr(src[2]);
+      data->type = src->type;
+      data->pixel_shader_bytecode = UInt32ToPtr(src->pixel_shader_bytecode);
+      data->conservative = src->conservative;
+      data->amplified = src->amplified;
+      data->triangles = src->triangles;
+      data->slices = src->slices;
+      data->flat_inputs = src->flat_inputs;
+      data->noperspective_inputs = src->noperspective_inputs;
+      data->barycentrics = src->barycentrics;
+      break;
+    }
+    case SM50_SHADER_LIBRARIES: {
+      struct SM50_SHADER_LIBRARIES_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_LIBRARIES_DATA *data = malloc(sizeof(struct SM50_SHADER_LIBRARIES_DATA));
+      if (!data) {
+        args32 = NULL;
+        break;
+      }
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->libraries = UInt32ToPtr(src->libraries);
+      data->count = src->count;
       break;
     }
     case SM50_SHADER_RAY_SHADER: {
@@ -2536,7 +2586,12 @@ sm50_compilation_argument32_convert(
     }
     case SM50_SHADER_ARGUMENT_TYPE_MAX:
       break;
+    default:
+      // unknown node: skip it and follow the chain (a newer PE half must not crash an older unix half)
+      break;
     }
+    if (!args32)
+      break;
     args32 = UInt32ToPtr(args32->next);
   }
 }
@@ -3344,8 +3399,12 @@ _MTLDevice_supportsPlacementSparse(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   params->ret = 0;
-  if (@available(macOS 26.4, *))
-    params->ret = [device supportsPlacementSparse];
+  // supportsPlacementSparse came with macOS 26.4 and so is declared by no earlier SDK, though every
+  // system that has it answers. ask for the selector the way MullionPlace asks a WINDOW for its hwnd
+  if (@available(macOS 26.4, *)) {
+    if ([device respondsToSelector:@selector(supportsPlacementSparse)])
+      params->ret = ((BOOL (*)(id, SEL))objc_msgSend)(device, @selector(supportsPlacementSparse));
+  }
   return STATUS_SUCCESS;
 }
 
@@ -6130,7 +6189,29 @@ const void *__wine_unix_call_wow64_funcs[] = {
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");
+// ordering, not only the length: inserting a call in the middle of one half and appending it on the other
+// keeps the counts equal and still routes the wrong unix function
+static void
+winemetal_wow64_order(void) __attribute__((constructor));
+static void
+winemetal_wow64_order(void) {
+  if (__wine_unix_call_wow64_funcs[WMTUnixSampledEncoder] != &_MTLCommandBuffer_sampledCommandEncoder ||
+      __wine_unix_call_wow64_funcs[WMTUnixCallCount - 1] != &_MTLDevice_supportsShaderBarycentricCoordinates) {
+    fprintf(stderr, "winemetal: 32-bit bridge call table is out of order\n");
+    abort();
+  }
+}
 #endif
 
 _Static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == WMTUnixCallCount,
                "bridge call count");
+static void
+winemetal_unix_order(void) __attribute__((constructor));
+static void
+winemetal_unix_order(void) {
+  if (__wine_unix_call_funcs[WMTUnixSampledEncoder] != &_MTLCommandBuffer_sampledCommandEncoder ||
+      __wine_unix_call_funcs[WMTUnixCallCount - 1] != &_MTLDevice_supportsShaderBarycentricCoordinates) {
+    fprintf(stderr, "winemetal: bridge call table is out of order\n");
+    abort();
+  }
+}

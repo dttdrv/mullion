@@ -35,7 +35,7 @@ ExportName(std::string_view function) {
 struct RayLibrary {
   sm50_shader_t shader = nullptr;
   ~RayLibrary() {
-    if (shader)
+    if (shader && !SM50ShaderIsInterned(shader))
       SM50Destroy(shader);
   }
 };
@@ -260,11 +260,9 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     if (!ShaderContainerHolds(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength) ||
         !ShaderFeaturesSupported(device_, desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength))
       return FAIL(E_INVALIDARG);
-    SM50Error error;
-    if (SM50Initialize(
-            desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength, &library->shader, nullptr, &error
-        )) {
-      ERR("CreateStateObject: a DXIL library is not usable: ", SM50GetErrorMessageString(error));
+    MTL_SHADER_REFLECTION reflection{};
+    if (FAILED(MTLD3D12PipelineState::InitializeShader(device_, desc.DXILLibrary, &library->shader, &reflection))) {
+      ERR("CreateStateObject: a DXIL library is not usable");
       return E_INVALIDARG;
     }
     std::unordered_map<std::wstring, RayShader> shaders;

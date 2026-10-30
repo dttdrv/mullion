@@ -805,6 +805,9 @@ public:
   );
   EncoderData *startComputePass(uint64_t argument_buffer_size);
   EncoderData *startBlitPass();
+  // fragment wrote, vertex of the same pass needs to read: end this encoder and start another with Load/Store so
+  // Metal orders them (RTVs, DSVs, queries stay)
+  void splitRenderPass();
 
   void endPass();
 

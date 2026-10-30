@@ -800,6 +800,16 @@ public:
       hr = DXGI_STATUS_OCCLUDED;
     if (PresentFlags & DXGI_PRESENT_TEST)
       return hr;
+    // DXGI_PRESENT_DO_NOT_WAIT: Present returns DXGI_ERROR_WAS_STILL_DRAWING instead of blocking
+    // (IDXGISwapChain::Present). a waitable swap chain's app owns the wait, so this flag is ignored
+    // there; otherwise Present takes a slot of present_semaphore_ or fails at once.
+    if (!(desc_.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)) {
+      DWORD waited = WaitForSingleObject(present_semaphore_, (PresentFlags & DXGI_PRESENT_DO_NOT_WAIT) ? 0 : INFINITE);
+      if (waited == WAIT_TIMEOUT)
+        return DXGI_ERROR_WAS_STILL_DRAWING;
+      if (waited != WAIT_OBJECT_0)
+        return DXGI_ERROR_INVALID_CALL;
+    }
     auto began = diag::profile ? diag::Now() : 0;
     // a window the picture keeps its size in may have another size by now
     if (settings_.Update(desc_, fullscreen_desc_.Windowed, hWnd, *presenter))

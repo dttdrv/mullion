@@ -9,15 +9,19 @@
 #include "assert.h"
 #include "string.h"
 
-#ifdef NDEBUG
-#define UNIX_CALL(code, params) WINE_UNIX_CALL(code, params)
-#else
+#include <stdio.h>
+#include <stdlib.h>
+
+// a failed unix dispatch must not leave the caller's outs as they were on the stack: thunks initialize those
+// fields, and a nonzero NTSTATUS is reported in every build (release used to discard it)
 #define UNIX_CALL(code, params)                                                                                        \
-  {                                                                                                                    \
+  do {                                                                                                                 \
     NTSTATUS status = WINE_UNIX_CALL(code, params);                                                                    \
-    assert(!status && "unix call failed");                                                                             \
-  }
-#endif
+    if (status) {                                                                                                      \
+      fprintf(stderr, "winemetal: unix call %u failed %#x\n", (unsigned)(code), (unsigned)status);                      \
+      assert(!status && "unix call failed");                                                                           \
+    }                                                                                                                  \
+  } while (0)
 
 #define PtrToUInt64(v) ((uint64_t)(uintptr_t)(v))
 

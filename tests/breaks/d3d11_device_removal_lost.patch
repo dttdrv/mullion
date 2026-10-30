@@ -1,0 +1,14 @@
+# a removed device reports no reason, as before
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1003,9 +1003,9 @@
+     return feature_level_;
+   }
+ 
+   UINT STDMETHODCALLTYPE GetCreationFlags() override { return feature_flags_ & 0x7fffffff; }
+ 
+-  HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override { return DeviceRemovalReason(); }
++  HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override { return S_OK; }
+ 
+   void STDMETHODCALLTYPE LoseDevice(HRESULT Reason) override { removal_->Lose(Reason); }
+ 

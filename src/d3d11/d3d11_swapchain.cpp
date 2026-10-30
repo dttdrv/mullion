@@ -814,6 +814,17 @@ public:
       hr = DXGI_STATUS_OCCLUDED;
     if (PresentFlags & DXGI_PRESENT_TEST)
       return hr;
+    // DXGI_PRESENT_DO_NOT_WAIT: Present returns DXGI_ERROR_WAS_STILL_DRAWING instead of blocking
+    // (IDXGISwapChain::Present). the queue's frame-latency wait is the block this flag skips.
+    if (PresentFlags & DXGI_PRESENT_DO_NOT_WAIT) {
+      if (device_->GetMullionDevice().queue().PresentWouldBlock())
+        return DXGI_ERROR_WAS_STILL_DRAWING;
+      if (frame_latency_fence_) {
+        uint64_t next = uint64_t(presentation_count_) + 1;
+        if (next > frame_latency && frame_latency_fence_->signaledValue() < next - frame_latency)
+          return DXGI_ERROR_WAS_STILL_DRAWING;
+      }
+    }
     // a window the picture keeps its size in may have another size by now
     if (settings_.Update(desc_, fullscreen_desc_.Windowed, hWnd, *presenter))
       ApplyLayerProps();

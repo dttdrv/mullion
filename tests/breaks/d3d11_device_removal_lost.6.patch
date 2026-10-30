@@ -1,0 +1,12 @@
+# a device that is gone still takes the work submitted after its removal
+--- a/src/mullion/mullion_command_queue.cpp
++++ b/src/mullion/mullion_command_queue.cpp
+@@ -209,7 +209,7 @@
+   // A submission for a device that is gone is refused: the API's removal is the device's, and its work cannot run. What
+   // an application waits on still completes, through the finish thread's completion of the refused chunk (see
+   // CommitChunkInternal and WaitForFinishThread), so a fence or a query the application asked for does not hang.
+-  chunk.refused = HasDeviceFault();
++  chunk.refused = false;
+   auto &statistics = CurrentFrameStatistics();
+   if (!chunk.refused)
+     statistics.command_buffer_count++;

@@ -3,12 +3,14 @@
 
 #ifdef __cplusplus
 #include <cstdint>
+#include <cstddef>
 #include <cassert>
-#define STATIC_ASSERT(x) static_assert(x)
+#define STATIC_ASSERT(x) static_assert(x, #x)
 #else
 #include <stdint.h>
 #include <stdbool.h>
-#define STATIC_ASSERT(x)
+#include <stddef.h>
+#define STATIC_ASSERT(x) _Static_assert(x, #x)
 #endif
 
 #ifdef _WIN32
@@ -189,8 +191,8 @@ struct WMTConstMemoryPointer {
 #define WMT_MEMPTR_SET(obj, value) obj.ptr = value
 #endif
 
-STATIC_ASSERT(sizeof(WMTMemoryPointer) == 8);
-STATIC_ASSERT(sizeof(WMTConstMemoryPointer) == 8);
+STATIC_ASSERT(sizeof(struct WMTMemoryPointer) == 8);
+STATIC_ASSERT(sizeof(struct WMTConstMemoryPointer) == 8);
 
 struct WMTBufferInfo {
   uint64_t length;                 // in
@@ -199,7 +201,7 @@ struct WMTBufferInfo {
   uint64_t gpu_address;            // out
 };
 
-STATIC_ASSERT(sizeof(WMTBufferInfo) == 32);
+STATIC_ASSERT(sizeof(struct WMTBufferInfo) == 32);
 
 WINEMETAL_API obj_handle_t MTLDevice_newBuffer(obj_handle_t device, struct WMTBufferInfo *info);
 
@@ -258,7 +260,7 @@ struct WMTSamplerInfo {
   uint64_t gpu_resource_id; // out
 };
 
-STATIC_ASSERT(sizeof(WMTSamplerInfo) == 32);
+STATIC_ASSERT(sizeof(struct WMTSamplerInfo) == 32);
 
 WINEMETAL_API obj_handle_t MTLDevice_newSamplerState(obj_handle_t device, struct WMTSamplerInfo *info);
 
@@ -1890,6 +1892,9 @@ struct WMTWindowPlacement {
   int32_t top_level_width, top_level_height;
   uint32_t screen_width;
 };
+STATIC_ASSERT(sizeof(struct WMTWindowPlacement) == 40);
+STATIC_ASSERT(offsetof(struct WMTWindowPlacement, x) == 8);
+STATIC_ASSERT(offsetof(struct WMTWindowPlacement, screen_width) == 32);
 
 WINEMETAL_API obj_handle_t CreateMetalViewFromHWND(
     intptr_t hwnd, const struct WMTWindowPlacement *placement, obj_handle_t device, obj_handle_t *layer
@@ -2275,7 +2280,7 @@ struct WMTHeapInfo {
   enum WMTSparsePageSize sparse_page_size;
 };
 
-STATIC_ASSERT(sizeof(WMTHeapInfo) == 24);
+STATIC_ASSERT(sizeof(struct WMTHeapInfo) == 24);
 
 WINEMETAL_API obj_handle_t MTLDevice_newHeap(obj_handle_t device, const struct WMTHeapInfo *info);
 
@@ -2367,7 +2372,7 @@ struct WMTAccelerationStructureGeometry {
   uint8_t padding[5];
 };
 
-STATIC_ASSERT(sizeof(WMTAccelerationStructureGeometry) == 72);
+STATIC_ASSERT(sizeof(struct WMTAccelerationStructureGeometry) == 72);
 
 struct WMTAccelerationStructureInfo {
   struct WMTMemoryPointer geometries; // WMTAccelerationStructureGeometry, of a primitive structure
@@ -2386,7 +2391,7 @@ struct WMTAccelerationStructureInfo {
   uint64_t refit_scratch_size;
 };
 
-STATIC_ASSERT(sizeof(WMTAccelerationStructureInfo) == 80);
+STATIC_ASSERT(sizeof(struct WMTAccelerationStructureInfo) == 80);
 
 WINEMETAL_API void MTLDevice_accelerationStructureSizes(obj_handle_t device, struct WMTAccelerationStructureInfo *info);
 

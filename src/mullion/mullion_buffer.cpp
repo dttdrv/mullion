@@ -19,6 +19,7 @@
 #include "mullion_buffer.hpp"
 #include "mullion_diag.hpp"
 #include "mullion_format.hpp"
+#include "log/log.hpp"
 #include "thread.hpp"
 #include "util_likely.hpp"
 #include "util_math.hpp"
@@ -163,9 +164,19 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
     assert(texel_size);
     assert(!(allocation->suballocation_size_ & (texel_size - 1)));
     auto total_length = allocation->suballocation_size_ * allocation->suballocation_count_;
+    auto window = typedBufferWindow(
+        viewDescriptors_[version].byte_offset,
+        viewDescriptors_[version].byte_length ? viewDescriptors_[version].byte_length : total_length, texel_size
+    );
+    if (window.capped)
+      ERR("typed buffer view is past Metal textureBuffer's 2^28: the window is the first 2^28");
+    if (window.byte_offset + window.byte_length > total_length)
+      window.byte_length = total_length > window.byte_offset ? total_length - window.byte_offset : 0;
     WMTTextureInfo info{};
     info.type = WMTTextureTypeTextureBuffer;
-    info.width = total_length / (uint64_t)texel_size;
+    info.width = window.byte_length / (uint64_t)texel_size;
+    if (!info.width)
+      info.width = 1;
     info.height = 1;
     info.depth = 1;
     info.array_length = 1;
@@ -183,7 +194,7 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
     }
     info.usage = usage;
 
-    auto view = allocation->obj_.newTexture(info, 0, total_length);
+    auto view = allocation->obj_.newTexture(info, window.byte_offset, window.byte_length);
 
     allocation->cached_view_.push_back(std::make_unique<BufferView>(
         std::move(view), info.gpu_resource_id, allocation->suballocation_size_ / texel_size
@@ -197,7 +208,9 @@ Buffer::createView(BufferViewDescriptor const &descriptor) {
   std::unique_lock<mullion::mutex> lock(mutex_);
   unsigned i = 0;
   for (; i < version_; i++) {
-    if (viewDescriptors_[i].format == descriptor.format && viewDescriptors_[i].write == descriptor.write) {
+    if (viewDescriptors_[i].format == descriptor.format && viewDescriptors_[i].write == descriptor.write &&
+        viewDescriptors_[i].byte_offset == descriptor.byte_offset &&
+        viewDescriptors_[i].byte_length == descriptor.byte_length) {
       return BufferViewKey(i, std::nullopt);
     }
   }

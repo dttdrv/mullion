@@ -44,11 +44,16 @@ if get_option('enable_d3d12') and cpu_family != 'x86'
   data.set('D3D12_TEST_FEATURE_LEVELS', ', '.join(names))
   configure_file(output: 'feature_levels.hpp', configuration: data)
   subdir('d3d12')
-  subdir('dxgi')
   subdir('perf')
 endif
+# DXGI is present whether or not D3D12 is: its common tests run on x86 and on a
+# build without D3D12, and its D3D12 cases are gated in their own directory
+subdir('dxgi')
 subdir('d3d11')
 subdir('d3d10')
+if get_option('enable_d3d9')
+  subdir('d3d9')
+endif
 # the host's own tests build against the macOS LLVM, which a 32-bit build does not make
 if is_variable('llvm_include_path_darwin')
   subdir('host')

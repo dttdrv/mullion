@@ -750,31 +750,22 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
     }
   }
 
-  // border color
-  info.border_color = WMTSamplerBorderColorOpaqueWhite;
-  if ((desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER ||
-       desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
-       desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER)) {
-    if (desc.BorderColor[0] == 0.0f && desc.BorderColor[1] == 0.0f &&
-        desc.BorderColor[2] == 0.0f && desc.BorderColor[3] == 0.0f) {
-      info.border_color = WMTSamplerBorderColorTransparentBlack;
-    } else if (desc.BorderColor[0] == 0.0f && desc.BorderColor[1] == 0.0f &&
-               desc.BorderColor[2] == 0.0f && desc.BorderColor[3] == 1.0f) {
-      info.border_color = WMTSamplerBorderColorOpaqueBlack;
-    } else if (desc.BorderColor[0] == 1.0f && desc.BorderColor[1] == 1.0f &&
-               desc.BorderColor[2] == 1.0f && desc.BorderColor[3] == 1.0f) {
-      info.border_color = WMTSamplerBorderColorOpaqueWhite;
-    } else {
-      WARN("CreateSamplerState: Unsupported border color (",
-           desc.BorderColor[0], ", ", desc.BorderColor[1], ", ",
-           desc.BorderColor[2], ", ", desc.BorderColor[3], ")");
-    }
-  }
+  // border color: Metal's own, or a custom one over transparent black (SM50_SAMPLER_BORDER), as D3D12
+  // already does (d3d12_sampler.cpp). Microsoft Learn, D3D11_SAMPLER_DESC::BorderColor.
+  auto &c = desc.BorderColor;
+  bool border = desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+                desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER;
+  bool black = !c[0] && !c[1] && !c[2], white = c[0] == 1 && c[1] == 1 && c[2] == 1 && c[3] == 1;
+  info.border_color = !border || white     ? WMTSamplerBorderColorOpaqueWhite
+                      : black && c[3] == 1 ? WMTSamplerBorderColorOpaqueBlack
+                                           : WMTSamplerBorderColorTransparentBlack;
+  bool custom = border && !white && !(black && (c[3] == 0 || c[3] == 1));
 
   info.support_argument_buffers = true;
   info.normalized_coords = true;
 
-  auto sampler = Sampler::createSampler(device->GetMTLDevice(), info, desc.MipLODBias);
+  auto sampler = Sampler::createSampler(device->GetMTLDevice(), info, desc.MipLODBias,
+                                        custom ? desc.BorderColor : nullptr);
 
   if (!sampler) {
     ERR("CreateSamplerState: failed to create sampler");
