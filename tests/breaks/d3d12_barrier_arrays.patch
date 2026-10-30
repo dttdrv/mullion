@@ -1,0 +1,14 @@
+# a ResourceBarrier call stops at the first barrier that orders, so a later one naming a cleared texture is lost
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 3d6d419..a12be7a 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2771,6 +2771,8 @@ public:
+     barrier_serial_++;
+     bool ordered = false;
+     for (auto &barrier : std::span(barriers, Count)) {
++      if (ordered)
++        break;
+       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
+         clear_joinable_ = false, va_found_ = nullptr;
+       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
