@@ -20,6 +20,10 @@ struct DxgiOptions {
   int32_t customDeviceId;
   std::string customDeviceDesc;
   bool forceSDR;
+  /// The most memory the adapter reports, in bytes (dxgi.maxDeviceMemory, in MB, as DXVK names it; 0 for all Metal
+  /// recommends). Titles size their streaming to the adapter's memory and the budget: a Mac of 16 GB shares it with
+  /// everything else (dttdrv/mullion#32, Starfield)
+  uint64_t maxDeviceMemory;
 };
 
 } // namespace mullion
