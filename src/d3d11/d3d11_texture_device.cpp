@@ -129,15 +129,11 @@ struct TextureShare {
     refcount.fetch_add(1u, std::memory_order_acquire);
   }
 
+  // JoinShare takes its reference under the same lock, so a count that reaches 0 under it is final. dropped before
+  // the lock, another thread could find the share, take it up and release it, and delete it before this one looks
   void decRef() {
-    if (refcount.fetch_sub(1u, std::memory_order_acq_rel) != 1u)
-      return;
-    // the last reference is gone, and this is the step that removes the share from the registry and deletes it.
-    // JoinShare looks a share up under the same lock, so its lookup either finds a live share - and takes its
-    // reference there, which the re-read below sees - or finds nothing. dropping the count to zero outside the
-    // lock would let that lookup take a reference to a share this thread is about to delete
     std::lock_guard<std::mutex> lock(share_registry_mutex);
-    if (refcount.load(std::memory_order_acquire) != 0u)
+    if (refcount.fetch_sub(1u, std::memory_order_acq_rel) != 1u)
       return;
     share_registry.erase(data.share_id);
     if (carrier)
