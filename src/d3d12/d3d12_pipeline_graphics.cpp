@@ -35,6 +35,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <deque>
 #include <variant>
 
 namespace mullion {
@@ -1197,7 +1198,7 @@ public:
     WMT::Reference<WMT::Error> err;
 
     SM50_SHADER_COMMON_DATA common;
-    common.flags = device_->GetShaderFlags();
+    common.flags = SM50_SHADER_FLAG(device_->GetShaderFlags() | (borderless ? SM50_SHADER_FLAG_NO_CUSTOM_BORDER : 0));
     common.type = SM50_SHADER_COMMON;
     common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();
@@ -1802,6 +1803,10 @@ CreateGraphicsPipelineState(
   auto pso = Com(new MTLD3D12GraphicsPipelineStateImpl(pDevice));
   if (HRESULT hr = PipelineKey(*pDesc, pso->library_key, depth_bounds, AS, MS, depth_stencil2); FAILED(hr))
     return hr;
+  PipelineStateStream stream{.desc_graphics = *pDesc, .desc_as = AS, .desc_ms = MS, .depth_bounds = depth_bounds};
+  if (depth_stencil2)
+    stream.depth_stencil2 = *depth_stencil2;
+  pso->borderless = Borderless(pDevice, stream);
   if (cached)
     pso->cached_shaders = *cached;
   pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
@@ -1811,6 +1816,52 @@ CreateGraphicsPipelineState(
     return hr;
   return pso->QueryInterface(riid, ppPipelineState);
 };
+
+std::shared_ptr<const PipelineStateStream>
+Borderless(MTLD3D12Device *device, const PipelineStateStream &stream) {
+  if (device->custom_borders)
+    return {};
+  struct Owned : PipelineStateStream {
+    std::deque<std::string> bytes;
+    std::vector<D3D12_SO_DECLARATION_ENTRY> outputs;
+    std::vector<UINT> strides;
+    std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+    Com<ID3D12RootSignature> signature;
+  };
+  auto owned = std::make_shared<Owned>();
+  static_cast<PipelineStateStream &>(*owned) = stream;
+  auto keep = [&](const void *data, size_t size) { return owned->bytes.emplace_back((const char *)data, size).data(); };
+  auto &cs = owned->desc_cs;
+  auto &graphics = owned->desc_graphics;
+  for (auto code : {&cs.CS, &graphics.VS, &graphics.PS, &graphics.DS, &graphics.HS, &graphics.GS, &owned->desc_as,
+                    &owned->desc_ms})
+    if (code->pShaderBytecode)
+      code->pShaderBytecode = keep(code->pShaderBytecode, code->BytecodeLength);
+  cs.CachedPSO = graphics.CachedPSO = {};
+  owned->signature = cs.pRootSignature ? cs.pRootSignature : graphics.pRootSignature;
+  auto &so = graphics.StreamOutput;
+  owned->outputs.assign(so.pSODeclaration, so.pSODeclaration + so.NumEntries);
+  for (auto &output : owned->outputs)
+    if (output.SemanticName)
+      output.SemanticName = keep(output.SemanticName, strlen(output.SemanticName) + 1);
+  so.pSODeclaration = owned->outputs.data();
+  owned->strides.assign(so.pBufferStrides, so.pBufferStrides + so.NumStrides);
+  so.pBufferStrides = owned->strides.data();
+  auto &layout = graphics.InputLayout;
+  owned->elements.assign(layout.pInputElementDescs, layout.pInputElementDescs + layout.NumElements);
+  for (auto &element : owned->elements)
+    element.SemanticName = keep(element.SemanticName, strlen(element.SemanticName) + 1);
+  layout.pInputElementDescs = owned->elements.data();
+  return owned;
+}
+
+ID3D12PipelineState *
+MTLD3D12PipelineState::Bordered(MTLD3D12Device *Device) {
+  std::lock_guard<mullion::mutex> lock(shader_mutex);
+  if (!bordered && FAILED(borderless->Create(Device, __uuidof(ID3D12PipelineState), (void **)&bordered)))
+    ERR("pipeline ", name, ": the variant that emulates custom borders failed");
+  return bordered.ptr();
+}
 
 HRESULT
 PipelineStateStream::Key(Sha1Digest &key) const {

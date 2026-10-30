@@ -48,7 +48,7 @@ public:
     rootsig.next = nullptr;
 
     SM50_SHADER_COMMON_DATA common;
-    common.flags = device_->GetShaderFlags();
+    common.flags = SM50_SHADER_FLAG(device_->GetShaderFlags() | (borderless ? SM50_SHADER_FLAG_NO_CUSTOM_BORDER : 0));
     common.type = SM50_SHADER_COMMON;
     common.metal_version = device_->GetMetalVersion();
     common.simd_width = device_->GetSIMDWidth();
@@ -149,6 +149,7 @@ CreateComputePipelineState(
   auto pso = Com(new MTLD3D12ComputePipelineStateImpl(pDevice));
   if (HRESULT hr = PipelineKey(*pDesc, pso->library_key); FAILED(hr))
     return hr;
+  pso->borderless = Borderless(pDevice, {.desc_cs = *pDesc});
   if (cached)
     pso->cached_shaders = *cached;
   HRESULT hr = pso->Initialize(&desc);

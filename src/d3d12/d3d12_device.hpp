@@ -33,6 +33,7 @@
 #include "mullion_presenter.hpp"
 #include "mullion_ring_bump_allocator.hpp"
 #include "mullion_texture.hpp"
+#include "com/com_pointer.hpp"
 #include "log/log.hpp"
 #include "sha1/sha1_util.hpp"
 #include <atomic>
@@ -428,6 +429,7 @@ public:
 };
 
 using PipelineShaderCache = std::unordered_map<Sha1Digest, WMT::Reference<WMT::DispatchData>>;
+struct PipelineStateStream;
 
 class MTLD3D12PipelineState : public ID3D12PipelineState {
 public:
@@ -435,6 +437,12 @@ public:
   Sha1Digest library_key;
   mullion::mutex shader_mutex;
   PipelineShaderCache cached_shaders;
+  // made while no sampler had a border color Metal lacks (MTLD3D12Device::custom_borders), its shaders leave out the
+  // emulation of one (SM50_SHADER_FLAG_NO_CUSTOM_BORDER): what it is made of, to make it again with the emulation
+  // once a draw or dispatch can read such a sampler
+  std::shared_ptr<const PipelineStateStream> borderless;
+  Com<ID3D12PipelineState> bordered;
+  ID3D12PipelineState *Bordered(MTLD3D12Device *Device);
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
@@ -540,6 +548,10 @@ public:
     mullion::mutex mutex;
     std::unordered_set<std::shared_ptr<Reached>> values;
   } fences;
+
+  // a sampler has a border color Metal lacks (PopulateWMTSamplerInfo), so pipelines made from now on emulate it
+  // (MTLD3D12PipelineState::borderless)
+  std::atomic<bool> custom_borders{false};
 
   // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
   std::atomic<uint32_t> max_mesh_threadgroups{0};

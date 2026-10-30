@@ -163,10 +163,13 @@ public:
     if (DescriptorOffset == ~0u) {
       if (~StaticSamplerArgumentIndex == 0)
         return {};
-      return GetSamplerDescriptor(
+      auto Static = GetSamplerDescriptor(
           Builder, Table(Builder, StaticSamplerArgumentIndex), Index,
           Sampler.range.lower_bound, Sampler.arg_index
       );
+      // a static sampler's border color is one of Metal's own (D3D12_STATIC_BORDER_COLOR)
+      Static.Border = nullptr;
+      return Static;
     }
     if (~RootSignatureArgumentIndex == 0)
       return {};

@@ -2620,7 +2620,7 @@ Converter::CustomBorder(
   using namespace llvm;
   using namespace llvm::air;
   // D3D's cubes ignore address modes. a missing format range (D3D11 SM50 textures) leaves the color unclamped
-  if (!Border || AIRBuilder::getTextureInfo(Tex.Logical).is_cube)
+  if (!Border || air.noCustomBorder() || AIRBuilder::getTextureInfo(Tex.Logical).is_cube)
     return Value;
   // only samplers with a border pay for it
   auto Head = ir.GetInsertBlock();

@@ -111,6 +111,7 @@ public:
   bool sampleNaNToZero = false;
   bool defuseFma = false;
   bool noAtomicMinMax64 = false;
+  bool noCustomBorder = false;
 };
 
 struct TextureOperationInfo {
@@ -599,6 +600,11 @@ public:
   getNaNToZero(Value *Operand) {
     return builder.CreateSelect(CreateIsNaN(Operand), Constant::getNullValue(Operand->getType()), Operand);
   };
+
+  bool
+  noCustomBorder() const {
+    return options.noCustomBorder;
+  }
 
   // a comparison takes a denormal reference as its sign's zero (D3D11.3 22.4.3); Metal compares it as it is
   Value *
