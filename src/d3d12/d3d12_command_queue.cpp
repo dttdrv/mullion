@@ -249,7 +249,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       // a removed device runs nothing more (D3D12: work submitted to one is dropped): after a GPU hang or fault the
       // application goes on submitting until it sees the removal, and each command buffer can hang the GPU again,
       // which stalls the whole system's graphics. one never committed is retired as a cancelled one is
-      if (device && FAILED(device->GetDeviceRemovedReason())) {
+      if (device && FAILED(device->RemovedReason())) {
         FLIGHT("command buffer %#llx is dropped: the device is removed", buffer.handle);
         return;
       }
@@ -432,9 +432,53 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   };
   std::vector<Unresolved> unresolved_;
 
-  // the process's queues, for MULLION_TRACE_RESOURCE: what each has on the GPU when a tile mapping is made
+  // the process's queues, for MULLION_TRACE_RESOURCE: what each has on the GPU when a tile mapping is made, and for
+  // GetDeviceRemovedReason, which reads their command buffers' feedback (SettleCommandQueueFeedback)
   static inline mullion::mutex queues_mutex_;
   static inline std::vector<MTLD3D12CommandQueueImpl *> queues_;
+
+  // Metal 4: command buffers whose work the GPU has finished, and whose fences are signalled, with Metal's feedback
+  // still to come (the status, an error and GPU times, which a commit's feedback handler gives some milliseconds
+  // after the queue's event): its sequence number with each. an error read in one removes the device, as one read
+  // before the fences would have
+  mullion::mutex feedback_mutex_;
+  std::vector<std::pair<WMT::Reference<MetalCommandBuffer>, uint64_t>> unsettled_;
+
+  // reads what feedback has come, all of it when `wait`
+  void
+  SettleFeedback(bool wait) {
+    std::lock_guard lock(feedback_mutex_);
+    std::erase_if(unsettled_, [&](auto &unsettled) {
+      auto &[cmdbuf, seq] = unsettled;
+      if (wait)
+        cmdbuf.waitUntilCompleted();
+      auto status = cmdbuf.status();
+      if (status == WMTCommandBufferStatusCommitted)
+        return false;
+      if (status == WMTCommandBufferStatusError) {
+        bool first = SUCCEEDED(device_->RemovedReason());
+        auto line = str::format(first ? "Device error: " : "", "queue ", this, ", command buffer ", seq,
+                                first ? ": " : " fails too: ", cmdbuf.error().description().getUTF8String());
+        if (first)
+          ERR(line);
+        else
+          TRACE_IN(Gpu, line);
+        device_->LoseDevice();
+      }
+      return true;
+    });
+  }
+
+public:
+  static void
+  SettleAll(MTLD3D12Device *device) {
+    std::lock_guard<mullion::mutex> lock(queues_mutex_);
+    for (auto queue : queues_)
+      if (queue->device_ == device)
+        queue->SettleFeedback(true);
+  }
+
+private:
 
   std::string
   QueuesInFlight() {
@@ -468,7 +512,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       if (!scope.Settle())
         return;
       // nothing more reaches the GPU of a removed device (Gate::Run)
-      if (FAILED(device_->GetDeviceRemovedReason()))
+      if (FAILED(device_->RemovedReason()))
         return;
       // the heaps it maps from must be resident by now, as for a command buffer
       device_->CommitResidency();
@@ -657,6 +701,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
     uint64_t internal_seq = 1;
     for (;;) {
+      // what feedback has come, without waiting for more: the next command buffer's completion is not held behind it.
+      // what is still to come is read at the next one, or by GetDeviceRemovedReason, which waits for it
+      if constexpr (Metal4)
+        SettleFeedback(false);
       inflight_cmdbuf_seq_.wait(internal_seq, std::memory_order_acquire);
       if (inflight_cmdbuf_stop_.load() == internal_seq)
         break;
@@ -679,8 +727,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       }
       Trace("waits for command buffer ", internal_seq);
       Watched(internal_seq);
+      // Metal 4: the queue's event says the work is done; its feedback may come later, and only the profile, which
+      // reads its GPU times, waits for it here
       if constexpr (Metal4)
-        inflight.cmdbuf.waitUntilCompleted();
+        profile_ ? inflight.cmdbuf.waitUntilCompleted() : inflight.cmdbuf.waitForGPU();
       else if (profile_ || inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
         inflight.cmdbuf.waitUntilCompleted();
       auto completed = profile_ ? diag::Now() : 0;
@@ -694,7 +744,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       if (inflight.cmdbuf.status() == WMTCommandBufferStatusError) {
         // the first says why; Metal fails what follows a fault of the process's too. MULLION_TRACE_GPU has them all:
         // one Metal calls an innocent victim of a GPU recovery leaves the one at fault to another command buffer
-        bool first = SUCCEEDED(device_->GetDeviceRemovedReason());
+        bool first = SUCCEEDED(device_->RemovedReason());
         if (first || trace::On(trace::Gpu)) {
           auto report = [&](const std::string &line) {
             if (first)
@@ -792,7 +842,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       }
       sample(inflight.sampled.size());
       uint32_t omitted[2] = {};
-      if (inflight.cmdbuf.status() == WMTCommandBufferStatusCompleted)
+      if (inflight.cmdbuf.status() != WMTCommandBufferStatusError)
         for (auto &[buffer, words, scratch] : inflight.omitted)
           for (auto word : words)
             omitted[scratch] = std::max(omitted[scratch], word);
@@ -805,6 +855,11 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         ERR("Stream output from an indirect command needed ", omitted[1], " bytes of scratch, more than it had: the "
             "command was not run, and lists recorded from now on have that much");
       }
+      if constexpr (Metal4)
+        if (inflight.cmdbuf.status() == WMTCommandBufferStatusCommitted) {
+          std::lock_guard lock(feedback_mutex_);
+          unsettled_.emplace_back(inflight.cmdbuf, internal_seq);
+        }
       for (auto &allocator : inflight.allocators)
         if (allocator)
           allocator->pending--;
@@ -2293,7 +2348,7 @@ public:
     auto &cmdbuf = scope.inflight->cmdbuf;
     if constexpr (Metal4)
       if (!cmdbuf)
-        return device_->GetDeviceRemovedReason();
+        return device_->RemovedReason();
     if (profile_)
       diag::Frame(device_->GetMTLDevice(), profile_->id, inflight_cmdbuf_seq_.load());
 
@@ -2353,6 +2408,11 @@ public:
     return S_OK;
   }
 };
+
+void
+SettleCommandQueueFeedback(MTLD3D12Device *pDevice) {
+  MTLD3D12CommandQueueImpl<true>::SettleAll(pDevice);
+}
 
 HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue) {

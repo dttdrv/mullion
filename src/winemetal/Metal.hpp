@@ -1010,6 +1010,10 @@ public:
   waitUntilCompleted() {
     MTL4CommandBuffer_waitUntilCompleted(handle);
   }
+  void
+  waitForGPU() {
+    MTL4CommandBuffer_waitForGPU(handle);
+  }
   WMTMetal4Feedback
   feedback() {
     return MTL4CommandBuffer_feedback(handle);

@@ -4996,6 +4996,23 @@ _MTL4CommandBuffer_waitUntilCompleted(void *obj) {
 }
 
 static NTSTATUS
+_MTL4CommandBuffer_waitForGPU(void *obj) {
+  if (@available(macOS 26.0, *)) {
+    MullionMetal4Buffer *state = (MullionMetal4Buffer *)*(obj_handle_t *)obj;
+    for (;;) {
+      @synchronized(state) {
+        if (state->finished && state->feedback.error)
+          break;
+      }
+      // the queue signals the event after the buffer's work; an error's feedback ends the wait if it cannot
+      if ([state->event waitUntilSignaledValue:state->value timeoutMS:NSEC_PER_SEC / NSEC_PER_MSEC])
+        break;
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MTL4CounterHeap_new(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *p = obj;
   if (@available(macOS 26.0, *)) {
@@ -6094,6 +6111,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_MTL4CommandBuffer_waitForGPU,
 };
 
 #ifndef MULLION_NATIVE
@@ -6293,6 +6311,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_MTL4CommandBuffer_waitForGPU,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

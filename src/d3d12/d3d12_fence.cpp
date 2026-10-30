@@ -103,7 +103,7 @@ public:
     if (!event)
       completion_->value = InitialValue;
     std::lock_guard lock(device_->fences.mutex);
-    if (FAILED(device_->GetDeviceRemovedReason()))
+    if (FAILED(device_->RemovedReason()))
       return DXGI_ERROR_DEVICE_REMOVED;
     device_->fences.values.insert(completion);
     return S_OK;
@@ -157,7 +157,7 @@ public:
   GetCompletedValue() {
     // "if the device has been removed, the return value will be UINT64_MAX" (ID3D12Fence::GetCompletedValue)
     auto &event = completion_->event;
-    return FAILED(device_->GetDeviceRemovedReason()) ? UINT64_MAX : event ? event.signaledValue() : completion->value.load();
+    return FAILED(device_->RemovedReason()) ? UINT64_MAX : event ? event.signaledValue() : completion->value.load();
   }
 
   HRESULT STDMETHODCALLTYPE

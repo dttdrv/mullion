@@ -1956,6 +1956,10 @@ WINEMETAL_API void
 MTL4CommandBuffer_waitUntilCompleted(obj_handle_t buffer) {
   UNIX_CALL(WMTUnixMetal4Wait, &buffer);
 }
+WINEMETAL_API void
+MTL4CommandBuffer_waitForGPU(obj_handle_t buffer) {
+  UNIX_CALL(WMTUnixMetal4WaitGPU, &buffer);
+}
 WINEMETAL_API obj_handle_t
 MTL4CounterHeap_new(obj_handle_t device, uint64_t count) {
   struct unixcall_generic_obj_uint64_obj_ret p = {.handle = device, .arg = count};

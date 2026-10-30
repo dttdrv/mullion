@@ -571,6 +571,9 @@ public:
   virtual uint32_t GetSIMDWidth() = 0;
   // later GPU errors must not replace the original removal reason (ID3D12Device::GetDeviceRemovedReason)
   virtual void LoseDevice(HRESULT Reason = DXGI_ERROR_DEVICE_HUNG) = 0;
+  // the removal reason as it is, for Mullion's own checks. GetDeviceRemovedReason first reads what Metal said of the
+  // command buffers whose work has finished (SettleCommandQueueFeedback): their fences are signalled before that comes
+  virtual HRESULT RemovedReason() = 0;
   // how many threads of a compute shader go to the GPU at once when its threadgroups wait for one another: the
   // lanes it runs at once (the estimate behind TotalLaneCount)
   virtual uint64_t ThreadsAtOnce() = 0;
@@ -694,6 +697,8 @@ HRESULT CreateStateObject(
 
 HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);
+// reads the feedback of the device's command buffers whose work has finished: an error in one removes the device
+void SettleCommandQueueFeedback(MTLD3D12Device *pDevice);
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator);
