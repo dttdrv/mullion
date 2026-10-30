@@ -1,0 +1,12 @@
+# another driver's blob is refused as invalid, so a game builds every pipeline again on every launch
+--- a/src/d3d12/d3d12_pipeline_compute.cpp
++++ b/src/d3d12/d3d12_pipeline_compute.cpp
+@@ -239,7 +239,7 @@
+     // d3d12_cached_pipeline_state_validate: "Avoid E_INVALIDARG with an invalid header size, since that may confuse
+     // some games")
+     if (size < kHeaderSize || memcmp(blob, kMagic, sizeof(kMagic)))
+-      return D3D12_ERROR_DRIVER_VERSION_MISMATCH;
++      return FAIL(E_INVALIDARG);
+     auto data = static_cast<const char *>(blob);
+     SIZE_T offset = sizeof(kMagic);
+     auto read = [&](auto &value) {
