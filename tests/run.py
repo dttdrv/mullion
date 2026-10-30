@@ -81,13 +81,39 @@ def builtin(pe):
 def compilers(prefix):
     """the Windows shader compilers the tests load, from the project's pinned copies (README.md) into the prefix: a
     prefix that falls back on Wine's own d3dcompiler answers `D3DCompile` with vkd3d-shader, which compiles some
-    Microsoft-profile programs differently, so a test of 'Microsoft's compiler' would measure another compiler"""
+    Microsoft-profile programs differently, so a test of 'Microsoft's compiler' would measure another compiler.
+
+    d3dcompiler_47.dll at the toolchain root is PE32+; the PE32 copy is the cab extract under c47/. a 32-bit prefix
+    gets the i386 DLL in system32; a WoW64 prefix gets PE32+ in system32 and i386 in syswow64."""
     source = Path(__file__).resolve().parents[1] / "toolchains" / "shadercompilers"
-    windows = prefix / "drive_c" / "windows" / "system32"
+    windows = prefix / "drive_c" / "windows"
+    system32 = windows / "system32"
+    wow64 = windows / "syswow64"
     installed = []
-    for name in ("d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll"):
+    x64 = source / "d3dcompiler_47.dll"
+    x86 = None
+    cab = source / "c47"
+    if cab.is_dir():
+        for candidate in sorted(cab.glob("*")):
+            if candidate.is_file() and machine(candidate) == "i386":
+                x86 = candidate
+                break
+    if wow64.is_dir():
+        if x64.is_file():
+            shutil.copy2(x64, system32 / "d3dcompiler_47.dll")
+            installed.append("d3dcompiler_47.dll")
+        if x86 is not None:
+            shutil.copy2(x86, wow64 / "d3dcompiler_47.dll")
+            installed.append("syswow64/d3dcompiler_47.dll")
+    elif x86 is not None:
+        shutil.copy2(x86, system32 / "d3dcompiler_47.dll")
+        installed.append("d3dcompiler_47.dll")
+    elif x64.is_file():
+        shutil.copy2(x64, system32 / "d3dcompiler_47.dll")
+        installed.append("d3dcompiler_47.dll")
+    for name in ("dxcompiler.dll", "dxil.dll"):
         if (source / name).is_file():
-            shutil.copy2(source / name, windows / name)
+            shutil.copy2(source / name, system32 / name)
             installed.append(name)
     return installed
 

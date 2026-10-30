@@ -73,6 +73,31 @@ public:
   DWORD ambient_source() const {
     return ambient_source_;
   }
+  DWORD stencil_ref() const {
+    return stencil_ref_;
+  }
+  bool fog_enabled() const {
+    return fog_enable_ != FALSE;
+  }
+  DWORD fog_table_mode() const {
+    return fog_table_mode_;
+  }
+  DWORD fog_vertex_mode() const {
+    return fog_vertex_mode_;
+  }
+  DWORD fog_color() const {
+    return fog_color_;
+  }
+  float fog_start() const {
+    float value = 0.0f;
+    memcpy(&value, &fog_start_, sizeof(value));
+    return value;
+  }
+  float fog_end() const {
+    float value = 0.0f;
+    memcpy(&value, &fog_end_, sizeof(value));
+    return value;
+  }
 
 private:
   // what D3D9's device starts with (the defaults D3DRENDERSTATETYPE names for each of these states). ZENABLE starts
@@ -105,6 +130,25 @@ private:
   DWORD colour_vertex_ = TRUE;
   DWORD diffuse_source_ = D3DMCS_COLOR1;
   DWORD ambient_source_ = D3DMCS_COLOR1;
+  // D3D9's stencil test, as D3D11's depth-stencil state: off, always passing, keep on every outcome, and a reference
+  // of 0 with every bit of the stencil writable (Microsoft Learn, D3DRS_STENCILENABLE)
+  DWORD stencil_enable_ = FALSE;
+  DWORD stencil_fail_ = D3DSTENCILOP_KEEP;
+  DWORD stencil_zfail_ = D3DSTENCILOP_KEEP;
+  DWORD stencil_pass_ = D3DSTENCILOP_KEEP;
+  DWORD stencil_func_ = D3DCMP_ALWAYS;
+  DWORD stencil_ref_ = 0;
+  DWORD stencil_mask_ = 0xFFFFFFFF;
+  DWORD stencil_write_mask_ = 0xFFFFFFFF;
+  // fog is stored so GetRenderState matches SetRenderState; RasterCaps names none until a pixel test reads it
+  DWORD fog_enable_ = FALSE;
+  DWORD fog_color_ = 0;
+  DWORD fog_table_mode_ = D3DFOG_NONE;
+  DWORD fog_vertex_mode_ = D3DFOG_NONE;
+  DWORD fog_start_ = 0;
+  DWORD fog_end_ = 0x3F800000; // 1.0f
+  DWORD fog_density_ = 0x3F800000;
+  DWORD fog_range_enable_ = FALSE;
 
   // the objects the values made, and whether one of them is out of date
   ComPtr<ID3D11RasterizerState> rasterizer_;

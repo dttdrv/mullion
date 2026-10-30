@@ -1716,7 +1716,14 @@ AIRCONV_API int SM50Initialize(
     // 1. Collect information about the shader.
     D3D10ShaderBinary::CShaderCodeParser CodeParser((CShaderToken *)DXBCParser.GetBlob(codeBlobIdx));
     sm50_shader->shader_type = CodeParser.ShaderType();
+    dxbc_clear_read_error();
     sm50_shader->bbs = read_control_flow(CodeParser, sm50_shader, inputParser, outputParser);
+    if (const char *unhandled = dxbc_read_error()) {
+      errorOut << unhandled;
+      delete sm50_shader;
+      *ppError = (sm50_error_t)errorObj;
+      return 1;
+    }
   }
 
   // a library's shaders bind their resources through root signatures only
@@ -1763,6 +1770,9 @@ AIRCONV_API int SM50Initialize(
       binding_table.DefineSampler("cube_s" + std::to_string(range_id), attr_index + 1);
     sampler.arg_metadata_index = binding_table.DefineInteger64(
       "meta_s" + std::to_string(range_id), attr_index + 2
+    );
+    sampler.arg_border_index = binding_table.DefineInteger64(
+      "border_s" + std::to_string(range_id), attr_index + 3
     );
     sm50_shader->args_reflection.push_back({
       .Type = SM50BindingType::Sampler,

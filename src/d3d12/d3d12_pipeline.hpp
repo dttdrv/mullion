@@ -89,6 +89,8 @@ struct PipelineStateStream {
   Create(MTLD3D12Device *device, REFIID iid, void **pipeline, const PipelineShaderCache *cached = nullptr) const;
 };
 
+bool SM50ShaderIsInterned(sm50_shader_t shader);
+
 class SM50Shader {
   sm50_shader_t sm50_shader_{};
 
@@ -103,7 +105,7 @@ public:
   }
 
   ~SM50Shader() {
-    if (sm50_shader_)
+    if (sm50_shader_ && !SM50ShaderIsInterned(sm50_shader_))
       SM50Destroy(sm50_shader_);
   }
 };

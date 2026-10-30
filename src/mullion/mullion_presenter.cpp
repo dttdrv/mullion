@@ -5,6 +5,7 @@
 #include "mullion_presenter.hpp"
 #include "mullion_diag.hpp"
 #include "util_likely.hpp"
+#include "wsi_platform.hpp"
 
 
 namespace mullion {
@@ -220,9 +221,20 @@ Presenter::encodeCommands(
 
   // a layer whose drawable timed out drops this frame; only a window without a layer takes frames through GDI
   if (!layer_) {
-    WindowFrame frame{{}, nullptr, (uint32_t)width, (uint32_t)height, number};
+    WindowFrame frame;
+    frame.width = (uint32_t)width;
+    frame.height = (uint32_t)height;
+    frame.number = number;
     WMTBufferInfo buffer_info{.length = frame.width * frame.height * 4ull, .options = WMTResourceStorageModeShared};
     buffer_info.memory.set(nullptr);
+#ifdef __i386__
+    // a 32-bit Windows half addresses only the memory below 4 GiB, and Metal's own allocation for a buffer is not
+    // there: the frame's bytes are allocated where the caller can read them and the buffer is made over them without
+    // a copy, as a texture's CPU allocation and a visibility readback's window are (mullion_texture.cpp,
+    // mullion_query.hpp). Metal wants the region and its length to be whole pages.
+    buffer_info.length = (buffer_info.length + MULLION_PAGE_SIZE - 1) / MULLION_PAGE_SIZE * MULLION_PAGE_SIZE;
+    buffer_info.memory.set(wsi::aligned_malloc(buffer_info.length, MULLION_PAGE_SIZE));
+#endif
     frame.buffer = device_.newBuffer(buffer_info);
     frame.pixels = buffer_info.memory.get();
     wmtcmd_blit_copy_from_texture_to_buffer copy{.type = WMTBlitCommandCopyFromTextureToBuffer};
@@ -241,6 +253,40 @@ Presenter::encodeCommands(
     window_frames_.push_back(std::move(frame));
   }
   return drawable;
+}
+
+// a frame's pixels are the caller's only on a 32-bit Windows half, where the buffer was made over them; the allocation
+// a 64-bit one reads is Metal's, and it is freed with the buffer
+Presenter::WindowFrame::WindowFrame(WindowFrame &&other) noexcept :
+    buffer(std::move(other.buffer)), pixels(other.pixels), width(other.width), height(other.height),
+    number(other.number) {
+  other.pixels = nullptr;
+}
+
+Presenter::WindowFrame &
+Presenter::WindowFrame::operator=(WindowFrame &&other) noexcept {
+  if (this != &other) {
+#ifdef __i386__
+    // the buffer was made over this frame's bytes without a copy, so it goes before they do
+    buffer = {};
+    wsi::aligned_free(pixels);
+#endif
+    buffer = std::move(other.buffer);
+    pixels = other.pixels;
+    width = other.width;
+    height = other.height;
+    number = other.number;
+    other.pixels = nullptr;
+  }
+  return *this;
+}
+
+Presenter::WindowFrame::~WindowFrame() {
+#ifdef __i386__
+  // the buffer was made over this frame's bytes without a copy, so it goes before they do
+  buffer = {};
+  wsi::aligned_free(pixels);
+#endif
 }
 
 template WMT::MetalDrawable Presenter::encodeCommands(

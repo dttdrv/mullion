@@ -399,8 +399,9 @@ inline D3DSURFACE_DESC to_surface_desc(const D3D11_TEXTURE2D_DESC &texture, D3DF
   desc.Type = D3DRTYPE_SURFACE;
   desc.Usage = 0;
   desc.Pool = pool;
-  desc.MultiSampleType = D3DMULTISAMPLE_NONE;
-  desc.MultiSampleQuality = 0;
+  desc.MultiSampleType = texture.SampleDesc.Count > 1 ? (D3DMULTISAMPLE_TYPE)texture.SampleDesc.Count
+                                                      : D3DMULTISAMPLE_NONE;
+  desc.MultiSampleQuality = texture.SampleDesc.Quality;
   // a level of a texture is as many pixels as the chain halves down to it
   desc.Width = std::max(1u, texture.Width >> level);
   desc.Height = std::max(1u, texture.Height >> level);

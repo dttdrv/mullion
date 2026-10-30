@@ -328,6 +328,37 @@ main() {
     CHECK(device->SetRenderTarget(0, back_buffer.Get()));
   }
 
+  // a dynamic texture's DISCARD lock forgets earlier pixels; NOOVERWRITE writes a rectangle and keeps the rest
+  // (Microsoft Learn, D3DLOCK_DISCARD, D3DLOCK_NOOVERWRITE)
+  {
+    ComPtr<IDirect3DTexture9> dynamic;
+    CHECK(device->CreateTexture(8, 8, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &dynamic, nullptr));
+    D3DLOCKED_RECT locked{};
+    CHECK(dynamic->LockRect(0, &locked, nullptr, D3DLOCK_DISCARD));
+    for (UINT y = 0; y < 8; y++)
+      for (UINT x = 0; x < 8; x++) {
+        DWORD *at = (DWORD *)((char *)locked.pBits + y * locked.Pitch + x * 4);
+        *at = D3DCOLOR_XRGB(255, 0, 0);
+      }
+    CHECK(dynamic->UnlockRect(0));
+    const RECT keep{2, 2, 4, 4};
+    CHECK(dynamic->LockRect(0, &locked, &keep, D3DLOCK_NOOVERWRITE));
+    for (UINT y = 0; y < 2; y++)
+      for (UINT x = 0; x < 2; x++) {
+        DWORD *at = (DWORD *)((char *)locked.pBits + y * locked.Pitch + x * 4);
+        *at = D3DCOLOR_XRGB(0, 255, 0);
+      }
+    CHECK(dynamic->UnlockRect(0));
+    ComPtr<IDirect3DSurface9> source, dest;
+    CHECK(dynamic->GetSurfaceLevel(0, &source));
+    CHECK(device->CreateOffscreenPlainSurface(8, 8, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &dest, nullptr));
+    CHECK(device->StretchRect(source.Get(), nullptr, dest.Get(), nullptr, D3DTEXF_NONE));
+    expect(read_pixel(device.Get(), dest.Get(), 0, 0, pixel) && is_colour(pixel, 255, 0, 0),
+           "D3DLOCK_DISCARD did not keep the texels a later NOOVERWRITE left alone");
+    expect(read_pixel(device.Get(), dest.Get(), 2, 2, pixel) && is_colour(pixel, 0, 255, 0),
+           "D3DLOCK_NOOVERWRITE did not write its rectangle");
+  }
+
   // the implicit swap chain's back buffer is a default surface ColorFill fills too
   {
     ComPtr<IDirect3DSurface9> back_buffer;

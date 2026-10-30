@@ -1,5 +1,6 @@
 #include "d3d9_fixed_function.hpp"
 #include "d3d9_fixed_function_shaders.hpp"
+#include "d3d9_ff_extended_shaders.hpp"
 #include "d3d9_lights.hpp"
 #include "d3d9_lighting_shaders.hpp"
 #include "d3d9_transform_shaders.hpp"
@@ -55,6 +56,18 @@ struct StageConstants {
   UINT32 ops[4];
   UINT32 args[4];
   float factor[4];
+};
+
+struct StageConstantsExtended {
+  UINT32 ops[4];
+  UINT32 args[4];
+  float factor[4];
+  UINT32 ops1[4];
+  UINT32 args1[4];
+  float fog[4];
+  float fogcolor[4];
+  UINT32 alpha[4];
+  float tex0[16];
 };
 
 } // namespace
@@ -122,6 +135,23 @@ FixedFunctionPipeline::initialize(ID3D11Device *device) {
   if (SUCCEEDED(hr))
     hr = device->CreatePixelShader(
         kFlatTexturedPixelShader, sizeof(kFlatTexturedPixelShader), nullptr, &flat_textured_pixel_shader_
+    );
+  if (SUCCEEDED(hr))
+    hr = device->CreatePixelShader(
+        kExtendedColourPixelShader, sizeof(kExtendedColourPixelShader), nullptr, &extended_pixel_shader_
+    );
+  if (SUCCEEDED(hr))
+    hr = device->CreatePixelShader(
+        kExtendedFlatColourPixelShader, sizeof(kExtendedFlatColourPixelShader), nullptr, &extended_flat_pixel_shader_
+    );
+  if (SUCCEEDED(hr))
+    hr = device->CreatePixelShader(
+        kExtendedTexturedPixelShader, sizeof(kExtendedTexturedPixelShader), nullptr, &extended_textured_pixel_shader_
+    );
+  if (SUCCEEDED(hr))
+    hr = device->CreatePixelShader(
+        kExtendedFlatTexturedPixelShader, sizeof(kExtendedFlatTexturedPixelShader), nullptr,
+        &extended_flat_textured_pixel_shader_
     );
   if (SUCCEEDED(hr))
     hr = device->CreateInputLayout(
@@ -206,9 +236,10 @@ FixedFunctionPipeline::initialize(ID3D11Device *device) {
   if (FAILED(hr))
     return hr;
 
-  // what the textured pixel shader's stage reads: its operation, its arguments and D3DRS_TEXTUREFACTOR
+  // what the textured and extended pixel shaders' stage reads: the one-stage constants the original blob uses, and
+  // the extra stage, fog, alpha test and texture matrix the extended blob adds after them
   D3D11_BUFFER_DESC stage_desc{};
-  stage_desc.ByteWidth = sizeof(StageConstants);
+  stage_desc.ByteWidth = sizeof(StageConstantsExtended);
   stage_desc.Usage = D3D11_USAGE_DYNAMIC;
   stage_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   stage_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -248,6 +279,10 @@ FixedFunctionPipeline::release_device() {
   flat_pixel_shader_.Reset();
   textured_pixel_shader_.Reset();
   flat_textured_pixel_shader_.Reset();
+  extended_pixel_shader_.Reset();
+  extended_flat_pixel_shader_.Reset();
+  extended_textured_pixel_shader_.Reset();
+  extended_flat_textured_pixel_shader_.Reset();
   vertex_layout_.Reset();
   textured_vertex_layout_.Reset();
   transformed_vertex_layout_.Reset();
@@ -302,24 +337,33 @@ FixedFunctionPipeline::bind(ID3D11DeviceContext *context, const FixedFunctionDra
           : transformed ? (sampling ? transformed_textured_vertex_layout_.Get() : transformed_vertex_layout_.Get())
                         : (sampling ? textured_vertex_layout_.Get() : vertex_layout_.Get())
   );
+  const bool extra = draw.fog_enabled || draw.alpha_test || (sampling && (sampling->stage1 || sampling->transform0));
   context->PSSetShader(
-      sampling ? (draw.flat_shaded ? flat_textured_pixel_shader_.Get() : textured_pixel_shader_.Get())
-               : (draw.flat_shaded ? flat_pixel_shader_.Get() : pixel_shader_.Get()),
+      sampling ? (extra ? (draw.flat_shaded ? extended_flat_textured_pixel_shader_.Get()
+                                            : extended_textured_pixel_shader_.Get())
+                        : (draw.flat_shaded ? flat_textured_pixel_shader_.Get() : textured_pixel_shader_.Get()))
+               : (extra ? (draw.flat_shaded ? extended_flat_pixel_shader_.Get() : extended_pixel_shader_.Get())
+                        : (draw.flat_shaded ? flat_pixel_shader_.Get() : pixel_shader_.Get())),
       nullptr, 0
   );
 
-  if (sampling) {
-    ID3D11ShaderResourceView *texture = sampling->texture ? sampling->texture : white_view_.Get();
-    if (!texture || !sampling->sampler)
-      return D3DERR_INVALIDCALL;
-    context->PSSetShaderResources(0, 1, &texture);
-    ID3D11SamplerState *sampler = sampling->sampler;
-    context->PSSetSamplers(0, 1, &sampler);
-
-    StageConstants constants{};
-    memcpy(constants.ops, sampling->ops, sizeof(constants.ops));
-    memcpy(constants.args, sampling->args, sizeof(constants.args));
-    memcpy(constants.factor, sampling->factor, sizeof(constants.factor));
+  if (sampling || extra) {
+    StageConstantsExtended constants{};
+    if (sampling) {
+      memcpy(constants.ops, sampling->ops, sizeof(constants.ops));
+      memcpy(constants.args, sampling->args, sizeof(constants.args));
+      memcpy(constants.factor, sampling->factor, sizeof(constants.factor));
+      memcpy(constants.ops1, sampling->ops1, sizeof(constants.ops1));
+      memcpy(constants.args1, sampling->args1, sizeof(constants.args1));
+      memcpy(constants.tex0, sampling->tex0, sizeof(constants.tex0));
+    }
+    constants.fog[0] = draw.fog_enabled ? 1.0f : 0.0f;
+    constants.fog[1] = draw.fog_start;
+    constants.fog[2] = draw.fog_end;
+    memcpy(constants.fogcolor, draw.fog_color, sizeof(constants.fogcolor));
+    constants.alpha[0] = draw.alpha_test ? 1u : 0u;
+    constants.alpha[1] = draw.alpha_func;
+    constants.alpha[2] = draw.alpha_ref;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context->Map(stage_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
       return D3DERR_INVALIDCALL;
@@ -327,6 +371,16 @@ FixedFunctionPipeline::bind(ID3D11DeviceContext *context, const FixedFunctionDra
     context->Unmap(stage_.Get(), 0);
     ID3D11Buffer *stage = stage_.Get();
     context->PSSetConstantBuffers(0, 1, &stage);
+  }
+
+  if (sampling) {
+    ID3D11ShaderResourceView *texture = sampling->texture ? sampling->texture : white_view_.Get();
+    if (!texture || !sampling->sampler)
+      return D3DERR_INVALIDCALL;
+    ID3D11ShaderResourceView *views[2] = {texture, sampling->texture1 ? sampling->texture1 : white_view_.Get()};
+    ID3D11SamplerState *samplers[2] = {sampling->sampler, sampling->sampler1 ? sampling->sampler1 : sampling->sampler};
+    context->PSSetShaderResources(0, extra ? 2 : 1, views);
+    context->PSSetSamplers(0, extra ? 2 : 1, samplers);
   } else {
     // an untextured draw samples nothing: the texture a draw before it sampled is not left bound to this one
     ID3D11ShaderResourceView *none = nullptr;

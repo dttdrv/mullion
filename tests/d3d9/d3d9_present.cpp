@@ -119,8 +119,7 @@ int main(int argc, char **argv) {
   expect(mode.Width != 0 && mode.Height != 0 && mode.Format == D3DFMT_X8R8G8B8,
          "the display mode is not a windowed chain's");
   CHECK(d3d9->CheckDeviceType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, D3DFMT_X8R8G8B8, TRUE));
-  expect(d3d9->CheckDeviceType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, D3DFMT_X8R8G8B8, FALSE) == D3DERR_NOTAVAILABLE,
-         "a fullscreen chain this build cannot show is reported as one it can");
+  CHECK(d3d9->CheckDeviceType(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, D3DFMT_X8R8G8B8, FALSE));
   expect(d3d9->CheckDeviceType(0, D3DDEVTYPE_REF, D3DFMT_X8R8G8B8, D3DFMT_X8R8G8B8, TRUE) == D3DERR_INVALIDCALL,
          "a device this build is not is reported as one it is");
 

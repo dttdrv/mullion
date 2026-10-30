@@ -56,8 +56,10 @@ inline DWORD operand_token(UINT type, DWORD selection, UINT index_dimension) {
 inline std::vector<DWORD> with_modifier(std::vector<DWORD> operand, D3D10_SB_OPERAND_MODIFIER modifier) {
   if (modifier == D3D10_SB_OPERAND_MODIFIER_NONE)
     return operand;
+  // OperandToken1 follows OperandToken0, then the indices (d3d12tokenizedprogramformat.hpp, Extended Instruction
+  // Operand Format). a push after the index is parsed as the register number.
   operand[0] |= D3D10_SB_OPERAND_EXTENDED_MASK;
-  operand.push_back(ENCODE_D3D10_SB_EXTENDED_OPERAND_MODIFIER(modifier));
+  operand.insert(operand.begin() + 1, ENCODE_D3D10_SB_EXTENDED_OPERAND_MODIFIER(modifier));
   return operand;
 }
 
@@ -151,6 +153,26 @@ inline std::vector<DWORD> src_constant(
   );
 }
 
+// c[a0.x + element]: the address register is an SM5 integer temp (Microsoft Learn, relative addressing)
+inline std::vector<DWORD> src_constant_relative(
+    UINT slot, UINT element, UINT index_temp, DWORD swizzle = 0xE4,
+    D3D10_SB_OPERAND_MODIFIER modifier = D3D10_SB_OPERAND_MODIFIER_NONE
+) {
+  DWORD token = ENCODE_D3D10_SB_OPERAND_NUM_COMPONENTS(D3D10_SB_OPERAND_4_COMPONENT) |
+                ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(D3D10_SB_OPERAND_4_COMPONENT_SWIZZLE_MODE) |
+                detail::swizzle_bits(swizzle) | ENCODE_D3D10_SB_OPERAND_TYPE(D3D10_SB_OPERAND_TYPE_CONSTANT_BUFFER) |
+                ENCODE_D3D10_SB_OPERAND_INDEX_DIMENSION(D3D10_SB_OPERAND_INDEX_2D) |
+                ENCODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(0, D3D10_SB_OPERAND_INDEX_IMMEDIATE32) |
+                ENCODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(1, D3D10_SB_OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE);
+  DWORD relative = ENCODE_D3D10_SB_OPERAND_NUM_COMPONENTS(D3D10_SB_OPERAND_4_COMPONENT) |
+                   ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(D3D10_SB_OPERAND_4_COMPONENT_SELECT_1_MODE) |
+                   ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECT_1(D3D10_SB_4_COMPONENT_X) |
+                   ENCODE_D3D10_SB_OPERAND_TYPE(D3D10_SB_OPERAND_TYPE_TEMP) |
+                   ENCODE_D3D10_SB_OPERAND_INDEX_DIMENSION(D3D10_SB_OPERAND_INDEX_1D) |
+                   ENCODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(0, D3D10_SB_OPERAND_INDEX_IMMEDIATE32);
+  return detail::with_modifier({token, slot, element, relative, index_temp}, modifier);
+}
+
 // one component of a value: the immediate an instruction's single component is written from. its token says one
 // component, not four (a compiler's own `mov o0.w, l(1.000000)` has exactly this token), because the count is what
 // tells a reader how many words the operand follows with: a token that says four over a single word is a program whose
@@ -178,6 +200,15 @@ inline std::vector<DWORD> src_immediate(float x, float y, float z, float w) {
               D3D10_SB_OPERAND_INDEX_0D
           ),
           values[0], values[1], values[2], values[3]};
+}
+
+inline std::vector<DWORD> src_immediate_int(int x, int y = 0, int z = 0, int w = 0) {
+  float fx, fy, fz, fw;
+  memcpy(&fx, &x, 4);
+  memcpy(&fy, &y, 4);
+  memcpy(&fz, &z, 4);
+  memcpy(&fw, &w, 4);
+  return src_immediate(fx, fy, fz, fw);
 }
 
 // the shader a stage draws with, as the tokens of its program and the signatures it links through
@@ -263,10 +294,10 @@ public:
   }
   // the two-dimensional texture a program samples (its `t#` register), whose texels come back as four floats: a
   // D3D9 texture's components are the format's, and a shader reads them sampled
-  void declare_texture2d(UINT reg) {
+  void declare_texture(UINT reg, D3D10_SB_RESOURCE_DIMENSION dimension) {
     program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_DCL_RESOURCE) |
                        ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(4) |
-                       ENCODE_D3D10_SB_RESOURCE_DIMENSION(D3D10_SB_RESOURCE_DIMENSION_TEXTURE2D));
+                       ENCODE_D3D10_SB_RESOURCE_DIMENSION(dimension));
     program_.push_back(detail::operand_token(
         D3D10_SB_OPERAND_TYPE_RESOURCE, 0, D3D10_SB_OPERAND_INDEX_1D
     ));
@@ -276,23 +307,101 @@ public:
                        ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 2) |
                        ENCODE_D3D10_SB_RESOURCE_RETURN_TYPE(D3D10_SB_RETURN_TYPE_FLOAT, 3));
   }
-  // the constant buffer at `slot`, holding `count` four-component registers, read through immediate indices
+  void declare_texture2d(UINT reg) { declare_texture(reg, D3D10_SB_RESOURCE_DIMENSION_TEXTURE2D); }
+  void declare_texturecube(UINT reg) { declare_texture(reg, D3D10_SB_RESOURCE_DIMENSION_TEXTURECUBE); }
+  void declare_texture3d(UINT reg) { declare_texture(reg, D3D10_SB_RESOURCE_DIMENSION_TEXTURE3D); }
+  // the constant buffer at `slot`, holding `count` four-component registers. DYNAMIC_INDEXED so c[a0.x] is a legal
+  // index (Microsoft Learn, dcl_constantbuffer; d3d12tokenizedprogramformat.hpp D3D10_SB_CONSTANT_BUFFER_DYNAMIC_INDEXED)
   void declare_constant_buffer(UINT slot, UINT count) {
-    raw(D3D10_SB_OPCODE_DCL_CONSTANT_BUFFER, {detail::operand_token(
-                                                 D3D10_SB_OPERAND_TYPE_CONSTANT_BUFFER,
-                                                 ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(
-                                                     D3D10_SB_OPERAND_4_COMPONENT_MASK_MODE
-                                                 ) |
-                                                     ENCODE_D3D10_SB_OPERAND_4_COMPONENT_MASK(0xF0),
-                                                 D3D10_SB_OPERAND_INDEX_2D
-                                             ),
-                                             slot,
-                                             count});
+    program_.push_back(
+        ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_DCL_CONSTANT_BUFFER) |
+        ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(4) |
+        ENCODE_D3D10_SB_D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN(D3D10_SB_CONSTANT_BUFFER_DYNAMIC_INDEXED)
+    );
+    program_.push_back(detail::operand_token(
+        D3D10_SB_OPERAND_TYPE_CONSTANT_BUFFER,
+        ENCODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(D3D10_SB_OPERAND_4_COMPONENT_MASK_MODE) |
+            ENCODE_D3D10_SB_OPERAND_4_COMPONENT_MASK(0xF0),
+        D3D10_SB_OPERAND_INDEX_2D
+    ));
+    program_.push_back(slot);
+    program_.push_back(count);
   }
 
   // a texture sample: the texels the resource holds at the coordinate, read through the sampler
   void sample(const std::vector<DWORD> &dest, const std::vector<DWORD> &coord, UINT resource, UINT sampler) {
     instruction(D3D10_SB_OPCODE_SAMPLE, false, {dest, coord, src_resource(resource), src_sampler(sampler)});
+  }
+  // texldl: the texels at an explicit level of detail (Microsoft Learn, texldl)
+  void sample_l(
+      const std::vector<DWORD> &dest, const std::vector<DWORD> &coord, UINT resource, UINT sampler,
+      const std::vector<DWORD> &lod
+  ) {
+    instruction(D3D10_SB_OPCODE_SAMPLE_L, false, {dest, coord, src_resource(resource), src_sampler(sampler), lod});
+  }
+  // texldd: the texels at an explicit gradient (Microsoft Learn, texldd)
+  void sample_d(
+      const std::vector<DWORD> &dest, const std::vector<DWORD> &coord, UINT resource, UINT sampler,
+      const std::vector<DWORD> &ddx, const std::vector<DWORD> &ddy
+  ) {
+    instruction(
+        D3D10_SB_OPCODE_SAMPLE_D, false, {dest, coord, src_resource(resource), src_sampler(sampler), ddx, ddy}
+    );
+  }
+
+  void if_nz(const std::vector<DWORD> &value) {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_IF) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH((DWORD)(1 + value.size())) |
+                       ENCODE_D3D10_SB_INSTRUCTION_TEST_BOOLEAN(D3D10_SB_INSTRUCTION_TEST_NONZERO));
+    program_.insert(program_.end(), value.begin(), value.end());
+  }
+  void else_() {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_ELSE) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(1));
+  }
+  void endif() {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_ENDIF) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(1));
+  }
+  void loop() {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_LOOP) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(1));
+  }
+  void endloop() {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_ENDLOOP) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(1));
+  }
+  void break_() {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_BREAK) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(1));
+  }
+  void breakc_nz(const std::vector<DWORD> &value) {
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_BREAKC) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH((DWORD)(1 + value.size())) |
+                       ENCODE_D3D10_SB_INSTRUCTION_TEST_BOOLEAN(D3D10_SB_INSTRUCTION_TEST_NONZERO));
+    program_.insert(program_.end(), value.begin(), value.end());
+  }
+  void call(UINT label) {
+    const std::vector<DWORD> operand = {
+        ENCODE_D3D10_SB_OPERAND_NUM_COMPONENTS(D3D10_SB_OPERAND_0_COMPONENT) |
+            ENCODE_D3D10_SB_OPERAND_TYPE(D3D10_SB_OPERAND_TYPE_LABEL) |
+            ENCODE_D3D10_SB_OPERAND_INDEX_DIMENSION(D3D10_SB_OPERAND_INDEX_1D) |
+            ENCODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(0, D3D10_SB_OPERAND_INDEX_IMMEDIATE32),
+        label};
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_CALL) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH((DWORD)(1 + operand.size())));
+    program_.insert(program_.end(), operand.begin(), operand.end());
+  }
+  void label(UINT id) {
+    const std::vector<DWORD> operand = {
+        ENCODE_D3D10_SB_OPERAND_NUM_COMPONENTS(D3D10_SB_OPERAND_0_COMPONENT) |
+            ENCODE_D3D10_SB_OPERAND_TYPE(D3D10_SB_OPERAND_TYPE_LABEL) |
+            ENCODE_D3D10_SB_OPERAND_INDEX_DIMENSION(D3D10_SB_OPERAND_INDEX_1D) |
+            ENCODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(0, D3D10_SB_OPERAND_INDEX_IMMEDIATE32),
+        id};
+    program_.push_back(ENCODE_D3D10_SB_OPCODE_TYPE(D3D10_SB_OPCODE_LABEL) |
+                       ENCODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH((DWORD)(1 + operand.size())));
+    program_.insert(program_.end(), operand.begin(), operand.end());
   }
 
   // the end of a pixel whose value is not zero: what D3D9's texkill is (the pixel is not written, and the target keeps

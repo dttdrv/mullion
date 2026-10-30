@@ -39,6 +39,9 @@ public:
   // (IDirect3DDevice9::SetTransform).
   D3DMATRIX *transform(D3DTRANSFORMSTATETYPE state);
   const D3DMATRIX *transform(D3DTRANSFORMSTATETYPE state) const;
+  const D3DMATRIX &texture_transform(UINT stage) const {
+    return texture_[stage < 8 ? stage : 0];
+  }
   // D3D9's world * matrix: the device's matrix and the one given are multiplied, so a vertex is transformed by both, the
   // device's first (IDirect3DDevice9::MultiplyTransform, "this method multiplies the world matrix by the specified
   // matrix"). The transform is a row vector's, so the product is the device's matrix times the given one.
@@ -60,6 +63,8 @@ private:
   D3DMATRIX world_ = identity_matrix();
   D3DMATRIX view_ = identity_matrix();
   D3DMATRIX projection_ = identity_matrix();
+  D3DMATRIX texture_[8] = {identity_matrix(), identity_matrix(), identity_matrix(), identity_matrix(),
+                           identity_matrix(), identity_matrix(), identity_matrix(), identity_matrix()};
   mutable float world_view_projection_[16] = {};
   mutable bool world_view_projection_current_ = false;
 };

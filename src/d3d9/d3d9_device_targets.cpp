@@ -92,14 +92,10 @@ MTLD3D9Device::Clear(DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR co
                    "Direct3D 11 context has not.");
         }
       }
-      // a rectangle's stencil has no clear in this build: ClearView's depth-stencil branch clears depth alone, and a
-      // stencil-only clear of part of a view would need a draw that writes the stencil, which this path has no shader
-      // for. so it is left as it was, with the log saying so, rather than the whole surface's being cleared as if the
-      // call had named no rectangle
-      if (clear_stencil) {
-        ERR_ONCE("D3D9: clearing the stencil of part of a surface is not implemented yet: this clear's rectangles clear "
-                 "its colour and depth and leave its stencil as it was.");
-      }
+      // a rectangle's stencil: ClearView writes a DSV's depth, not its stencil, so the stencil of each rectangle is a
+      // scissored draw that always replaces (Microsoft Learn, IDirect3DDevice9::Clear)
+      if (clear_stencil)
+        clear_stencil_rects(region_data, region_count, (UINT8)stencil);
     }
   }
   return S_OK;
@@ -138,8 +134,6 @@ MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3D
   if (!surface || shared_handle || !width || !height)
     return D3DERR_INVALIDCALL;
   *surface = nullptr;
-  if (multisample != D3DMULTISAMPLE_NONE)
-    return D3DERR_NOTAVAILABLE;
   if (lockable) {
     ERR_ONCE("D3D9: a render target whose bytes the CPU locks is not implemented yet.");
     return D3DERR_INVALIDCALL;
@@ -150,6 +144,13 @@ MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3D
   const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
   if (dxgi_format == DXGI_FORMAT_UNKNOWN)
     return D3DERR_INVALIDCALL;
+  UINT sample_count = 1, sample_quality = 0;
+  if (multisample != D3DMULTISAMPLE_NONE) {
+    UINT quality = 0;
+    if (FAILED(d3d11_device_->CheckMultisampleQualityLevels(dxgi_format, (UINT)multisample, &quality)) || !quality)
+      return D3DERR_NOTAVAILABLE;
+    sample_count = (UINT)multisample;
+  }
 
   D3D11_TEXTURE2D_DESC desc{};
   desc.Width = width;
@@ -157,7 +158,8 @@ MTLD3D9Device::CreateRenderTarget(UINT width, UINT height, D3DFORMAT format, D3D
   desc.MipLevels = 1;
   desc.ArraySize = 1;
   desc.Format = dxgi_format;
-  desc.SampleDesc.Count = 1;
+  desc.SampleDesc.Count = sample_count;
+  desc.SampleDesc.Quality = sample_quality;
   desc.Usage = D3D11_USAGE_DEFAULT;
   desc.BindFlags = D3D11_BIND_RENDER_TARGET;
   ComPtr<ID3D11Texture2D> texture;
@@ -178,14 +180,19 @@ MTLD3D9Device::CreateDepthStencilSurface(UINT width, UINT height, D3DFORMAT form
   if (!surface || shared_handle || !width || !height)
     return D3DERR_INVALIDCALL;
   *surface = nullptr;
-  if (multisample != D3DMULTISAMPLE_NONE)
-    return D3DERR_NOTAVAILABLE;
   if (HRESULT lost = lost_reason(); FAILED(lost))
     return lost;
   const DXGI_FORMAT dxgi_format = to_dxgi_depth_format(format);
   if (dxgi_format == DXGI_FORMAT_UNKNOWN) {
     ERR_ONCE("D3D9: this build has no depth-stencil surface of that format.");
     return D3DERR_INVALIDCALL;
+  }
+  UINT sample_count = 1;
+  if (multisample != D3DMULTISAMPLE_NONE) {
+    UINT quality = 0;
+    if (FAILED(d3d11_device_->CheckMultisampleQualityLevels(dxgi_format, (UINT)multisample, &quality)) || !quality)
+      return D3DERR_NOTAVAILABLE;
+    sample_count = (UINT)multisample;
   }
 
   D3D11_TEXTURE2D_DESC desc{};
@@ -194,7 +201,7 @@ MTLD3D9Device::CreateDepthStencilSurface(UINT width, UINT height, D3DFORMAT form
   desc.MipLevels = 1;
   desc.ArraySize = 1;
   desc.Format = dxgi_format;
-  desc.SampleDesc.Count = 1;
+  desc.SampleDesc.Count = sample_count;
   desc.Usage = D3D11_USAGE_DEFAULT;
   desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
   ComPtr<ID3D11Texture2D> texture;
@@ -237,8 +244,12 @@ MTLD3D9Device::SetRenderTarget(DWORD index, IDirect3DSurface9 *surface) {
   // is, at the level's size
   D3D11_RENDER_TARGET_VIEW_DESC view_desc{};
   view_desc.Format = desc.Format;
-  view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-  view_desc.Texture2D.MipSlice = level;
+  if (desc.SampleDesc.Count > 1) {
+    view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+  } else {
+    view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    view_desc.Texture2D.MipSlice = level;
+  }
   ComPtr<ID3D11RenderTargetView> view;
   if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), &view_desc, &view)))
     return D3DERR_INVALIDCALL;
@@ -328,8 +339,8 @@ MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix
     return D3DERR_INVALIDCALL;
   D3DMATRIX *slot = state_.transform(state);
   if (!slot) {
-    ERR_ONCE("D3D9: only the world, view and projection transforms are kept: this build performs no vertex blending "
-             "and no texture coordinate transform, so that transform would be one no draw reads.");
+    ERR_ONCE("D3D9: only the world, view, projection and texture 0..7 transforms are kept: this build performs no "
+             "vertex blending, so that transform would be one no draw reads.");
     return D3DERR_INVALIDCALL;
   }
   *slot = *matrix;
@@ -344,7 +355,8 @@ MTLD3D9Device::GetTransform(D3DTRANSFORMSTATETYPE state, D3DMATRIX *matrix) {
     return D3DERR_INVALIDCALL;
   const D3DMATRIX *slot = state_.transform(state);
   if (!slot) {
-    ERR_ONCE("D3D9: only the world, view and projection transforms are kept: that one has no value to give.");
+    ERR_ONCE("D3D9: only the world, view, projection and texture 0..7 transforms are kept: that one has no value to "
+             "give.");
     return D3DERR_INVALIDCALL;
   }
   *matrix = *slot;
@@ -502,6 +514,85 @@ MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **block) {
 HRESULT
 MTLD3D9Device::CreateQuery(D3DQUERYTYPE type, IDirect3DQuery9 **query) {
   return MTLD3D9Query::create(this, d3d11_device_.Get(), context_.Get(), type, query);
+}
+
+HRESULT
+MTLD3D9Device::ensure_stencil_fill_target() {
+  if (stencil_fill_target_ && stencil_fill_width_ == target_width_ && stencil_fill_height_ == target_height_)
+    return S_OK;
+  stencil_fill_target_.Reset();
+  HRESULT hr = CreateRenderTarget(
+      target_width_, target_height_, D3DFMT_X8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &stencil_fill_target_, nullptr
+  );
+  if (FAILED(hr))
+    return hr;
+  stencil_fill_width_ = target_width_;
+  stencil_fill_height_ = target_height_;
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::clear_stencil_rects(const D3D11_RECT *rects, UINT count, UINT8 stencil) {
+  if (!rects || !count || !depth_stencil_view_)
+    return S_OK;
+  HRESULT hr = ensure_stencil_fill_target();
+  if (FAILED(hr))
+    return hr;
+
+  ComPtr<IDirect3DSurface9> previous_target;
+  GetRenderTarget(0, &previous_target);
+  DWORD color_write = 0, stencil_enable = 0, stencil_func = 0, stencil_pass = 0, stencil_ref = 0;
+  DWORD z_enable = 0, z_func = 0, z_write = 0, cull = 0, fvf = 0;
+  RECT scissor{};
+  GetRenderState(D3DRS_COLORWRITEENABLE, &color_write);
+  GetRenderState(D3DRS_STENCILENABLE, &stencil_enable);
+  GetRenderState(D3DRS_STENCILFUNC, &stencil_func);
+  GetRenderState(D3DRS_STENCILPASS, &stencil_pass);
+  GetRenderState(D3DRS_STENCILREF, &stencil_ref);
+  GetRenderState(D3DRS_ZENABLE, &z_enable);
+  GetRenderState(D3DRS_ZFUNC, &z_func);
+  GetRenderState(D3DRS_ZWRITEENABLE, &z_write);
+  GetRenderState(D3DRS_CULLMODE, &cull);
+  GetFVF(&fvf);
+  GetScissorRect(&scissor);
+
+  SetRenderTarget(0, stencil_fill_target_.Get());
+  SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+  SetRenderState(D3DRS_STENCILENABLE, TRUE);
+  SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+  SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE);
+  SetRenderState(D3DRS_STENCILREF, stencil);
+  SetRenderState(D3DRS_ZENABLE, TRUE);
+  SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+  SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+  SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+  SetFVF(kPreTransformedFVF);
+
+  for (UINT at = 0; at < count; at++) {
+    const RECT clip{(LONG)rects[at].left, (LONG)rects[at].top, (LONG)rects[at].right, (LONG)rects[at].bottom};
+    SetScissorRect(&clip);
+    PreTransformedVertex verts[4] = {
+        {(float)clip.left, (float)clip.top, 0.0f, 1.0f, 0},
+        {(float)clip.right, (float)clip.top, 0.0f, 1.0f, 0},
+        {(float)clip.left, (float)clip.bottom, 0.0f, 1.0f, 0},
+        {(float)clip.right, (float)clip.bottom, 0.0f, 1.0f, 0},
+    };
+    DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(PreTransformedVertex));
+  }
+
+  SetRenderTarget(0, previous_target.Get());
+  SetRenderState(D3DRS_COLORWRITEENABLE, color_write);
+  SetRenderState(D3DRS_STENCILENABLE, stencil_enable);
+  SetRenderState(D3DRS_STENCILFUNC, stencil_func);
+  SetRenderState(D3DRS_STENCILPASS, stencil_pass);
+  SetRenderState(D3DRS_STENCILREF, stencil_ref);
+  SetRenderState(D3DRS_ZENABLE, z_enable);
+  SetRenderState(D3DRS_ZFUNC, z_func);
+  SetRenderState(D3DRS_ZWRITEENABLE, z_write);
+  SetRenderState(D3DRS_CULLMODE, cull);
+  SetFVF(fvf);
+  SetScissorRect(&scissor);
+  return S_OK;
 }
 
 } // namespace mullion::d3d9

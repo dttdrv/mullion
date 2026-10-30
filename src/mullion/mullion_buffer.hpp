@@ -24,6 +24,7 @@
 #include "mullion_allocation.hpp"
 #include "rc/util_rc_ptr.hpp"
 #include "thread.hpp"
+#include "mullion_typed_window.hpp"
 #include "util_flags.hpp"
 #include "util_svector.hpp"
 #include <memory>
@@ -72,6 +73,9 @@ struct BufferViewDescriptor {
   WMTPixelFormat format;
   // a written view: Metal reads some formats' texture buffers only
   bool write = false;
+  // the byte range of this view inside the allocation; 0 length is the whole allocation, capped at the Metal max
+  uint64_t byte_offset = 0;
+  uint64_t byte_length = 0;
 };
 
 class Buffer;

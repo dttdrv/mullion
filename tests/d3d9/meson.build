@@ -63,6 +63,11 @@ test('d3d9_lifetime', executable('d3d9_lifetime', ['d3d9_lifetime.cpp'], depende
 test('d3d9_containers', executable('d3d9_containers', ['d3d9_containers.cpp'], dependencies : d3d9_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
 
+# a window that is not one is refused, and Present after the window is destroyed does not crash (GDI present on i386
+# copies into guest-addressable pages)
+test('d3d9_hwnd', executable('d3d9_hwnd', ['d3d9_hwnd.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
 # ColorFill, StretchRect and UpdateSurface: the copies a game makes outside a draw, with the formats, pools and
 # rectangles each takes and refuses
 test('d3d9_transfer', executable('d3d9_transfer', ['d3d9_transfer.cpp'], dependencies : d3d9_test_deps),
@@ -108,6 +113,20 @@ test('d3d9_lighting', executable('d3d9_lighting', ['d3d9_lighting.cpp'], depende
 # certify, and the versions refused where a program above them is made
 test('d3d9_caps', executable('d3d9_caps', ['d3d9_caps.cpp'], dependencies : d3d9_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# cube textures, MSAA create/resolve, additional swap chains / streams / fog storage, and remaining vs_2_0 opcodes
+test('d3d9_cube', executable('d3d9_cube', ['d3d9_cube.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_volume', executable('d3d9_volume', ['d3d9_volume.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_msaa', executable('d3d9_msaa', ['d3d9_msaa.cpp'], dependencies : d3d9_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_extra', executable('d3d9_extra', ['d3d9_extra.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_ff_extra', executable('d3d9_ff_extra', ['d3d9_ff_extra.cpp'], dependencies : d3d9_shader_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d9_shader_opcodes', executable('d3d9_shader_opcodes', ['d3d9_shader_opcodes.cpp'],
+     dependencies : d3d9_shader_deps), env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
 
 # no test: the generator of the fixed-function transform's shader blobs (src/d3d9/d3d9_transform_shaders.hpp), run by
 # hand under the tests' Wine when the transform's source changes

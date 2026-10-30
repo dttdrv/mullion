@@ -4,8 +4,7 @@
 // - D3DRS_ALPHATESTENABLE is D3D9's alpha test on the alpha a pixel shader writes: D3DRS_ALPHAFUNC compares it with
 //   D3DRS_ALPHAREF and a pixel that fails is not written, and the three states are the draw's (they are the program's
 //   only by being translated into it, so the same program is drawn with the test and without it).
-// - a fixed-function draw under the alpha test is refused rather than drawn without it: the fixed-function pixel
-//   shaders this build carries have no test of their own.
+// - a fixed-function draw under the alpha test discards the pixels that fail it, as a game's own pixel shader does.
 // https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/texkill---ps
 // https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3drs-alphatestenable
 #include <windows.h>
@@ -331,12 +330,12 @@ main() {
     };
     CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET, kClear, 1.0f, 0));
     CHECK(device->BeginScene());
-    const HRESULT refused = device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(FixedVertex));
+    const HRESULT drawn = device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(FixedVertex));
     CHECK(device->EndScene());
     back_buffer.Reset();
     CHECK(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back_buffer));
-    expect(refused == D3DERR_INVALIDCALL, "a fixed-function draw under the alpha test was drawn anyway");
-    expect(pixel(32, 32) == kClearPixel, "a refused fixed-function draw wrote pixels");
+    expect(SUCCEEDED(drawn), "a fixed-function draw under the alpha test was refused");
+    expect(pixel(32, 32) == kClearPixel, "a fixed-function pixel whose alpha failed the test was written");
     CHECK(device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE));
   }
 

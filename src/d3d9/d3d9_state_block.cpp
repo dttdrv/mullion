@@ -83,8 +83,9 @@ MTLD3D9StateBlock::capture_all() {
   if (pixel) {
     UINT stage_types = 0;
     const D3DTEXTURESTAGESTATETYPE *types = TextureStageState9::all_types(stage_types);
-    for (UINT at = 0; at < stage_types; at++)
-      keys_.push_back(StateKey{StateKey::TextureStage, 0, (UINT)types[at]});
+    for (UINT stage = 0; stage < MTLD3D9Device::kMaxBlendStages; stage++)
+      for (UINT at = 0; at < stage_types; at++)
+        keys_.push_back(StateKey{StateKey::TextureStage, stage, (UINT)types[at]});
 
     UINT sampler_types = 0;
     const D3DSAMPLERSTATETYPE *samplers = SamplerState9::all_types(sampler_types);
@@ -106,6 +107,8 @@ MTLD3D9StateBlock::capture_all() {
     keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_WORLD, 0});
     keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_VIEW, 0});
     keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_PROJECTION, 0});
+    for (UINT stage = 0; stage < 8; stage++)
+      keys_.push_back(StateKey{StateKey::Transform, (UINT)D3DTS_TEXTURE0 + stage, 0});
     // D3D9's vertex state is the one the lights and the material belong to as well: the eight lights, which of them is
     // enabled, and the material a lit vertex's reflectances come from. at least one light is always enabled, which is
     // what makes their enables part of the state (Microsoft Learn, "Saving Vertex State with a StateBlock")
@@ -122,7 +125,8 @@ MTLD3D9StateBlock::capture_all() {
   if (type_ == D3DSBT_ALL) {
     keys_.push_back(StateKey{StateKey::FVF, 0, 0});
     keys_.push_back(StateKey{StateKey::Declaration, 0, 0});
-    keys_.push_back(StateKey{StateKey::Stream, 0, 0});
+    for (UINT stream = 0; stream < MTLD3D9Device::kMaxStreams; stream++)
+      keys_.push_back(StateKey{StateKey::Stream, stream, 0});
     keys_.push_back(StateKey{StateKey::Indices, 0, 0});
     keys_.push_back(StateKey{StateKey::Viewport, 0, 0});
   }

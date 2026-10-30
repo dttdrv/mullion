@@ -518,8 +518,10 @@ main() {
   expect(device->GetTexture(8, &set_texture) == D3DERR_INVALIDCALL, "a stage the device has not was read");
   expect(device->SetSamplerState(8, D3DSAMP_MINFILTER, D3DTEXF_LINEAR) == D3DERR_INVALIDCALL,
          "a sampler state was set on a sampler the device has not");
-  // the fixed-function blender is one stage, so a second stage's operations are refused
-  expect(device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_ADD) == D3DERR_INVALIDCALL,
+  expect(SUCCEEDED(device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_ADD)),
+         "the second fixed-function blend stage was refused");
+  CHECK(device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE));
+  expect(device->SetTextureStageState(2, D3DTSS_COLOROP, D3DTOP_ADD) == D3DERR_INVALIDCALL,
          "a texture stage operation was set on a stage the fixed-function blender has not");
   expect(device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_NONE) == D3DERR_INVALIDCALL,
          "a minification filter that is not one is taken");
@@ -553,7 +555,7 @@ main() {
   CHECK(device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT));
   CHECK(device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE));
   CHECK(device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, 1));
-  expect(device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_MODULATE) == D3DERR_INVALIDCALL,
+  expect(device->SetTextureStageState(2, D3DTSS_COLOROP, D3DTOP_MODULATE) == D3DERR_INVALIDCALL,
          "a texture stage state was set on a stage the device has not");
   expect(device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_DOTPRODUCT3) == D3DERR_INVALIDCALL,
          "a texture operation this build has not is taken");

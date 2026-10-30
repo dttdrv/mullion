@@ -111,6 +111,22 @@ RenderState::supported(D3DRENDERSTATETYPE state) {
   case D3DRS_COLORVERTEX:
   case D3DRS_DIFFUSEMATERIALSOURCE:
   case D3DRS_AMBIENTMATERIALSOURCE:
+  case D3DRS_STENCILENABLE:
+  case D3DRS_STENCILFAIL:
+  case D3DRS_STENCILZFAIL:
+  case D3DRS_STENCILPASS:
+  case D3DRS_STENCILFUNC:
+  case D3DRS_STENCILREF:
+  case D3DRS_STENCILMASK:
+  case D3DRS_STENCILWRITEMASK:
+  case D3DRS_FOGENABLE:
+  case D3DRS_FOGCOLOR:
+  case D3DRS_FOGTABLEMODE:
+  case D3DRS_FOGVERTEXMODE:
+  case D3DRS_FOGSTART:
+  case D3DRS_FOGEND:
+  case D3DRS_FOGDENSITY:
+  case D3DRS_RANGEFOGENABLE:
     return true;
   default:
     return false;
@@ -124,7 +140,10 @@ RenderState::all_states(UINT &count) {
       D3DRS_SHADEMODE,   D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND,      D3DRS_DESTBLEND,         D3DRS_BLENDOP,
       D3DRS_COLORWRITEENABLE, D3DRS_TEXTUREFACTOR, D3DRS_ALPHATESTENABLE, D3DRS_ALPHAFUNC,     D3DRS_ALPHAREF,
       D3DRS_SCISSORTESTENABLE, D3DRS_LIGHTING, D3DRS_SPECULARENABLE, D3DRS_AMBIENT, D3DRS_NORMALIZENORMALS,
-      D3DRS_COLORVERTEX, D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_AMBIENTMATERIALSOURCE,
+      D3DRS_COLORVERTEX, D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_AMBIENTMATERIALSOURCE, D3DRS_STENCILENABLE,
+      D3DRS_STENCILFAIL, D3DRS_STENCILZFAIL, D3DRS_STENCILPASS, D3DRS_STENCILFUNC, D3DRS_STENCILREF, D3DRS_STENCILMASK,
+      D3DRS_STENCILWRITEMASK, D3DRS_FOGENABLE, D3DRS_FOGCOLOR, D3DRS_FOGTABLEMODE, D3DRS_FOGVERTEXMODE, D3DRS_FOGSTART,
+      D3DRS_FOGEND, D3DRS_FOGDENSITY, D3DRS_RANGEFOGENABLE,
   };
   count = (UINT)(sizeof(states) / sizeof(states[0]));
   return states;
@@ -142,6 +161,9 @@ RenderState::usable_value(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_SPECULARENABLE:
   case D3DRS_NORMALIZENORMALS:
   case D3DRS_COLORVERTEX:
+  case D3DRS_STENCILENABLE:
+  case D3DRS_FOGENABLE:
+  case D3DRS_RANGEFOGENABLE:
     return value == TRUE || value == FALSE;
   case D3DRS_AMBIENT:
     return true; // every DWORD is a colour, alpha and all
@@ -152,7 +174,16 @@ RenderState::usable_value(D3DRENDERSTATETYPE state, DWORD value) {
     return value == D3DMCS_MATERIAL || value == D3DMCS_COLOR1;
   case D3DRS_ZFUNC:
   case D3DRS_ALPHAFUNC:
+  case D3DRS_STENCILFUNC:
     return value >= D3DCMP_NEVER && value <= D3DCMP_ALWAYS;
+  case D3DRS_STENCILFAIL:
+  case D3DRS_STENCILZFAIL:
+  case D3DRS_STENCILPASS:
+    return value >= D3DSTENCILOP_KEEP && value <= D3DSTENCILOP_DECR;
+  case D3DRS_STENCILREF:
+  case D3DRS_STENCILMASK:
+  case D3DRS_STENCILWRITEMASK:
+    return true;
   case D3DRS_ALPHAREF:
     // D3D9's reference is an 8-bit alpha in a DWORD, and a value past it is the low eight bits D3D9 compares
     return true;
@@ -172,7 +203,14 @@ RenderState::usable_value(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_COLORWRITEENABLE:
     return value <= 0xF;
   case D3DRS_TEXTUREFACTOR:
+  case D3DRS_FOGCOLOR:
+  case D3DRS_FOGSTART:
+  case D3DRS_FOGEND:
+  case D3DRS_FOGDENSITY:
     return true; // every DWORD is a colour, alpha and all
+  case D3DRS_FOGTABLEMODE:
+  case D3DRS_FOGVERTEXMODE:
+    return value == D3DFOG_NONE || value == D3DFOG_LINEAR || value == D3DFOG_EXP || value == D3DFOG_EXP2;
   default:
     return false;
   }
@@ -265,6 +303,61 @@ RenderState::set(D3DRENDERSTATETYPE state, DWORD value) {
   case D3DRS_AMBIENTMATERIALSOURCE:
     ambient_source_ = value;
     break;
+  case D3DRS_STENCILENABLE:
+    stencil_enable_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILFAIL:
+    stencil_fail_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILZFAIL:
+    stencil_zfail_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILPASS:
+    stencil_pass_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILFUNC:
+    stencil_func_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILREF:
+    stencil_ref_ = value;
+    break;
+  case D3DRS_STENCILMASK:
+    stencil_mask_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_STENCILWRITEMASK:
+    stencil_write_mask_ = value;
+    depth_stencil_current_ = false;
+    break;
+  case D3DRS_FOGENABLE:
+    fog_enable_ = value;
+    break;
+  case D3DRS_FOGCOLOR:
+    fog_color_ = value;
+    break;
+  case D3DRS_FOGTABLEMODE:
+    fog_table_mode_ = value;
+    break;
+  case D3DRS_FOGVERTEXMODE:
+    fog_vertex_mode_ = value;
+    break;
+  case D3DRS_FOGSTART:
+    fog_start_ = value;
+    break;
+  case D3DRS_FOGEND:
+    fog_end_ = value;
+    break;
+  case D3DRS_FOGDENSITY:
+    fog_density_ = value;
+    break;
+  case D3DRS_RANGEFOGENABLE:
+    fog_range_enable_ = value;
+    break;
   default:
     return D3DERR_INVALIDCALL;
   }
@@ -345,6 +438,54 @@ RenderState::get(D3DRENDERSTATETYPE state, DWORD *value) const {
   case D3DRS_AMBIENTMATERIALSOURCE:
     *value = ambient_source_;
     break;
+  case D3DRS_STENCILENABLE:
+    *value = stencil_enable_;
+    break;
+  case D3DRS_STENCILFAIL:
+    *value = stencil_fail_;
+    break;
+  case D3DRS_STENCILZFAIL:
+    *value = stencil_zfail_;
+    break;
+  case D3DRS_STENCILPASS:
+    *value = stencil_pass_;
+    break;
+  case D3DRS_STENCILFUNC:
+    *value = stencil_func_;
+    break;
+  case D3DRS_STENCILREF:
+    *value = stencil_ref_;
+    break;
+  case D3DRS_STENCILMASK:
+    *value = stencil_mask_;
+    break;
+  case D3DRS_STENCILWRITEMASK:
+    *value = stencil_write_mask_;
+    break;
+  case D3DRS_FOGENABLE:
+    *value = fog_enable_;
+    break;
+  case D3DRS_FOGCOLOR:
+    *value = fog_color_;
+    break;
+  case D3DRS_FOGTABLEMODE:
+    *value = fog_table_mode_;
+    break;
+  case D3DRS_FOGVERTEXMODE:
+    *value = fog_vertex_mode_;
+    break;
+  case D3DRS_FOGSTART:
+    *value = fog_start_;
+    break;
+  case D3DRS_FOGEND:
+    *value = fog_end_;
+    break;
+  case D3DRS_FOGDENSITY:
+    *value = fog_density_;
+    break;
+  case D3DRS_RANGEFOGENABLE:
+    *value = fog_range_enable_;
+    break;
   default:
     return D3DERR_INVALIDCALL;
   }
@@ -378,7 +519,14 @@ RenderState::apply(ID3D11Device *device, ID3D11DeviceContext *context) {
     // a depth test that is off writes nothing either, as D3D9's does
     desc.DepthWriteMask = (z_enable_ && z_write_enable_) ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
     desc.DepthFunc = comparison_of(z_func_);
-    desc.StencilEnable = FALSE;
+    desc.StencilEnable = stencil_enable_ != FALSE;
+    desc.StencilReadMask = (UINT8)stencil_mask_;
+    desc.StencilWriteMask = (UINT8)stencil_write_mask_;
+    desc.FrontFace.StencilFailOp = static_cast<D3D11_STENCIL_OP>(stencil_fail_);
+    desc.FrontFace.StencilDepthFailOp = static_cast<D3D11_STENCIL_OP>(stencil_zfail_);
+    desc.FrontFace.StencilPassOp = static_cast<D3D11_STENCIL_OP>(stencil_pass_);
+    desc.FrontFace.StencilFunc = comparison_of(stencil_func_);
+    desc.BackFace = desc.FrontFace;
     depth_stencil_.Reset();
     if (FAILED(device->CreateDepthStencilState(&desc, &depth_stencil_)))
       return D3DERR_INVALIDCALL;
@@ -404,7 +552,7 @@ RenderState::apply(ID3D11Device *device, ID3D11DeviceContext *context) {
   }
 
   context->RSSetState(rasterizer_.Get());
-  context->OMSetDepthStencilState(depth_stencil_.Get(), 0);
+  context->OMSetDepthStencilState(depth_stencil_.Get(), stencil_ref_);
   context->OMSetBlendState(blend_.Get(), nullptr, 0xFFFFFFFF);
   return S_OK;
 }

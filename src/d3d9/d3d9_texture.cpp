@@ -109,18 +109,20 @@ Texture9Storage::Texture9Storage(
       pixel_bytes_(pixel_size(format)), block_bytes_(block_size(format)), can_generate_mips_(can_generate_mips) {
   texture_->GetDesc(&desc_);
   const D3D11_TEXTURE2D_DESC &desc = desc_;
-  level_count_ = desc.MipLevels;
+  // a cube (or 2D array) locks each face's mip as its own subresource: D3D11CalcSubresource(mip, face, MipLevels)
+  level_count_ = desc.MipLevels * desc.ArraySize;
   // A texture whose bytes are not the CPU's has none to keep: a lock of it is refused rather than answered with bytes
   // that would never reach the texture. A dynamic texture's levels are the CPU's too: D3D11 maps a texture with
   // WRITE_DISCARD only, so the level is authored here and uploaded, which is what its NOOVERWRITE lock needs to keep
   // the pixels outside the rectangle it writes.
   if (!lockable)
     return;
-  levels_.resize(desc.MipLevels);
-  for (UINT level = 0; level < desc.MipLevels; level++) {
-    Level &one = levels_[level];
-    one.width = std::max(1u, desc.Width >> level);
-    one.height = std::max(1u, desc.Height >> level);
+  levels_.resize(level_count_);
+  for (UINT sub = 0; sub < level_count_; sub++) {
+    const UINT mip = desc.MipLevels ? sub % desc.MipLevels : 0;
+    Level &one = levels_[sub];
+    one.width = std::max(1u, desc.Width >> mip);
+    one.height = std::max(1u, desc.Height >> mip);
     if (block_bytes_) {
       // a compressed level is a grid of four-by-four blocks, as many as its size rounds up to, and its rows are the
       // blocks' rows: the pitch a D3D9 lock of a compressed level reports is the one it is stored with
@@ -476,6 +478,145 @@ MTLD3D9Texture::AddDirtyRect(const RECT *) {
   return S_OK;
 }
 
+MTLD3D9CubeTexture::MTLD3D9CubeTexture(
+    IDirect3DDevice9 *device, ComPtr<ID3D11Texture2D> texture, ComPtr<ID3D11ShaderResourceView> view,
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, bool can_generate_mips,
+    DWORD usage
+)
+    : device_(device), device_ref_(device), texture_(std::move(texture)), view_(std::move(view)),
+      storage_(
+          texture_, view_, context, format, pool == D3DPOOL_MANAGED || (usage & D3DUSAGE_DYNAMIC) != 0,
+          can_generate_mips, (usage & D3DUSAGE_DYNAMIC) != 0
+      ),
+      format_(format), pool_(pool), usage_(usage), levels_count_(levels) {
+  if (pool_ == D3DPOOL_MANAGED)
+    resources_.attach(device, this);
+}
+
+void
+MTLD3D9CubeTexture::reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) {
+  if (pool_ != D3DPOOL_MANAGED || !device)
+    return;
+  if (FAILED(storage_.reset_device(device, context))) {
+    ERR_ONCE("D3D9: a managed cube texture did not survive the device a Reset made.");
+    return;
+  }
+  texture_ = storage_.texture();
+  view_ = storage_.view();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::QueryInterface(REFIID riid, void **object) {
+  if (!object)
+    return E_POINTER;
+  *object = nullptr;
+  if (riid == IID_IUnknown || riid == __uuidof(IDirect3DResource9) || riid == __uuidof(IDirect3DBaseTexture9) ||
+      riid == __uuidof(IDirect3DCubeTexture9)) {
+    *object = static_cast<IDirect3DCubeTexture9 *>(this);
+  } else if (riid == IID_IMTLD3D9Texture) {
+    *object = static_cast<IMTLD3D9Texture *>(this);
+  } else if (riid == IID_IMTLD3D9LockTarget) {
+    *object = static_cast<IMTLD3D9LockTarget *>(this);
+  } else {
+    return E_NOINTERFACE;
+  }
+  AddRef();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::GetDevice(IDirect3DDevice9 **device) {
+  if (!device)
+    return D3DERR_INVALIDCALL;
+  *device = device_;
+  if (device_)
+    device_->AddRef();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
+}
+DWORD STDMETHODCALLTYPE MTLD3D9CubeTexture::SetPriority(DWORD) { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9CubeTexture::GetPriority() { return 0; }
+void STDMETHODCALLTYPE MTLD3D9CubeTexture::PreLoad() {}
+D3DRESOURCETYPE STDMETHODCALLTYPE MTLD3D9CubeTexture::GetType() { return D3DRTYPE_CUBETEXTURE; }
+DWORD STDMETHODCALLTYPE MTLD3D9CubeTexture::SetLOD(DWORD) { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9CubeTexture::GetLOD() { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9CubeTexture::GetLevelCount() { return levels_count_; }
+HRESULT STDMETHODCALLTYPE MTLD3D9CubeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE) {
+  return D3DERR_INVALIDCALL;
+}
+D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE MTLD3D9CubeTexture::GetAutoGenFilterType() { return D3DTEXF_LINEAR; }
+void STDMETHODCALLTYPE MTLD3D9CubeTexture::GenerateMipSubLevels() {
+  if (managed())
+    storage_.generate_mips();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::GetLevelDesc(UINT level, D3DSURFACE_DESC *desc) {
+  if (level >= levels_count_ || !desc)
+    return D3DERR_INVALIDCALL;
+  D3D11_TEXTURE2D_DESC texture_desc{};
+  texture_->GetDesc(&texture_desc);
+  *desc = to_surface_desc(texture_desc, format_, pool_, level);
+  desc->Usage = usage_;
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES face, UINT level, IDirect3DSurface9 **surface_level) {
+  if ((UINT)face > 5 || level >= levels_count_ || !surface_level)
+    return D3DERR_INVALIDCALL;
+  *surface_level = nullptr;
+  ComPtr<MTLD3D9Surface> surface;
+  surface.Attach(new MTLD3D9Surface(
+      device_, texture_, format_, pool_, false, storage_.context(), usage_, false,
+      static_cast<IMTLD3D9LockTarget *>(this), level, static_cast<IDirect3DBaseTexture9 *>(this), (UINT)face
+  ));
+  *surface_level = surface.Detach();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::LockRect(D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked, const RECT *rect, DWORD flags) {
+  if ((UINT)face > 5 || level >= levels_count_ || !storage_.lockable())
+    return D3DERR_INVALIDCALL;
+  return storage_.lock(subresource(face, level), rect, locked, flags);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::UnlockRect(D3DCUBEMAP_FACES face, UINT level) {
+  if ((UINT)face > 5 || !storage_.lockable() || !storage_.locked() ||
+      storage_.locked_level() != subresource(face, level))
+    return D3DERR_INVALIDCALL;
+  return storage_.unlock();
+}
+
+HRESULT
+MTLD3D9CubeTexture::lock_level(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWORD flags) {
+  return storage_.lock(level, rect, locked, flags);
+}
+
+HRESULT
+MTLD3D9CubeTexture::unlock_level(UINT) {
+  return storage_.unlock();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9CubeTexture::AddDirtyRect(D3DCUBEMAP_FACES, const RECT *) {
+  return S_OK;
+}
+
 bool
 SamplerState9::supported(D3DSAMPLERSTATETYPE type) {
   switch (type) {
@@ -697,11 +838,10 @@ TextureStageState9::usable_value(D3DTEXTURESTAGESTATETYPE type, DWORD value) {
       return false;
     }
   case D3DTSS_TEXCOORDINDEX:
-    // the first set of texture coordinates, and no generated one: a texture transform or a camera-space map is another
-    // stage's texture coordinates
+    // the first set of texture coordinates, and no generated one: a camera-space map is another stage's coordinates
     return value == 0;
   case D3DTSS_TEXTURETRANSFORMFLAGS:
-    return value == D3DTTFF_DISABLE;
+    return value == D3DTTFF_DISABLE || value == D3DTTFF_COUNT2;
   case D3DTSS_RESULTARG:
     return value == D3DTA_CURRENT;
   default:
@@ -734,9 +874,14 @@ TextureStageState9::set(D3DTEXTURESTAGESTATETYPE type, DWORD value) {
   case D3DTSS_ALPHAARG2:
     alpha_arg2_ = value;
     break;
+  case D3DTSS_TEXCOORDINDEX:
+    texcoord_index_ = value;
+    break;
+  case D3DTSS_TEXTURETRANSFORMFLAGS:
+    texture_transform_flags_ = value;
+    break;
   default:
-    return S_OK; // a state whose only usable value is the one this stage has (the coordinate set, the transform, the
-                 // result register)
+    return S_OK; // a state whose only usable value is the one this stage has (the result register)
   }
   return S_OK;
 }
@@ -765,10 +910,10 @@ TextureStageState9::get(D3DTEXTURESTAGESTATETYPE type, DWORD *value) const {
     *value = alpha_arg2_;
     break;
   case D3DTSS_TEXCOORDINDEX:
-    *value = 0;
+    *value = texcoord_index_;
     break;
   case D3DTSS_TEXTURETRANSFORMFLAGS:
-    *value = D3DTTFF_DISABLE;
+    *value = texture_transform_flags_;
     break;
   default:
     *value = D3DTA_CURRENT;
@@ -778,15 +923,297 @@ TextureStageState9::get(D3DTEXTURESTAGESTATETYPE type, DWORD *value) const {
 }
 
 void
-TextureStageState9::constants(UINT32 ops[4], UINT32 args[4]) const {
+TextureStageState9::constants(UINT32 ops[4], UINT32 args[4], bool current_as_previous) const {
+  auto argument = [&](DWORD value) -> UINT32 {
+    if (current_as_previous && (value & D3DTA_SELECTMASK) == D3DTA_CURRENT)
+      return 3;
+    return argument_of(value);
+  };
   ops[0] = operation_of(colour_op_);
-  ops[1] = argument_of(colour_arg1_);
-  ops[2] = argument_of(colour_arg2_);
+  ops[1] = argument(colour_arg1_);
+  ops[2] = argument(colour_arg2_);
   ops[3] = operation_of(alpha_op_);
-  args[0] = argument_of(alpha_arg1_);
-  args[1] = argument_of(alpha_arg2_);
+  args[0] = argument(alpha_arg1_);
+  args[1] = argument(alpha_arg2_);
   args[2] = 0;
   args[3] = 0;
+}
+
+Volume9Storage::Volume9Storage(
+    ComPtr<ID3D11Texture3D> texture, const ComPtr<ID3D11ShaderResourceView> &view,
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool dynamic
+)
+    : texture_(std::move(texture)), view_(view), context_(context), lockable_(lockable), dynamic_(dynamic),
+      pixel_bytes_(pixel_size(format)) {
+  texture_->GetDesc(&desc_);
+  if (!lockable_)
+    return;
+  levels_.resize(desc_.MipLevels);
+  for (UINT mip = 0; mip < desc_.MipLevels; mip++) {
+    Level &one = levels_[mip];
+    one.width = std::max(1u, desc_.Width >> mip);
+    one.height = std::max(1u, desc_.Height >> mip);
+    one.depth = std::max(1u, desc_.Depth >> mip);
+    one.pitch = one.width * pixel_bytes_;
+    one.slice_pitch = one.pitch * one.height;
+    one.bytes.resize((size_t)one.slice_pitch * one.depth);
+  }
+}
+
+HRESULT
+Volume9Storage::lock(UINT level, const D3DBOX *box, D3DLOCKED_BOX *locked, DWORD flags) {
+  if (!locked)
+    return D3DERR_INVALIDCALL;
+  locked->RowPitch = 0;
+  locked->SlicePitch = 0;
+  locked->pBits = nullptr;
+  if (!lockable_ || level >= levels_.size() || locked_level_ != kNoLevel)
+    return D3DERR_INVALIDCALL;
+  const DWORD dynamic_allowed = D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE | D3DLOCK_NOSYSLOCK;
+  const DWORD allowed = dynamic_ ? dynamic_allowed : (D3DLOCK_READONLY | D3DLOCK_NOSYSLOCK);
+  if (flags & ~allowed)
+    return D3DERR_INVALIDCALL;
+  if (dynamic_ && (flags & D3DLOCK_DISCARD) && (flags & D3DLOCK_NOOVERWRITE))
+    return D3DERR_INVALIDCALL;
+  if ((flags & D3DLOCK_DISCARD) && box)
+    return D3DERR_INVALIDCALL;
+
+  Level &one = levels_[level];
+  UINT left = 0, top = 0, front = 0;
+  if (box) {
+    if (box->Left >= box->Right || box->Top >= box->Bottom || box->Front >= box->Back || box->Right > one.width ||
+        box->Bottom > one.height || box->Back > one.depth)
+      return D3DERR_INVALIDCALL;
+    left = box->Left;
+    top = box->Top;
+    front = box->Front;
+  }
+  if (dynamic_ && (flags & D3DLOCK_DISCARD))
+    std::fill(one.bytes.begin(), one.bytes.end(), 0);
+
+  locked->RowPitch = (INT)one.pitch;
+  locked->SlicePitch = (INT)one.slice_pitch;
+  locked->pBits = one.bytes.data() + (size_t)front * one.slice_pitch + (size_t)top * one.pitch +
+                  (size_t)left * pixel_bytes_;
+  locked_level_ = level;
+  read_only_ = (flags & D3DLOCK_READONLY) != 0;
+  return S_OK;
+}
+
+HRESULT
+Volume9Storage::unlock() {
+  if (locked_level_ == kNoLevel)
+    return D3DERR_INVALIDCALL;
+  const UINT level = locked_level_;
+  const bool read_only = read_only_;
+  locked_level_ = kNoLevel;
+  read_only_ = false;
+  if (!read_only) {
+    const Level &one = levels_[level];
+    context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, one.slice_pitch);
+  }
+  return S_OK;
+}
+
+HRESULT
+Volume9Storage::reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) {
+  if (!device)
+    return D3DERR_INVALIDCALL;
+  ComPtr<ID3D11Texture3D> texture;
+  HRESULT hr = device->CreateTexture3D(&desc_, nullptr, &texture);
+  if (FAILED(hr))
+    return D3DERR_INVALIDCALL;
+  ComPtr<ID3D11ShaderResourceView> view;
+  hr = device->CreateShaderResourceView(texture.Get(), nullptr, &view);
+  if (FAILED(hr))
+    return D3DERR_INVALIDCALL;
+  texture_ = texture;
+  view_ = view;
+  context_ = context;
+  for (UINT level = 0; level < levels_.size(); level++) {
+    const Level &one = levels_[level];
+    if (!one.bytes.empty())
+      context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, one.slice_pitch);
+  }
+  return S_OK;
+}
+
+MTLD3D9VolumeTexture::MTLD3D9VolumeTexture(
+    IDirect3DDevice9 *device, ComPtr<ID3D11Texture3D> texture, ComPtr<ID3D11ShaderResourceView> view,
+    const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, DWORD usage
+)
+    : device_(device), device_ref_(device), texture_(std::move(texture)), view_(std::move(view)),
+      storage_(
+          texture_, view_, context, format, pool == D3DPOOL_MANAGED || (usage & D3DUSAGE_DYNAMIC) != 0,
+          (usage & D3DUSAGE_DYNAMIC) != 0
+      ),
+      format_(format), pool_(pool), usage_(usage), levels_count_(levels) {
+  if (pool_ == D3DPOOL_MANAGED)
+    resources_.attach(device, this);
+}
+
+void
+MTLD3D9VolumeTexture::reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) {
+  if (pool_ != D3DPOOL_MANAGED || !device)
+    return;
+  if (FAILED(storage_.reset_device(device, context))) {
+    ERR_ONCE("D3D9: a managed volume texture did not survive the device a Reset made.");
+    return;
+  }
+  texture_ = storage_.texture();
+  view_ = storage_.view();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::QueryInterface(REFIID riid, void **object) {
+  if (!object)
+    return E_POINTER;
+  *object = nullptr;
+  if (riid == IID_IUnknown || riid == __uuidof(IDirect3DResource9) || riid == __uuidof(IDirect3DBaseTexture9) ||
+      riid == __uuidof(IDirect3DVolumeTexture9)) {
+    *object = static_cast<IDirect3DVolumeTexture9 *>(this);
+  } else if (riid == IID_IMTLD3D9Texture) {
+    *object = static_cast<IMTLD3D9Texture *>(this);
+  } else {
+    return E_NOINTERFACE;
+  }
+  AddRef();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::GetDevice(IDirect3DDevice9 **device) {
+  if (!device)
+    return D3DERR_INVALIDCALL;
+  *device = device_;
+  if (device_)
+    device_->AddRef();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
+}
+DWORD STDMETHODCALLTYPE MTLD3D9VolumeTexture::SetPriority(DWORD) { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9VolumeTexture::GetPriority() { return 0; }
+void STDMETHODCALLTYPE MTLD3D9VolumeTexture::PreLoad() {}
+D3DRESOURCETYPE STDMETHODCALLTYPE MTLD3D9VolumeTexture::GetType() { return D3DRTYPE_VOLUMETEXTURE; }
+DWORD STDMETHODCALLTYPE MTLD3D9VolumeTexture::SetLOD(DWORD) { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9VolumeTexture::GetLOD() { return 0; }
+DWORD STDMETHODCALLTYPE MTLD3D9VolumeTexture::GetLevelCount() { return levels_count_; }
+HRESULT STDMETHODCALLTYPE MTLD3D9VolumeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE) {
+  return D3DERR_INVALIDCALL;
+}
+D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE MTLD3D9VolumeTexture::GetAutoGenFilterType() { return D3DTEXF_LINEAR; }
+void STDMETHODCALLTYPE MTLD3D9VolumeTexture::GenerateMipSubLevels() {}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::GetLevelDesc(UINT level, D3DVOLUME_DESC *desc) {
+  if (!desc || level >= levels_count_)
+    return D3DERR_INVALIDCALL;
+  D3D11_TEXTURE3D_DESC texture{};
+  texture_->GetDesc(&texture);
+  *desc = {};
+  desc->Format = format_;
+  desc->Type = D3DRTYPE_VOLUME;
+  desc->Usage = usage_;
+  desc->Pool = pool_;
+  desc->Width = std::max(1u, texture.Width >> level);
+  desc->Height = std::max(1u, texture.Height >> level);
+  desc->Depth = std::max(1u, texture.Depth >> level);
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::GetVolumeLevel(UINT level, IDirect3DVolume9 **volume_level) {
+  if (!volume_level || level >= levels_count_)
+    return D3DERR_INVALIDCALL;
+  ComPtr<MTLD3D9Volume> volume;
+  volume.Attach(new MTLD3D9Volume(this, level));
+  *volume_level = volume.Detach();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::LockBox(UINT level, D3DLOCKED_BOX *locked, const D3DBOX *box, DWORD flags) {
+  return storage_.lock(level, box, locked, flags);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::UnlockBox(UINT) {
+  return storage_.unlock();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9VolumeTexture::AddDirtyBox(const D3DBOX *) {
+  return S_OK;
+}
+
+MTLD3D9Volume::MTLD3D9Volume(MTLD3D9VolumeTexture *parent, UINT level)
+    : texture_(parent), level_(level) {
+  parent_.Attach(parent);
+  parent_->AddRef();
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::QueryInterface(REFIID riid, void **object) {
+  if (!object)
+    return E_POINTER;
+  *object = nullptr;
+  if (riid == IID_IUnknown || riid == __uuidof(IDirect3DVolume9)) {
+    *object = static_cast<IDirect3DVolume9 *>(this);
+  } else {
+    return E_NOINTERFACE;
+  }
+  AddRef();
+  return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::GetDevice(IDirect3DDevice9 **device) {
+  return texture_->GetDevice(device);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) {
+  return private_data_.set(guid, data, size, flags);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::GetPrivateData(REFGUID guid, void *data, DWORD *size) {
+  return private_data_.get(guid, data, size);
+}
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::FreePrivateData(REFGUID guid) {
+  return private_data_.free(guid);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::GetContainer(REFIID riid, void **container) {
+  return texture_->QueryInterface(riid, container);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::GetDesc(D3DVOLUME_DESC *desc) {
+  return texture_->GetLevelDesc(level_, desc);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::LockBox(D3DLOCKED_BOX *locked, const D3DBOX *box, DWORD flags) {
+  return texture_->LockBox(level_, locked, box, flags);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Volume::UnlockBox() {
+  return texture_->UnlockBox(level_);
 }
 
 } // namespace mullion::d3d9

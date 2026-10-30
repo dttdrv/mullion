@@ -139,6 +139,195 @@ MTLD3D9Device::CreateTexture(
   return S_OK;
 }
 
+// a cube texture: six square faces as a D3D11 TEXTURECUBE (Microsoft Learn, IDirect3DDevice9::CreateCubeTexture).
+// each face is an array slice, so a lock of GetCubeMapSurface(face, level) is the same lock as LockRect(face, level).
+HRESULT
+MTLD3D9Device::CreateCubeTexture(
+    UINT edge, UINT levels, DWORD usage, D3DFORMAT format, D3DPOOL pool, IDirect3DCubeTexture9 **texture,
+    HANDLE *shared_handle
+) {
+  if (!texture || shared_handle)
+    return D3DERR_INVALIDCALL;
+  *texture = nullptr;
+  const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
+  if (dxgi_format == DXGI_FORMAT_UNKNOWN || !edge || edge > caps_.MaxTextureWidth) {
+    ERR_ONCE(
+        "D3D9: no cube texture of this format (", format, ") or this edge (", edge, "): the device makes up to ",
+        caps_.MaxTextureWidth, "."
+    );
+    return D3DERR_INVALIDCALL;
+  }
+  if (block_size(format) && (edge & 3)) {
+    ERR_ONCE("D3D9: a compressed cube texture's edge is a multiple of four; ", edge, " is not.");
+    return D3DERR_INVALIDCALL;
+  }
+  if (pool != D3DPOOL_DEFAULT && pool != D3DPOOL_MANAGED) {
+    ERR_ONCE("D3D9: only a default-pool and a managed cube texture are made yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  if (pool == D3DPOOL_DEFAULT) {
+    if (HRESULT lost = lost_reason(); FAILED(lost))
+      return lost;
+  }
+  if (usage & ~(DWORD)(D3DUSAGE_RENDERTARGET | D3DUSAGE_DYNAMIC)) {
+    ERR_ONCE("D3D9: cube texture usage 0x", std::hex, usage, " is not honoured yet (render target and dynamic are).");
+    return D3DERR_INVALIDCALL;
+  }
+  if (usage && pool != D3DPOOL_DEFAULT) {
+    ERR_ONCE("D3D9: a used cube texture is a default-pool texture; pool ", (unsigned)pool, " is refused.");
+    return D3DERR_INVALIDCALL;
+  }
+  if ((usage & D3DUSAGE_RENDERTARGET) && (usage & D3DUSAGE_DYNAMIC)) {
+    ERR_ONCE("D3D9: a cube texture is a render target or dynamic, not both.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT chain = 1;
+  for (UINT size = edge; size > 1; size >>= 1)
+    chain++;
+  if (levels > chain) {
+    ERR_ONCE("D3D9: a cube texture asked for ", levels, " levels; this edge has ", chain, ".");
+    return D3DERR_INVALIDCALL;
+  }
+  UINT level_count = levels ? levels : chain;
+
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = edge;
+  desc.Height = edge;
+  desc.MipLevels = level_count;
+  desc.ArraySize = 6;
+  desc.Format = dxgi_format;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+  if (usage & D3DUSAGE_RENDERTARGET)
+    desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+  bool can_generate_mips = false;
+  if (level_count > 1 && !(usage & D3DUSAGE_DYNAMIC)) {
+    UINT support = 0;
+    if (SUCCEEDED(d3d11_device_->CheckFormatSupport(dxgi_format, &support)) &&
+        (support & D3D11_FORMAT_SUPPORT_MIP_AUTOGEN)) {
+      desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+      desc.MiscFlags |= D3D11_RESOURCE_MISC_GENERATE_MIPS;
+      can_generate_mips = true;
+    }
+  }
+
+  ComPtr<ID3D11Texture2D> d3d11_texture;
+  HRESULT create_hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &d3d11_texture);
+  if (FAILED(create_hr) && can_generate_mips) {
+    desc.BindFlags &= ~D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags &= ~D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    can_generate_mips = false;
+    create_hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &d3d11_texture);
+  }
+  if (FAILED(create_hr)) {
+    ERR("D3D9: no cube texture of edge ", edge, " with ", level_count, " levels: 0x", std::hex, create_hr);
+    return D3DERR_INVALIDCALL;
+  }
+
+  D3D11_SHADER_RESOURCE_VIEW_DESC view_desc{};
+  view_desc.Format = dxgi_format;
+  view_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+  view_desc.TextureCube.MostDetailedMip = 0;
+  view_desc.TextureCube.MipLevels = level_count;
+  ComPtr<ID3D11ShaderResourceView> view;
+  if (FAILED(d3d11_device_->CreateShaderResourceView(d3d11_texture.Get(), &view_desc, &view))) {
+    ERR_ONCE("D3D9: the cube texture's view is not there, so the texture is not either.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  ComPtr<MTLD3D9CubeTexture> result;
+  result.Attach(new MTLD3D9CubeTexture(
+      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count,
+      can_generate_mips, usage
+  ));
+  *texture = result.Detach();
+  return S_OK;
+}
+
+// a volume texture: a D3D11 TEXTURE3D the CPU authors with LockBox and a draw samples through dcl_volume / tex3D
+// (Microsoft Learn, IDirect3DDevice9::CreateVolumeTexture)
+HRESULT
+MTLD3D9Device::CreateVolumeTexture(
+    UINT width, UINT height, UINT depth, UINT levels, DWORD usage, D3DFORMAT format, D3DPOOL pool,
+    IDirect3DVolumeTexture9 **texture, HANDLE *shared_handle
+) {
+  if (!texture || shared_handle)
+    return D3DERR_INVALIDCALL;
+  *texture = nullptr;
+  const DXGI_FORMAT dxgi_format = to_dxgi_format(format);
+  if (dxgi_format == DXGI_FORMAT_UNKNOWN || !width || !height || !depth || width > caps_.MaxVolumeExtent ||
+      height > caps_.MaxVolumeExtent || depth > caps_.MaxVolumeExtent) {
+    ERR_ONCE(
+        "D3D9: no volume texture of this format (", format, ") or this size (", width, "x", height, "x", depth,
+        "): the device makes up to ", caps_.MaxVolumeExtent, "."
+    );
+    return D3DERR_INVALIDCALL;
+  }
+  if (pool != D3DPOOL_DEFAULT && pool != D3DPOOL_MANAGED) {
+    ERR_ONCE("D3D9: only a default-pool and a managed volume texture are made yet.");
+    return D3DERR_INVALIDCALL;
+  }
+  if (pool == D3DPOOL_DEFAULT) {
+    if (HRESULT lost = lost_reason(); FAILED(lost))
+      return lost;
+  }
+  if (usage & ~(DWORD)D3DUSAGE_DYNAMIC) {
+    ERR_ONCE("D3D9: volume texture usage 0x", std::hex, usage, " is not honoured yet (dynamic is).");
+    return D3DERR_INVALIDCALL;
+  }
+  if (usage && pool != D3DPOOL_DEFAULT) {
+    ERR_ONCE("D3D9: a used volume texture is a default-pool texture; pool ", (unsigned)pool, " is refused.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  UINT longest = std::max(width, std::max(height, depth));
+  UINT chain = 1;
+  for (UINT size = longest; size > 1; size >>= 1)
+    chain++;
+  if (levels > chain) {
+    ERR_ONCE("D3D9: a volume texture asked for ", levels, " levels; this size has ", chain, ".");
+    return D3DERR_INVALIDCALL;
+  }
+  UINT level_count = levels ? levels : chain;
+
+  D3D11_TEXTURE3D_DESC desc{};
+  desc.Width = width;
+  desc.Height = height;
+  desc.Depth = depth;
+  desc.MipLevels = level_count;
+  desc.Format = dxgi_format;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+  ComPtr<ID3D11Texture3D> d3d11_texture;
+  HRESULT create_hr = d3d11_device_->CreateTexture3D(&desc, nullptr, &d3d11_texture);
+  if (FAILED(create_hr)) {
+    ERR("D3D9: no volume texture of ", width, "x", height, "x", depth, ": 0x", std::hex, create_hr);
+    return D3DERR_INVALIDCALL;
+  }
+
+  D3D11_SHADER_RESOURCE_VIEW_DESC view_desc{};
+  view_desc.Format = dxgi_format;
+  view_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+  view_desc.Texture3D.MostDetailedMip = 0;
+  view_desc.Texture3D.MipLevels = level_count;
+  ComPtr<ID3D11ShaderResourceView> view;
+  if (FAILED(d3d11_device_->CreateShaderResourceView(d3d11_texture.Get(), &view_desc, &view))) {
+    ERR_ONCE("D3D9: the volume texture's view is not there, so the texture is not either.");
+    return D3DERR_INVALIDCALL;
+  }
+
+  ComPtr<MTLD3D9VolumeTexture> result;
+  result.Attach(new MTLD3D9VolumeTexture(
+      static_cast<IDirect3DDevice9 *>(this), d3d11_texture, view, context_, format, pool, level_count, usage
+  ));
+  *texture = result.Detach();
+  return S_OK;
+}
+
 // the textures a draw samples: D3D9's eight stages (the caps' MaxSimultaneousTextures), each keeping the texture
 // SetTexture set for it, and a stage past them refused as D3D9 refuses one a device does not have
 HRESULT
@@ -228,26 +417,26 @@ MTLD3D9Device::GetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD *v
   return sampler_states_[sampler].get(type, value);
 }
 
-// the fixed-function blender has one stage (the caps' MaxTextureBlendStages): stage 0's operations are the ones the
-// textured pixel shader performs, so another stage's are refused rather than kept by nobody
+// the fixed-function blender has two stages (the caps' MaxTextureBlendStages): stage 0 and the extra the extended
+// pixel shader blends after it
 HRESULT
 MTLD3D9Device::SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) {
-  if (stage != 0) {
-    ERR_ONCE("D3D9: this device's fixed-function blender has one stage (MaxTextureBlendStages is 1); stage ", stage,
-             "'s operations are refused.");
+  if (stage >= kMaxBlendStages) {
+    ERR_ONCE("D3D9: this device's fixed-function blender has ", kMaxBlendStages,
+             " stages (MaxTextureBlendStages); stage ", stage, "'s operations are refused.");
     return D3DERR_INVALIDCALL;
   }
-  const HRESULT hr = texture_stage_.set(type, value);
+  const HRESULT hr = texture_stages_[stage].set(type, value);
   if (SUCCEEDED(hr) && recording_)
-    record(StateKey{StateKey::TextureStage, 0, (UINT)type});
+    record(StateKey{StateKey::TextureStage, stage, (UINT)type});
   return hr;
 }
 
 HRESULT
 MTLD3D9Device::GetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD *value) {
-  if (stage != 0 || !value)
+  if (stage >= kMaxBlendStages || !value)
     return D3DERR_INVALIDCALL;
-  return texture_stage_.get(type, value);
+  return texture_stages_[stage].get(type, value);
 }
 
 } // namespace mullion::d3d9

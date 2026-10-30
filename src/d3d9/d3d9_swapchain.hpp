@@ -4,8 +4,11 @@
 // the frame it is showing.
 #pragma once
 #include "d3d9_common.hpp"
+#include <memory>
 
 namespace mullion::d3d9 {
+
+class MTLD3D9Surface;
 
 // the interface id of IMTLD3D9PresentSource, compared in QueryInterface
 extern const IID IID_IMTLD3D9PresentSource;
@@ -21,9 +24,29 @@ struct IMTLD3D9PresentSource {
   virtual HRESULT display_mode(D3DDISPLAYMODE *mode) = 0;
 };
 
+// a second windowed chain: its own DXGI swap chain and back buffer, presented independently of the device's implicit
+// one (Microsoft Learn, IDirect3DDevice9::CreateAdditionalSwapChain)
+class MTLD3D9AdditionalPresent final : public IMTLD3D9PresentSource {
+public:
+  HRESULT init(ID3D11Device *device, ID3D11DeviceContext *context, IDXGIFactory2 *factory, HWND window,
+               D3DPRESENT_PARAMETERS &parameters, IDirect3DDevice9 *owner);
+  HRESULT present(const RECT *source, const RECT *destination, HWND window, const RGNDATA *dirty,
+                  DWORD flags) override;
+  HRESULT back_buffer(UINT index, IDirect3DSurface9 **surface) override;
+  HRESULT display_mode(D3DDISPLAYMODE *mode) override;
+
+private:
+  ComPtr<IDXGISwapChain1> chain_;
+  ComPtr<ID3D11DeviceContext> context_;
+  ComPtr<MTLD3D9Surface> buffer_;
+  IDirect3DDevice9 *owner_ = nullptr;
+  HWND window_ = nullptr;
+};
+
 class MTLD3D9SwapChain final : private Object9, public IDirect3DSwapChain9 {
 public:
-  MTLD3D9SwapChain(IDirect3DDevice9 *device, IMTLD3D9PresentSource *source, const D3DPRESENT_PARAMETERS &parameters);
+  MTLD3D9SwapChain(IDirect3DDevice9 *device, IMTLD3D9PresentSource *source, const D3DPRESENT_PARAMETERS &parameters,
+                   std::unique_ptr<MTLD3D9AdditionalPresent> additional = {});
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
   ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
@@ -51,6 +74,7 @@ private:
   IDirect3DDevice9 *device_ = nullptr;
   DeviceChildRef device_ref_;
   IMTLD3D9PresentSource *source_ = nullptr;
+  std::unique_ptr<MTLD3D9AdditionalPresent> additional_;
   D3DPRESENT_PARAMETERS parameters_{};
 };
 

@@ -9,6 +9,8 @@ DeviceState::reset() {
   render_ = RenderState();
   lights_ = Lights();
   world_ = view_ = projection_ = identity_matrix();
+  for (UINT at = 0; at < 8; at++)
+    texture_[at] = identity_matrix();
   world_view_projection_current_ = false;
 }
 
@@ -31,6 +33,8 @@ DeviceState::transform(D3DTRANSFORMSTATETYPE state) const {
   case D3DTS_PROJECTION:
     return &projection_;
   default:
+    if ((UINT)state >= D3DTS_TEXTURE0 && (UINT)state <= D3DTS_TEXTURE7)
+      return &texture_[(UINT)state - D3DTS_TEXTURE0];
     return nullptr;
   }
 }

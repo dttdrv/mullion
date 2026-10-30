@@ -1,9 +1,13 @@
 #include "mullion_sampler.hpp"
 #include "winemetal.h"
 #include "airconv_public.h"
+#include "wsi_platform.hpp"
+#include "util_env.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_set>
 #include "log/log.hpp"
 #include "thread.hpp"
@@ -11,15 +15,47 @@
 namespace mullion {
 
 // Metal holds maxArgumentBufferSamplerCount distinct samplers ("unique argument buffer samplers per app") and the
-// ones past it sample wrong with no error (measured on an M1 Pro): the first of them says so. an id Metal gives again
-// is the slot it reuses, so the ids seen count the slots taken
-static void
-Hold(WMT::Device device, uint64_t id) {
+// ones past it sample wrong with no error (measured on an M1 Pro). MULLION_SAMPLER_UNIQUE_LIMIT lowers that cap for
+// tests. past the cap this build reuses the first Metal sampler rather than taking another unique slot
+static uint64_t
+uniqueSamplerLimit(WMT::Device device) {
+  uint64_t max = device.maxArgumentBufferSamplerCount();
+  auto asked_limit = env::getEnvVar("MULLION_SAMPLER_UNIQUE_LIMIT");
+  if (!asked_limit.empty()) {
+    char *end = nullptr;
+    unsigned long asked = strtoul(asked_limit.c_str(), &end, 10);
+    if (end != asked_limit.c_str() && asked)
+      max = std::min(max, (uint64_t)asked);
+  }
+  return max ? max : 1;
+}
+
+static WMT::Reference<WMT::SamplerState>
+makeOrReuseSampler(WMT::Device device, WMTSamplerInfo &info, uint64_t &out_id) {
   static mullion::mutex mutex;
   static std::unordered_set<uint64_t> ids;
+  static WMT::Reference<WMT::SamplerState> fallback;
+  static uint64_t fallback_id = 0;
   std::lock_guard<mullion::mutex> lock(mutex);
-  if (ids.insert(id).second && ids.size() == device.maxArgumentBufferSamplerCount() + 1)
-    WARN("Sampler: past the ", ids.size() - 1, " distinct samplers Metal holds; the newer ones sample wrong");
+  const uint64_t limit = uniqueSamplerLimit(device);
+  if (ids.size() >= limit && fallback) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      WARN("Sampler: reusing one Metal sampler past the ", limit, " distinct samplers it holds");
+    }
+    out_id = fallback_id;
+    return fallback;
+  }
+  auto state = device.newSamplerState(info);
+  if (!state)
+    return {};
+  out_id = info.gpu_resource_id;
+  if (ids.insert(out_id).second && !fallback) {
+    fallback = state;
+    fallback_id = out_id;
+  }
+  return state;
 }
 
 void
@@ -33,6 +69,11 @@ Sampler::decRef() {
     delete this;
 };
 
+Sampler::~Sampler() {
+  border_buffer = {};
+  wsi::aligned_free(border_host_);
+}
+
 Rc<Sampler>
 Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color) {
   Rc<Sampler> ret = new Sampler();
@@ -45,12 +86,10 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
   capped.max_anisotroy = std::bit_ceil(std::max(capped.max_anisotroy, 1u));
   ret->info_ = capped;
 
-  ret->sampler_state = device.newSamplerState(ret->info_);
+  ret->sampler_state = makeOrReuseSampler(device, ret->info_, ret->sampler_state_handle);
   if (!ret->sampler_state) {
     return nullptr;
   }
-  ret->sampler_state_handle = ret->info_.gpu_resource_id;
-  Hold(device, ret->sampler_state_handle);
 
   WMTSamplerInfo cube_sampler_info = capped;
   // it's probably still wrong, but the best result we can get
@@ -64,21 +103,30 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
     cube_sampler_info.t_address_mode = WMTSamplerAddressModeClampToEdge;
     cube_sampler_info.r_address_mode = WMTSamplerAddressModeClampToEdge;
   }
-  ret->sampler_state_cube = device.newSamplerState(cube_sampler_info);
+  ret->sampler_state_cube = makeOrReuseSampler(device, cube_sampler_info, ret->sampler_state_cube_handle);
   if (!ret->sampler_state_cube) {
     return nullptr;
   }
-  ret->sampler_state_cube_handle = cube_sampler_info.gpu_resource_id;
-  Hold(device, ret->sampler_state_cube_handle);
   if (border_color) {
     WMTSamplerInfo white_info = capped;
     white_info.border_color = WMTSamplerBorderColorOpaqueWhite;
-    ret->sampler_state_white = device.newSamplerState(white_info);
+    ret->sampler_state_white = makeOrReuseSampler(device, white_info, ret->sampler_state_white_handle);
     if (!ret->sampler_state_white)
       return nullptr;
-    ret->sampler_state_white_handle = white_info.gpu_resource_id;
-    Hold(device, ret->sampler_state_white_handle);
     std::copy_n(border_color, 4, ret->border_color);
+    ret->border_host_ = wsi::aligned_malloc(MULLION_PAGE_SIZE, MULLION_PAGE_SIZE);
+    if (ret->border_host_) {
+      std::memset(ret->border_host_, 0, MULLION_PAGE_SIZE);
+      auto *gpu_border = reinterpret_cast<SM50_SAMPLER_BORDER *>(ret->border_host_);
+      gpu_border->white_sampler = ret->sampler_state_white_handle;
+      std::copy_n(border_color, 4, gpu_border->color);
+      WMTBufferInfo buf{};
+      buf.length = MULLION_PAGE_SIZE;
+      buf.memory.set(ret->border_host_);
+      buf.options = (WMTResourceOptions)(WMTResourceStorageModeShared | WMTResourceHazardTrackingModeUntracked);
+      ret->border_buffer = device.newBuffer(buf);
+      ret->border_gpu_address = buf.gpu_address;
+    }
   }
   constexpr uint64_t field_max = (1 << SM50_SAMPLER_METADATA_LOD_BITS) - 1;
   auto field = [](float lod) {

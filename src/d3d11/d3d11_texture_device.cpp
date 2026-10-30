@@ -108,12 +108,11 @@ ShareMappingName(uint64_t id, char (&out)[64]) {
   snprintf(out, 64, "MULLION_shared_texture_%016llx", (unsigned long long)id);
 }
 
-// the marker bit names a legacy handle and is never part of an id. a legacy handle is an identity value carried in
-// the handle's own width, so the marker is the second-highest bit that width has and the id stays below it: a win32
-// process (a 32-bit HANDLE, where 1 << 62 is zero and the marker would vanish) names and resolves the same
-// identity its win64 peer does
-static constexpr uintptr_t legacy_handle_marker = uintptr_t(1) << (sizeof(uintptr_t) * 8 - 2);
-static constexpr uint64_t share_id_range = uint64_t(1) << (sizeof(uintptr_t) * 8 - 2);
+// the marker bit names a legacy handle and is never part of an id. a 32-bit HANDLE and a 64-bit HANDLE of the
+// same share must be the same integer: the marker is bit 30, which both widths carry, so a truncated 64-bit
+// GetSharedHandle is still a legacy handle a 32-bit OpenSharedResource can name (not a width-local bit 62)
+static constexpr uint64_t legacy_handle_marker = uint64_t(1) << 30;
+static constexpr uint64_t share_id_range = uint64_t(1) << 30;
 
 static uint64_t
 MakeShareId() {
@@ -151,7 +150,7 @@ struct TextureShare {
   }
 
   HANDLE legacyHandle() const {
-    return reinterpret_cast<HANDLE>(data.share_id | legacy_handle_marker);
+    return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(data.share_id | legacy_handle_marker));
   }
 
   const char *
@@ -169,7 +168,7 @@ struct TextureShare {
 
 static bool
 IsLegacySharedHandle(HANDLE hResource) {
-  return reinterpret_cast<uintptr_t>(hResource) & legacy_handle_marker;
+  return (uint64_t(uintptr_t(hResource)) & legacy_handle_marker) != 0;
 }
 
 // one share is one entry per process however its handle arrives; the entry holds the share's object open while any
@@ -927,7 +926,7 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
   // made it, for as long as any device anywhere still holds a resource of the share
   char mapping_name[64];
-  ShareMappingName(reinterpret_cast<uintptr_t>(hResource) & ~legacy_handle_marker, mapping_name);
+  ShareMappingName(uint64_t(uintptr_t(hResource)) & ~legacy_handle_marker, mapping_name);
   HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, mapping_name);
   if (!mapping) {
     // "released sharing chain retained its handle": no resource of the share exists anywhere any more

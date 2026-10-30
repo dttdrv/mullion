@@ -190,7 +190,18 @@ private:
   // a list keeps its root's address until the queue has committed it, while later lists add roots
   std::deque<EncoderData> encoder_lists_;
 
-  small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
+  // allocator-owned ICB pooling: Reset (after GPU retirement) keeps the buffers and a later
+  // EncodeIndirect* reuses one whose type, storage and max_count fit (#64)
+  struct PooledIcb {
+    WMT::Reference<WMT::IndirectCommandBuffer> icb;
+    uint32_t max_count = 0;
+    uint32_t type = 0;
+    uint64_t storage = 0;
+    uint64_t gpu_resource_id = 0;
+  };
+  small_vector<PooledIcb, 4> icb_;
+  small_vector<PooledIcb, 4> icb_pool_;
+  PooledIcb takeIndirectCommandBuffer(WMTIndirectCommandBufferInfo &info, uint32_t max_count, uint64_t storage);
   uint64_t visibility_address_ = 0;
   size_t visibility_used_ = kVisibilityWindow;
   // the acceleration structures the lists' commands name, some of them replaced at their addresses since

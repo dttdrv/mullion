@@ -29,9 +29,9 @@ MTLD3D9Device::CreateVertexDeclaration(
     const D3DVERTEXELEMENT9 &element = elements[at];
     if (element.Stream == 0xFF)
       break;
-    if (element.Stream != 0) {
-      ERR_ONCE("D3D9: a vertex declaration that reads a stream but 0 is not implemented yet (instancing and "
-               "multi-stream draws are not).");
+    if (element.Stream >= MTLD3D9Device::kMaxStreams) {
+      ERR_ONCE("D3D9: a vertex declaration that reads stream ", (unsigned)element.Stream, " is past MaxStreams (",
+               MTLD3D9Device::kMaxStreams, ").");
       return D3DERR_INVALIDCALL;
     }
     if (!to_dxgi_declaration_format(element.Type) || !declaration_type_mask(element.Type)) {
@@ -134,21 +134,37 @@ MTLD3D9Device::upload_shader_constants() {
     context_->Unmap(buffer, 0);
     return S_OK;
   };
-  HRESULT hr = upload(vs_constants_f_.Get(), vertex_constants_f_.data(), (UINT)(vertex_constants_f_.size() * sizeof(float)));
-  if (SUCCEEDED(hr))
-    hr = upload(vs_constants_i_.Get(), vertex_constants_i_.data(), (UINT)(vertex_constants_i_.size() * sizeof(int32_t)));
-  if (SUCCEEDED(hr))
-    hr = upload(vs_constants_b_.Get(), vertex_constants_b_.data(), (UINT)(vertex_constants_b_.size() * sizeof(WINBOOL)));
-  if (SUCCEEDED(hr))
-    hr = upload(ps_constants_f_.Get(), pixel_constants_f_.data(), (UINT)(pixel_constants_f_.size() * sizeof(float)));
-  if (SUCCEEDED(hr))
-    hr = upload(ps_constants_i_.Get(), pixel_constants_i_.data(), (UINT)(pixel_constants_i_.size() * sizeof(int32_t)));
-  if (SUCCEEDED(hr))
-    hr = upload(ps_constants_b_.Get(), pixel_constants_b_.data(), (UINT)(pixel_constants_b_.size() * sizeof(WINBOOL)));
+  HRESULT hr = S_OK;
+  auto maybe = [&](bool &dirty, ID3D11Buffer *buffer, const void *data, UINT bytes) {
+    if (FAILED(hr) || !dirty)
+      return;
+    hr = upload(buffer, data, bytes);
+    if (SUCCEEDED(hr))
+      dirty = false;
+  };
+  maybe(vs_f_dirty_, vs_constants_f_.Get(), vertex_constants_f_.data(),
+        (UINT)(vertex_constants_f_.size() * sizeof(float)));
+  maybe(vs_i_dirty_, vs_constants_i_.Get(), vertex_constants_i_.data(),
+        (UINT)(vertex_constants_i_.size() * sizeof(int32_t)));
+  maybe(vs_b_dirty_, vs_constants_b_.Get(), vertex_constants_b_.data(),
+        (UINT)(vertex_constants_b_.size() * sizeof(WINBOOL)));
+  maybe(ps_f_dirty_, ps_constants_f_.Get(), pixel_constants_f_.data(),
+        (UINT)(pixel_constants_f_.size() * sizeof(float)));
+  maybe(ps_i_dirty_, ps_constants_i_.Get(), pixel_constants_i_.data(),
+        (UINT)(pixel_constants_i_.size() * sizeof(int32_t)));
+  maybe(ps_b_dirty_, ps_constants_b_.Get(), pixel_constants_b_.data(),
+        (UINT)(pixel_constants_b_.size() * sizeof(WINBOOL)));
   if (SUCCEEDED(hr)) {
-    // D3DRS_ALPHAREF as the 0-to-255 value D3D9's comparison is in, which is what the program reads
-    const float alpha[4] = {(float)state_.render().alpha_ref(), 0.0f, 0.0f, 0.0f};
-    hr = upload(ps_alpha_constants_.Get(), alpha, sizeof(alpha));
+    const DWORD alpha_ref = state_.render().alpha_ref();
+    if (ps_alpha_dirty_ || uploaded_alpha_ref_ != alpha_ref) {
+      // D3DRS_ALPHAREF as the 0-to-255 value D3D9's comparison is in, which is what the program reads
+      const float alpha[4] = {(float)alpha_ref, 0.0f, 0.0f, 0.0f};
+      hr = upload(ps_alpha_constants_.Get(), alpha, sizeof(alpha));
+      if (SUCCEEDED(hr)) {
+        ps_alpha_dirty_ = false;
+        uploaded_alpha_ref_ = alpha_ref;
+      }
+    }
   }
   return hr;
 }
@@ -170,32 +186,97 @@ MTLD3D9Device::bind_viewport_state() {
 // shaders and layout the translation made are kept by the D3D9 shader objects.
 HRESULT
 MTLD3D9Device::prepare_shader_draw() {
-  if (!vertex_shader_) {
-    ERR_ONCE("D3D9: a draw with a pixel shader and the fixed-function vertex pipeline is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  if (!pixel_shader_) {
-    ERR_ONCE("D3D9: a draw with a vertex shader and the fixed-function pixel pipeline is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
-  if (!declaration_inputs_) {
-    ERR_ONCE("D3D9: a draw with a game's shader needs the vertex declaration it reads (SetVertexDeclaration); a shader "
-             "fed by SetFVF's format is not implemented yet.");
-    return D3DERR_INVALIDCALL;
+  IMTLD3D9VertexDeclaration *declaration = declaration_inputs_.Get();
+  ComPtr<MTLD3D9VertexDeclaration> fvf_declaration;
+  if (!declaration) {
+    std::vector<D3DVERTEXELEMENT9> elements;
+    if (!elements_from_fvf(fvf_, elements)) {
+      ERR_ONCE("D3D9: a draw with a game's shader needs the vertex declaration it reads, or an FVF this build places.");
+      return D3DERR_INVALIDCALL;
+    }
+    fvf_declaration.Attach(new MTLD3D9VertexDeclaration(this, std::move(elements)));
+    declaration = fvf_declaration.Get();
   }
 
-  ComPtr<IMTLD3D9PixelShader> pixel;
-  if (FAILED(pixel_shader_->QueryInterface(
-          IID_IMTLD3D9PixelShader, reinterpret_cast<void **>(pixel.GetAddressOf())
-      )))
-    return D3DERR_INVALIDCALL;
-  ComPtr<ID3D11PixelShader> pixel_shader;
-  AlphaTest alpha;
-  alpha.enabled = state_.render().alpha_test_enabled();
-  alpha.func = state_.render().alpha_func();
-  HRESULT hr = pixel->compiled(d3d11_device_.Get(), alpha, &pixel_shader);
-  if (FAILED(hr))
-    return hr;
+  if (!vertex_shader_) {
+    if (!pixel_shader_ || !FixedFunctionPipeline::supports(fvf_)) {
+      ERR_ONCE("D3D9: a draw with a pixel shader and the fixed-function vertex pipeline needs an FVF this build "
+               "transforms.");
+      return D3DERR_INVALIDCALL;
+    }
+    HRESULT hr = prepare_fixed_function_draw();
+    if (FAILED(hr))
+      return hr;
+    ComPtr<IMTLD3D9PixelShader> pixel;
+    if (FAILED(pixel_shader_->QueryInterface(
+            IID_IMTLD3D9PixelShader, reinterpret_cast<void **>(pixel.GetAddressOf())
+        )))
+      return D3DERR_INVALIDCALL;
+    AlphaTest alpha;
+    alpha.enabled = state_.render().alpha_test_enabled();
+    alpha.func = state_.render().alpha_func();
+    ComPtr<ID3D11PixelShader> compiled_pixel;
+    hr = pixel->compiled(d3d11_device_.Get(), alpha, &compiled_pixel);
+    if (FAILED(hr))
+      return hr;
+    context_->PSSetShader(compiled_pixel.Get(), nullptr, 0);
+    if (pixel->samples()) {
+      ID3D11ShaderResourceView *views[kTextureStages]{};
+      ID3D11SamplerState *samplers[kTextureStages]{};
+      for (UINT stage = 0; stage < kTextureStages; stage++) {
+        views[stage] = texture_sources_[stage] ? texture_sources_[stage]->view() : nullptr;
+        samplers[stage] = sampler_states_[stage].state(d3d11_device_.Get());
+      }
+      HRESULT tex_hr = ensure_default_texture();
+      if (FAILED(tex_hr))
+        return tex_hr;
+      for (UINT stage = 0; stage < kTextureStages; stage++)
+        if (!views[stage])
+          views[stage] = default_texture_view_.Get();
+      context_->PSSetShaderResources(0, kTextureStages, views);
+      context_->PSSetSamplers(0, kTextureStages, samplers);
+    }
+    return S_OK;
+  }
+
+  ComPtr<ID3D11PixelShader> compiled_pixel;
+  ID3D11PixelShader *bound_pixel = nullptr;
+  std::vector<PixelInputSlot> pixel_inputs;
+  bool samples = false;
+  if (pixel_shader_) {
+    ComPtr<IMTLD3D9PixelShader> pixel;
+    if (FAILED(pixel_shader_->QueryInterface(
+            IID_IMTLD3D9PixelShader, reinterpret_cast<void **>(pixel.GetAddressOf())
+        )))
+      return D3DERR_INVALIDCALL;
+    AlphaTest alpha;
+    alpha.enabled = state_.render().alpha_test_enabled();
+    alpha.func = state_.render().alpha_func();
+    HRESULT hr = pixel->compiled(d3d11_device_.Get(), alpha, &compiled_pixel);
+    if (FAILED(hr))
+      return hr;
+    bound_pixel = compiled_pixel.Get();
+    pixel_inputs = pixel->pixel_inputs();
+    samples = pixel->samples();
+  } else {
+    // mixed: a game's vertex shader, the fixed-function pixel shader. COLOR0 is interpolator 1, where oD0 is written
+    if ((state_.render().alpha_test_enabled() && state_.render().alpha_func() != D3DCMP_ALWAYS) ||
+        state_.render().fog_enabled()) {
+      ERR_ONCE("D3D9: a mixed draw under D3DRS_ALPHATESTENABLE or fog is not drawn yet: the mixed path binds the "
+               "untextured colour pixel shader without the extra constants those states read.");
+      return D3DERR_INVALIDCALL;
+    }
+    bound_pixel = fixed_function_.colour_pixel_shader(state_.render().flat_shaded());
+    if (!bound_pixel) {
+      ERR_ONCE("D3D9: the fixed-function pixel shader a mixed draw needs is not made.");
+      return D3DERR_INVALIDCALL;
+    }
+    PixelInputSlot colour;
+    colour.semantic = "COLOR";
+    colour.index = 0;
+    colour.reg = 1;
+    pixel_inputs.push_back(std::move(colour));
+  }
 
   // the vertex shader is translated against the pixel shader's inputs: the two link by register, so its outputs are
   // written where this shader reads them
@@ -206,9 +287,9 @@ MTLD3D9Device::prepare_shader_draw() {
     return D3DERR_INVALIDCALL;
   ComPtr<ID3D11VertexShader> vertex_shader;
   ComPtr<ID3D11InputLayout> layout;
-  hr = vertex->compiled(
-      d3d11_device_.Get(), declaration_inputs_->elements(), declaration_inputs_->inputs(), pixel->pixel_inputs(),
-      declaration_inputs_->layout(), &vertex_shader, &layout
+  HRESULT hr = vertex->compiled(
+      d3d11_device_.Get(), declaration->elements(), declaration->inputs(), pixel_inputs, declaration->layout(),
+      &vertex_shader, &layout
   );
   if (FAILED(hr))
     return hr;
@@ -222,12 +303,12 @@ MTLD3D9Device::prepare_shader_draw() {
 
   context_->IASetInputLayout(layout.Get());
   context_->VSSetShader(vertex_shader.Get(), nullptr, 0);
-  context_->PSSetShader(pixel_shader.Get(), nullptr, 0);
+  context_->PSSetShader(bound_pixel, nullptr, 0);
 
   // the textures a sampling pixel shader reads: each stage's texture, or the default texture a stage with none has,
   // sampled through the sampler that stage's sampler states make. a program names a sampler by its stage's number
   // (`dcl_2d s#` and `texld r#, t#, s#`), and both are bound to the registers it declared
-  if (pixel->samples()) {
+  if (samples || vertex->samples()) {
     hr = ensure_default_texture();
     if (FAILED(hr))
       return hr;
@@ -244,12 +325,18 @@ MTLD3D9Device::prepare_shader_draw() {
     }
     context_->PSSetShaderResources(0, kTextureStages, views);
     context_->PSSetSamplers(0, kTextureStages, samplers);
+    if (vertex->samples()) {
+      context_->VSSetShaderResources(0, kTextureStages, views);
+      context_->VSSetSamplers(0, kTextureStages, samplers);
+    }
   }
   ID3D11Buffer *vertex_buffers[3] = {vs_constants_f_.Get(), vs_constants_i_.Get(), vs_constants_b_.Get()};
   context_->VSSetConstantBuffers(0, 3, vertex_buffers);
-  ID3D11Buffer *pixel_buffers[4] = {
-      ps_constants_f_.Get(), ps_constants_i_.Get(), ps_constants_b_.Get(), ps_alpha_constants_.Get()};
-  context_->PSSetConstantBuffers(0, 4, pixel_buffers);
+  if (pixel_shader_) {
+    ID3D11Buffer *pixel_buffers[4] = {
+        ps_constants_f_.Get(), ps_constants_i_.Get(), ps_constants_b_.Get(), ps_alpha_constants_.Get()};
+    context_->PSSetConstantBuffers(0, 4, pixel_buffers);
+  }
   return S_OK;
 }
 

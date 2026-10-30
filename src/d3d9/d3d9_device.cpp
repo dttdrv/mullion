@@ -5,6 +5,7 @@
 #include "d3d9_device.hpp"
 #include <algorithm>
 #include <dxgi1_4.h>
+#include <memory>
 
 namespace mullion::d3d9 {
 
@@ -13,10 +14,8 @@ const IID IID_IMTLD3D9DeviceResources = {0x2c8e5a94, 0x1b76, 0x4f0d, {0x83, 0x5a
 
 void
 MTLD3D9Device::release_device_children() {
-  stream_source_.Reset();
-  stream_buffer_.Reset();
-  stream_offset_ = 0;
-  stream_stride_ = 0;
+  for (UINT stream = 0; stream < kMaxStreams; stream++)
+    clear_stream(stream);
   indices_.Reset();
   index_buffer_.Reset();
   vertex_shader_.Reset();
@@ -48,10 +47,8 @@ MTLD3D9Device::release_device_children() {
 // survive a Reset.
 void
 MTLD3D9Device::reset_state() {
-  stream_source_.Reset();
-  stream_buffer_.Reset();
-  stream_offset_ = 0;
-  stream_stride_ = 0;
+  for (UINT stream = 0; stream < kMaxStreams; stream++)
+    clear_stream(stream);
   indices_.Reset();
   index_buffer_.Reset();
   up_scratch_.Reset();
@@ -69,13 +66,20 @@ MTLD3D9Device::reset_state() {
     texture.Reset();
   for (auto &sampler : sampler_states_)
     sampler = SamplerState9();
-  texture_stage_ = TextureStageState9();
+  texture_stages_[0] = TextureStageState9();
+  texture_stages_[1] = TextureStageState9(D3DTOP_DISABLE);
+  for (UINT stream = 0; stream < kMaxStreams; stream++)
+    stream_freq_[stream] = 1;
   vertex_constants_f_.fill(0.0f);
   vertex_constants_i_.fill(0);
   vertex_constants_b_.fill(0);
   pixel_constants_f_.fill(0.0f);
   pixel_constants_i_.fill(0);
   pixel_constants_b_.fill(0);
+  vs_f_dirty_ = vs_i_dirty_ = vs_b_dirty_ = true;
+  ps_f_dirty_ = ps_i_dirty_ = ps_b_dirty_ = true;
+  ps_alpha_dirty_ = true;
+  uploaded_alpha_ref_ = ~0u;
   // the lighting state and the transforms are lost with everything else: the lights, their enables and the material go
   // back to the defaults a device is made with, and the three matrices to the identity
   state_.reset();
@@ -97,12 +101,6 @@ HRESULT
 MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *parameters) {
   if (!parameters)
     return D3DERR_INVALIDCALL;
-  // a fullscreen chain is a display mode this build has not: it presents only to a window (d3d9_direct3d.cpp's
-  // CheckDeviceType refuses one too), so a Reset into one would be a mode the game did not ask for
-  if (!parameters->Windowed) {
-    ERR_ONCE("D3D9: Reset to a fullscreen chain is not implemented yet: this build presents to a window.");
-    return D3DERR_INVALIDCALL;
-  }
   if (parameters->MultiSampleType != D3DMULTISAMPLE_NONE) {
     ERR_ONCE("D3D9: Reset with a multisampled chain is not implemented yet.");
     return D3DERR_INVALIDCALL;
@@ -121,11 +119,8 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *parameters) {
     ERR_ONCE("D3D9: Reset names a window that is not one.");
     return D3DERR_INVALIDCALL;
   }
-  if (target_window != window_) {
-    ERR_ONCE("D3D9: Reset to a window other than the device's is not implemented yet: present to the window the device "
-             "was made with.");
-    return D3DERR_INVALIDCALL;
-  }
+  // a different window is a new DXGI chain: the old chain belongs to the HWND it was made for
+  const bool new_window = target_window != window_;
   // nothing to resize, and nothing to make a recovery's chain over: a chain the device was made with, or the one an
   // earlier failed recovery releases (a lost device is still one a Reset can try again)
   if (!swapchain_ && !swap_chain_)
@@ -177,7 +172,6 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *parameters) {
     // the chain the parameters describe, over the device the Reset makes: the fields the application left to the window
     // are the sizes it asked for, and a chain the device already had keeps its format
     present_ = *parameters;
-    present_.Windowed = TRUE;
     present_.hDeviceWindow = window_;
     present_.BackBufferWidth = width;
     present_.BackBufferHeight = height;
@@ -205,28 +199,44 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *parameters) {
   depth_stencil_view_.Reset();
   invalidate_back_buffer();
 
-  // a flip model chain has at least two buffers; D3D9's BackBufferCount of zero is one back buffer, which a flip chain
-  // cannot turn between, so the chain keeps the two this build makes
   const UINT buffer_count = std::max<UINT>(parameters->BackBufferCount, 2);
-  HRESULT hr = swapchain_->ResizeBuffers(buffer_count, width, height, dxgi_format, 0);
-  if (FAILED(hr)) {
-    ERR("D3D9: the chain did not resize: 0x", std::hex, hr);
-    return D3DERR_INVALIDCALL;
+  HRESULT hr = S_OK;
+  if (new_window) {
+    swapchain_.Reset();
+    window_ = target_window;
+    present_ = *parameters;
+    present_.hDeviceWindow = window_;
+    present_.BackBufferWidth = width;
+    present_.BackBufferHeight = height;
+    present_.BackBufferFormat = format;
+    present_.MultiSampleType = D3DMULTISAMPLE_NONE;
+    present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    hr = create_chain(factory_.Get());
+    if (FAILED(hr))
+      return hr;
+  } else {
+    if (!parameters->Windowed)
+      swapchain_->SetFullscreenState(TRUE, nullptr);
+    else if (!present_.Windowed)
+      swapchain_->SetFullscreenState(FALSE, nullptr);
+    hr = swapchain_->ResizeBuffers(buffer_count, width, height, dxgi_format, 0);
+    if (FAILED(hr)) {
+      ERR("D3D9: the chain did not resize: 0x", std::hex, hr);
+      return D3DERR_INVALIDCALL;
+    }
+    DXGI_SWAP_CHAIN_DESC1 created{};
+    swapchain_->GetDesc1(&created);
+    width_ = created.Width;
+    height_ = created.Height;
+    present_ = *parameters;
+    present_.hDeviceWindow = window_;
+    present_.BackBufferWidth = created.Width;
+    present_.BackBufferHeight = created.Height;
+    present_.BackBufferCount = created.BufferCount;
+    present_.BackBufferFormat = format;
+    present_.MultiSampleType = D3DMULTISAMPLE_NONE;
+    present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
   }
-  DXGI_SWAP_CHAIN_DESC1 created{};
-  swapchain_->GetDesc1(&created);
-  width_ = created.Width;
-  height_ = created.Height;
-
-  present_ = *parameters;
-  present_.Windowed = TRUE;
-  present_.hDeviceWindow = window_;
-  present_.BackBufferWidth = created.Width;
-  present_.BackBufferHeight = created.Height;
-  present_.BackBufferCount = created.BufferCount;
-  present_.BackBufferFormat = format;
-  present_.MultiSampleType = D3DMULTISAMPLE_NONE;
-  present_.SwapEffect = D3DSWAPEFFECT_DISCARD;
   if (swap_chain_)
     swap_chain_->set_present_parameters(present_);
   return finish_reset(parameters);
@@ -269,7 +279,7 @@ MTLD3D9Device::finish_reset(D3DPRESENT_PARAMETERS *parameters) {
 HRESULT
 MTLD3D9Device::create_chain(IDXGIFactory2 *factory) {
   const DXGI_FORMAT format = to_dxgi_format(present_.BackBufferFormat);
-  if (format == DXGI_FORMAT_UNKNOWN || !window_ || !present_.Windowed || !factory)
+  if (format == DXGI_FORMAT_UNKNOWN || !window_ || !IsWindow(window_) || !factory)
     return D3DERR_INVALIDCALL;
 
   DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -288,7 +298,15 @@ MTLD3D9Device::create_chain(IDXGIFactory2 *factory) {
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   desc.Flags = 0;
 
-  HRESULT hr = factory->CreateSwapChainForHwnd(d3d11_device_.Get(), window_, &desc, nullptr, nullptr, &swapchain_);
+  DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen{};
+  fullscreen.Windowed = present_.Windowed ? TRUE : FALSE;
+  fullscreen.RefreshRate.Numerator = 0;
+  fullscreen.RefreshRate.Denominator = 0;
+  fullscreen.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+  fullscreen.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
+  HRESULT hr = factory->CreateSwapChainForHwnd(
+      d3d11_device_.Get(), window_, &desc, present_.Windowed ? nullptr : &fullscreen, nullptr, &swapchain_
+  );
   if (FAILED(hr)) {
     ERR("D3D9: no swap chain for the window: 0x", std::hex, hr);
     return D3DERR_NOTAVAILABLE;
@@ -314,7 +332,7 @@ MTLD3D9Device::create_chain(IDXGIFactory2 *factory) {
 
 HRESULT
 MTLD3D9Device::init(IDXGIFactory2 *factory) {
-  if (to_dxgi_format(present_.BackBufferFormat) == DXGI_FORMAT_UNKNOWN || !window_ || !present_.Windowed)
+  if (to_dxgi_format(present_.BackBufferFormat) == DXGI_FORMAT_UNKNOWN || !window_ || !IsWindow(window_))
     return D3DERR_INVALIDCALL;
   if (present_.MultiSampleType != D3DMULTISAMPLE_NONE)
     return D3DERR_NOTAVAILABLE;
@@ -395,8 +413,8 @@ MTLD3D9Device::recreate_after_loss() {
   up_index_scratch_.Reset();
   up_scratch_size_ = 0;
   up_index_scratch_size_ = 0;
-  stream_source_.Reset();
-  stream_buffer_.Reset();
+  for (UINT stream = 0; stream < kMaxStreams; stream++)
+    clear_stream(stream);
   indices_.Reset();
   index_buffer_.Reset();
   vertex_shader_.Reset();
@@ -492,16 +510,57 @@ MTLD3D9Device::lost_reason() const {
 }
 
 HRESULT
-MTLD3D9Device::present(const RECT *, const RECT *, HWND, const RGNDATA *, DWORD) {
+MTLD3D9Device::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *parameters, IDirect3DSwapChain9 **chain) {
+  if (!parameters || !chain)
+    return D3DERR_INVALIDCALL;
+  *chain = nullptr;
+  if (HRESULT lost = lost_reason(); FAILED(lost))
+    return lost;
+  HWND window = parameters->hDeviceWindow ? parameters->hDeviceWindow : window_;
+  auto extra = std::make_unique<MTLD3D9AdditionalPresent>();
+  HRESULT hr = extra->init(d3d11_device_.Get(), context_.Get(), factory_.Get(), window, *parameters,
+                           static_cast<IDirect3DDevice9 *>(this));
+  if (FAILED(hr)) {
+    ERR_ONCE("D3D9: CreateAdditionalSwapChain needs a windowed DISCARD chain without MSAA.");
+    return hr;
+  }
+  ComPtr<MTLD3D9SwapChain> result;
+  result.Attach(new MTLD3D9SwapChain(
+      static_cast<IDirect3DDevice9 *>(this), nullptr, *parameters, std::move(extra)
+  ));
+  *chain = result.Detach();
+  return S_OK;
+}
+
+HRESULT
+MTLD3D9Device::present(const RECT *source, const RECT *, HWND window, const RGNDATA *, DWORD flags) {
   if (!swapchain_)
     return D3DERR_INVALIDCALL;
   if (HRESULT lost = lost_reason(); FAILED(lost))
     return lost;
+  if (window && window != window_ && !IsWindow(window))
+    return D3DERR_INVALIDCALL;
+  if (flags & ~(DWORD)D3DPRESENT_DONOTWAIT) {
+    ERR_ONCE("D3D9: Present flags 0x", std::hex, flags, " are not honoured yet (D3DPRESENT_DONOTWAIT is).");
+    return D3DERR_INVALIDCALL;
+  }
 
   // what was cleared and drawn into goes to the window before the chain turns
   // over
   context_->Flush();
-  HRESULT hr = swapchain_->Present(to_sync_interval(present_.PresentationInterval), 0);
+  DXGI_PRESENT_PARAMETERS dirty{};
+  RECT rect{};
+  if (source) {
+    rect = *source;
+    dirty.DirtyRectsCount = 1;
+    dirty.pDirtyRects = &rect;
+  }
+  UINT dxgi_flags = (flags & D3DPRESENT_DONOTWAIT) ? DXGI_PRESENT_DO_NOT_WAIT : 0;
+  HRESULT hr = swapchain_->Present1(
+      to_sync_interval(present_.PresentationInterval), dxgi_flags, source ? &dirty : nullptr
+  );
+  if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+    return D3DERR_WASSTILLDRAWING;
   if (FAILED(hr)) {
     ERR("D3D9: Present failed: 0x", std::hex, hr);
     return (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) ? D3DERR_DEVICELOST : D3DERR_INVALIDCALL;

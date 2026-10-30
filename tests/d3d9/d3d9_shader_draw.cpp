@@ -7,8 +7,7 @@
 //   is zero and the colour when it is one.
 // - both a hand-written program (the tokens of this test, so the translator is proved without a compiler) and one
 //   Microsoft's compiler makes of HLSL at test time (a real game's program) draw the same pixels.
-// - a program that samples a texture this build does not have (a cube, a volume: tests/d3d9/d3d9_texture_draw.cpp draws
-//   the 2D ones) refuses the draw with D3DERR_INVALIDCALL rather than drawing something else.
+// - a volume-sampling program is tests/d3d9/d3d9_volume.cpp; this file no longer refuses dcl_volume.
 // https://learn.microsoft.com/en-us/windows/win32/direct3d9/dx9-graphics-reference-asm-vs-instructions
 // https://learn.microsoft.com/en-us/windows/win32/direct3d9/dx9-graphics-reference-asm-ps-instructions
 #include <windows.h>
@@ -82,10 +81,6 @@ const char *kPixelHlsl = "uniform float4 tint : register(c1);\n"
                          "float4 main(float4 colour : COLOR0) : COLOR {\n"
                          "  return colour * tint;\n"
                          "}\n";
-// a pixel shader whose sampler is a cube texture's, which this build does not sample (it reads 2D ones)
-const char *kCubeSamplerHlsl = "samplerCUBE s0 : register(s0);\n"
-                               "float4 main(float3 uv : TEXCOORD0) : COLOR { return texCUBE(s0, uv); }\n";
-
 ComPtr<ID3DBlob>
 compile(const char *hlsl, const char *profile) {
   ComPtr<ID3DBlob> code, errors;
@@ -270,15 +265,7 @@ main() {
     CHECK(device->SetVertexShaderConstantF(0, identity, 1));
   }
 
-  // ---- what the translator refuses ---------------------------------------------------------------------------------
-  ComPtr<ID3DBlob> cube_sampler_code = compile(kCubeSamplerHlsl, "ps_2_0");
-  if (cube_sampler_code) {
-    ComPtr<IDirect3DPixelShader9> cube_sampler_shader;
-    CHECK(device->CreatePixelShader((const DWORD *)cube_sampler_code->GetBufferPointer(), &cube_sampler_shader));
-    expect(draw_once(hand_vertex.Get(), cube_sampler_shader.Get()) == D3DERR_INVALIDCALL,
-           "a pixel shader that samples a cube texture did not refuse the draw");
-    printf("shader: a ps_2_0 that samples a cube texture refused the draw, as it should\n");
-  }
+  // volume sampling is tests/d3d9/d3d9_volume.cpp; this translator now emits tex3D rather than refusing dcl_volume
 
   CHECK(device->SetVertexShader(nullptr));
   CHECK(device->SetPixelShader(nullptr));

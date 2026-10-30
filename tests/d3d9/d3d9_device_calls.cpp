@@ -263,11 +263,32 @@ main() {
     expect(query->GetData(&signalled, sizeof(signalled), D3DGETDATA_FLUSH) == S_OK,
            "a re-issued event query refused its result");
 
-    // the query types that need a pass of their own are refused rather than answered with a number nothing measured
     ComPtr<IDirect3DQuery9> occlusion;
-    expect(device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &occlusion) == D3DERR_INVALIDCALL,
-           "an occlusion query was made");
-    expect(!occlusion, "a refused query still handed an object back");
+    CHECK(device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &occlusion));
+    CHECK(occlusion->Issue(D3DISSUE_BEGIN));
+    CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(255, 0, 0), 1.0f, 0));
+    CHECK(device->BeginScene());
+    CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, vertices, sizeof(vertices[0])));
+    CHECK(device->EndScene());
+    CHECK(occlusion->Issue(D3DISSUE_END));
+    DWORD pixels = 0;
+    HRESULT occ = S_FALSE;
+    for (int attempt = 0; attempt < 500 && occ == S_FALSE; attempt++) {
+      occ = occlusion->GetData(&pixels, sizeof(pixels), D3DGETDATA_FLUSH);
+      if (occ == S_FALSE)
+        Sleep(10);
+    }
+    expect(occ == S_OK && pixels > 0, "an occlusion query did not count the drawn pixels");
+    ComPtr<IDirect3DQuery9> stamp, freq;
+    CHECK(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &stamp));
+    CHECK(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &freq));
+    CHECK(stamp->Issue(D3DISSUE_END));
+    CHECK(freq->Issue(D3DISSUE_END));
+    UINT64 ticks = 0, rate = 0;
+    expect(stamp->GetData(&ticks, sizeof(ticks), D3DGETDATA_FLUSH) != D3DERR_INVALIDCALL,
+           "a timestamp query was refused");
+    expect(freq->GetData(&rate, sizeof(rate), D3DGETDATA_FLUSH) != D3DERR_INVALIDCALL,
+           "a timestamp-frequency query was refused");
   }
 
   // ---- state blocks: what a block carries, and Apply putting it back ------------------------------------------------

@@ -72,6 +72,7 @@ struct SamplerInfo {
   uint32_t arg_index;
   uint32_t arg_cube_index;
   uint32_t arg_metadata_index;
+  uint32_t arg_border_index;
 };
 
 struct ThreadgroupBufferInfo {

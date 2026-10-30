@@ -56,5 +56,7 @@ private:
 
 // the DXGI format an element's D3DDECLTYPE is read as, DXGI_FORMAT_UNKNOWN for a type this build has no format for
 DXGI_FORMAT to_dxgi_declaration_format(UINT type);
+// SetFVF's format as the declaration a programmable draw reads (Microsoft Learn, D3DFVF)
+bool elements_from_fvf(DWORD fvf, std::vector<D3DVERTEXELEMENT9> &elements);
 
 } // namespace mullion::d3d9

@@ -43,11 +43,12 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   // ratio of one to the other is bounded by those maxima
   caps.MaxTextureAspectRatio = caps.MaxTextureWidth;
   caps.MaxAnisotropy = 16;
-  caps.RasterCaps = D3DPRASTERCAPS_ANISOTROPY;
+  caps.RasterCaps = D3DPRASTERCAPS_ANISOTROPY | D3DPRASTERCAPS_FOGTABLE | D3DPRASTERCAPS_ZFOG;
   // a texture holds an alpha channel, and a texture of this build has mip levels: the ones the game authored, or the
   // ones GenerateMipSubLevels makes out of the level above when the format supports D3D11's generator
   // (d3d9_device_texture.cpp, d3d9_texture.cpp)
-  caps.TextureCaps = D3DPTEXTURECAPS_ALPHA | D3DPTEXTURECAPS_MIPMAP;
+  caps.TextureCaps = D3DPTEXTURECAPS_ALPHA | D3DPTEXTURECAPS_MIPMAP | D3DPTEXTURECAPS_CUBEMAP |
+                     D3DPTEXTURECAPS_VOLUMEMAP | D3DPTEXTURECAPS_MIPVOLUMEMAP;
   caps.TextureFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MINFANISOTROPIC |
                            D3DPTFILTERCAPS_MAGFPOINT | D3DPTFILTERCAPS_MAGFLINEAR | D3DPTFILTERCAPS_MAGFANISOTROPIC |
                            D3DPTFILTERCAPS_MIPFPOINT | D3DPTFILTERCAPS_MIPFLINEAR;
@@ -56,12 +57,17 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   // the operations the one stage's pixel shader carries (d3d9_fixed_function_shaders.hpp)
   caps.TextureOpCaps = D3DTEXOPCAPS_DISABLE | D3DTEXOPCAPS_SELECTARG1 | D3DTEXOPCAPS_SELECTARG2 |
                        D3DTEXOPCAPS_MODULATE | D3DTEXOPCAPS_ADD | D3DTEXOPCAPS_SUBTRACT;
-  caps.MaxStreams = 1;
+  caps.MaxStreams = 4; // SetStreamSource 0..3 (d3d9_device_draw.cpp)
+  caps.StencilCaps = D3DSTENCILCAPS_KEEP | D3DSTENCILCAPS_ZERO | D3DSTENCILCAPS_REPLACE | D3DSTENCILCAPS_INCRSAT |
+                     D3DSTENCILCAPS_DECRSAT | D3DSTENCILCAPS_INVERT | D3DSTENCILCAPS_INCR | D3DSTENCILCAPS_DECR;
+  caps.CubeTextureFilterCaps = caps.TextureFilterCaps;
+  caps.VolumeTextureFilterCaps = caps.TextureFilterCaps;
+  caps.MaxVolumeExtent = caps.MaxTextureWidth;
   caps.MaxVertexIndex = 0xFFFFFF;
   caps.MaxPrimitiveCount = 0x555555;
-  // the fixed-function blender has one stage (its pixel shader is one texture's operation); a game's own shader samples
-  // eight textures, one an interface's stage with its own sampler
-  caps.MaxTextureBlendStages = 1;
+  // the fixed-function blender has two stages (the extended pixel shader blends stage 1 after stage 0); a game's own
+  // shader samples eight textures, one an interface's stage with its own sampler
+  caps.MaxTextureBlendStages = 2;
   caps.MaxSimultaneousTextures = 8;
   caps.MaxPointSize = 1.0f;
   // the eight lights D3D9's fixed-function path has, which is the index SetLight, GetLight, LightEnable and
@@ -69,21 +75,19 @@ caps_of(UINT adapter, D3D_FEATURE_LEVEL level) {
   // the documented attenuation and Range) and spot (with its cone) lights
   caps.MaxActiveLights = Lights::kMax;
   caps.NumSimultaneousRTs = 1;
-  // the shader models this build's translator certifies: the programs of these versions (and the vertex shaders below
-  // their version) are translated, and a program of a higher one is refused by CreateVertexShader/CreatePixelShader, so a
-  // game that reads these caps and makes a shader of the version they name draws with it (d3d9_shader_translator.cpp).
-  // the constants are D3D9's 256 float registers a stage, and the flow-control caps are 0 because the translator reads
-  // no flow control: a game that asks for it falls back, which is what the caps are for
-  caps.VertexShaderVersion = D3DVS_VERSION(2, 0);
-  caps.PixelShaderVersion = D3DPS_VERSION(2, 0);
+  // the shader models this build's translator certifies: vs_3_0 and ps_3_0 (and every version below). a program of a
+  // higher one is refused by CreateVertexShader/CreatePixelShader. the constants are D3D9's 256 float registers a
+  // stage. if/else/endif, ifc, loop/rep and call are translated (d3d9_shader_translator.cpp)
+  caps.VertexShaderVersion = D3DVS_VERSION(3, 0);
+  caps.PixelShaderVersion = D3DPS_VERSION(3, 0);
   caps.MaxVertexShaderConst = 256;
   caps.VS20Caps.NumTemps = 12;
-  caps.VS20Caps.DynamicFlowControlDepth = 0;
-  caps.VS20Caps.StaticFlowControlDepth = 0;
+  caps.VS20Caps.DynamicFlowControlDepth = 24;
+  caps.VS20Caps.StaticFlowControlDepth = 24;
   caps.VS20Caps.Caps = 0;
   caps.PS20Caps.NumTemps = 12;
-  caps.PS20Caps.DynamicFlowControlDepth = 0;
-  caps.PS20Caps.StaticFlowControlDepth = 0;
+  caps.PS20Caps.DynamicFlowControlDepth = 24;
+  caps.PS20Caps.StaticFlowControlDepth = 24;
   caps.PS20Caps.Caps = 0;
   return caps;
 }
@@ -177,10 +181,6 @@ public:
                                             D3DFORMAT back_buffer_format, WINBOOL windowed) override {
     if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
       return D3DERR_INVALIDCALL;
-    // a fullscreen chain is a display mode set, which this milestone does not
-    // do
-    if (!windowed)
-      return D3DERR_NOTAVAILABLE;
     if (to_dxgi_format(display_format) == DXGI_FORMAT_UNKNOWN ||
         to_dxgi_format(back_buffer_format) == DXGI_FORMAT_UNKNOWN)
       return D3DERR_NOTAVAILABLE;
@@ -191,22 +191,37 @@ public:
                                               D3DRESOURCETYPE resource_type, D3DFORMAT format) override {
     if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
       return D3DERR_INVALIDCALL;
-    // a surface that is a render target or read back is a texture this build
-    // makes; a texture a shader samples or a resource a device has to hold is
-    // not yet
-    if (usage != 0 || resource_type != D3DRTYPE_SURFACE)
+    if (resource_type != D3DRTYPE_SURFACE && resource_type != D3DRTYPE_TEXTURE &&
+        resource_type != D3DRTYPE_CUBETEXTURE && resource_type != D3DRTYPE_VOLUMETEXTURE &&
+        resource_type != D3DRTYPE_VOLUME)
+      return D3DERR_NOTAVAILABLE;
+    if (usage & ~(DWORD)(D3DUSAGE_RENDERTARGET | D3DUSAGE_DYNAMIC | D3DUSAGE_QUERY_FILTER |
+                         D3DUSAGE_QUERY_SRGBREAD | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING))
       return D3DERR_NOTAVAILABLE;
     return to_dxgi_format(format) == DXGI_FORMAT_UNKNOWN ? D3DERR_NOTAVAILABLE : S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE CheckDeviceMultiSampleType(UINT adapter, D3DDEVTYPE type, D3DFORMAT, WINBOOL,
+  HRESULT STDMETHODCALLTYPE CheckDeviceMultiSampleType(UINT adapter, D3DDEVTYPE type, D3DFORMAT format, WINBOOL,
                                                        D3DMULTISAMPLE_TYPE samples, DWORD *quality_levels) override {
     if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
       return D3DERR_INVALIDCALL;
-    if (samples != D3DMULTISAMPLE_NONE)
+    if (samples == D3DMULTISAMPLE_NONE) {
+      if (quality_levels)
+        *quality_levels = 1;
+      return S_OK;
+    }
+    D3D_FEATURE_LEVEL level;
+    if (FAILED(level_of(adapter, level)))
+      return D3DERR_NOTAVAILABLE;
+    const DXGI_FORMAT dxgi = to_dxgi_format(format) != DXGI_FORMAT_UNKNOWN ? to_dxgi_format(format)
+                                                                          : to_dxgi_depth_format(format);
+    if (dxgi == DXGI_FORMAT_UNKNOWN)
+      return D3DERR_NOTAVAILABLE;
+    UINT quality = 0;
+    if (FAILED(probes_[adapter]->CheckMultisampleQualityLevels(dxgi, (UINT)samples, &quality)) || !quality)
       return D3DERR_NOTAVAILABLE;
     if (quality_levels)
-      *quality_levels = 1;
+      *quality_levels = quality;
     return S_OK;
   }
 
@@ -214,10 +229,10 @@ public:
                                                    D3DFORMAT depth_stencil) override {
     if (adapter >= adapters_.size() || type != D3DDEVTYPE_HAL)
       return D3DERR_INVALIDCALL;
-    (void)render_target;
-    (void)depth_stencil;
-    // no depth buffer yet, so no render target has one that matches
-    return D3DERR_NOTAVAILABLE;
+    if (to_dxgi_format(render_target) == DXGI_FORMAT_UNKNOWN ||
+        to_dxgi_depth_format(depth_stencil) == DXGI_FORMAT_UNKNOWN)
+      return D3DERR_NOTAVAILABLE;
+    return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE CheckDeviceFormatConversion(UINT adapter, D3DDEVTYPE type, D3DFORMAT source,

@@ -3,9 +3,11 @@
 // and viewport they are drawn under are d3d9_device_targets.cpp's, and the texture stage they sample
 // d3d9_device_texture.cpp's).
 #include "d3d9_device.hpp"
+#include "d3d9_range.hpp"
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <cstring>
 
 namespace mullion::d3d9 {
 
@@ -51,12 +53,29 @@ MTLD3D9Device::primitive_count_fits(UINT primitive_count) const {
 // D3D9's DrawPrimitiveUP clears stream 0, so GetStreamSource reports NULL afterwards; the device's own stream state is
 // cleared here as well, and a recording state block records the change
 void
+MTLD3D9Device::clear_stream(UINT stream) {
+  streams_[stream] = {};
+}
+
+void
+MTLD3D9Device::bind_streams() {
+  ID3D11Buffer *buffers[kMaxStreams] = {};
+  UINT strides[kMaxStreams] = {};
+  UINT offsets[kMaxStreams] = {};
+  for (UINT stream = 0; stream < kMaxStreams; stream++) {
+    if (streams_[stream].buffer) {
+      buffers[stream] = streams_[stream].buffer->buffer();
+      strides[stream] = streams_[stream].stride;
+      offsets[stream] = streams_[stream].offset;
+    }
+  }
+  context_->IASetVertexBuffers(0, kMaxStreams, buffers, strides, offsets);
+}
+
+void
 MTLD3D9Device::unbind_stream_source() {
-  stream_source_.Reset();
-  stream_buffer_.Reset();
-  stream_offset_ = 0;
-  stream_stride_ = 0;
-  context_->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+  clear_stream(0);
+  bind_streams();
   if (recording_)
     record(StateKey{StateKey::Stream, 0, 0});
 }
@@ -117,31 +136,53 @@ HRESULT
 MTLD3D9Device::prepare_fixed_function_draw() {
   if (!FixedFunctionPipeline::supports(fvf_))
     return D3DERR_INVALIDCALL;
-  // D3D9's alpha test is carried by the pixel program (d3d9_shader_translator.cpp), and the fixed-function pixel shaders
-  // this build carries have none: a fixed-function draw that asks for one is refused rather than drawn without it, so a
-  // caption that should be cut out is never drawn as a quad
-  if (state_.render().alpha_test_enabled() && state_.render().alpha_func() != D3DCMP_ALWAYS) {
-    ERR_ONCE("D3D9: a fixed-function draw under D3DRS_ALPHATESTENABLE is not drawn yet: the fixed-function pixel "
-             "shaders this build carries have no alpha test (a draw through a game's own pixel shader has one).");
-    return D3DERR_INVALIDCALL;
-  }
 
   FixedFunctionDraw draw{};
   draw.viewport = viewport_;
   draw.clip = clip_rect();
   draw.flat_shaded = state_.render().flat_shaded();
+  draw.fog_enabled = state_.render().fog_enabled() && state_.render().fog_table_mode() == D3DFOG_LINEAR;
+  draw.fog_start = state_.render().fog_start();
+  draw.fog_end = state_.render().fog_end();
+  {
+    const DWORD fog_color = state_.render().fog_color();
+    draw.fog_color[0] = ((fog_color >> 16) & 0xFF) / 255.0f;
+    draw.fog_color[1] = ((fog_color >> 8) & 0xFF) / 255.0f;
+    draw.fog_color[2] = (fog_color & 0xFF) / 255.0f;
+    draw.fog_color[3] = ((fog_color >> 24) & 0xFF) / 255.0f;
+  }
+  draw.alpha_test = state_.render().alpha_test_enabled() && state_.render().alpha_func() != D3DCMP_ALWAYS;
+  draw.alpha_func = state_.render().alpha_func();
+  draw.alpha_ref = state_.render().alpha_ref();
+  if (state_.render().fog_enabled() && state_.render().fog_table_mode() != D3DFOG_NONE &&
+      state_.render().fog_table_mode() != D3DFOG_LINEAR) {
+    ERR_ONCE("D3D9: only linear table fog is applied; exponential fog is stored but not drawn.");
+  }
 
   // what the texture stage does for this draw: a format with texture coordinates draws through it, and a stage whose
   // first colour argument is the texture is not processed at all while no texture is bound (Microsoft Learn, Texture
   // Blending), which is what the untextured shaders already draw -- the vertex colour, colour and alpha both. the
-  // fixed-function blender has one stage, which is stage 0's
+  // fixed-function blender has two stages; stage 1 is DISABLE until a draw sets it
   FixedFunctionSampling sampling{};
-  if (FixedFunctionPipeline::textured(fvf_) && (texture_sources_[0] || !texture_stage_.skipped_without_texture())) {
+  if (FixedFunctionPipeline::textured(fvf_) && (texture_sources_[0] || !texture_stages_[0].skipped_without_texture())) {
     sampling.texture = texture_sources_[0] ? texture_sources_[0]->view() : nullptr;
     sampling.sampler = sampler_states_[0].state(d3d11_device_.Get());
     if (!sampling.sampler)
       return D3DERR_INVALIDCALL;
-    texture_stage_.constants(sampling.ops, sampling.args);
+    texture_stages_[0].constants(sampling.ops, sampling.args);
+    if (texture_stages_[1].colour_op() != D3DTOP_DISABLE &&
+        (texture_sources_[1] || !texture_stages_[1].skipped_without_texture())) {
+      sampling.stage1 = true;
+      sampling.texture1 = texture_sources_[1] ? texture_sources_[1]->view() : nullptr;
+      sampling.sampler1 = sampler_states_[1].state(d3d11_device_.Get());
+      if (!sampling.sampler1)
+        return D3DERR_INVALIDCALL;
+      texture_stages_[1].constants(sampling.ops1, sampling.args1, true);
+    }
+    if (texture_stages_[0].texture_transform_flags() == D3DTTFF_COUNT2) {
+      sampling.transform0 = true;
+      memcpy(sampling.tex0, &state_.texture_transform(0), sizeof(sampling.tex0));
+    }
     // D3DRS_TEXTUREFACTOR, as the shader reads a colour
     const DWORD factor = state_.render().texture_factor();
     sampling.factor[0] = ((factor >> 16) & 0xFF) / 255.0f;
@@ -275,15 +316,12 @@ MTLD3D9Device::GetFVF(DWORD *fvf) {
 
 HRESULT
 MTLD3D9Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer9 *buffer, UINT offset, UINT stride) {
-  if (stream != 0)
+  if (stream >= kMaxStreams)
     return D3DERR_INVALIDCALL;
   if (!buffer) {
     if (offset || stride)
       return D3DERR_INVALIDCALL;
-    stream_source_.Reset();
-    stream_buffer_.Reset();
-    stream_offset_ = 0;
-    stream_stride_ = 0;
+    clear_stream(stream);
     if (recording_)
       record(StateKey{StateKey::Stream, stream, 0});
     return S_OK;
@@ -293,10 +331,10 @@ MTLD3D9Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer9 *buffer, UINT
   if (FAILED(buffer->QueryInterface(IID_IMTLD3D9Buffer, reinterpret_cast<void **>(ours.GetAddressOf()))) || !stride ||
       offset > ours->size())
     return D3DERR_INVALIDCALL;
-  stream_source_ = buffer;
-  stream_buffer_ = ours;
-  stream_offset_ = offset;
-  stream_stride_ = stride;
+  streams_[stream].source = buffer;
+  streams_[stream].buffer = ours;
+  streams_[stream].offset = offset;
+  streams_[stream].stride = stride;
   if (recording_)
     record(StateKey{StateKey::Stream, stream, 0});
   return S_OK;
@@ -304,27 +342,36 @@ MTLD3D9Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer9 *buffer, UINT
 
 HRESULT
 MTLD3D9Device::GetStreamSource(UINT stream, IDirect3DVertexBuffer9 **buffer, UINT *offset, UINT *stride) {
-  if (stream != 0 || !buffer || !offset || !stride)
+  if (stream >= kMaxStreams || !buffer || !offset || !stride)
     return D3DERR_INVALIDCALL;
-  *buffer = stream_source_.Get();
+  *buffer = streams_[stream].source.Get();
   if (*buffer)
     (*buffer)->AddRef();
-  *offset = stream_offset_;
-  *stride = stream_stride_;
+  *offset = streams_[stream].offset;
+  *stride = streams_[stream].stride;
   return S_OK;
 }
 
 // instancing is not drawn yet: the setting of a stream that does not instance is the one thing this accepts
 HRESULT
 MTLD3D9Device::SetStreamSourceFreq(UINT stream, UINT setting) {
-  return stream == 0 && setting == 1 ? S_OK : D3DERR_INVALIDCALL;
+  if (stream >= kMaxStreams)
+    return D3DERR_INVALIDCALL;
+  const UINT count = setting & 0x3FFFFFFF;
+  const UINT flags = setting & ~0x3FFFFFFFu;
+  if (setting != 1 && flags != D3DSTREAMSOURCE_INDEXEDDATA && flags != D3DSTREAMSOURCE_INSTANCEDATA)
+    return D3DERR_INVALIDCALL;
+  if (!count)
+    return D3DERR_INVALIDCALL;
+  stream_freq_[stream] = setting;
+  return S_OK;
 }
 
 HRESULT
 MTLD3D9Device::GetStreamSourceFreq(UINT stream, UINT *setting) {
-  if (stream != 0 || !setting)
+  if (stream >= kMaxStreams || !setting)
     return D3DERR_INVALIDCALL;
-  *setting = 1;
+  *setting = stream_freq_[stream];
   return S_OK;
 }
 
@@ -369,21 +416,30 @@ MTLD3D9Device::DrawPrimitive(D3DPRIMITIVETYPE type, UINT start_vertex, UINT prim
   if (!primitive_count_fits(primitive_count))
     return D3DERR_INVALIDCALL;
   // a fixed-function draw's stream is the FVF's size; a shader draw reads the stride the stream was set with
-  if (!stream_buffer_ || (!vertex_shader_ && !pixel_shader_ && stream_stride_ != FixedFunctionPipeline::stride(fvf_)))
+  if (!streams_[0].buffer ||
+      (!vertex_shader_ && !pixel_shader_ && streams_[0].stride != FixedFunctionPipeline::stride(fvf_)))
     return D3DERR_INVALIDCALL;
-  // the vertices the draw reads are the stream's, from the offset it was set with; the sum is 64-bit so a start
-  // vertex near UINT_MAX is a range past the buffer rather than a wrapped one inside it
-  const uint64_t vertices = (uint64_t)start_vertex + count;
-  if ((uint64_t)stream_offset_ + vertices * stream_stride_ > stream_buffer_->size())
-    return D3DERR_INVALIDCALL;
+  // the vertices the draw reads are the stream's, from the offset it was set with; the sum and the product are
+  // checked so a start near UINT_MAX and a stride near UINT_MAX are a range past the buffer, never a wrapped
+  // product that looks small enough to draw (Microsoft Learn, IDirect3DDevice9::DrawPrimitive)
+  for (UINT stream = 0; stream < kMaxStreams; stream++) {
+    if (!streams_[stream].buffer)
+      continue;
+    if (!stream_range_fits(streams_[stream].offset, start_vertex, count, streams_[stream].stride,
+                           streams_[stream].buffer->size()))
+      return D3DERR_INVALIDCALL;
+  }
 
   HRESULT hr = prepare_draw();
   if (FAILED(hr))
     return hr;
-  ID3D11Buffer *buffer = stream_buffer_->buffer();
-  context_->IASetVertexBuffers(0, 1, &buffer, &stream_stride_, &stream_offset_);
+  bind_streams();
   context_->IASetPrimitiveTopology(topology_of(type));
-  context_->Draw(count, start_vertex);
+  const UINT instances = (stream_freq_[0] & D3DSTREAMSOURCE_INDEXEDDATA) ? (stream_freq_[0] & 0x3FFFFFFFu) : 1u;
+  if (instances > 1)
+    context_->DrawInstanced(count, instances, start_vertex, 0);
+  else
+    context_->Draw(count, start_vertex);
   return S_OK;
 }
 
@@ -403,7 +459,8 @@ MTLD3D9Device::DrawIndexedPrimitive(
     return D3DERR_INVALIDCALL;
   if (!primitive_count_fits(primitive_count))
     return D3DERR_INVALIDCALL;
-  if (!stream_buffer_ || (!vertex_shader_ && !pixel_shader_ && stream_stride_ != FixedFunctionPipeline::stride(fvf_)) ||
+  if (!streams_[0].buffer ||
+      (!vertex_shader_ && !pixel_shader_ && streams_[0].stride != FixedFunctionPipeline::stride(fvf_)) ||
       !index_buffer_ || !vertex_count)
     return D3DERR_INVALIDCALL;
 
@@ -414,8 +471,8 @@ MTLD3D9Device::DrawIndexedPrimitive(
   if (((uint64_t)start_index + count) * index_size > index_buffer_->size())
     return D3DERR_INVALIDCALL;
   const int64_t first_vertex = (int64_t)base_vertex + min_vertex;
-  const uint64_t stream_vertices = stream_offset_ < stream_buffer_->size()
-                                       ? (uint64_t)(stream_buffer_->size() - stream_offset_) / stream_stride_
+  const uint64_t stream_vertices = streams_[0].offset < streams_[0].buffer->size()
+                                       ? (uint64_t)(streams_[0].buffer->size() - streams_[0].offset) / streams_[0].stride
                                        : 0;
   if (first_vertex < 0 || (uint64_t)first_vertex + vertex_count > stream_vertices)
     return D3DERR_INVALIDCALL;
@@ -423,14 +480,17 @@ MTLD3D9Device::DrawIndexedPrimitive(
   HRESULT hr = prepare_draw();
   if (FAILED(hr))
     return hr;
-  ID3D11Buffer *buffer = stream_buffer_->buffer();
-  context_->IASetVertexBuffers(0, 1, &buffer, &stream_stride_, &stream_offset_);
+  bind_streams();
   context_->IASetIndexBuffer(
       index_buffer_->buffer(),
       index_buffer_->format() == D3DFMT_INDEX32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, 0
   );
   context_->IASetPrimitiveTopology(topology_of(type));
-  context_->DrawIndexed(count, start_index, base_vertex);
+  const UINT instances = (stream_freq_[0] & D3DSTREAMSOURCE_INDEXEDDATA) ? (stream_freq_[0] & 0x3FFFFFFFu) : 1u;
+  if (instances > 1)
+    context_->DrawIndexedInstanced(count, instances, start_index, base_vertex, 0);
+  else
+    context_->DrawIndexed(count, start_index, base_vertex);
   return S_OK;
 }
 
@@ -452,7 +512,7 @@ MTLD3D9Device::DrawPrimitiveUP(
   if (!vertex_shader_ && !pixel_shader_ &&
       (!FixedFunctionPipeline::supports(fvf_) || stride != FixedFunctionPipeline::stride(fvf_)))
     return D3DERR_INVALIDCALL;
-  if ((vertex_shader_ || pixel_shader_) && (!vertex_shader_ || !pixel_shader_ || !declaration_inputs_))
+  if ((vertex_shader_ || pixel_shader_) && !declaration_inputs_ && !fvf_)
     return D3DERR_INVALIDCALL;
 
   const uint64_t bytes = (uint64_t)count * stride;
@@ -515,7 +575,7 @@ MTLD3D9Device::DrawIndexedPrimitiveUP(
   if (!vertex_shader_ && !pixel_shader_ &&
       (!FixedFunctionPipeline::supports(fvf_) || stride != FixedFunctionPipeline::stride(fvf_)))
     return D3DERR_INVALIDCALL;
-  if ((vertex_shader_ || pixel_shader_) && (!vertex_shader_ || !pixel_shader_ || !declaration_inputs_))
+  if ((vertex_shader_ || pixel_shader_) && !declaration_inputs_ && !fvf_)
     return D3DERR_INVALIDCALL;
   if (!vertex_count)
     return D3DERR_INVALIDCALL;

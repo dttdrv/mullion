@@ -329,6 +329,13 @@ public:
     return statistics.at(frame_count);
   }
 
+  bool
+  PresentWouldBlock() {
+    // whether the next PresentBoundary would wait: after this present, frame_count+1 must fit in max_latency_
+    uint64_t next = frame_count + 1;
+    return next > max_latency_ && frame_latency_fence_.signaledValue() < next - max_latency_;
+  }
+
   void
   PresentBoundary() {
     statistics.compute(frame_count);

@@ -125,4 +125,37 @@ MTLD3D9VertexDeclaration::GetDeclaration(D3DVERTEXELEMENT9 *elements, UINT *coun
   return S_OK;
 }
 
+bool
+elements_from_fvf(DWORD fvf, std::vector<D3DVERTEXELEMENT9> &elements) {
+  elements.clear();
+  WORD offset = 0;
+  auto push = [&](BYTE type, BYTE usage, BYTE usage_index, WORD size) {
+    D3DVERTEXELEMENT9 element{};
+    element.Offset = offset;
+    element.Type = type;
+    element.Usage = usage;
+    element.UsageIndex = usage_index;
+    elements.push_back(element);
+    offset = (WORD)(offset + size);
+  };
+  if (fvf & D3DFVF_XYZRHW)
+    push(D3DDECLTYPE_FLOAT4, D3DDECLUSAGE_POSITION, 0, 16);
+  else if (fvf & D3DFVF_XYZ)
+    push(D3DDECLTYPE_FLOAT3, D3DDECLUSAGE_POSITION, 0, 12);
+  else
+    return false;
+  if (fvf & D3DFVF_NORMAL)
+    push(D3DDECLTYPE_FLOAT3, D3DDECLUSAGE_NORMAL, 0, 12);
+  if (fvf & D3DFVF_DIFFUSE)
+    push(D3DDECLTYPE_D3DCOLOR, D3DDECLUSAGE_COLOR, 0, 4);
+  if (fvf & D3DFVF_SPECULAR)
+    push(D3DDECLTYPE_D3DCOLOR, D3DDECLUSAGE_COLOR, 1, 4);
+  const UINT tex = (fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
+  if (tex > 8)
+    return false;
+  for (UINT at = 0; at < tex; at++)
+    push(D3DDECLTYPE_FLOAT2, D3DDECLUSAGE_TEXCOORD, (BYTE)at, 8);
+  return !elements.empty();
+}
+
 } // namespace mullion::d3d9

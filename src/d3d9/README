@@ -381,10 +381,10 @@ compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road 
 
   * the register files the two stages link through, because a compiled program links by register and not by name: o0 is
     the position (a system value, declared with D3D10_SB_OPCODE_DCL_OUTPUT_SIV, which is what a Metal vertex function's
-    [[position]] comes from), o1 and o2 are the two colours, and o3 to o7 are the texture coordinates. A pixel shader's
-    v0 and v1 are o1 and o2 and its t# is o3 + t#, so a vertex shader writes its outputs where the pixel shader it
-    draws with reads them. Direct3D 11 gives a vertex shader eight output registers, so a program that needs more than
-    the five texture coordinates this leaves is refused rather than written over another output.
+    [[position]] comes from), o1 and o2 are the two colours, and o3 to o10 are the eight vs_2_0 texture coordinates
+    (oT0-oT7). A pixel shader's v0 and v1 are o1 and o2 and its t# is o3 + t#, so a vertex shader writes its outputs
+    where the pixel shader it draws with reads them. airconv sizes max_output_register from the DXBC signature; the
+    old five-texcoord cap was this translator's packing, not an AIR limit.
   * a vertex declaration element is an input register: the vertex shader's input signature declares exactly the
     components its element carries and its layout is the declaration, and the components a vertex does not carry read as
     D3D9 says they do (w is 1, the rest 0), which the translation completes in a temporary the program reads instead
@@ -398,10 +398,10 @@ compiles (airconv takes DXBC), so a D3D9 game's shaders reach Metal by the road 
     M3x3 and M3x2, with all four component masks, swizzles and the negate, absolute and absolute-negate modifiers, on
     temporaries, constants, inputs and outputs.
   * what a draw refuses rather than draws as something else: the texture instructions of shader model 1.x (the texture
-    registers TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX and TEXM3x3TEX sample), TEXLDD and TEXLDL, a vertex shader's own
-    TEX, relative addressing of the constant tables (c# with an address register, a0), shader model 3's flow control
-    (IF, IFC, LOOP, REP, CALL and their ends), the fog and point-size outputs, and a register the eight output registers
-    cannot place. The reason is in the library's log, once, and the draw answers D3DERR_INVALIDCALL.
+    registers TEXBEM, TEXBEML, TEXDP3TEX, TEXM3x2TEX and TEXM3x3TEX sample), a vertex shader's own TEX (vertex texture
+    fetch), shader model 3's loop/rep/call, and the fog and point-size outputs. Relative addressing (a0/mova), IF/ELSE/
+    ENDIF/IFC, texldd, texldl and projected texld are translated. The reason of a refusal is in the library's log, once,
+    and the draw answers D3DERR_INVALIDCALL.
 
 A translated program can be read back: `MULLION_DXBC_DUMP` names a directory, and every translation is written there
 as `vs1.bin`, `ps1.bin` and so on, which Microsoft's disassembler (d3dcompiler_47) reads as the program it is.
@@ -490,8 +490,8 @@ a negative coordinate, and a program drawn with and without the alpha test, each
 survived.
 
 # What is not there yet, and is refused rather than pretended
-  * anything that makes a resource this build does not have (cube and volume textures, scratch-pool textures): E_NOTIMPL
-    or D3DERR_INVALIDCALL, with the library saying so once. `SetVertexShader(NULL)` and
+  * a volume or scratch-pool texture: D3DERR_INVALIDCALL, said once. cube textures are made (CreateCubeTexture, six
+    faces as a D3D11 TEXTURECUBE) and sampled from a programmable pixel shader. `SetVertexShader(NULL)` and
     `SetPixelShader(NULL)` answer S_OK, as D3D9 does: they choose the fixed-function pipeline, as one of the two stages
     being set chooses the program one
   * a vertex format other than D3DFVF_XYZRHW or D3DFVF_XYZ with D3DFVF_DIFFUSE, with or without D3DFVF_NORMAL and one
@@ -507,8 +507,9 @@ survived.
     answers D3DTEXF_LINEAR and SetAutoGenFilterType is D3DERR_INVALIDCALL: the automatic mip filter is a
     D3DUSAGE_AUTOGENMIPMAP texture's, and this build makes a managed texture's levels only when GenerateMipSubLevels
     asks it to and the format supports D3D11's generator
-  * a render target or a depth-stencil surface with more than one sample, and a render target the CPU locks:
-    D3DERR_NOTAVAILABLE or D3DERR_INVALIDCALL rather than a target that is not what it says
+  * a render target the CPU locks: D3DERR_INVALIDCALL rather than a target that is not what it says. a
+    multisampled render target or depth-stencil surface is made when D3D11 reports quality for that count, and
+    StretchRect of an MSAA source onto a 1x dest resolves
   * clearing the stencil of part of a surface (its colour and depth are cleared, and its stencil is left as it was,
     said once: this build's ClearView clears depth alone, and a stencil-only clear of part of a view needs a draw that
     writes the stencil)
@@ -518,8 +519,13 @@ survived.
   * the second and further fixed-function blending stages (their operations) and lights: D3DERR_INVALIDCALL (a game's
     own shader may sample all eight stages, which is what the caps' MaxSimultaneousTextures says); an occlusion,
     timestamp or vertex-cache query: D3DERR_INVALIDCALL rather than a number nothing measured
-  * a fullscreen chain, additional swap chains, GetFrontBufferData and CreateAdditionalSwapChain: not implemented
-    (a windowed Reset is milestone 3b's)
+  * a fullscreen chain and GetFrontBufferData: not implemented (a windowed Reset is milestone 3b's).
+    CreateAdditionalSwapChain makes a second windowed DISCARD chain. fog render states are stored and FOGENABLE
+    does not crash, but RasterCaps does not advertise fog and the pixels are unfogged. the second and further
+    fixed-function blending stages stay refused (MaxTextureBlendStages is 1) until extra FF bytecode exists.
+    vs_3_0/ps_3_0, vertex texture fetch, loop/rep/call, and ps_1.x texture ops are still refused. a programmable
+    vertex shader with SetPixelShader(NULL) draws through the fixed-function pixel shader (untextured COLOR0);
+    a programmable pixel shader with a fixed-function vertex shader is still refused.
 
 # Seeing what a game asked for
 Every call this layer refuses says so once, in the library's log, with what it was asked for: the format, the shader

@@ -80,9 +80,16 @@ inline constexpr DWORD kLitTexturedFVF = kLitFVF | D3DFVF_TEX1;
 struct FixedFunctionSampling {
   ID3D11ShaderResourceView *texture = nullptr;
   ID3D11SamplerState *sampler = nullptr;
+  ID3D11ShaderResourceView *texture1 = nullptr;
+  ID3D11SamplerState *sampler1 = nullptr;
   UINT32 ops[4] = {};
   UINT32 args[4] = {};
+  UINT32 ops1[4] = {};
+  UINT32 args1[4] = {};
   float factor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  bool stage1 = false;
+  bool transform0 = false;
+  float tex0[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
 
 struct LightConstants;
@@ -103,6 +110,13 @@ struct FixedFunctionDraw {
   const float *world_view_projection = nullptr;
   // what a lit format's vertex colour is computed from, or null for a format with no normal (d3d9_lights.hpp)
   const LightConstants *lighting = nullptr;
+  bool fog_enabled = false;
+  float fog_start = 0.0f;
+  float fog_end = 1.0f;
+  float fog_color[4] = {};
+  bool alpha_test = false;
+  DWORD alpha_func = D3DCMP_ALWAYS;
+  DWORD alpha_ref = 0;
 };
 
 class FixedFunctionPipeline {
@@ -125,6 +139,13 @@ public:
   // shader declares (d3d9_transform_shaders.hpp, d3d9_lighting_shaders.hpp). Everything the draw is comes from `draw`;
   // the pipeline owns the D3D11 objects and how they are bound
   HRESULT bind(ID3D11DeviceContext *context, const FixedFunctionDraw &draw);
+  // the untextured pixel shader a mixed draw (a game's vertex shader, this pipeline's pixel shader) binds: COLOR0 is
+  // interpolator register 1, matching the translator's oD0 (d3d9_fixed_function_shaders.hpp)
+  ID3D11PixelShader *colour_pixel_shader(bool flat_shaded, bool extra = false) const {
+    if (extra)
+      return (flat_shaded ? extended_flat_pixel_shader_ : extended_pixel_shader_).Get();
+    return (flat_shaded ? flat_pixel_shader_ : pixel_shader_).Get();
+  }
 
 private:
   ComPtr<ID3D11VertexShader> vertex_shader_;
@@ -133,6 +154,10 @@ private:
   ComPtr<ID3D11PixelShader> flat_pixel_shader_;
   ComPtr<ID3D11PixelShader> textured_pixel_shader_;
   ComPtr<ID3D11PixelShader> flat_textured_pixel_shader_;
+  ComPtr<ID3D11PixelShader> extended_pixel_shader_;
+  ComPtr<ID3D11PixelShader> extended_flat_pixel_shader_;
+  ComPtr<ID3D11PixelShader> extended_textured_pixel_shader_;
+  ComPtr<ID3D11PixelShader> extended_flat_textured_pixel_shader_;
   ComPtr<ID3D11InputLayout> vertex_layout_;
   ComPtr<ID3D11InputLayout> textured_vertex_layout_;
   // the transform's path: the vertex shaders of the two vertex the device transforms, their layouts, and the composed

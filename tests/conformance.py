@@ -2,7 +2,7 @@
 """runs the test suites others wrote against Windows in a Wine with the build's libraries, and prints what changed
 against the verdicts recorded in tests/conformance.
 
-the suites are not in this tree. Wine's own Direct3D tests (dlls/{d3d11,d3d10core,dxgi,d3d12}/tests) are built from
+the suites are not in this tree. Wine's own Direct3D tests (dlls/{d3d11,d3d10core,dxgi,d3d12,d3d9}/tests) are built from
 a Wine source tree and the build tree made from it (--wine-source, --wine-build); vkd3d-proton's Direct3D 12 tests
 from a checkout of it with its khronos/Vulkan-Headers submodule (--vkd3d-proton); vkd3d's shader tests from a checkout
 of vkd3d (--vkd3d), each file through the build's Direct3D 12 and Direct3D 11. each test function or file runs in a
@@ -38,7 +38,7 @@ ASSERTION = re.compile(r"Assertion failed: (.*)")
 SKIPPED = re.compile(r"^\S+?:\d+:.*?Tests? skipped: (.*)$", re.M)
 FAILED = re.compile(r"^\S+?:\d+:.*?Test failed:.*$", re.M)
 # Wine's Direct3D tests that are one source file
-WINE_TESTS = ("d3d11", "d3d10core", "dxgi", "d3d12")
+WINE_TESTS = ("d3d11", "d3d10core", "dxgi", "d3d12", "d3d9")
 
 
 def build(commands):

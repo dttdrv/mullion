@@ -5,7 +5,7 @@
 // - a program of the version the caps name is created and drawn, and a program of a version above them is refused by
 //   CreateVertexShader/CreatePixelShader: a version reported but refused here would be worse than a lower cap, because a
 //   game plans its shaders from these numbers.
-// - MaxSimultaneousTextures is the eight stages a pixel shader samples and MaxTextureBlendStages the one stage of the
+// - MaxSimultaneousTextures is the eight stages a pixel shader samples and MaxTextureBlendStages the two stages of the
 //   fixed-function blender: the caps are the counts the tests certify.
 // https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3dcaps9
 #include <windows.h>
@@ -106,18 +106,18 @@ main() {
            (unsigned long)caps.VertexShaderVersion, (unsigned long)caps.PixelShaderVersion,
            (unsigned long)caps.MaxVertexShaderConst, (unsigned long)caps.MaxSimultaneousTextures,
            (unsigned long)caps.MaxTextureBlendStages, (unsigned long)caps.PS20Caps.NumTemps);
-    expect(caps.VertexShaderVersion == D3DVS_VERSION(2, 0), "VertexShaderVersion is not the vs_2_0 the translator has");
-    expect(caps.PixelShaderVersion == D3DPS_VERSION(2, 0), "PixelShaderVersion is not the ps_2_0 the translator has");
+    expect(caps.VertexShaderVersion == D3DVS_VERSION(3, 0), "VertexShaderVersion is not the vs_3_0 the translator has");
+    expect(caps.PixelShaderVersion == D3DPS_VERSION(3, 0), "PixelShaderVersion is not the ps_3_0 the translator has");
     expect(caps.MaxVertexShaderConst == 256, "MaxVertexShaderConst is not the 256 float registers a stage has");
     expect(caps.VS20Caps.NumTemps == 12 && caps.PS20Caps.NumTemps == 12,
            "the shader model 2 temp count is not the twelve both models have");
-    expect(caps.VS20Caps.DynamicFlowControlDepth == 0 && caps.PS20Caps.DynamicFlowControlDepth == 0 &&
-               caps.VS20Caps.StaticFlowControlDepth == 0 && caps.PS20Caps.StaticFlowControlDepth == 0,
-           "a flow control depth is reported, which the translator does not read");
+    expect(caps.VS20Caps.DynamicFlowControlDepth == 24 && caps.PS20Caps.DynamicFlowControlDepth == 24 &&
+               caps.VS20Caps.StaticFlowControlDepth == 24 && caps.PS20Caps.StaticFlowControlDepth == 24,
+           "the flow control depth is not the if/ifc the translator reads");
     expect(caps.MaxSimultaneousTextures == 8, "MaxSimultaneousTextures is not the eight stages a draw samples");
-    expect(caps.MaxTextureBlendStages == 1, "MaxTextureBlendStages is not the one fixed-function stage");
+    expect(caps.MaxTextureBlendStages == 2, "MaxTextureBlendStages is not the two fixed-function stages");
     expect(caps.NumSimultaneousRTs == 1, "NumSimultaneousRTs is not the one target a draw writes");
-    expect(caps.MaxStreams == 1, "MaxStreams is not the one vertex stream a draw reads");
+    expect(caps.MaxStreams == 4, "MaxStreams is not the four vertex streams a draw reads");
   };
   check_caps(adapter_caps, "adapter");
 
@@ -171,15 +171,12 @@ main() {
   printf("probe: vs_2_0/ps_2_0 %06lx\n", (unsigned long)middle);
   expect(middle == 0x0000FF00, "the vs_2_0/ps_2_0 pair the caps name did not draw its colour");
 
-  // a version above the caps is refused where the shader is made, which is what a device whose caps say 2.0 does
   ComPtr<IDirect3DVertexShader9> vertex30;
   ComPtr<IDirect3DPixelShader9> pixel30;
-  expect(device->CreateVertexShader(kVertex30, &vertex30) == D3DERR_INVALIDCALL,
-         "a vs_3_0 program was made by a device whose VertexShaderVersion says 2.0");
-  expect(!vertex30, "a refused vs_3_0 still handed a shader back");
-  expect(device->CreatePixelShader(kPixel30, &pixel30) == D3DERR_INVALIDCALL,
-         "a ps_3_0 program was made by a device whose PixelShaderVersion says 2.0");
-  expect(!pixel30, "a refused ps_3_0 still handed a shader back");
+  expect(SUCCEEDED(device->CreateVertexShader(kVertex30, &vertex30)),
+         "a vs_3_0 program the caps name was refused");
+  expect(SUCCEEDED(device->CreatePixelShader(kPixel30, &pixel30)),
+         "a ps_3_0 program the caps name was refused");
 
   // and the 1.x pixel programs, which the translator does not read yet, are refused where they are made rather than at
   // a draw: a device whose caps say ps_2_0 does not make a ps_1_1 program this build cannot draw

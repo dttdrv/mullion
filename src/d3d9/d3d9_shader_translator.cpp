@@ -38,12 +38,13 @@ constexpr UINT kSamplers = 8;
 // register (airconv names a varying after its register and component), so an output this build writes has to be the
 // register the pixel shader reads it at, which is what `output_slot` asks the pixel shader's signature for. the
 // position is register 0, as every compiled shader has it, and the pixel shader's inputs follow it: the two colours,
-// then the texture coordinates. Direct3D 11 gives a vertex shader eight output registers (o0 to o7), so a program that
-// needs more than the five texture coordinates this leaves is refused (src/d3d9/README)
+// then the texture coordinates. vs_2_0 has oT0-oT7. airconv sizes max_output_register from the DXBC signature (no
+// 8-register cap in dxbc_signature.cpp); this packing is position + two colours + eight texcoords
 constexpr UINT kSlotPosition = 0;
 constexpr UINT kSlotColour = 1;
 constexpr UINT kSlotTexcoord = 3;
-constexpr UINT kTexcoordSlots = 5;
+constexpr UINT kTexcoordSlots = 8;
+constexpr UINT kMaxOutputRegisters = 16;
 
 // a source modifier as d3d9types.h packs it (D3DSPSM_*, already shifted down here)
 enum SourceModifier {
@@ -72,6 +73,8 @@ struct Param {
   DWORD swizzle = 0xE4;  // a source's swizzle
   DWORD modifier = 0;
   DWORD shift = 0;
+  bool relative = false; // D3DSHADER_ADDRMODE_RELATIVE: c[a0.x + regnum]
+  UINT address_reg = 0;
 };
 
 // the register a token names: d3dbc keeps the type's low three bits above the register number and the bits the types
@@ -97,7 +100,22 @@ Param source(DWORD token) {
   p.regtype = register_type(token);
   p.swizzle = (token & D3DSP_SWIZZLE_MASK) >> D3DSP_SWIZZLE_SHIFT;
   p.modifier = (token & D3DSP_SRCMOD_MASK) >> D3DSP_SRCMOD_SHIFT;
+  p.relative = (token & D3DSHADER_ADDRESSMODE_MASK) == D3DSHADER_ADDRMODE_RELATIVE;
   return p;
+}
+
+// a source token and, when it is relative, the address register that follows it (Microsoft Learn, relative addressing)
+bool take_source(const DWORD *params, UINT &index, UINT length, Param &out) {
+  if (index >= length)
+    return false;
+  out = source(params[index++]);
+  if (out.relative) {
+    if (index >= length)
+      return false;
+    Param addr = source(params[index++]);
+    out.address_reg = addr.regnum;
+  }
+  return true;
 }
 
 const char *usage_name_of(UINT usage) {
@@ -291,9 +309,9 @@ private:
       // `dcl_2d s#`: the sampler a texld reads, and the dimension it reads its texture as. D3D9's stage # is both the
       // texture and the sampler of that number, and this device has the eight stages its caps name
       const UINT dimension = usage_token & D3DSP_TEXTURETYPE_MASK;
-      if (dimension != D3DSTT_2D) {
-        reason_ = "a sampler of a texture dimension this build does not sample yet (dcl_2d is the one it reads: cube "
-                  "and volume textures are not).";
+      if (dimension != D3DSTT_2D && dimension != D3DSTT_CUBE && dimension != D3DSTT_VOLUME) {
+        reason_ = "a sampler of a texture dimension this build does not sample yet (dcl_2d, dcl_cube and dcl_volume "
+                  "are the ones it reads).";
         return false;
       }
       if (register_param.regnum >= kSamplers) {
@@ -302,6 +320,10 @@ private:
         return false;
       }
       declared_samplers_ |= 1u << register_param.regnum;
+      if (dimension == D3DSTT_CUBE)
+        sampler_cube_ |= 1u << register_param.regnum;
+      if (dimension == D3DSTT_VOLUME)
+        sampler_volume_ |= 1u << register_param.regnum;
     }
     return true;
   }
@@ -322,6 +344,18 @@ private:
   }
 
   bool scan_registers(UINT opcode, const DWORD *params, UINT length) {
+    switch (opcode) {
+    case D3DSIO_ELSE:
+    case D3DSIO_ENDIF:
+    case D3DSIO_ENDLOOP:
+    case D3DSIO_ENDREP:
+    case D3DSIO_BREAK:
+    case D3DSIO_RET:
+    case D3DSIO_NOP:
+      return true;
+    default:
+      break;
+    }
     if (length < 1) {
       reason_ = "an instruction with no parameters";
       return false;
@@ -376,7 +410,7 @@ private:
         }
       }
       // a texld samples the sampler its third parameter names, which is the stage whose texture it reads
-      if (code_.pixel && opcode == D3DSIO_TEX) {
+      if (code_.pixel && (opcode == D3DSIO_TEX || opcode == D3DSIO_TEXLDL || opcode == D3DSIO_TEXLDD)) {
         if (length < 3 || source(params[2]).regtype != D3DSPR_SAMPLER) {
           reason_ = "a texld without a sampler (the shader model 2 and 3 form names one: texld r#, t#, s#)";
           return false;
@@ -388,24 +422,44 @@ private:
         }
         sampled_ |= 1u << source(params[2]).regnum;
       }
+      if (!code_.pixel && dest_param.regtype == D3DSPR_ADDR)
+        uses_a0_ = true;
       break;
     }
     }
-    // the sources: every parameter after the destination, except for the branches, whose registers this slice refuses
-    for (UINT at = 1; at < length; at++) {
-      const Param src = source(params[at]);
+    // the sources: every parameter after the destination, except for the branches, whose first token is a source
+    UINT at = 1;
+    switch (opcode) {
+    case D3DSIO_IF:
+    case D3DSIO_IFC:
+    case D3DSIO_CALL:
+    case D3DSIO_CALLNZ:
+    case D3DSIO_REP:
+    case D3DSIO_LOOP:
+    case D3DSIO_BREAKC:
+      at = 0;
+      break;
+    default:
+      break;
+    }
+    while (at < length) {
+      Param src;
+      if (!take_source(params, at, length, src)) {
+        reason_ = "a relative address without an address register";
+        return false;
+      }
+      if (src.relative)
+        uses_a0_ = true;
       if (src.regtype == D3DSPR_TEMP)
         max_temp_ = std::max(max_temp_, src.regnum);
       if (src.regtype == D3DSPR_CONST2 || src.regtype == D3DSPR_CONST3 || src.regtype == D3DSPR_CONST4) {
-        reason_ = "relative constant addressing is not translated yet";
-        return false;
+        if (!src.relative) {
+          reason_ = "a constant bank past c255 is not this device's MaxVertexShaderConst";
+          return false;
+        }
       }
-      // register type 3 is the address register in a vertex shader and the texture register t# in a pixel shader, so
-      // only the vertex shader's is what this refuses
-      if (!code_.pixel && src.regtype == D3DSPR_ADDR) {
-        reason_ = "the address register is not translated yet";
-        return false;
-      }
+      if (!code_.pixel && src.regtype == D3DSPR_ADDR)
+        uses_a0_ = true;
       if (code_.pixel && src.regtype == D3DSPR_INPUT && src.regnum > 1) {
         reason_ = "a pixel shader colour input past v1 is not D3D9's, and this build refuses it";
         return false;
@@ -427,9 +481,8 @@ private:
 
   // remembers an input register the pixel shader reads and gives it its semantic
   bool register_input(UINT sm5_reg, const char *semantic, UINT semantic_index) {
-    if (sm5_reg >= 8) {
-      reason_ = "a pixel shader input at a register past the eight a vertex shader's outputs reach, which this build "
-                "does not pack yet";
+    if (sm5_reg >= kMaxOutputRegisters) {
+      reason_ = "a pixel shader input at a register past the interpolators this build packs";
       return false;
     }
     if (pixel_inputs_.count(sm5_reg))
@@ -627,7 +680,12 @@ private:
       if (!(sampled_ & (1u << stage)))
         continue;
       writer_->declare_sampler(stage);
-      writer_->declare_texture2d(stage);
+      if (sampler_cube_ & (1u << stage))
+        writer_->declare_texturecube(stage);
+      else if (sampler_volume_ & (1u << stage))
+        writer_->declare_texture3d(stage);
+      else
+        writer_->declare_texture2d(stage);
     }
 
     // the temporary registers the program reads and writes, and two the translation of one instruction into several
@@ -652,6 +710,10 @@ private:
     colour_shadow_ = UINT_MAX;
     if (alpha_test_ && uses_colour_out_[0])
       colour_shadow_ = scratch_++;
+    if (uses_a0_)
+      a0_temp_ = scratch_++;
+    loop_temps_base_ = scratch_;
+    scratch_ += 8;
     if (alpha_compare_)
       writer_->declare_constant_buffer(kAlphaSlot, 1);
 
@@ -707,7 +769,7 @@ private:
         continue;
       }
       const UINT length = (head >> 24) & 0xF;
-      if (!emit_instruction(opcode, tokens + at + 1, length))
+      if (!emit_instruction(head, tokens + at + 1, length))
         return false;
       at += 1 + length;
     }
@@ -771,10 +833,181 @@ private:
     return true;
   }
 
-  bool emit_instruction(UINT opcode, const DWORD *params, UINT length) {
+  bool emit_instruction(DWORD head, const DWORD *params, UINT length) {
+    const UINT opcode = head & 0xFFFF;
     if (opcode == D3DSIO_NOP || opcode == D3DSIO_DCL || opcode == D3DSIO_DEF)
       return true;
-    if (length < 2 && opcode != D3DSIO_DEFI && opcode != D3DSIO_DEFB) {
+    if (opcode == D3DSIO_ELSE) {
+      writer_->else_();
+      return true;
+    }
+    if (opcode == D3DSIO_ENDIF) {
+      writer_->endif();
+      return true;
+    }
+    if (opcode == D3DSIO_ENDLOOP || opcode == D3DSIO_ENDREP) {
+      if (loop_stack_.empty()) {
+        reason_ = "an endloop/endrep without a matching loop/rep";
+        return false;
+      }
+      const UINT slot = loop_stack_.back();
+      writer_->instruction(
+          D3D10_SB_OPCODE_IADD, false,
+          {dxbc::dest_temp(slot, 0x1), dxbc::src_temp(slot, 0x0000), dxbc::src_immediate_int(-1)}
+      );
+      if (opcode == D3DSIO_ENDLOOP) {
+        writer_->instruction(
+            D3D10_SB_OPCODE_IADD, false,
+            {dxbc::dest_temp(slot, 0x2), dxbc::src_temp(slot, 0x5555), dxbc::src_temp(slot, 0xAAAA)}
+        );
+      }
+      writer_->endloop();
+      loop_stack_.pop_back();
+      return true;
+    }
+    if (opcode == D3DSIO_BREAK) {
+      writer_->break_();
+      return true;
+    }
+    if (opcode == D3DSIO_RET) {
+      writer_->instruction(D3D10_SB_OPCODE_RET, false, {});
+      return true;
+    }
+    if (opcode == D3DSIO_LABEL) {
+      if (length < 1) {
+        reason_ = "a label without a number";
+        return false;
+      }
+      writer_->label(destination(params[0]).regnum);
+      return true;
+    }
+    if (opcode == D3DSIO_CALL || opcode == D3DSIO_CALLNZ) {
+      UINT cursor = 0;
+      Param label;
+      if (!take_source(params, cursor, length, label)) {
+        reason_ = "a call without a label";
+        return false;
+      }
+      if (opcode == D3DSIO_CALLNZ) {
+        Param predicate;
+        if (!take_source(params, cursor, length, predicate)) {
+          reason_ = "a callnz without a predicate";
+          return false;
+        }
+        std::vector<DWORD> pred;
+        if (!source_operand(predicate, pred))
+          return false;
+        writer_->if_nz(pred);
+        writer_->call(label.regnum);
+        writer_->endif();
+        return true;
+      }
+      writer_->call(label.regnum);
+      return true;
+    }
+    if (opcode == D3DSIO_LOOP || opcode == D3DSIO_REP) {
+      UINT cursor = 0;
+      Param first;
+      if (!take_source(params, cursor, length, first)) {
+        reason_ = "a loop/rep without an integer count";
+        return false;
+      }
+      Param count = first;
+      if (first.regtype == D3DSPR_LOOP && !take_source(params, cursor, length, count)) {
+        reason_ = "a loop without an integer count";
+        return false;
+      }
+      if (loop_stack_.size() >= 4) {
+        reason_ = "more than four nested loop/rep instructions";
+        return false;
+      }
+      const UINT slot = loop_temps_base_ + (UINT)loop_stack_.size() * 2;
+      loop_stack_.push_back(slot);
+      std::vector<DWORD> integer;
+      if (!source_operand(count, integer))
+        return false;
+      writer_->instruction(
+          D3D10_SB_OPCODE_IADD, false,
+          {dxbc::dest_temp(slot, 0x1), integer, dxbc::src_immediate_int(0)}
+      );
+      if (opcode == D3DSIO_LOOP) {
+        Param start = count;
+        start.swizzle = 0x55;
+        Param step = count;
+        step.swizzle = 0xAA;
+        std::vector<DWORD> start_op, step_op;
+        if (!source_operand(start, start_op) || !source_operand(step, step_op))
+          return false;
+        writer_->instruction(
+            D3D10_SB_OPCODE_IADD, false, {dxbc::dest_temp(slot, 0x2), start_op, dxbc::src_immediate_int(0)}
+        );
+        writer_->instruction(
+            D3D10_SB_OPCODE_IADD, false, {dxbc::dest_temp(slot, 0x4), step_op, dxbc::src_immediate_int(0)}
+        );
+      }
+      writer_->loop();
+      writer_->instruction(
+          D3D10_SB_OPCODE_IGE, false,
+          {dxbc::dest_temp(slot, 0x8), dxbc::src_immediate_int(0), dxbc::src_temp(slot, 0x0000)}
+      );
+      writer_->breakc_nz(dxbc::src_temp(slot, 0xFFFF));
+      return true;
+    }
+    if (opcode == D3DSIO_IF || opcode == D3DSIO_IFC) {
+      UINT cursor = 0;
+      Param first;
+      if (!take_source(params, cursor, length, first)) {
+        reason_ = "an if without a source";
+        return false;
+      }
+      std::vector<DWORD> predicate;
+      if (opcode == D3DSIO_IF) {
+        if (!source_operand(first, predicate))
+          return false;
+        writer_->if_nz(predicate);
+        return true;
+      }
+      Param second;
+      if (!take_source(params, cursor, length, second)) {
+        reason_ = "an ifc without two sources";
+        return false;
+      }
+      std::vector<DWORD> left, right;
+      if (!source_operand(first, left) || !source_operand(second, right))
+        return false;
+      const UINT cmp = (head >> 16) & 7;
+      D3D10_SB_OPCODE_TYPE sm5 = D3D10_SB_OPCODE_EQ;
+      bool swapped = false;
+      switch (cmp) {
+      case D3DSPC_GT:
+        sm5 = D3D10_SB_OPCODE_GE;
+        swapped = true;
+        break;
+      case D3DSPC_EQ:
+        sm5 = D3D10_SB_OPCODE_EQ;
+        break;
+      case D3DSPC_GE:
+        sm5 = D3D10_SB_OPCODE_GE;
+        break;
+      case D3DSPC_LT:
+        sm5 = D3D10_SB_OPCODE_LT;
+        break;
+      case D3DSPC_NE:
+        sm5 = D3D10_SB_OPCODE_NE;
+        break;
+      case D3DSPC_LE:
+        sm5 = D3D10_SB_OPCODE_LT;
+        swapped = true;
+        break;
+      default:
+        reason_ = "an ifc comparison this translator does not read";
+        return false;
+      }
+      writer_->instruction(sm5, false, {dxbc::dest_temp(scratch_, 0x1), swapped ? right : left, swapped ? left : right});
+      writer_->if_nz(dxbc::src_temp(scratch_, 0x0000));
+      return true;
+    }
+    if (length < 2 && opcode != D3DSIO_DEFI && opcode != D3DSIO_DEFB && opcode != D3DSIO_TEXKILL) {
       // every instruction this slice reads takes a destination and at least one source
       switch (opcode) {
       case D3DSIO_MOV:
@@ -803,12 +1036,25 @@ private:
       return false;
     }
 
+    UINT cursor = 1;
+    std::vector<Param> sources;
+    while (cursor < length) {
+      Param s;
+      if (!take_source(params, cursor, length, s)) {
+        reason_ = "a relative address without an address register";
+        return false;
+      }
+      sources.push_back(s);
+    }
     auto source_at = [&](UINT index, std::vector<DWORD> &out) {
-      return source_operand(source(params[index]), out);
+      if (index < 1 || index > sources.size())
+        return false;
+      return source_operand(sources[index - 1], out);
     };
 
     switch (opcode) {
     case D3DSIO_MOV:
+    case D3DSIO_MOVA:
     case D3DSIO_ADD:
     case D3DSIO_MUL:
     case D3DSIO_MIN:
@@ -819,10 +1065,25 @@ private:
     case D3DSIO_RCP:
     case D3DSIO_RSQ:
     case D3DSIO_EXP:
-    case D3DSIO_LOG: {
+    case D3DSIO_EXPP:
+    case D3DSIO_LOG:
+    case D3DSIO_LOGP: {
+      std::vector<DWORD> first;
+      if (!source_at(1, first))
+        return false;
+      if ((opcode == D3DSIO_MOV || opcode == D3DSIO_MOVA) && dest_param.regtype == D3DSPR_ADDR) {
+        // a0 is an integer: MOVA rounds to nearest, MOV truncates (Microsoft Learn, mova)
+        if (opcode == D3DSIO_MOVA) {
+          writer_->instruction(D3D10_SB_OPCODE_ROUND_NE, false, {dxbc::dest_temp(scratch_), first});
+          first = dxbc::src_temp(scratch_);
+        }
+        writer_->instruction(D3D10_SB_OPCODE_FTOI, false, {dest, first});
+        return true;
+      }
       D3D10_SB_OPCODE_TYPE sm5 = D3D10_SB_OPCODE_MOV;
       switch (opcode) {
       case D3DSIO_MOV:
+      case D3DSIO_MOVA:
         sm5 = D3D10_SB_OPCODE_MOV;
         break;
       case D3DSIO_ADD:
@@ -853,17 +1114,16 @@ private:
         sm5 = D3D10_SB_OPCODE_RSQ;
         break;
       case D3DSIO_EXP:
+      case D3DSIO_EXPP:
         sm5 = D3D10_SB_OPCODE_EXP;
         break;
       default:
         sm5 = D3D10_SB_OPCODE_LOG;
         break;
       }
-      std::vector<DWORD> first;
-      if (!source_at(1, first))
-        return false;
-      if (opcode == D3DSIO_MOV || opcode == D3DSIO_FRC || opcode == D3DSIO_RCP || opcode == D3DSIO_RSQ ||
-          opcode == D3DSIO_EXP || opcode == D3DSIO_LOG) {
+      if (opcode == D3DSIO_MOV || opcode == D3DSIO_MOVA || opcode == D3DSIO_FRC || opcode == D3DSIO_RCP ||
+          opcode == D3DSIO_RSQ || opcode == D3DSIO_EXP || opcode == D3DSIO_EXPP || opcode == D3DSIO_LOG ||
+          opcode == D3DSIO_LOGP) {
         writer_->instruction(sm5, saturate, {dest, first});
         return true;
       }
@@ -985,19 +1245,94 @@ private:
       }
       return true;
     }
-    case D3DSIO_TEX: {
-      // `texld r#, t#, s#`: the texels the texture bound to that sampler holds at the coordinate, which for the 2D
-      // sampler this build has are its first two components (Direct3D 9 reads .xy of a 2D sampler's coordinate)
-      if (!code_.pixel) {
-        reason_ = "a vertex shader's texture sample (vertex texture fetch, texld in shader model 3) is not translated "
-                  "yet";
+    case D3DSIO_CMP: {
+      // dest = src0 >= 0 ? src1 : src2, per component (Microsoft Learn, cmp - ps)
+      std::vector<DWORD> compared, first, second;
+      if (!source_at(1, compared) || !source_at(2, first) || !source_at(3, second))
         return false;
-      }
+      writer_->instruction(
+          D3D10_SB_OPCODE_GE, false, {dxbc::dest_temp(scratch_), compared, dxbc::src_immediate(0, 0, 0, 0)}
+      );
+      writer_->instruction(
+          D3D10_SB_OPCODE_MOVC, saturate, {dest, dxbc::src_temp(scratch_), first, second}
+      );
+      return true;
+    }
+    case D3DSIO_DP2ADD: {
+      // dest = src0.x * src1.x + src0.y * src1.y + src2 (Microsoft Learn, dp2add)
+      std::vector<DWORD> first, second, third;
+      if (!source_at(1, first) || !source_at(2, second) || !source_at(3, third))
+        return false;
+      writer_->instruction(D3D10_SB_OPCODE_DP2, false, {dxbc::dest_temp(scratch_), first, second});
+      writer_->instruction(D3D10_SB_OPCODE_ADD, saturate, {dest, dxbc::src_temp(scratch_), third});
+      return true;
+    }
+    case D3DSIO_CRS: {
+      // dest.xyz = src0 × src1 (Microsoft Learn, crs): i(yz-zy), j(zx-xz), k(xy-yx)
+      Param a = source(params[1]), b = source(params[2]);
+      Param a_yzx = a, a_zxy = a, b_yzx = b, b_zxy = b;
+      auto rotate = [](Param &p, UINT x, UINT y, UINT z) {
+        const UINT comps[4] = {UINT(p.swizzle & 3), UINT((p.swizzle >> 2) & 3), UINT((p.swizzle >> 4) & 3),
+                               UINT((p.swizzle >> 6) & 3)};
+        p.swizzle = comps[x] | (comps[y] << 2) | (comps[z] << 4) | (comps[x] << 6);
+      };
+      rotate(a_yzx, 1, 2, 0);
+      rotate(a_zxy, 2, 0, 1);
+      rotate(b_yzx, 1, 2, 0);
+      rotate(b_zxy, 2, 0, 1);
+      std::vector<DWORD> a_yzx_op, a_zxy_op, b_yzx_op, b_zxy_op;
+      if (!source_operand(a_yzx, a_yzx_op) || !source_operand(a_zxy, a_zxy_op) || !source_operand(b_yzx, b_yzx_op) ||
+          !source_operand(b_zxy, b_zxy_op))
+        return false;
+      writer_->instruction(D3D10_SB_OPCODE_MUL, false, {dxbc::dest_temp(scratch_), a_yzx_op, b_zxy_op});
+      std::vector<DWORD> negated = dxbc::src_temp(scratch_);
+      negate_operand(negated);
+      writer_->instruction(D3D10_SB_OPCODE_MAD, saturate, {dest, a_zxy_op, b_yzx_op, negated});
+      return true;
+    }
+    case D3DSIO_SINCOS: {
+      // dest.x = cos(src), dest.y = sin(src) (Microsoft Learn, sincos). SM5 writes sin then cos.
+      std::vector<DWORD> value;
+      if (!source_at(1, value))
+        return false;
+      writer_->instruction(
+          D3D10_SB_OPCODE_SINCOS, false,
+          {dxbc::dest_temp(scratch_, 0x2), dxbc::dest_temp(scratch_, 0x1), value}
+      );
+      writer_->instruction(D3D10_SB_OPCODE_MOV, saturate, {dest, dxbc::src_temp(scratch_)});
+      return true;
+    }
+    case D3DSIO_TEX:
+    case D3DSIO_TEXLDL: {
+      // `texld r#, t#, s#`: the texels the texture bound to that sampler holds at the coordinate. texldp divides by
+      // .w first (D3DSI_TEXLD_PROJECT). texldl samples at the explicit lod in the coordinate's .w (Microsoft Learn,
+      // texld, texldp, texldl)
       std::vector<DWORD> coordinate;
       if (!source_at(1, coordinate))
         return false;
+      if (opcode == D3DSIO_TEX && (head & D3DSI_TEXLD_PROJECT)) {
+        Param w = source(params[1]);
+        w.swizzle = 0xFF; // .wwww
+        std::vector<DWORD> divisor;
+        if (!source_operand(w, divisor))
+          return false;
+        writer_->instruction(D3D11_SB_OPCODE_RCP, false, {dxbc::dest_temp(scratch_), divisor});
+        writer_->instruction(
+            D3D10_SB_OPCODE_MUL, false, {dxbc::dest_temp(scratch_), coordinate, dxbc::src_temp(scratch_)}
+        );
+        coordinate = dxbc::src_temp(scratch_);
+      }
       const UINT stage = source(params[2]).regnum;
-      writer_->sample(dest, coordinate, stage, stage);
+      if (opcode == D3DSIO_TEXLDL) {
+        Param lod = source(params[1]);
+        lod.swizzle = 0xFF;
+        std::vector<DWORD> lod_op;
+        if (!source_operand(lod, lod_op))
+          return false;
+        writer_->sample_l(dest, coordinate, stage, stage, lod_op);
+      } else {
+        writer_->sample(dest, coordinate, stage, stage);
+      }
       return true;
     }
     case D3DSIO_TEXKILL: {
@@ -1037,10 +1372,21 @@ private:
       writer_->discard_if_nonzero(dxbc::src_temp(scratch_, 0x0000));
       return true;
     }
-    case D3DSIO_TEXLDD:
-    case D3DSIO_TEXLDL:
-      reason_ = "texldd and texldl (a sample with explicit derivatives or a level of detail) are not translated yet";
-      return false;
+    case D3DSIO_TEXLDD: {
+      if (!code_.pixel) {
+        reason_ = "a vertex shader's texture sample (vertex texture fetch) is not translated yet";
+        return false;
+      }
+      std::vector<DWORD> coordinate, ddx, ddy;
+      if (!source_at(1, coordinate) || !source_at(3, ddx) || !source_at(4, ddy))
+        return false;
+      if (sources.size() < 3 || sources[1].regtype != D3DSPR_SAMPLER) {
+        reason_ = "a texldd without a sampler";
+        return false;
+      }
+      writer_->sample_d(dest, coordinate, sources[1].regnum, sources[1].regnum, ddx, ddy);
+      return true;
+    }
     case D3DSIO_TEXBEM:
     case D3DSIO_TEXBEML:
     case D3DSIO_TEXM3x2TEX:
@@ -1060,6 +1406,11 @@ private:
     switch (p.regtype) {
     case D3DSPR_TEMP:
       out = dxbc::dest_temp(p.regnum, p.mask);
+      return true;
+    case D3DSPR_ADDR:
+      if (code_.pixel || a0_temp_ == UINT_MAX)
+        return false;
+      out = dxbc::dest_temp(a0_temp_, p.mask ? p.mask : 0x1);
       return true;
     case D3DSPR_RASTOUT:
     case D3DSPR_ATTROUT:
@@ -1088,7 +1439,7 @@ private:
   // the SM5 operand a d3dbc source is read as, with its swizzle and its modifier
   bool source_operand(const Param &p, std::vector<DWORD> &out) {
     // a constant the program defined is read as the immediate it defined
-    if (p.regtype == D3DSPR_CONST && p.regnum < kFloatConstants && defined_valid_[p.regnum]) {
+    if (p.regtype == D3DSPR_CONST && !p.relative && p.regnum < kFloatConstants && defined_valid_[p.regnum]) {
       float values[4];
       for (UINT at = 0; at < 4; at++)
         values[at] = defined_[p.regnum][(p.swizzle >> (2 * at)) & 3];
@@ -1148,19 +1499,49 @@ private:
       out = dxbc::src_input(code_.pixel ? kSlotColour + std::min<UINT>(p.regnum, 1) : p.regnum, p.swizzle, modifier);
       return true;
     }
-    case D3DSPR_TEXTURE:
-      if (!code_.pixel) {
-        reason_ = "the texture register of a vertex shader this translator does not read";
+    case D3DSPR_LOOP:
+      if (loop_stack_.empty())
         return false;
+      out = dxbc::src_temp(loop_stack_.back(), p.swizzle, modifier);
+      return true;
+    case D3DSPR_TEXTURE: // D3DSPR_ADDR in a vertex shader: a0
+      if (!code_.pixel) {
+        if (a0_temp_ == UINT_MAX)
+          return false;
+        out = dxbc::src_temp(a0_temp_, p.swizzle, modifier);
+        return true;
       }
       out = dxbc::src_input(kSlotTexcoord + p.regnum, p.swizzle, modifier);
       return true;
     case D3DSPR_CONST:
-      if (p.regnum >= kFloatConstants)
+    case D3DSPR_CONST2:
+    case D3DSPR_CONST3:
+    case D3DSPR_CONST4: {
+      UINT element = p.regnum;
+      if (p.regtype == D3DSPR_CONST2)
+        element += 2048;
+      else if (p.regtype == D3DSPR_CONST3)
+        element += 4096;
+      else if (p.regtype == D3DSPR_CONST4)
+        element += 6144;
+      if (p.relative) {
+        if (a0_temp_ == UINT_MAX)
+          return false;
+        out = dxbc::src_constant_relative(kFloatSlot, element, a0_temp_, p.swizzle, modifier);
+        return true;
+      }
+      if (element >= kFloatConstants)
         return false;
-      out = dxbc::src_constant(kFloatSlot, p.regnum, p.swizzle, modifier);
+      out = dxbc::src_constant(kFloatSlot, element, p.swizzle, modifier);
       return true;
+    }
     case D3DSPR_CONSTINT:
+      if (p.relative) {
+        if (a0_temp_ == UINT_MAX)
+          return false;
+        out = dxbc::src_constant_relative(kIntSlot, p.regnum, a0_temp_, p.swizzle, modifier);
+        return true;
+      }
       if (p.regnum >= kIntConstants)
         return false;
       out = dxbc::src_constant(kIntSlot, p.regnum, p.swizzle, modifier);
@@ -1191,7 +1572,7 @@ private:
       return;
     }
     operand[0] |= D3D10_SB_OPERAND_EXTENDED_MASK;
-    operand.push_back(ENCODE_D3D10_SB_EXTENDED_OPERAND_MODIFIER(D3D10_SB_OPERAND_MODIFIER_NEG));
+    operand.insert(operand.begin() + 1, ENCODE_D3D10_SB_EXTENDED_OPERAND_MODIFIER(D3D10_SB_OPERAND_MODIFIER_NEG));
   }
 
   const ShaderCode &code_;
@@ -1215,6 +1596,12 @@ private:
   // the stages the program samples and the samplers it declares, a bit each
   UINT sampled_ = 0;
   UINT declared_samplers_ = 0;
+  UINT sampler_cube_ = 0;
+  UINT sampler_volume_ = 0;
+  bool uses_a0_ = false;
+  UINT a0_temp_ = UINT_MAX;
+  UINT loop_temps_base_ = 0;
+  std::vector<UINT> loop_stack_;
   std::map<UINT, UINT> vs_output_slot_;
   std::map<UINT, UINT> vs_output_declared_;
 

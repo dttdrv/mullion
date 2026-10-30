@@ -564,6 +564,10 @@ jobs:
       - name: D3D9 tests
         run: python3 tests/run.py --build build32 --wine "${{ vars.MULLION_WINE_X86 }}" --family native --validate d3d9_
 
+      # a second inventory, not a second --build: D3D10/11 on the same 32-bit prefix as the D3D9 run
+      - name: D3D10 and D3D11 tests
+        run: python3 tests/run.py --build build32 --wine "${{ vars.MULLION_WINE_X86 }}" --family native --validate d3d10_ d3d11_
+
       - name: Test evidence
         if: always()
         uses: actions/upload-artifact@v6

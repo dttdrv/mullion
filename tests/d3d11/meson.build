@@ -5,14 +5,19 @@ d3d11_test_deps = [cpp.find_library('d3d11'), cpp.find_library('dxgi'), cpp.find
 d3d11_test_sources = { 'tessellator': files('../reference/reference.cpp') }
 # the libraries a test links beside Direct3D's: the Metal bridge, for a test of the bridge itself
 d3d11_test_links = { 'bridge_errors': [winemetal_dep] }
-foreach name : ['blending', 'block_values', 'clear_values', 'constant_updates', 'depth_stencil', 'depth_values', 'discard', 'dxbc_arithmetic', 'dxbc_calls', 'dynamic_initial', 'format_blend', 'format_logic', 'format_msaa', 'format_values', 'generate_mips', 'ia_draws', 'ia_formats', 'ia_patches', 'logic', 'om_order', 'om_uav', 'raster', 'raster_bias', 'raster_samples', 'raster_state', 'resinfo', 'resolve', 'resource_dimensions', 'resource_usage', 'sample_mask', 'sample_positions', 'shader_groups', 'structured_copies', 'texture_updates', 'uav_counters', 'anisotropy_bias', 'geometry_indirect_parts', 'geometry_parts', 'geometry_oversize', 'trace_encoders', 'sample_compare', 'integer_rare', 'gs_restart', 'atomics_rare', 'rgb32', 'sincos', 'clear_rectangles', 'copy_formats', 'resource_creation', 'view_creation', 'shared_texture_crossprocess', 'shared_mutex_race', 'device_arguments', 'psout', 'device_teardown', 'default_updates', 'default_allocations', 'default_growth', 'bridge_errors', 'planar', 'feature_queries', 'shared_resource', 'subresource_surface', 'interface_eligibility', 'device_interfaces', 'shader_levels', 'swapchain_buffers', 'initial_data', 'input_layout', 'streamout_declarations', 'copy_region', 'staging_depth', 'timestamp', 'fullscreen', 'profile', 'queries', 'deferred_release', 'state_objects', 'buffer_loads', 'atomic_bounds', 'shared_fence', 'staging_order', 'commandlist_state', 'map_contract', 'state_transitions', 'occlusion_many', 'streamout', 'streamout_scratch', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'rectangles_many', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices', 'dynamic_generations', 'ps_writes']
+foreach name : ['blending', 'block_values', 'clear_values', 'constant_updates', 'depth_stencil', 'depth_values', 'discard', 'dxbc_arithmetic', 'dxbc_calls', 'dynamic_initial', 'format_blend', 'format_logic', 'format_msaa', 'format_values', 'generate_mips', 'ia_draws', 'ia_formats', 'ia_patches', 'logic', 'om_order', 'om_uav', 'raster', 'raster_bias', 'raster_samples', 'raster_state', 'resinfo', 'resolve', 'resource_dimensions', 'resource_usage', 'sample_mask', 'sample_positions', 'shader_groups', 'structured_copies', 'texture_updates', 'uav_counters', 'anisotropy_bias', 'geometry_indirect_parts', 'geometry_parts', 'geometry_oversize', 'trace_encoders', 'sample_compare', 'integer_rare', 'gs_restart', 'atomics_rare', 'rgb32', 'sincos', 'clear_rectangles', 'copy_formats', 'resource_creation', 'view_creation', 'shared_texture_crossprocess', 'shared_mutex_race', 'device_arguments', 'psout', 'device_teardown', 'default_updates', 'default_allocations', 'default_growth', 'bridge_errors', 'planar', 'feature_queries', 'shared_resource', 'subresource_surface', 'interface_eligibility', 'device_interfaces', 'shader_levels', 'swapchain_buffers', 'initial_data', 'input_layout', 'streamout_declarations', 'copy_region', 'staging_depth', 'timestamp', 'fullscreen', 'profile', 'queries', 'deferred_release', 'state_objects', 'buffer_loads', 'atomic_bounds', 'shared_fence', 'staging_order', 'commandlist_state', 'map_contract', 'state_transitions', 'occlusion_many', 'streamout', 'streamout_scratch', 'drawauto', 'assembly', 'primitiveid', 'tessellator', 'predication', 'staging', 'state', 'viewports', 'rectangles_many', 'surface', 'indices', 'device', 'constants', 'minlod', 'formats', 'packed', 'garbled', 'null_indices', 'null_stage_indices', 'dynamic_generations', 'ps_writes', 'border']
   # without the shader cache, so a test meets the shaders this build makes
   test('d3d11_' + name,
        executable('d3d11_' + name, ['d3d11_' + name + '.cpp'] + d3d11_test_sources.get(name, []),
                   dependencies : d3d11_test_deps + d3d11_test_links.get(name, [])),
        env : ['MULLION_SHADER_CACHE=0'], timeout : 600)
 endforeach
-if get_option('enable_d3d12')
+d3d11_sampler_limit = executable('d3d11_sampler_limit', ['d3d11_sampler_limit.cpp'],
+                                 dependencies : d3d11_test_deps)
+test('d3d11_sampler_limit', d3d11_sampler_limit, env : ['MULLION_SHADER_CACHE=0'], timeout : 300)
+test('d3d11_sampler_limit_capped', d3d11_sampler_limit,
+     env : ['MULLION_SHADER_CACHE=0', 'MULLION_SAMPLER_UNIQUE_LIMIT=4'], timeout : 300)
+if get_option('enable_d3d12') and cpu_family != 'x86'
   on12 = executable('d3d11_on12', 'd3d11_on12.cpp',
                     dependencies : d3d11_test_deps + [cpp.find_library('d3d12')])
 foreach part : ['creation', 'wrapped', 'wait', 'unwrap', 'swapchain', 'lifetime', 'ordering', 'teardown', 'longwait', 'dimensions', 'cpu', 'flags', 'aliases', 'predication', 'independent']
@@ -40,3 +45,8 @@ test('d3d11_swapchain_formats', executable('d3d11_swapchain_formats', ['d3d11_sw
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
 test('d3d11_swapchain', executable('d3d11_swapchain', ['d3d11_swapchain.cpp'], dependencies : d3d11_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+# a destroyed or never-a-window HWND must not crash CreateMetalViewFromHWND
+test('d3d11_hwnd', executable('d3d11_hwnd', ['d3d11_hwnd.cpp'], dependencies : d3d11_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+test('d3d11_present_flags', executable('d3d11_present_flags', ['d3d11_present_flags.cpp'],
+     dependencies : d3d11_test_deps), env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)

@@ -12,8 +12,9 @@
 //   ONE/ONE add, and with blending off the colour is written as it is.
 // - COLORWRITEENABLE keeps a draw out of the channels its mask does not name.
 // - SHADEMODE: GOURAUD interpolates the three vertex colours, FLAT gives the triangle the first vertex's.
-// - a state this milestone cannot honour, a state it does not know, and a value it cannot use are D3DERR_INVALIDCALL,
-//   and the value the device had stays (the next frame is drawn with it).
+// - fog is stored (GetRenderState matches SetRenderState) without being applied; RasterCaps names none until a pixel
+//   test reads it (tests/d3d9/d3d9_extra.cpp). a state this milestone cannot honour (D3DRS_DITHERENABLE), a state it
+//   does not know, and a value it cannot use are D3DERR_INVALIDCALL, and the value the device had stays.
 #include <windows.h>
 #include <d3d9.h>
 #include <d3d11.h>
@@ -342,10 +343,14 @@ main() {
   printf("shade: GOURAUD reads %06lx at 25,25, FLAT reads %06lx (wanted ff0000)\n", (unsigned long)gouraud,
          (unsigned long)flat);
 
-  // what this milestone cannot honour is refused, and the device keeps what it had
+  // fog is stored; a state this milestone cannot honour is refused, and the device keeps what it had
   DWORD value = 0;
-  expect(device->SetRenderState(D3DRS_FOGENABLE, TRUE) == D3DERR_INVALIDCALL, "a state that is not honoured was taken");
-  expect(device->GetRenderState(D3DRS_FOGENABLE, &value) == D3DERR_INVALIDCALL,
+  CHECK(device->SetRenderState(D3DRS_FOGENABLE, TRUE));
+  CHECK(device->GetRenderState(D3DRS_FOGENABLE, &value));
+  expect(value == TRUE, "FOGENABLE was not stored");
+  expect(device->SetRenderState(D3DRS_DITHERENABLE, TRUE) == D3DERR_INVALIDCALL,
+         "a state that is not honoured was taken");
+  expect(device->GetRenderState(D3DRS_DITHERENABLE, &value) == D3DERR_INVALIDCALL,
          "a state that is not honoured was read back");
   expect(device->SetRenderState((D3DRENDERSTATETYPE)0xFFFF, 0) == D3DERR_INVALIDCALL, "an unknown state was taken");
   expect(device->SetRenderState(D3DRS_CULLMODE, 99) == D3DERR_INVALIDCALL, "an unknown cull mode was taken");

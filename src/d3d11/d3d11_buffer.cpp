@@ -276,7 +276,11 @@ public:
       return S_FALSE;
     }
 
-    auto viewId = buffer_->createView({.format = view_format});
+    auto window = typedBufferWindow(offset, size, MTLGetTexelSize(view_format));
+    auto viewId = buffer_->createView(
+        {.format = view_format, .write = false, .byte_offset = window.byte_offset, .byte_length = window.byte_length}
+    );
+    viewElementOffset = window.element_offset;
 
     auto srv = ref(new TBufferSRV(
         &finalDesc, this, m_parent,
@@ -362,7 +366,11 @@ public:
       return S_FALSE;
     }
 
-    auto viewId = buffer_->createView({.format = view_format, .write = true});
+    auto window = typedBufferWindow(offset, size, MTLGetTexelSize(view_format));
+    auto viewId = buffer_->createView(
+        {.format = view_format, .write = true, .byte_offset = window.byte_offset, .byte_length = window.byte_length}
+    );
+    viewElementOffset = window.element_offset;
 
     auto srv = ref(new UAVWithCounter(
         &finalDesc, this, m_parent,

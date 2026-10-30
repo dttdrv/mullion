@@ -34,6 +34,11 @@ class MTLD3D9Device final : private Object9,
 public:
   // the texture stages, and so the samplers, a draw samples: D3D9's eight (the caps' MaxSimultaneousTextures)
   static constexpr UINT kTextureStages = 8;
+  // the fixed-function blender's stages (the caps' MaxTextureBlendStages): stage 0 and one extra that the extended
+  // pixel shader blends after it
+  static constexpr UINT kMaxBlendStages = 2;
+  // the vertex streams a shader declaration may read (the caps' MaxStreams)
+  static constexpr UINT kMaxStreams = 4;
 
   MTLD3D9Device(IDirect3D9 *direct3d, ComPtr<IDXGIAdapter1> adapter, UINT adapter_ordinal, const D3DCAPS9 &caps,
                 HWND window, DWORD behavior_flags, const D3DPRESENT_PARAMETERS &present)
@@ -250,10 +255,7 @@ public:
   void STDMETHODCALLTYPE SetCursorPosition(int X, int Y, DWORD Flags) override {}
   WINBOOL STDMETHODCALLTYPE ShowCursor(WINBOOL bShow) override { return FALSE; }
   HRESULT STDMETHODCALLTYPE CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *pPresentationParameters,
-                                                      IDirect3DSwapChain9 **pSwapChain) override {
-    ERR_ONCE("D3D9: a second swap chain is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                                      IDirect3DSwapChain9 **pSwapChain) override;
   HRESULT STDMETHODCALLTYPE SetDialogBoxMode(WINBOOL bEnableDialogs) override { return D3DERR_INVALIDCALL; }
   void STDMETHODCALLTYPE SetGammaRamp(UINT swapchain_idx, DWORD flags, const D3DGAMMARAMP *ramp) override {}
   void STDMETHODCALLTYPE GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp) override {}
@@ -262,15 +264,9 @@ public:
   HRESULT STDMETHODCALLTYPE CreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage,
                                                 D3DFORMAT Format, D3DPOOL Pool,
                                                 IDirect3DVolumeTexture9 **ppVolumeTexture,
-                                                HANDLE *pSharedHandle) override {
-    ERR_ONCE("D3D9: a volume texture is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                                HANDLE *pSharedHandle) override;
   HRESULT STDMETHODCALLTYPE CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
-                                              IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle) override {
-    ERR_ONCE("D3D9: a cube texture is not implemented yet.");
-    return D3DERR_INVALIDCALL;
-  }
+                                              IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *pSharedHandle) override;
   HRESULT STDMETHODCALLTYPE CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf, D3DPOOL pool,
                                                IDirect3DVertexBuffer9 **vertex_buffer,
                                                HANDLE *shared_handle) override;
@@ -519,16 +515,21 @@ private:
   // is its reset, and a state block captures and restores it through the interface above
   DeviceState state_;
 
-  // the fixed-function path, and the state a draw reads: the FVF or the declaration, one stream source and the
-  // indices (SetStreamSourceFreq is 1, no instancing)
+  // the fixed-function path, and the state a draw reads: the FVF or the declaration, the streams a declaration names
+  // and the indices (SetStreamSourceFreq is 1, no instancing)
   FixedFunctionPipeline fixed_function_;
   DWORD fvf_ = 0;
   ComPtr<IDirect3DVertexDeclaration9> declaration_;
   ComPtr<IMTLD3D9VertexDeclaration> declaration_inputs_;
-  ComPtr<IDirect3DVertexBuffer9> stream_source_;
-  ComPtr<IMTLD3D9Buffer> stream_buffer_;
-  UINT stream_offset_ = 0;
-  UINT stream_stride_ = 0;
+  struct StreamSlot {
+    ComPtr<IDirect3DVertexBuffer9> source;
+    ComPtr<IMTLD3D9Buffer> buffer;
+    UINT offset = 0;
+    UINT stride = 0;
+  };
+  StreamSlot streams_[kMaxStreams];
+  void bind_streams();
+  void clear_stream(UINT stream);
   ComPtr<IDirect3DIndexBuffer9> indices_;
   ComPtr<IMTLD3D9Buffer> index_buffer_;
   ComPtr<ID3D11Buffer> up_scratch_;
@@ -543,7 +544,8 @@ private:
   ComPtr<IDirect3DBaseTexture9> textures_[kTextureStages];
   ComPtr<IMTLD3D9Texture> texture_sources_[kTextureStages];
   SamplerState9 sampler_states_[kTextureStages];
-  TextureStageState9 texture_stage_;
+  TextureStageState9 texture_stages_[kMaxBlendStages];
+  UINT stream_freq_[kMaxStreams] = {1, 1, 1, 1};
   // what a stage with no texture samples: D3D9's default texture, one opaque white texel, which a shader's texld reads
   // like any other texture (made the first time a sampling draw needs it)
   ComPtr<ID3D11Texture2D> default_texture_;
@@ -560,6 +562,12 @@ private:
   std::array<float, 256 * 4> pixel_constants_f_{};
   std::array<int32_t, 16 * 4> pixel_constants_i_{};
   std::array<WINBOOL, 16> pixel_constants_b_{};
+  // a programmable draw used to upload every table every time; only a table a Set*ShaderConstant* (or Reset) changed
+  // is mapped again
+  bool vs_f_dirty_ = true, vs_i_dirty_ = true, vs_b_dirty_ = true;
+  bool ps_f_dirty_ = true, ps_i_dirty_ = true, ps_b_dirty_ = true;
+  bool ps_alpha_dirty_ = true;
+  DWORD uploaded_alpha_ref_ = ~0u;
 
   // the D3D11 constant buffers the tables are read from, three a stage, and the one a pixel program with D3D9's alpha
   // test reads D3DRS_ALPHAREF from (register b3)
@@ -580,7 +588,8 @@ private:
   // pipeline's
   HRESULT prepare_fixed_function_draw();
   // the draw a game's own shaders make: the vertex declaration's layout, the translated programs, the constant tables
-  // a draw uploads, and the texture stage 0 samples when the pixel shader samples it (d3d9_device_shader.cpp)
+  // a draw uploads, and the texture stage 0 samples when the pixel shader samples it. a vertex shader with no pixel
+  // shader bound draws through the fixed-function pixel shader (d3d9_device_shader.cpp)
   HRESULT prepare_shader_draw();
   HRESULT ensure_shader_constants();
   HRESULT upload_shader_constants();
@@ -599,6 +608,12 @@ private:
       D3DPRIMITIVETYPE type, UINT primitive_count, UINT count, UINT start_vertex, ID3D11Buffer *buffer, UINT stride,
       UINT offset
   );
+  // a rectangle's stencil: D3D11's ClearView writes depth of a DSV, not stencil, so a partial stencil clear is a
+  // scissored draw that always replaces stencil (Microsoft Learn, IDirect3DDevice9::Clear, D3DCLEAR_STENCIL)
+  HRESULT clear_stencil_rects(const D3D11_RECT *rects, UINT count, UINT8 stencil);
+  HRESULT ensure_stencil_fill_target();
+  ComPtr<IDirect3DSurface9> stencil_fill_target_;
+  UINT stencil_fill_width_ = 0, stencil_fill_height_ = 0;
 };
 
 // makes a device over `adapter` for `window`, with the implicit swap chain

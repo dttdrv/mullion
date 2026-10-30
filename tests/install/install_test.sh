@@ -76,4 +76,31 @@ sh "$archive/install.sh" "$work/wine" "$p64" "$p32" "$pnosys" "$pfallback"
 [ -f "$work/wine/lib/wine/i386-windows/mullion32.dll" ] || fail "i386 Windows half not installed in the Wine"
 [ -f "$work/wine/lib/wine/x86_64-unix/mullion_unix.so" ] || fail "Unix half not installed in the Wine"
 
+# a CrossOver bottle: install.sh --crossover copies the archive into a private CX_ROOT and points the bottle at DXMT.
+# HOME is the fixture's, so this does not touch the machine's CrossOver.
+cxhome="$work/cxhome"
+mkdir -p "$cxhome/Library/Application Support/CrossOver/Bottles/test"
+printf '[EnvironmentVariables]\n"CX_GRAPHICS_BACKEND" = "wined3d"\n' > "$cxhome/Library/Application Support/CrossOver/Bottles/test/cxbottle.conf"
+mkdir -p "$work/CrossOver.app/Contents/SharedSupport/CrossOver/lib/dxmt"
+printf 'dxmt\n' > "$work/CrossOver.app/Contents/SharedSupport/CrossOver/lib/dxmt/placeholder"
+printf 'cx\n' > "$work/CrossOver.app/Contents/SharedSupport/CrossOver/keepme"
+HOME="$cxhome" sh "$archive/install.sh" --crossover test "$work/CrossOver.app"
+cxroot="$cxhome/Library/Mullion/CrossOver"
+[ -f "$cxroot/lib/dxmt/x86_64-windows/mullion64.dll" ] || fail "CrossOver root missing x86_64 Windows half"
+[ -f "$cxroot/lib/dxmt/i386-windows/mullion32.dll" ] || fail "CrossOver root missing i386 Windows half"
+[ -f "$cxroot/lib/dxmt/x86_64-unix/mullion_unix.so" ] || fail "CrossOver root missing Unix half"
+[ -L "$cxroot/keepme" ] || fail "CrossOver root did not link the rest of CrossOver"
+grep -q 'CX_GRAPHICS_BACKEND" = "dxmt"' "$cxhome/Library/Application Support/CrossOver/Bottles/test/cxbottle.conf" ||
+  fail "bottle was not switched to DXMT"
+[ -f "$cxhome/Library/Application Support/CrossOver/Bottles/test/cxbottle.conf.before-mullion" ] ||
+  fail "CrossOver bottle had no backup of cxbottle.conf"
+
+# how a game run proves it loaded this archive, not DXMT or D3DMetal: hash the PE the process maps
+# (system32 for PE32+, syswow64 for PE32) against the same file in the unpacked release
+hash_pe() { openssl dgst -sha256 "$1" | awk '{print $2}'; }
+[ "$(hash_pe "$p64/drive_c/windows/system32/mullion64.dll")" = "$(hash_pe "$archive/x86_64-windows/mullion64.dll")" ] ||
+  fail "installed x86_64 DLL hash does not match the archive"
+[ "$(hash_pe "$p64/drive_c/windows/syswow64/mullion32.dll")" = "$(hash_pe "$archive/i386-windows/mullion32.dll")" ] ||
+  fail "installed i386 DLL hash does not match the archive"
+
 echo "install fixtures passed"

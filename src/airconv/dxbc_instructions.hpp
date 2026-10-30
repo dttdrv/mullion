@@ -30,6 +30,9 @@
 
 namespace mullion::dxbc {
 
+void dxbc_clear_read_error();
+const char *dxbc_read_error();
+
 struct Swizzle {
   union {
     uint8_t x;

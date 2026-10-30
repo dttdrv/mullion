@@ -82,8 +82,7 @@ main() {
     context->CopyResource(staging.Get(), texture.Get());
     D3D11_MAPPED_SUBRESOURCE mapped;
     CHECK(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
-    if (attempt)
-      for (UINT y = 0; y < height; y++) {
+    for (UINT y = 0; y < height; y++) {
         auto row = reinterpret_cast<const UINT *>(static_cast<const char *>(mapped.pData) + y * mapped.RowPitch);
         for (UINT x = 0; x < width; x++)
           if (!expect(row[2 * x] == x + 1 && row[2 * x + 1] == y + 1, "pixel %u,%u: (%u,%u)", x, y,

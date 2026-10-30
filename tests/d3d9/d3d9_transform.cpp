@@ -330,8 +330,10 @@ main() {
     expect(memcmp(&got, &moved, sizeof(got)) == 0, "GetTransform did not give back the matrix SetTransform was given");
     expect(device->SetTransform(D3DTS_WORLD, nullptr) == D3DERR_INVALIDCALL, "SetTransform took a null matrix");
     expect(device->GetTransform(D3DTS_WORLD, nullptr) == D3DERR_INVALIDCALL, "GetTransform took a null output");
-    expect(device->SetTransform((D3DTRANSFORMSTATETYPE)D3DTS_TEXTURE0, &moved) == D3DERR_INVALIDCALL,
-           "a texture coordinate transform, which this build does not perform, was kept by the device");
+    expect(SUCCEEDED(device->SetTransform((D3DTRANSFORMSTATETYPE)D3DTS_TEXTURE0, &moved)),
+           "a texture coordinate transform was refused");
+    CHECK(device->GetTransform((D3DTRANSFORMSTATETYPE)D3DTS_TEXTURE0, &got));
+    expect(memcmp(&got, &moved, sizeof(got)) == 0, "GetTransform(D3DTS_TEXTURE0) did not give the matrix back");
     // MultiplyTransform multiplies the matrix the device holds by the one it is given, the device's first, as D3D9's
     // does: a half scale then a translation of 0.5 is v * S * T, whose x' is x * 0.5 + 0.5 (the other order would
     // give 0.5 * (x + 0.5) = x * 0.5 + 0.25). The two differ by 0.25 in NDC, four pixels, so the geometry's right edge

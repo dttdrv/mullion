@@ -240,6 +240,11 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     Run(MetalCommandBuffer buffer, uint64_t *committed) {
       if (cancelled)
         return;
+      // a removed device still retires cancelled work; it does not commit (GitHub #71 leftover)
+      if (device && FAILED(device->GetDeviceRemovedReason())) {
+        cancelled = true;
+        return;
+      }
       if constexpr (Metal4)
         if (!buffer)
           return;

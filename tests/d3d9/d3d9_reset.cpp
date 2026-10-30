@@ -10,8 +10,8 @@
 //   the new size.
 // - all state is lost: the render states are the defaults, the textures, streams and shaders set are unbound, and a
 //   chain with EnableAutoDepthStencil has a depth-stencil surface of the new size with depth testing on.
-// - a fullscreen chain, a multisampled chain, a non-discard swap effect and a format this build has none are refused
-//   and leave the windowed chain as it was (src/d3d9/README says what is not there yet).
+// - a fullscreen Reset is DXGI's SetFullscreenState (then Reset back to windowed); a multisampled chain, a non-discard
+//   swap effect and a format this build has none are refused and leave the chain as it was.
 #include <windows.h>
 #include <d3d9.h>
 #include <wrl/client.h>
@@ -131,7 +131,13 @@ main() {
     fullscreen.BackBufferWidth = 64;
     fullscreen.BackBufferHeight = 64;
     fullscreen.Windowed = FALSE;
-    expect(device->Reset(&fullscreen) == D3DERR_INVALIDCALL, "Reset to a fullscreen chain succeeded");
+    CHECK(device->Reset(&fullscreen));
+    D3DPRESENT_PARAMETERS got{};
+    ComPtr<IDirect3DSwapChain9> chain;
+    CHECK(device->GetSwapChain(0, &chain));
+    CHECK(chain->GetPresentParameters(&got));
+    expect(got.Windowed == FALSE, "Reset to fullscreen left a windowed chain");
+    CHECK(device->Reset(&present));
   }
   {
     D3DPRESENT_PARAMETERS multisampled = present;

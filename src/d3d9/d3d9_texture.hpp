@@ -19,6 +19,8 @@ struct IMTLD3D9Texture {
   virtual ID3D11ShaderResourceView *view() = 0;
   // the D3D11 texture under it, which UpdateTexture's destination is written through and a target is made of
   virtual ID3D11Texture2D *texture() = 0;
+  // a volume texture's D3D11 TEXTURE3D; 2D and cube textures have none
+  virtual ID3D11Texture3D *volume() { return nullptr; }
   virtual D3DPOOL pool() = 0;
   virtual bool managed() = 0;
 };
@@ -193,6 +195,183 @@ private:
   DWORD levels_count_ = 1;
 };
 
+// a cube texture: six square faces as a D3D11 TEXTURECUBE. each face's mip is a surface whose array slice is that
+// face (D3DCUBEMAP_FACES) and whose level is the mip, so a lock through GetCubeMapSurface is the same lock as
+// LockRect(face, level) (Microsoft Learn, IDirect3DCubeTexture9)
+class MTLD3D9CubeTexture final : private Object9,
+                                 public IDirect3DCubeTexture9,
+                                 public IMTLD3D9Texture,
+                                 public IMTLD3D9LockTarget,
+                                 public IMTLD3D9ResetTarget {
+public:
+  MTLD3D9CubeTexture(
+      IDirect3DDevice9 *device, ComPtr<ID3D11Texture2D> texture, ComPtr<ID3D11ShaderResourceView> view,
+      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels,
+      bool can_generate_mips, DWORD usage = 0
+  );
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
+  ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
+  ULONG STDMETHODCALLTYPE Release() override { return Object9::Release(); }
+
+  ID3D11ShaderResourceView *view() override { return view_.Get(); }
+  ID3D11Texture2D *texture() override { return texture_.Get(); }
+  D3DPOOL pool() override { return pool_; }
+  bool managed() override { return pool_ == D3DPOOL_MANAGED; }
+
+  HRESULT lock_level(UINT level, const RECT *rect, D3DLOCKED_RECT *locked, DWORD flags) override;
+  HRESULT unlock_level(UINT level) override;
+  void reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) override;
+
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, void *data, DWORD *size) override;
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID guid) override;
+  DWORD STDMETHODCALLTYPE SetPriority(DWORD priority) override;
+  DWORD STDMETHODCALLTYPE GetPriority() override;
+  void STDMETHODCALLTYPE PreLoad() override;
+  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() override;
+  DWORD STDMETHODCALLTYPE SetLOD(DWORD lod) override;
+  DWORD STDMETHODCALLTYPE GetLOD() override;
+  DWORD STDMETHODCALLTYPE GetLevelCount() override;
+  HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE filter_type) override;
+  D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override;
+  void STDMETHODCALLTYPE GenerateMipSubLevels() override;
+  HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT level, D3DSURFACE_DESC *desc) override;
+  HRESULT STDMETHODCALLTYPE GetCubeMapSurface(D3DCUBEMAP_FACES face, UINT level, IDirect3DSurface9 **surface) override;
+  HRESULT STDMETHODCALLTYPE LockRect(D3DCUBEMAP_FACES face, UINT level, D3DLOCKED_RECT *locked, const RECT *rect,
+                                     DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE UnlockRect(D3DCUBEMAP_FACES face, UINT level) override;
+  HRESULT STDMETHODCALLTYPE AddDirtyRect(D3DCUBEMAP_FACES face, const RECT *dirty_rect) override;
+
+private:
+  UINT subresource(D3DCUBEMAP_FACES face, UINT level) const { return (UINT)face * levels_count_ + level; }
+  IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
+  DeviceResourceRef resources_;
+  ComPtr<ID3D11Texture2D> texture_;
+  ComPtr<ID3D11ShaderResourceView> view_;
+  PrivateData9 private_data_;
+  Texture9Storage storage_;
+  D3DFORMAT format_ = D3DFMT_UNKNOWN;
+  D3DPOOL pool_ = D3DPOOL_DEFAULT;
+  DWORD usage_ = 0;
+  DWORD levels_count_ = 1;
+};
+
+// a volume texture: a D3D11 TEXTURE3D the CPU authors with LockBox and a draw samples through tex3D / dcl_volume
+// (Microsoft Learn, IDirect3DDevice9::CreateVolumeTexture, IDirect3DVolumeTexture9::LockBox)
+class Volume9Storage {
+public:
+  Volume9Storage(
+      ComPtr<ID3D11Texture3D> texture, const ComPtr<ID3D11ShaderResourceView> &view,
+      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, bool lockable, bool dynamic = false
+  );
+  HRESULT lock(UINT level, const D3DBOX *box, D3DLOCKED_BOX *locked, DWORD flags);
+  HRESULT unlock();
+  HRESULT reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context);
+  ID3D11Texture3D *texture() const { return texture_.Get(); }
+  ID3D11ShaderResourceView *view() const { return view_.Get(); }
+  UINT level_count() const { return (UINT)levels_.size(); }
+
+private:
+  static constexpr UINT kNoLevel = UINT_MAX;
+  struct Level {
+    std::vector<char> bytes;
+    UINT pitch = 0;
+    UINT slice_pitch = 0;
+    UINT width = 0, height = 0, depth = 0;
+  };
+  ComPtr<ID3D11Texture3D> texture_;
+  ComPtr<ID3D11ShaderResourceView> view_;
+  ComPtr<ID3D11DeviceContext> context_;
+  D3D11_TEXTURE3D_DESC desc_{};
+  std::vector<Level> levels_;
+  UINT locked_level_ = kNoLevel;
+  bool read_only_ = false;
+  bool lockable_ = false;
+  bool dynamic_ = false;
+  UINT pixel_bytes_ = 0;
+};
+
+class MTLD3D9VolumeTexture;
+
+class MTLD3D9Volume final : private Object9, public IDirect3DVolume9 {
+public:
+  MTLD3D9Volume(MTLD3D9VolumeTexture *parent, UINT level);
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
+  ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
+  ULONG STDMETHODCALLTYPE Release() override { return Object9::Release(); }
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, void *data, DWORD *size) override;
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID guid) override;
+  HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **container) override;
+  HRESULT STDMETHODCALLTYPE GetDesc(D3DVOLUME_DESC *desc) override;
+  HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *locked, const D3DBOX *box, DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE UnlockBox() override;
+
+private:
+  ComPtr<IDirect3DVolumeTexture9> parent_;
+  MTLD3D9VolumeTexture *texture_ = nullptr;
+  UINT level_ = 0;
+  PrivateData9 private_data_;
+};
+
+class MTLD3D9VolumeTexture final : private Object9,
+                                   public IDirect3DVolumeTexture9,
+                                   public IMTLD3D9Texture,
+                                   public IMTLD3D9ResetTarget {
+public:
+  MTLD3D9VolumeTexture(
+      IDirect3DDevice9 *device, ComPtr<ID3D11Texture3D> texture, ComPtr<ID3D11ShaderResourceView> view,
+      const ComPtr<ID3D11DeviceContext> &context, D3DFORMAT format, D3DPOOL pool, UINT levels, DWORD usage = 0
+  );
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
+  ULONG STDMETHODCALLTYPE AddRef() override { return Object9::AddRef(); }
+  ULONG STDMETHODCALLTYPE Release() override { return Object9::Release(); }
+
+  ID3D11ShaderResourceView *view() override { return view_.Get(); }
+  ID3D11Texture2D *texture() override { return nullptr; }
+  ID3D11Texture3D *volume() override { return texture_.Get(); }
+  D3DPOOL pool() override { return pool_; }
+  bool managed() override { return pool_ == D3DPOOL_MANAGED; }
+  void reset_device(ID3D11Device *device, const ComPtr<ID3D11DeviceContext> &context) override;
+
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **device) override;
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, const void *data, DWORD size, DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, void *data, DWORD *size) override;
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID guid) override;
+  DWORD STDMETHODCALLTYPE SetPriority(DWORD priority) override;
+  DWORD STDMETHODCALLTYPE GetPriority() override;
+  void STDMETHODCALLTYPE PreLoad() override;
+  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() override;
+  DWORD STDMETHODCALLTYPE SetLOD(DWORD lod) override;
+  DWORD STDMETHODCALLTYPE GetLOD() override;
+  DWORD STDMETHODCALLTYPE GetLevelCount() override;
+  HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE filter_type) override;
+  D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override;
+  void STDMETHODCALLTYPE GenerateMipSubLevels() override;
+  HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT level, D3DVOLUME_DESC *desc) override;
+  HRESULT STDMETHODCALLTYPE GetVolumeLevel(UINT level, IDirect3DVolume9 **volume_level) override;
+  HRESULT STDMETHODCALLTYPE LockBox(UINT level, D3DLOCKED_BOX *locked, const D3DBOX *box, DWORD flags) override;
+  HRESULT STDMETHODCALLTYPE UnlockBox(UINT level) override;
+  HRESULT STDMETHODCALLTYPE AddDirtyBox(const D3DBOX *dirty_box) override;
+
+private:
+  friend class MTLD3D9Volume;
+  IDirect3DDevice9 *device_ = nullptr;
+  DeviceChildRef device_ref_;
+  DeviceResourceRef resources_;
+  ComPtr<ID3D11Texture3D> texture_;
+  ComPtr<ID3D11ShaderResourceView> view_;
+  PrivateData9 private_data_;
+  Volume9Storage storage_;
+  D3DFORMAT format_ = D3DFMT_UNKNOWN;
+  D3DPOOL pool_ = D3DPOOL_DEFAULT;
+  DWORD usage_ = 0;
+  DWORD levels_count_ = 1;
+};
+
 // the sampler a texture stage samples through: D3D9's sampler states as the D3D11 sampler they make, made on demand and
 // remade when a value changes. a value D3D11 has no sampler for is refused rather than sampled as something else.
 class SamplerState9 {
@@ -228,6 +407,9 @@ private:
 // a different one.
 class TextureStageState9 {
 public:
+  TextureStageState9() = default;
+  explicit TextureStageState9(DWORD colour_op) : colour_op_(colour_op) {}
+
   static bool supported(D3DTEXTURESTAGESTATETYPE type);
   static bool usable_value(D3DTEXTURESTAGESTATETYPE type, DWORD value);
   // every type the device takes, which is what a state block enumerates
@@ -237,8 +419,15 @@ public:
   HRESULT get(D3DTEXTURESTAGESTATETYPE type, DWORD *value) const;
 
   // the shader constants the operations and arguments make: ops is colour op, colour arg1, colour arg2 and alpha op,
-  // args is alpha arg1 and alpha arg2
-  void constants(UINT32 ops[4], UINT32 args[4]) const;
+  // args is alpha arg1 and alpha arg2. `current_as_previous` encodes D3DTA_CURRENT as 3 so a later stage reads the
+  // previous stage's result rather than the vertex colour
+  void constants(UINT32 ops[4], UINT32 args[4], bool current_as_previous = false) const;
+  DWORD colour_op() const {
+    return colour_op_;
+  }
+  DWORD texture_transform_flags() const {
+    return texture_transform_flags_;
+  }
   // whether this stage is skipped while no texture is bound: "when a texture stage has D3DTSS_COLORARG1 equal to
   // D3DTA_TEXTURE and the texture pointer for the stage is NULL, this stage and all stages after it are not processed"
   // (Microsoft Learn, Texture Blending), which for stage 0 is the vertex colour the frame already carries
@@ -248,13 +437,15 @@ public:
 
 private:
   // what D3D9's device starts with for stage 0 (its documented defaults: MODULATE of the texture and the current
-  // colour, and the texture's own alpha)
+  // colour, and the texture's own alpha). a later stage starts DISABLE, which is D3D9's default past stage 0
   DWORD colour_op_ = D3DTOP_MODULATE;
   DWORD colour_arg1_ = D3DTA_TEXTURE;
   DWORD colour_arg2_ = D3DTA_CURRENT;
   DWORD alpha_op_ = D3DTOP_SELECTARG1;
   DWORD alpha_arg1_ = D3DTA_TEXTURE;
   DWORD alpha_arg2_ = D3DTA_CURRENT;
+  DWORD texcoord_index_ = 0;
+  DWORD texture_transform_flags_ = D3DTTFF_DISABLE;
 };
 
 } // namespace mullion::d3d9

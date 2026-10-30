@@ -18,6 +18,8 @@ struct IMTLD3D9Surface {
   virtual bool depth_stencil() = 0;
   // which level of the texture under it this surface is: a read back of it copies that level, not level 0
   virtual UINT level() = 0;
+  // which array slice of a cube (or 2D array) this surface is: a 2D texture's only slice is 0
+  virtual UINT array_slice() = 0;
 };
 
 // the interface id of IMTLD3D9Surface, compared in QueryInterface
@@ -40,7 +42,7 @@ public:
   MTLD3D9Surface(IDirect3DDevice9 *device, const ComPtr<ID3D11Texture2D> &texture, D3DFORMAT format, D3DPOOL pool,
                  bool lockable, const ComPtr<ID3D11DeviceContext> &context, DWORD usage = 0,
                  bool depth_stencil = false, IMTLD3D9LockTarget *lock_target = nullptr, UINT level = 0,
-                 IUnknown *container = nullptr);
+                 IUnknown *container = nullptr, UINT array_slice = 0);
 
   // IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override;
@@ -52,6 +54,7 @@ public:
   bool lockable() override { return lockable_; }
   bool depth_stencil() override { return depth_stencil_; }
   UINT level() override { return level_; }
+  UINT array_slice() override { return array_slice_; }
 
   // the references an application holds on the surface, apart from the device's: Reset needs them released
   ULONG public_references() const {
@@ -95,6 +98,7 @@ private:
   // the texture this surface is a level of, when its bytes are that texture's (not a staging texture's)
   IMTLD3D9LockTarget *lock_target_ = nullptr;
   UINT level_ = 0;
+  UINT array_slice_ = 0;
 };
 
 } // namespace mullion::d3d9

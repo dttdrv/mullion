@@ -64,6 +64,7 @@ struct IMTLD3D9VertexShader {
       const std::vector<PixelInputSlot> &pixel_inputs, const std::vector<D3D11_INPUT_ELEMENT_DESC> &layout,
       ID3D11VertexShader **shader, ID3D11InputLayout **input_layout
   ) = 0;
+  virtual bool samples() = 0;
 };
 
 // and what it asks a pixel shader for: the D3D11 pixel shader its program is translated to, for the alpha test the draw
@@ -103,6 +104,9 @@ public:
       const std::vector<PixelInputSlot> &pixel_inputs, const std::vector<D3D11_INPUT_ELEMENT_DESC> &layout,
       ID3D11VertexShader **shader, ID3D11InputLayout **input_layout
   ) override;
+  bool samples() override {
+    return samples_;
+  }
 
 private:
   // the device that made the shader is held through a private reference (DeviceChildRef), so a shader kept after the
@@ -119,6 +123,7 @@ private:
     ComPtr<ID3D11InputLayout> layout;
   };
   std::vector<Variant> variants_;
+  bool samples_ = false;
 };
 
 class MTLD3D9PixelShader final : private Object9, public IDirect3DPixelShader9, public IMTLD3D9PixelShader {

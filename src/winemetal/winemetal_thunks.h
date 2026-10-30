@@ -293,6 +293,11 @@ struct unixcall_create_metal_view_from_hwnd {
   obj_handle_t ret_view;
   obj_handle_t ret_layer;
 };
+STATIC_ASSERT(sizeof(struct unixcall_create_metal_view_from_hwnd) == 72);
+STATIC_ASSERT(offsetof(struct unixcall_create_metal_view_from_hwnd, hwnd) == 0);
+STATIC_ASSERT(offsetof(struct unixcall_create_metal_view_from_hwnd, placement) == 8);
+STATIC_ASSERT(offsetof(struct unixcall_create_metal_view_from_hwnd, ret_view) == 56);
+STATIC_ASSERT(offsetof(struct unixcall_create_metal_view_from_hwnd, ret_layer) == 64);
 
 struct unixcall_metal_view_set_placement {
   obj_handle_t view;

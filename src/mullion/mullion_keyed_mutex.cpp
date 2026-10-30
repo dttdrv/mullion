@@ -198,8 +198,10 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
   if (!state_)
     return E_FAIL;
   uint64_t deadline = GetTickCount64() + milliseconds;
-  // one liveness question per owner a wait sees, so a spinner does not ask it once a turn
+  // one liveness question per owner a wait sees, so a spinner does not ask it once a turn; the same
+  // owner is re-probed while waiting so a death mid-wait is not missed
   uint64_t checked_owner = 0;
+  uint64_t last_probe = 0;
   for (;;) {
     LONG64 owner = InterlockedCompareExchange64(&state_->owner, 0, 0);
     if (owner == static_cast<LONG64>(token_))
@@ -209,8 +211,12 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
       return WAIT_ABANDONED;
     // an owner whose process is gone left the token behind and will never release it: the abandonment its
     // destructor would have marked is marked here instead, whether the owner exited or was killed
-    if (owner && uint64_t(owner) != checked_owner) {
+    // re-probe the same owner while waiting: an owner that dies mid-wait must abandon rather than
+    // leave a waiter spinning on a token that will never release (GitHub keyed-mutex residual)
+    uint64_t now = GetTickCount64();
+    if (owner && (uint64_t(owner) != checked_owner || now - last_probe >= 10)) {
       checked_owner = uint64_t(owner);
+      last_probe = now;
       if (!ownerProcessAlive(checked_owner)) {
         InterlockedExchange(&state_->abandoned, 1);
         return WAIT_ABANDONED;

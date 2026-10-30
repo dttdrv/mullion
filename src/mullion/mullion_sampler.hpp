@@ -21,13 +21,18 @@ public:
   WMT::Reference<WMT::SamplerState> sampler_state_white;
   uint64_t sampler_state_white_handle = 0;
   float border_color[4] = {};
+  uint64_t border_gpu_address = 0;
+  WMT::Reference<WMT::Buffer> border_buffer;
 
   static Rc<Sampler>
   createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color = nullptr);
 
+  ~Sampler();
+
 private:
   WMTSamplerInfo info_;
   std::atomic<uint32_t> refcount_ = {0u};
+  void *border_host_ = nullptr;
 };
 
 } // namespace mullion

@@ -52,8 +52,29 @@ MTLD3D9Device::ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR 
   if (rect && !clamp_rect(rect, desc.Width, desc.Height, box))
     return S_OK;
 
+  D3D11_TEXTURE2D_DESC texture_desc{};
+  ours->texture()->GetDesc(&texture_desc);
+  D3D11_RENDER_TARGET_VIEW_DESC view_desc{};
+  view_desc.Format = texture_desc.Format;
+  if (texture_desc.SampleDesc.Count > 1) {
+    if (texture_desc.ArraySize == 1) {
+      view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+    } else {
+      view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY;
+      view_desc.Texture2DMSArray.FirstArraySlice = ours->array_slice();
+      view_desc.Texture2DMSArray.ArraySize = 1;
+    }
+  } else if (texture_desc.ArraySize == 1) {
+    view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    view_desc.Texture2D.MipSlice = ours->level();
+  } else {
+    view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+    view_desc.Texture2DArray.MipSlice = ours->level();
+    view_desc.Texture2DArray.FirstArraySlice = ours->array_slice();
+    view_desc.Texture2DArray.ArraySize = 1;
+  }
   ComPtr<ID3D11RenderTargetView> view;
-  if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), nullptr, &view))) {
+  if (FAILED(d3d11_device_->CreateRenderTargetView(ours->texture(), &view_desc, &view))) {
     ERR_ONCE("D3D9: this surface's format takes no render target view, so ColorFill cannot fill it.");
     return D3DERR_INVALIDCALL;
   }
@@ -128,19 +149,62 @@ MTLD3D9Device::StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect,
     }
   }
 
-  context_->CopySubresourceRegion(target->texture(), 0, (UINT)dst_left, (UINT)dst_top, 0, source->texture(), 0,
-                                  &source_box);
+  D3D11_TEXTURE2D_DESC source_texture{}, target_texture{};
+  source->texture()->GetDesc(&source_texture);
+  target->texture()->GetDesc(&target_texture);
+  const UINT source_sub = D3D11CalcSubresource(source->level(), source->array_slice(), source_texture.MipLevels);
+  const UINT target_sub = D3D11CalcSubresource(target->level(), target->array_slice(), target_texture.MipLevels);
+  // a multisampled source is resolved into a single-sample destination of the same format (Microsoft Learn,
+  // IDirect3DDevice9::StretchRect: "StretchRect can be used to perform a stretch blit from a multisampled surface to
+  // a non-multisampled surface")
+  if (source_texture.SampleDesc.Count > 1 && target_texture.SampleDesc.Count == 1) {
+    if (src_rect || dst_rect) {
+      ERR_ONCE("D3D9: StretchRect of a multisampled surface resolves the whole surface; a rectangle is refused.");
+      return D3DERR_INVALIDCALL;
+    }
+    context_->ResolveSubresource(target->texture(), target_sub, source->texture(), source_sub, source_texture.Format);
+    return S_OK;
+  }
+  if (source_texture.SampleDesc.Count != target_texture.SampleDesc.Count) {
+    ERR_ONCE("D3D9: StretchRect copies between surfaces of the same sample count, or resolves a multisampled source.");
+    return D3DERR_INVALIDCALL;
+  }
+  context_->CopySubresourceRegion(
+      target->texture(), target_sub, (UINT)dst_left, (UINT)dst_top, 0, source->texture(), source_sub, &source_box
+  );
   return S_OK;
 }
 
 // A managed texture's levels copied into a default-pool texture's, which is D3D9's UpdateTexture: the two are the same
 // format and the same size, with the same level count, and each level's bytes are the ones the application authored into
-// the source. The source is a managed (or system-memory) texture and the destination a default-pool one; a cube or
-// volume texture is refused, as this build has neither.
+// the source. The source is a managed (or system-memory) texture and the destination a default-pool one. Volume textures
+// copy GPU-side after the source's last unlock; cubes stay refused until they share this path.
 HRESULT
 MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *source, IDirect3DBaseTexture9 *destination) {
   if (!source || !destination || source == destination)
     return D3DERR_INVALIDCALL;
+
+  ComPtr<IDirect3DVolumeTexture9> source_volume, destination_volume;
+  if (SUCCEEDED(source->QueryInterface(
+          __uuidof(IDirect3DVolumeTexture9), reinterpret_cast<void **>(source_volume.GetAddressOf())
+      )) &&
+      SUCCEEDED(destination->QueryInterface(
+          __uuidof(IDirect3DVolumeTexture9), reinterpret_cast<void **>(destination_volume.GetAddressOf())
+      ))) {
+    ComPtr<IMTLD3D9Texture> source_ours, destination_ours;
+    if (FAILED(source_volume->QueryInterface(IID_IMTLD3D9Texture, reinterpret_cast<void **>(source_ours.GetAddressOf()))) ||
+        FAILED(destination_volume->QueryInterface(
+            IID_IMTLD3D9Texture, reinterpret_cast<void **>(destination_ours.GetAddressOf())
+        )))
+      return D3DERR_INVALIDCALL;
+    if (!source_ours->managed() || destination_ours->pool() != D3DPOOL_DEFAULT || !source_ours->volume() ||
+        !destination_ours->volume())
+      return D3DERR_INVALIDCALL;
+    if (source_volume->GetLevelCount() != destination_volume->GetLevelCount())
+      return D3DERR_INVALIDCALL;
+    context_->CopyResource(destination_ours->volume(), source_ours->volume());
+    return S_OK;
+  }
 
   ComPtr<IDirect3DTexture9> source_texture, destination_texture;
   if (FAILED(source->QueryInterface(
@@ -149,7 +213,7 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *source, IDirect3DBaseTexture
       FAILED(destination->QueryInterface(
           __uuidof(IDirect3DTexture9), reinterpret_cast<void **>(destination_texture.GetAddressOf())
       ))) {
-    ERR_ONCE("D3D9: UpdateTexture copies between 2D textures; a cube or volume texture is not implemented yet.");
+    ERR_ONCE("D3D9: UpdateTexture copies between 2D or volume textures; a cube texture is not implemented yet.");
     return D3DERR_INVALIDCALL;
   }
 
@@ -202,8 +266,11 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *source, IDirect3DBaseTexture
 HRESULT
 MTLD3D9Device::UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface,
                              const POINT *dst_point) {
-  if (!src_surface || !dst_surface || !dst_point)
+  if (!src_surface || !dst_surface)
     return D3DERR_INVALIDCALL;
+  const POINT origin{0, 0};
+  if (!dst_point)
+    dst_point = &origin;
   ComPtr<IMTLD3D9Surface> source, target;
   if (FAILED(device_surface(src_surface, false, &source)) || FAILED(device_surface(dst_surface, false, &target)))
     return D3DERR_INVALIDCALL;
@@ -235,8 +302,13 @@ MTLD3D9Device::UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rec
   if (!pixel_bytes)
     return D3DERR_INVALIDCALL;
 
+  D3D11_TEXTURE2D_DESC source_texture{}, target_texture{};
+  source->texture()->GetDesc(&source_texture);
+  target->texture()->GetDesc(&target_texture);
+  const UINT source_sub = D3D11CalcSubresource(source->level(), source->array_slice(), source_texture.MipLevels);
+  const UINT target_sub = D3D11CalcSubresource(target->level(), target->array_slice(), target_texture.MipLevels);
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  if (FAILED(context_->Map(source->texture(), 0, D3D11_MAP_READ, 0, &mapped))) {
+  if (FAILED(context_->Map(source->texture(), source_sub, D3D11_MAP_READ, 0, &mapped))) {
     ERR_ONCE("D3D9: UpdateSurface's source could not be mapped.");
     return D3DERR_INVALIDCALL;
   }
@@ -244,8 +316,8 @@ MTLD3D9Device::UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rec
                       (size_t)source_box.left * pixel_bytes;
   const D3D11_BOX destination_box{(UINT)dst_point->x, (UINT)dst_point->y, 0, (UINT)dst_point->x + width,
                                   (UINT)dst_point->y + height, 1};
-  context_->UpdateSubresource(target->texture(), 0, &destination_box, bytes, mapped.RowPitch, 0);
-  context_->Unmap(source->texture(), 0);
+  context_->UpdateSubresource(target->texture(), target_sub, &destination_box, bytes, mapped.RowPitch, 0);
+  context_->Unmap(source->texture(), source_sub);
   return S_OK;
 }
 

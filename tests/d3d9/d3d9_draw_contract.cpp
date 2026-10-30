@@ -16,6 +16,7 @@
 //   length is a valid draw, and a negative BaseVertexIndex is valid while the range it names stays in the stream.
 // - D3DPT_POINTLIST is not a valid type for DrawIndexedPrimitive.
 // - a primitive count whose vertex/index count overflows 32 bits is D3DERR_INVALIDCALL, never a smaller draw.
+//   a start and stride whose byte product overflows 64 bits is the same refusal (tests/host/stream_range.cpp).
 // - a UP draw leaves stream 0 unbound (and DrawIndexedPrimitiveUP the index buffer too), as Microsoft Learn says;
 //   an all-state block restores them.
 // - D3DRS_SCISSORTESTENABLE clips every draw to SetScissorRect's rectangle, intersected with the viewport; the
@@ -417,7 +418,8 @@ main() {
   expect(device->SetStreamSourceFreq(0, 1) == S_OK, "the stream a draw reads refuses the setting that does not instance");
   expect(device->GetStreamSourceFreq(0, &divider) == S_OK && divider == 1, "the stream's setting is not 1");
   expect(device->SetStreamSourceFreq(0, 2) == D3DERR_INVALIDCALL, "a stream takes a setting that instances");
-  expect(device->SetStreamSourceFreq(1, 1) == D3DERR_INVALIDCALL, "a second stream takes a setting");
+  expect(device->SetStreamSourceFreq(1, 1) == S_OK, "stream 1 (MaxStreams is 4) refused a non-instancing setting");
+  expect(device->SetStreamSourceFreq(4, 1) == D3DERR_INVALIDCALL, "a stream past MaxStreams took a setting");
 
   // no stream source: nothing to draw from
   CHECK(device->SetStreamSource(0, nullptr, 0, 0));

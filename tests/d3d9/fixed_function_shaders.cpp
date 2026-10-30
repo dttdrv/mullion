@@ -225,11 +225,13 @@ write_array(FILE *file, const char *name, const std::vector<unsigned char> &byte
 }
 
 bool
-compile(const char *source, const char *entry, const char *name, std::vector<unsigned char> &bytes, bool textured) {
-  D3D_SHADER_MACRO macros[2] = {{"TEXTURED", "1"}, {nullptr, nullptr}};
+compile_profile(
+    const char *source, const char *entry, const char *name, const char *profile, const D3D_SHADER_MACRO *macros,
+    std::vector<unsigned char> &bytes
+) {
   ID3DBlob *code = nullptr, *errors = nullptr;
   const HRESULT hr = D3DCompile(
-      source, strlen(source), name, textured ? macros : nullptr, nullptr, entry, "vs_5_0",
+      source, strlen(source), name, macros, nullptr, entry, profile,
       D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_ENABLE_STRICTNESS, 0, &code, &errors
   );
   if (errors) {
@@ -243,6 +245,161 @@ compile(const char *source, const char *entry, const char *name, std::vector<uns
   const unsigned char *first = (const unsigned char *)code->GetBufferPointer();
   bytes.assign(first, first + code->GetBufferSize());
   code->Release();
+  return true;
+}
+
+bool
+compile(const char *source, const char *entry, const char *name, std::vector<unsigned char> &bytes, bool textured) {
+  D3D_SHADER_MACRO macros[2] = {{"TEXTURED", "1"}, {nullptr, nullptr}};
+  return compile_profile(source, entry, name, "vs_5_0", textured ? macros : nullptr, bytes);
+}
+
+// extra stages, linear table fog and the fixed-function alpha test, as one pixel shader. stage 1's current argument is
+// 3 so it reads stage 0's result rather than the vertex colour (stage 0 still encodes current as 1, which is the vertex
+// colour). fog is D3D9's linear table fog of the pixel's depth (Microsoft Learn, D3DRS_FOGTABLEMODE). the alpha test
+// multiplies the written alpha by 255 and compares it with D3DRS_ALPHAREF, as the translator does for a game's own
+// pixel shader.
+const char kExtendedPixelSource[] = R"(
+cbuffer Stage : register(b0) {
+  uint4 ops;
+  uint4 args;
+  float4 factor;
+  uint4 ops1;
+  uint4 args1;
+  float4 fog;       // x enable, y start, z end
+  float4 fogcolor;
+  uint4 alpha;      // x enable, y func, z ref 0..255
+  row_major float4x4 tex0;
+};
+
+#ifdef TEXTURED
+Texture2D texture0 : register(t0);
+Texture2D texture1 : register(t1);
+SamplerState sampler0 : register(s0);
+SamplerState sampler1 : register(s1);
+#endif
+
+float4 argument(uint which, float4 sampled, float4 colour, float4 current) {
+  if (which == 0) return sampled;
+  if (which == 1) return colour;
+  if (which == 2) return factor;
+  return current;
+}
+
+float4 blend(uint op, float4 first, float4 second, float4 current) {
+  if (op == 1) return first;
+  if (op == 2) return second;
+  if (op == 3) return first * second;
+  if (op == 4) return first + second;
+  if (op == 5) return first - second;
+  return current;
+}
+
+bool alpha_passes(float a, uint func, uint ref8) {
+  const float value = a * 255.0;
+  const float reference = (float)ref8;
+  if (func == 1) return false;
+  if (func == 2) return value < reference;
+  if (func == 3) return value == reference;
+  if (func == 4) return value <= reference;
+  if (func == 5) return value > reference;
+  if (func == 6) return value != reference;
+  if (func == 7) return value >= reference;
+  return true;
+}
+
+float4 apply_fog_alpha(float4 colour, float depth) {
+  if (alpha.x != 0 && !alpha_passes(colour.a, alpha.y, alpha.z))
+    discard;
+  if (fog.x != 0) {
+    const float span = max(fog.z - fog.y, 1e-5);
+    const float factor_fog = saturate((fog.z - depth) / span);
+    colour.rgb = lerp(fogcolor.rgb, colour.rgb, factor_fog);
+  }
+  return colour;
+}
+
+#ifdef TEXTURED
+float4 shade(float4 colour, float2 uv, float depth) {
+  const float2 uv0 = mul(float4(uv, 0.0, 1.0), tex0).xy;
+  const float4 sampled0 = texture0.Sample(sampler0, uv0);
+  float4 rgb = blend(ops.x, argument(ops.y, sampled0, colour, colour), argument(ops.z, sampled0, colour, colour), colour);
+  float4 alpha0 = blend(ops.w, argument(args.x, sampled0, colour, colour), argument(args.y, sampled0, colour, colour), colour);
+  float4 current = float4(rgb.rgb, alpha0.a);
+  if (ops1.x != 0) {
+    const float4 sampled1 = texture1.Sample(sampler1, uv);
+    rgb = blend(ops1.x, argument(ops1.y, sampled1, colour, current), argument(ops1.z, sampled1, colour, current), current);
+    alpha0 = blend(ops1.w, argument(args1.x, sampled1, colour, current), argument(args1.y, sampled1, colour, current), current);
+    current = float4(rgb.rgb, alpha0.a);
+  }
+  return apply_fog_alpha(current, depth);
+}
+#else
+float4 shade(float4 colour, float depth) {
+  return apply_fog_alpha(colour, depth);
+}
+#endif
+
+#ifdef FLAT
+float4 main(float4 position : SV_POSITION, nointerpolation float4 colour : COLOR0
+#ifdef TEXTURED
+            , float2 uv : TEXCOORD0
+#endif
+            ) : SV_TARGET {
+#ifdef TEXTURED
+  return shade(colour, uv, position.z);
+#else
+  return shade(colour, position.z);
+#endif
+}
+#else
+struct PSInput {
+  float4 position : SV_POSITION;
+  float4 colour : COLOR0;
+#ifdef TEXTURED
+  float2 uv : TEXCOORD0;
+#endif
+};
+float4 main(PSInput input) : SV_TARGET {
+#ifdef TEXTURED
+  return shade(input.colour, input.uv, input.position.z);
+#else
+  return shade(input.colour, input.position.z);
+#endif
+}
+#endif
+)";
+
+bool
+write_extended_header(const char *path) {
+  D3D_SHADER_MACRO none[] = {{nullptr, nullptr}};
+  D3D_SHADER_MACRO flat[] = {{"FLAT", "1"}, {nullptr, nullptr}};
+  D3D_SHADER_MACRO textured[] = {{"TEXTURED", "1"}, {nullptr, nullptr}};
+  D3D_SHADER_MACRO textured_flat[] = {{"TEXTURED", "1"}, {"FLAT", "1"}, {nullptr, nullptr}};
+  std::vector<unsigned char> colour, colour_flat, sample, sample_flat;
+  if (!compile_profile(kExtendedPixelSource, "main", "extended_colour", "ps_5_0", none, colour) ||
+      !compile_profile(kExtendedPixelSource, "main", "extended_colour_flat", "ps_5_0", flat, colour_flat) ||
+      !compile_profile(kExtendedPixelSource, "main", "extended_textured", "ps_5_0", textured, sample) ||
+      !compile_profile(kExtendedPixelSource, "main", "extended_textured_flat", "ps_5_0", textured_flat, sample_flat))
+    return false;
+
+  FILE *file = fopen(path, "wb");
+  if (!file) {
+    printf("failed: no file %s\n", path);
+    return false;
+  }
+  fprintf(file,
+          "// generated by tests/d3d9/fixed_function_shaders.cpp: do not edit. the fixed-function pixel shaders that\n"
+          "// apply a second blend stage, linear table fog and D3DRS_ALPHATESTENABLE. compiled offline at ps_5_0.\n"
+          "#pragma once\n\nnamespace mullion::d3d9 {\n");
+  write_array(file, "kExtendedColourPixelShader", colour);
+  write_array(file, "kExtendedFlatColourPixelShader", colour_flat);
+  write_array(file, "kExtendedTexturedPixelShader", sample);
+  write_array(file, "kExtendedFlatTexturedPixelShader", sample_flat);
+  fprintf(file, "\n} // namespace mullion::d3d9\n");
+  fclose(file);
+  printf("wrote %s (%zu %zu %zu %zu bytes)\n", path, colour.size(), colour_flat.size(), sample.size(),
+         sample_flat.size());
   return true;
 }
 
@@ -308,6 +465,8 @@ main(int argc, char **argv) {
     return 1;
   if (!write_header((directory + "/d3d9_lighting_shaders.hpp").c_str(), kLightingComment, kLightingSource,
                     "kLitVertexShader", "kLitTexturedVertexShader"))
+    return 1;
+  if (!write_extended_header((directory + "/d3d9_ff_extended_shaders.hpp").c_str()))
     return 1;
   return 0;
 }

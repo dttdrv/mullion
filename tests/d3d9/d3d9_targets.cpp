@@ -354,6 +354,47 @@ main() {
     DestroyWindow(auto_window);
   }
 
+  // a rectangle's stencil: Clear of part of a D24S8 surface writes those pixels' stencil (Microsoft Learn,
+  // IDirect3DDevice9::Clear, D3DCLEAR_STENCIL) and leaves the rest; a later stencil-equal draw covers only the rectangle
+  {
+    CHECK(device->SetDepthStencilSurface(nullptr));
+    CHECK(device->SetRenderTarget(0, back_buffer.Get()));
+    CHECK(device->SetDepthStencilSurface(depth.Get()));
+    D3DVIEWPORT9 full{0, 0, client, client, 0.0f, 1.0f};
+    CHECK(device->SetViewport(&full));
+    CHECK(device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, kClear, 1.0f, 0));
+    const D3DRECT stencil_rect{20, 20, 80, 80};
+    CHECK(device->Clear(1, &stencil_rect, D3DCLEAR_STENCIL, 0, 1.0f, 1));
+    CHECK(device->SetRenderState(D3DRS_ZENABLE, FALSE));
+    CHECK(device->SetRenderState(D3DRS_STENCILENABLE, TRUE));
+    CHECK(device->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL));
+    CHECK(device->SetRenderState(D3DRS_STENCILREF, 1));
+    CHECK(device->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP));
+    PreTransformedVertex cover[3] = {
+        {0.0f, 0.0f, 0.0f, 1.0f, D3DCOLOR_XRGB(255, 255, 255)},
+        {0.0f, (float)client, 0.0f, 1.0f, D3DCOLOR_XRGB(255, 255, 255)},
+        {(float)client, 0.0f, 0.0f, 1.0f, D3DCOLOR_XRGB(255, 255, 255)},
+    };
+    CHECK(device->BeginScene());
+    CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, cover, sizeof(PreTransformedVertex)));
+    CHECK(device->EndScene());
+    ComPtr<IDirect3DSurface9> stencil_readback;
+    CHECK(device->CreateOffscreenPlainSurface(client, client, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &stencil_readback,
+                                              nullptr));
+    CHECK(device->GetRenderTargetData(back_buffer.Get(), stencil_readback.Get()));
+    D3DLOCKED_RECT stencil_locked{};
+    CHECK(stencil_readback->LockRect(&stencil_locked, nullptr, D3DLOCK_READONLY));
+    auto colour_at = [&](UINT x, UINT y) -> D3DCOLOR {
+      const DWORD *row = (const DWORD *)((const char *)stencil_locked.pBits + y * stencil_locked.Pitch);
+      return row[x] & 0x00FFFFFF;
+    };
+    expect(colour_at(40, 40) == 0xFFFFFF, "the stencil rectangle did not receive the stencil-equal draw");
+    expect(colour_at(10, 10) == (kClear & 0x00FFFFFF), "a pixel outside the stencil rectangle was drawn");
+    stencil_readback->UnlockRect();
+    CHECK(device->SetRenderState(D3DRS_STENCILENABLE, FALSE));
+    CHECK(device->SetRenderState(D3DRS_ZENABLE, TRUE));
+  }
+
   device.Reset();
   d3d9.Reset();
   DestroyWindow(window);

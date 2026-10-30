@@ -6,13 +6,9 @@ This is a pre-release. Expect games that break, and please report them.
 
 ## How it runs today
 
-| | Mullion | D3DMetal |
-|---|---|---|
-| Black Myth: Wukong benchmark, High preset, 1512 × 982, TSR at 100%, no frame generation | 28 FPS | 34 FPS (D3DMetal 4.0 beta 3) |
-| God of War Ragnarök, High preset, 1512 × 982, no vsync, where a save starts | 26 to 28 FPS, 35 ms of GPU time a frame | 29 to 40 FPS, 22 to 25 ms of GPU time a frame (D3DMetal 4.0 beta 3) |
-| 3DMark Fire Strike | 7003 | |
+Game-parity numbers against D3DMetal are **not claimed** until `docs/game-parity.md` has a warm-cache, same-hardware, same-settings row. The Wukong ~28 vs 34 FPS and God of War Ragnarök figures previously in this table were shader-compile screenshots, not a benchmark.
 
-Both columns were measured on the same Mac. The God of War numbers are premature: they come from screenshots taken while the game was still compiling shaders, not from a benchmark. Time Spy's graphics tests render correctly, though 3DMark does not report a score for them yet. Steel Nomad does not start yet.
+Time Spy's graphics tests render correctly, though 3DMark does not report a score for them yet. Steel Nomad does not start yet. See `docs/game-parity.md` for the matrix (untested titles stay unclaimed) and `docs/advertised-features.md` for advertised D3D12 feature edges.
 
 | Mullion | D3DMetal |
 |---|---|
@@ -25,7 +21,8 @@ Direct3D 12 is supported at feature level 12_2 with shader models up to 6.7, inc
 
 - A Mac with Apple silicon, M1 or later.
 - macOS 15 or later.
-- Wine for x86_64. Stock Wine works, with no patches and no DLL overrides. Only 64-bit games run for now.
+- Wine for x86_64, or a WoW64 Wine that also loads i386 PE. Stock Wine works, with no patches and no DLL overrides.
+- Direct3D 10 and 11 are built for both PE32 and PE32+. Direct3D 9 is off by default (`-Denable_d3d9=true` builds it for both). Direct3D 12 is 64-bit only: its descriptor handles pack a heap pointer into 64 bits (`MULLION_USE_EMBEDDED_HEAP_POINTER`), so an x86 D3D12 is not a working API. 32-bit D3D9/10/11 support is a runtime claim only after the PE32 GPU tests on that host pass.
 
 ## Install
 
@@ -36,11 +33,13 @@ The script copies the libraries into `<wine>/lib/wine`, where they replace Wine'
 
 In CrossOver, `./install.sh --crossover <bottle>` sets up that bottle and leaves CrossOver.app as it is. The bottle gets a CrossOver root of its own in `~/Library/Mullion/CrossOver`, made of links to CrossOver's files with Mullion as its DXMT, and its graphics are set to DXMT. Updates of CrossOver keep it; run the script again after one, so that files it adds are linked too. Give the path of CrossOver.app as a third argument if it is not in `/Applications` or `~/Applications`. To undo, put back the bottle's `cxbottle.conf.before-mullion`.
 
-Without the script, rename `CrossOver.app/Contents/SharedSupport/CrossOver/lib/dxmt` to `dxmt-original`, put the unpacked release folder in its place under the name `dxmt`, and set the bottle's graphics to DXMT. Replace the whole folder: CrossOver's 32-bit DXMT cannot drive Mullion, and the release's empty `i386-windows` leaves 32-bit games on Wine's own Direct3D. A CrossOver update brings back its own DXMT this way.
+Without the script, rename `CrossOver.app/Contents/SharedSupport/CrossOver/lib/dxmt` to `dxmt-original`, put the unpacked release folder in its place under the name `dxmt`, and set the bottle's graphics to DXMT. Replace the whole folder: CrossOver's 32-bit DXMT cannot drive Mullion. A release that includes `i386-windows` is installed into `syswow64` by `install.sh`; an archive without that directory still leaves 32-bit games on Wine's own Direct3D. A CrossOver update brings back its own DXMT this way.
+
+Confirm the process loaded Mullion, not DXMT or D3DMetal: after a game starts, the SHA-256 of `d3d9.dll` / `d3d11.dll` / `d3d12.dll` in the prefix's `system32` (and `syswow64` for a 32-bit executable) must match the same files in the unpacked release. `otool -L` on the Unix `winemetal.so` is the other half.
 
 On the first launch macOS blocks `winemetal.so`; allow it under System Settings, Privacy & Security, and start the game again.
 
-The archive has the layout of DXMT's builds (`x86_64-windows` and `x86_64-unix`), so tools that install DXMT can install Mullion the same way. To install by hand, copy both directories into `<wine>/lib/wine`, and the DLLs of `x86_64-windows` into `drive_c/windows/system32` of each existing prefix.
+The archive has the layout of DXMT's builds (`x86_64-windows` and `x86_64-unix`, and `i386-windows` when a 32-bit PE half is packaged). Tools that install DXMT can install Mullion the same way. To install by hand, copy those directories into `<wine>/lib/wine`, the DLLs of `x86_64-windows` into `drive_c/windows/system32`, and the DLLs of `i386-windows` into `syswow64` of a WoW64 prefix. There is no i386 Unix library: 32-bit PE talks to the host 64-bit `winemetal.so` through WoW64.
 
 ## Settings
 

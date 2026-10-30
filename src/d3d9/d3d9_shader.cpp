@@ -30,6 +30,8 @@ constexpr DWORD kOpcodeComment = 0xFFFE;
 // the game twice). a pixel shader of 1.x is refused because the translator does not read the 1.x registers yet
 // (src/d3d9/README), and saying so at creation is better than a draw that fails mid-frame
 bool supported(bool pixel, UINT major, UINT minor) {
+  if (major == 3)
+    return minor == 0;
   if (pixel)
     return major == 2 && minor == 0;
   if (major == 1)
@@ -159,6 +161,8 @@ MTLD3D9VertexShader::compiled(
       fclose(file);
     }
   }
+
+  samples_ = samples_ || program.samples;
 
   Variant variant;
   variant.declaration = declaration;
@@ -325,8 +329,8 @@ MTLD3D9Device::CreateVertexShader(const DWORD *byte_code, IDirect3DVertexShader9
   *shader = nullptr;
   ShaderCode code;
   if (!read_shader_code(byte_code, code) || code.pixel) {
-    ERR_ONCE("D3D9: a vertex shader whose program this build does not read was refused: it reads vs_1_1 and vs_2_0 "
-             "(the versions its caps name).");
+    ERR_ONCE("D3D9: a vertex shader whose program this build does not read was refused: it reads vs_1_1, vs_2_0 and "
+             "vs_3_0 (the versions its caps name).");
     return D3DERR_INVALIDCALL;
   }
   ComPtr<MTLD3D9VertexShader> result;
@@ -359,6 +363,8 @@ MTLD3D9Device::SetVertexShaderConstantF(UINT start, const float *data, UINT coun
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&vertex_constants_f_[start * 4], data, (size_t)count * 4 * sizeof(float));
+  if (count)
+    vs_f_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::VertexConstantF, start, count});
   return S_OK;
@@ -379,6 +385,8 @@ MTLD3D9Device::SetVertexShaderConstantI(UINT start, const int *data, UINT count)
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&vertex_constants_i_[start * 4], data, (size_t)count * 4 * sizeof(int));
+  if (count)
+    vs_i_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::VertexConstantI, start, count});
   return S_OK;
@@ -399,6 +407,8 @@ MTLD3D9Device::SetVertexShaderConstantB(UINT start, const WINBOOL *data, UINT co
     return D3DERR_INVALIDCALL;
   for (UINT at = 0; at < count; at++)
     vertex_constants_b_[start + at] = data[at] ? TRUE : FALSE;
+  if (count)
+    vs_b_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::VertexConstantB, start, count});
   return S_OK;
@@ -420,8 +430,8 @@ MTLD3D9Device::CreatePixelShader(const DWORD *byte_code, IDirect3DPixelShader9 *
   *shader = nullptr;
   ShaderCode code;
   if (!read_shader_code(byte_code, code) || !code.pixel) {
-    ERR_ONCE("D3D9: a pixel shader whose program this build does not read was refused: it reads ps_2_0 (the version "
-             "its caps name); the 1.x registers and the 3.0 programs are not translated yet.");
+    ERR_ONCE("D3D9: a pixel shader whose program this build does not read was refused: it reads ps_2_0 and ps_3_0 "
+             "(the versions its caps name); the 1.x registers are not translated.");
     return D3DERR_INVALIDCALL;
   }
   ComPtr<MTLD3D9PixelShader> result;
@@ -454,6 +464,8 @@ MTLD3D9Device::SetPixelShaderConstantF(UINT start, const float *data, UINT count
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&pixel_constants_f_[start * 4], data, (size_t)count * 4 * sizeof(float));
+  if (count)
+    ps_f_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::PixelConstantF, start, count});
   return S_OK;
@@ -474,6 +486,8 @@ MTLD3D9Device::SetPixelShaderConstantI(UINT start, const int *data, UINT count) 
     return D3DERR_INVALIDCALL;
   if (count)
     memcpy(&pixel_constants_i_[start * 4], data, (size_t)count * 4 * sizeof(int));
+  if (count)
+    ps_i_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::PixelConstantI, start, count});
   return S_OK;
@@ -494,6 +508,8 @@ MTLD3D9Device::SetPixelShaderConstantB(UINT start, const WINBOOL *data, UINT cou
     return D3DERR_INVALIDCALL;
   for (UINT at = 0; at < count; at++)
     pixel_constants_b_[start + at] = data[at] ? TRUE : FALSE;
+  if (count)
+    ps_b_dirty_ = true;
   if (count && recording_)
     record(StateKey{StateKey::PixelConstantB, start, count});
   return S_OK;

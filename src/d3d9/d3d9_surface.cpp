@@ -7,9 +7,11 @@ const IID IID_IMTLD3D9LockTarget = {0x2d0c6f18, 0x5a73, 0x4b62, {0xa1, 0x38, 0x6
 
 MTLD3D9Surface::MTLD3D9Surface(IDirect3DDevice9 *device, const ComPtr<ID3D11Texture2D> &texture, D3DFORMAT format,
                                D3DPOOL pool, bool lockable, const ComPtr<ID3D11DeviceContext> &context, DWORD usage,
-                               bool depth_stencil, IMTLD3D9LockTarget *lock_target, UINT level, IUnknown *container)
+                               bool depth_stencil, IMTLD3D9LockTarget *lock_target, UINT level, IUnknown *container,
+                               UINT array_slice)
     : device_(device), device_ref_(device), container_(container), texture_(texture), context_(context),
-      lockable_(lockable), depth_stencil_(depth_stencil), lock_target_(lock_target), level_(level) {
+      lockable_(lockable), depth_stencil_(depth_stencil), lock_target_(lock_target), level_(level),
+      array_slice_(array_slice) {
   D3D11_TEXTURE2D_DESC texture_desc;
   texture_->GetDesc(&texture_desc);
   desc_ = to_surface_desc(texture_desc, format, pool, level);
@@ -91,8 +93,12 @@ HRESULT STDMETHODCALLTYPE MTLD3D9Surface::LockRect(D3DLOCKED_RECT *locked, const
   locked->Pitch = 0;
   locked->pBits = nullptr;
   // a level of a managed texture locks the bytes its texture holds on this side, not a staging texture's
-  if (lock_target_)
-    return lock_target_->lock_level(level_, rect, locked, flags);
+  if (lock_target_) {
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_->GetDesc(&texture_desc);
+    return lock_target_->lock_level(D3D11CalcSubresource(level_, array_slice_, texture_desc.MipLevels), rect, locked,
+                                    flags);
+  }
   if (!lockable_ || mapped_valid_)
     return D3DERR_INVALIDCALL;
 
@@ -110,8 +116,11 @@ HRESULT STDMETHODCALLTYPE MTLD3D9Surface::LockRect(D3DLOCKED_RECT *locked, const
 }
 
 HRESULT STDMETHODCALLTYPE MTLD3D9Surface::UnlockRect() {
-  if (lock_target_)
-    return lock_target_->unlock_level(level_);
+  if (lock_target_) {
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_->GetDesc(&texture_desc);
+    return lock_target_->unlock_level(D3D11CalcSubresource(level_, array_slice_, texture_desc.MipLevels));
+  }
   if (!mapped_valid_)
     return D3DERR_INVALIDCALL;
   context_->Unmap(texture_.Get(), 0);
