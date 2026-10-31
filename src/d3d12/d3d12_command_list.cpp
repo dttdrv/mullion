@@ -2740,7 +2740,7 @@ public:
   // a pass, where draws and dispatches run unordered. one that orders writes a draw made (UAV, render target, depth,
   // stream output) or aliases memory ends the render pass, and the next draw opens one that loads what this one
   // stored. a dispatch writes through UAVs alone and keeps its pass: `dispatched` is a barrier on one, before or after.
-  // true when no later barrier of the call can matter
+  // true when no later barrier of the call can order more; their resources still count (BarrierLeaves, BarrierNames)
   bool
   Order(bool drew, bool dispatched) {
     auto type = allocator_->encoder_current ? allocator_->encoder_current->type : EncoderType::Null;
@@ -2772,6 +2772,7 @@ public:
       return;
     }
     barrier_serial_++;
+    bool ordered = false;
     for (auto &barrier : std::span(barriers, Count)) {
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
         clear_joinable_ = false, va_found_ = nullptr;
@@ -2786,19 +2787,19 @@ public:
         BarrierNames(barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ? barrier.Transition.pResource
                      : barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV      ? barrier.UAV.pResource
                                                                             : nullptr);
+      if (ordered)
+        continue;
       // a UAV barrier orders UAV accesses alone: a render pass whose draws used none keeps going, as a dispatch's would
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV && allocator_->encoder_current &&
           allocator_->encoder_current->type == EncoderType::Render &&
           allocator_->encoder_current != uav_draw_pass_) {
-        if (Order(false, true))
-          return;
+        ordered = Order(false, true);
         continue;
       }
       bool other = barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       auto &states = barrier.Transition;
-      if (Order(other || ((states.StateBefore & draw_writes) && PassWrote(states.pResource)),
-                other || ((states.StateBefore | states.StateAfter) & uav)))
-        return;
+      ordered = Order(other || ((states.StateBefore & draw_writes) && PassWrote(states.pResource)),
+                      other || ((states.StateBefore | states.StateAfter) & uav));
     }
   };
 
@@ -4884,6 +4885,7 @@ public:
     auto any = [](D3D12_BARRIER_ACCESS access, D3D12_BARRIER_ACCESS of) {
       return access == D3D12_BARRIER_ACCESS_COMMON || (access != D3D12_BARRIER_ACCESS_NO_ACCESS && (access & of));
     };
+    bool ordered = false;
     for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
       for (UINT32 i = 0; i < group.NumBarriers; i++) {
         auto [before, after] =
@@ -4898,8 +4900,8 @@ public:
         if (!clears_.empty())
           BarrierNames(resource);
         BarrierLeaves(resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATES(0));
-        if (Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav)))
-          return;
+        if (!ordered)
+          ordered = Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav));
       }
   }
 };
