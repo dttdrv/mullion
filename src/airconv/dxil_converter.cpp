@@ -3283,7 +3283,14 @@ convert_dxil(
         ret = UndefValue::get(ty);
         break;
       }
-      auto locks = ty->isIntegerTy(64) ? ctx.binding.GetAtomicLocks(air) : nullptr;
+      // Metal has texture atomics on integer textures only: a float exchange on a typed resource (an R32_FLOAT
+      // RWTexture or RWBuffer, HLSL SM 6.6, which DXIL gives as an exchange of its bits) runs under a lock as a
+      // 64-bit atomic does, its bits the word's low half
+      bool float_texel =
+          !h.buffer && !ty->isIntegerTy(64) && h.texture->Texture.sample_type == Texture::sample_float;
+      auto locks = ty->isIntegerTy(64) || float_texel ? ctx.binding.GetAtomicLocks(air) : nullptr;
+      if (float_texel && !locks)
+        return make_error<UnsupportedFeature>("float atomic on a typed resource without the atomic lock table");
       if (locks) {
         // aliases key the backing allocation and its coordinates, rather than the Metal view and relative slice
         auto texel = [&]() -> Word64 {
@@ -3307,14 +3314,22 @@ convert_dxil(
                                ir.CreateLShr(origin, ir.getInt32Ty()->getBitWidth()));
           }
           return {key, llvm::air::MemFlags::Texture,
-                  [=, &ir, &air, &t] {
+                  [=, &ir, &air, &t]() -> Value * {
                     auto v = air.CreateRead(t.Texture, t.Handle, address, array, nullptr, ir.getInt32(0), true).first;
+                    if (float_texel)
+                      return ir.CreateZExt(ir.CreateBitCast(ir.CreateExtractElement(v, (uint64_t)0), ir.getInt32Ty()), i64);
                     return ir.CreateOr(
                         ir.CreateZExt(ir.CreateExtractElement(v, (uint64_t)0), i64),
                         ir.CreateShl(ir.CreateZExt(ir.CreateExtractElement(v, 1), i64), 32)
                     );
                   },
                   [=, &ir, &air, &t](Value *v) {
+                    if (float_texel) {
+                      auto bits = ir.CreateBitCast(ir.CreateTrunc(v, ir.getInt32Ty()), ir.getFloatTy());
+                      air.CreateWrite(t.Texture, t.Handle, address, array, nullptr, ir.getInt32(0),
+                                      ir.CreateVectorSplat(4, bits), true);
+                      return;
+                    }
                     Value *halves = Constant::getNullValue(FixedVectorType::get(ir.getInt32Ty(), 4));
                     halves = ir.CreateInsertElement(halves, ir.CreateTrunc(v, ir.getInt32Ty()), (uint64_t)0);
                     halves = ir.CreateInsertElement(halves, ir.CreateTrunc(ir.CreateLShr(v, 32), ir.getInt32Ty()), 1);
@@ -3326,10 +3341,16 @@ convert_dxil(
                                    *h.buffer, ir.getInt64Ty(), ir.CreateLShr(byte_address(h, a(first), a(first + 1)), 3)
                                ))
                              : texel();
+        // a float's operands are its bits, so a compare is of bits (-0.0 is not 0.0)
+        auto operand = [&](unsigned i) {
+          return float_texel ? ir.CreateZExt(ir.CreateBitCast(a(i), ir.getInt32Ty()), ir.getInt64Ty()) : a(i);
+        };
         ret = locked(word, locks, [&](Value *old) {
-          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, a(5)), a(6), old)
-                          : buildAtomicRMWValue(atomic_op(code), ir, old, a(6));
+          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
+                          : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
         });
+        if (float_texel)
+          ret = ir.CreateBitCast(ir.CreateTrunc(ret, ir.getInt32Ty()), ty);
         break;
       }
       if (ty->isIntegerTy(64))
