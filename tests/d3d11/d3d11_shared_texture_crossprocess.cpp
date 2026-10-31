@@ -293,36 +293,21 @@ child_shared(char **argv) {
 }
 
 // the late child: the creator of the share whose handle this process inherited has released every resource of it,
-// so this handle is all that is left of the share. the texture it names and the mutex it was made with both have
-// to still be there, at the key the creator left them, because the handle is a handle to the share's own object
+// so this handle is all that is left of the share. Windows keeps the share for it; Mullion keeps a share while an
+// object of its creating process lives (winemetal_unix.c, shared_name), so the open fails at once
 static int
 child_late(char **argv) {
   HANDLE kept = reinterpret_cast<HANDLE>(uintptr_t(strtoull(argv[2], nullptr, 10)));
   const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
   ComPtr<ID3D11Device> device;
-  ComPtr<ID3D11DeviceContext> context;
   ComPtr<ID3D11Device1> device1;
   CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
-                          nullptr, &context));
+                          nullptr, nullptr));
   CHECK(device.As(&device1));
   ComPtr<ID3D11Texture2D> imported;
-  CHECK(device1->OpenSharedResource1(kept, IID_PPV_ARGS(&imported)));
-  ComPtr<IDXGIKeyedMutex> mutex;
-  CHECK(imported.As(&mutex));
+  HRESULT hr = device1->OpenSharedResource1(kept, IID_PPV_ARGS(&imported));
   CloseHandle(kept);
-  // a fresh mutex is free with the initial key, so taking the initial key is what a mutex that lost its state does:
-  // "If the mutex is not released within the time-out interval, the method returns" (Microsoft Learn,
-  // IDXGIKeyedMutex::AcquireSync)
-  if (!expect(mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "the late open took the initial key, so it came back fresh"))
-    return 1;
-  if (!expect(mutex->AcquireSync(late_key, wait_ms) == S_OK, "the late open lost the key the share was left with"))
-    return 1;
-  auto got = contents(device.Get(), context.Get(), imported.Get());
-  if (!expect(got == pattern(11), "the late open's bytes changed (%u bytes, first %02x)", (unsigned)got.size(),
-              got.empty() ? 0u : got[0]))
-    return 1;
-  if (!expect(mutex->ReleaseSync(2 * late_key) == S_OK, "the late open could not release the mutex"))
-    return 1;
+  expect(FAILED(hr) && !imported, "the late open opened a share none of its creator's objects keeps, hr %#lx", hr);
   return verdict();
 }
 
@@ -566,14 +551,14 @@ parent() {
   if (!expect(contents(device.Get(), context.Get(), shared_texture.Get()) == pattern(7),
              "the child's bytes did not arrive through the marshalled handle"))
     return 1;
-  step("the handle stays valid while the child holds the resource, and dies with it");
+  // Windows keeps the share openable while the child holds it; Mullion keeps it while an object of the creating
+  // process made from it lives (winemetal_unix.c, shared_name), so the creator's open after its release fails at once
+  step("with the creator's texture released, its open fails at once while the child holds the resource");
   shared_resource.Reset();
   expect(shared_texture.Reset() == 0, "the creator texture retained an extra reference");
   ComPtr<ID3D11Texture2D> reopened;
-  CHECK(device->OpenSharedResource(legacy, IID_PPV_ARGS(&reopened)));
-  expect(contents(device.Get(), context.Get(), reopened.Get()) == pattern(7),
-         "the reopened texture's bytes changed");
-  expect(reopened.Reset() == 0, "the reopened texture retained an extra reference");
+  HRESULT reopen = device->OpenSharedResource(legacy, IID_PPV_ARGS(&reopened));
+  expect(FAILED(reopen) && !reopened, "the creator reopened a share none of its objects keeps, hr %#lx", reopen);
   if (!expect(!!SetEvent(go), "SetEvent: %lu", GetLastError()))
     return verdict();
   if (!expect(WaitForSingleObject(shared_child.hProcess, 60000) == WAIT_OBJECT_0, "the shared child did not exit")) {
@@ -588,7 +573,9 @@ parent() {
   HRESULT hr = device->OpenSharedResource(legacy, IID_PPV_ARGS(&dead));
   expect(FAILED(hr) && !dead, "the released sharing chain kept its handle valid, hr %#lx", hr);
 
-  step("an NT handle kept while every resource of its share goes carries the mutex it was made with");
+  // Windows keeps a share while a handle to it is open; Mullion while an object of its creating process lives
+  // (winemetal_unix.c, shared_name), so a handle kept past every resource opens nothing, at once
+  step("an NT handle kept while every resource of its share goes opens nothing");
   D3D11_TEXTURE2D_DESC late_desc{width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                   D3D11_BIND_SHADER_RESOURCE, 0,
                                   D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE};
@@ -618,26 +605,8 @@ parent() {
     if (!expect(other.open(), "a second device could not be made"))
       return verdict();
     ComPtr<ID3D11Texture2D> reopened;
-    expect(SUCCEEDED(other.device1->OpenSharedResource1(kept, IID_PPV_ARGS(&reopened))),
-           "the kept handle no longer opened a texture once every resource of the share went");
-    // the rest of this step says what the reopened texture has to be, so it only runs on one that opened
-    if (reopened) {
-      ComPtr<IDXGIKeyedMutex> reopened_mutex;
-      expect(SUCCEEDED(reopened.As(&reopened_mutex)), "the reopened texture has no mutex");
-      if (reopened_mutex) {
-        // a mutex that came back fresh is free with the initial key, and one that came back as its share's is not
-        expect(reopened_mutex->AcquireSync(0, 0) == WAIT_TIMEOUT,
-               "the reopened texture's mutex took the initial key, so it came back fresh");
-        expect(reopened_mutex->AcquireSync(late_key, wait_ms) == S_OK,
-               "the reopened texture's mutex lost the key it had");
-        // handed on at the key it was taken at, so the child that opens the handle next finds the same one
-        expect(reopened_mutex->ReleaseSync(late_key) == S_OK, "the reopened texture's mutex could not release");
-        reopened_mutex.Reset();
-      }
-      expect(contents(other.device.Get(), other.context.Get(), reopened.Get()) == pattern(11),
-             "the reopened texture's bytes changed");
-      expect(reopened.Reset() == 0, "the reopened texture retained an extra reference");
-    }
+    HRESULT reopen = other.device1->OpenSharedResource1(kept, IID_PPV_ARGS(&reopened));
+    expect(FAILED(reopen) && !reopened, "the kept handle opened a share with no resource left, hr %#lx", reopen);
   }
   // and the same handle in a process of its own, which never held a resource of the share either
   {
@@ -802,7 +771,9 @@ parent() {
   read_resource.Reset();
   expect(read_texture.Reset() == 0, "the read-only texture retained an extra reference");
 
-  step("a published name outlives its creator: a peer's resource keeps it open");
+  // Windows keeps the name while the peer holds a resource of the share; Mullion keeps the share while an object of
+  // its creating process lives (winemetal_unix.c, shared_name), so the open by name fails at once
+  step("a published name whose creator let its resources go opens nothing, though a peer holds one");
   WCHAR held_name[64];
   share_name(GetCurrentProcessId(), L"_held", held_name);
   ComPtr<ID3D11Texture2D> held_texture;
@@ -849,23 +820,11 @@ parent() {
     if (!expect(other.open(), "a second device could not be made"))
       return verdict();
     ComPtr<ID3D11Texture2D> late_named;
-    expect(SUCCEEDED(other.device1->OpenSharedResourceByName(
-               held_name, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&late_named)
-           )),
-           "the name died with the creator even though a peer held a resource of the share");
-    if (late_named) {
-      ComPtr<IDXGIKeyedMutex> late_named_mutex;
-      expect(SUCCEEDED(late_named.As(&late_named_mutex)), "the name-open has no mutex");
-      if (late_named_mutex) {
-        expect(late_named_mutex->AcquireSync(held_key, wait_ms) == S_OK,
-               "the name-open lost the key the share had");
-        expect(late_named_mutex->ReleaseSync(held_key) == S_OK, "the name-open could not release the mutex");
-        late_named_mutex.Reset();
-      }
-      expect(contents(other.device.Get(), other.context.Get(), late_named.Get()) == pattern(41),
-             "the name-open's bytes changed");
-      expect(late_named.Reset() == 0, "the name-open retained an extra reference");
-    }
+    HRESULT named_hr = other.device1->OpenSharedResourceByName(
+        held_name, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&late_named)
+    );
+    expect(FAILED(named_hr) && !late_named, "the name opened a share none of its creator's objects keeps, hr %#lx",
+           named_hr);
   }
   if (!expect(!!SetEvent(holder_go), "SetEvent: %lu", GetLastError())) {
     TerminateProcess(holder.hProcess, 1);
