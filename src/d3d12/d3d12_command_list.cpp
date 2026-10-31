@@ -4849,6 +4849,32 @@ public:
   Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) {
     barrier_serial_++;
     OrderingPoint();
+    // an access to or from NO_ACCESS hands memory from one resource to another that aliases it (Enhanced Barriers,
+    // Resource Aliasing), after which another may take the addresses. once a reserved buffer exists, an access from
+    // NO_ACCESS, which makes a resource the one that uses the memory, is ordered as ResourceBarrier orders an ALIASING
+    // barrier; the access to NO_ACCESS before it needs nothing of its own, as that orders all the work before it
+    bool aliasing = false, activates = false;
+    for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
+      for (UINT32 i = 0; i < group.NumBarriers; i++) {
+        auto [before, after] =
+            group.Type == D3D12_BARRIER_TYPE_GLOBAL
+                ? std::pair{group.pGlobalBarriers[i].AccessBefore, group.pGlobalBarriers[i].AccessAfter}
+                : group.Type == D3D12_BARRIER_TYPE_TEXTURE
+                      ? std::pair{group.pTextureBarriers[i].AccessBefore, group.pTextureBarriers[i].AccessAfter}
+                      : std::pair{group.pBufferBarriers[i].AccessBefore, group.pBufferBarriers[i].AccessAfter};
+        aliasing |= before == D3D12_BARRIER_ACCESS_NO_ACCESS || after == D3D12_BARRIER_ACCESS_NO_ACCESS;
+        activates |= before == D3D12_BARRIER_ACCESS_NO_ACCESS;
+      }
+    if (aliasing)
+      va_found_ = nullptr;
+    if (activates && device_->HasSparseBuffers()) {
+      clears_.clear();
+      named_.clear();
+      allocator_->InvalidateCurrentPass();
+      allocator_->AllocatePass<EncoderData>()->type = EncoderType::Settle;
+      allocator_->InvalidateCurrentPass();
+      return;
+    }
     constexpr auto uav = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, draw_writes = uav | D3D12_BARRIER_ACCESS_RENDER_TARGET |
                        D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE | D3D12_BARRIER_ACCESS_STREAM_OUTPUT;
     // common access is any access, writes included
