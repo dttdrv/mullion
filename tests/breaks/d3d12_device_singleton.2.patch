@@ -1,0 +1,12 @@
+# D3D12CreateDevice returns the existing device after it is removed
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -2745,8 +2745,6 @@ CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
+         existing->AddRefIfReferenced())
+       device = Com<MTLD3D12DeviceImpl>::transfer(existing);
+   if (device) {
+-    if (FAILED(hr = device->GetDeviceRemovedReason()))
+-      return hr;
+     return device->QueryInterface(riid, ppDevice);
+   }
+   device = Com(new MTLD3D12DeviceImpl(adapter));
