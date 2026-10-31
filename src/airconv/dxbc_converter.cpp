@@ -1799,7 +1799,7 @@ static int SM50InitializeUncached(
       auto scaler_type = to_air_scaler_type(srv.scaler_type);
       srv.arg_index = binding_table.DefineTexture(
         "t" + std::to_string(range_id), texture_kind, access, scaler_type,
-        attr_index
+        attr_index, std::nullopt, srv.compared
       );
     } else {
       srv.arg_index = binding_table.DefineBuffer(
@@ -1839,7 +1839,9 @@ static int SM50InitializeUncached(
       flags |= MTL_SM50_SHADER_ARGUMENT_READ_ACCESS;
     }
     if (srv.resource_type != ResourceType::NonApplicable)
-      flags |= (MTL_SM50_SHADER_ARGUMENT_FLAG)stand_in_flags(lowering_texture_1d_to_2d(to_air_resource_type(srv.resource_type, srv.compared)), srv.scaler_type);
+      flags |= (MTL_SM50_SHADER_ARGUMENT_FLAG)stand_in_flags(
+        lowering_texture_1d_to_2d(to_air_resource_type(srv.resource_type, srv.compared), srv.compared), srv.scaler_type
+      );
     sm50_shader->args_reflection.push_back({
       .Type = SM50BindingType::SRV,
       .SM50BindingSlot = range_id,

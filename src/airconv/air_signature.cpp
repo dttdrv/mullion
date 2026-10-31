@@ -124,7 +124,7 @@ uint32_t ArgumentBufferBuilder::DefineSampler(
 uint32_t ArgumentBufferBuilder::DefineTexture(
   std::string name, TextureKind kind, MemoryAccess access,
   MSLScalerType scaler_type, uint32_t location_index,
-  std::optional<uint32_t> raster_order_group
+  std::optional<uint32_t> raster_order_group, bool compared
 ) {
   auto element_index = fieldsType.size();
   assert(!fields.count(name) && "otherwise duplicated field name");
@@ -137,7 +137,7 @@ uint32_t ArgumentBufferBuilder::DefineTexture(
       MSLTexture{
         .component_type = scaler_type,
         .memory_access = access,
-        .resource_kind =  air::lowering_texture_1d_to_2d(kind),
+        .resource_kind =  air::lowering_texture_1d_to_2d(kind, compared),
         .resource_kind_logical = kind,
       },
     .arg_name = name,
