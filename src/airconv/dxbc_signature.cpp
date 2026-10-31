@@ -604,6 +604,7 @@ void handle_signature_ps(
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL: {
       sm50_shader->ps_fine_shading = true;
+      sm50_shader->ps_depth_output = true;
       signature_handlers.push_back([=](SignatureContext &ctx) {
         ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
           assert(

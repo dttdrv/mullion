@@ -577,7 +577,7 @@ protected:
   struct PipelineDescriptor {
     std::variant<WMTRenderPipelineInfo, WMTMeshRenderPipelineInfo> info;
     std::vector<WMT::Reference<WMT::Function>> functions;
-    std::unordered_map<uint32_t, WMT::Reference<WMT::RenderPipelineState>> variants;
+    std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> variants;
     // the geometry shader that counts pipeline statistics, made when first used
     std::function<WMT::Reference<WMT::Function>()> statistics_geometry_shader;
     WMT::Reference<WMT::Function> statistics_gs;
@@ -588,7 +588,8 @@ protected:
   // after it (an occlusion query and the depth bounds test of a GPU without one), of coarse pixels (variable rate
   // shading), or blending only the targets a pass binds, as Metal refuses a pipeline whose shader reads a target it has
   // no format for
-  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late, bool coarse, uint32_t blends)> pixel_shader_;
+  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late, bool coarse, uint32_t blends, bool depth)>
+      pixel_shader_;
   std::unordered_map<uint32_t, WMT::Reference<WMT::Function>> pixel_shaders_;
   // the targets the pixel shader blends itself (ShaderBlend)
   uint32_t blend_mask_ = 0;
@@ -971,6 +972,18 @@ public:
         info.depth_pixel_format = format_desc.PixelFormat;
       if (dsv_flags & 2)
         info.stencil_pixel_format = format_desc.PixelFormat;
+    } else if (auto &ds = pDesc->DepthStencilState;
+               !pDesc->RasterizerState.ForcedSampleCount &&
+               ((ds.DepthEnable && (ds.DepthFunc != D3D12_COMPARISON_FUNC_ALWAYS ||
+                                    ds.DepthWriteMask != D3D12_DEPTH_WRITE_MASK_ZERO || ds.StencilEnable)) ||
+                ds.StencilEnable || depth_bounds || depth_bounds_emulated)) {
+      // D3D12 asks for the bound view's format, but titles that test depth or stencil without one rely on drivers
+      // testing the view bound (vkd3d-proton keeps it: "A workaround for SottR, which creates pipelines with
+      // DSV_UNKNOWN, but still insists on using a depth buffer", libs/vkd3d/state.c). a test of ALWAYS that writes
+      // nothing, with no stencil test, is off, as there. a forced sample count rasterizes with no view and no depth
+      // test (D3D11.3 3.5.6.2), so such a pipeline keeps the view out as before
+      dsv_mask = 3;
+      dsv_any_format = true;
     }
 
     if constexpr (std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo>) {
@@ -1383,7 +1396,7 @@ public:
       pixel_shader_ =
           [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
            signature = Com<ID3D12RootSignature>(pDesc->pRootSignature), data_ps, common,
-           ps_name](bool statistics, bool late, bool coarse, uint32_t blends) mutable {
+           ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
             MTL_SHADER_REFLECTION reflection;
@@ -1393,13 +1406,17 @@ public:
             data.pipeline_statistics = statistics;
             data.late_tests = late;
             data.coarse_shading = coarse;
+            // Metal refuses a pipeline whose shader outputs depth without a depth format: the shader's depth is kept
+            // only for a variant that has one (RenderTargets)
+            data.disable_depth_output &= !depth;
             for (unsigned i = 0; i < std::size(data.blend); i++)
               if (!(blends >> i & 1))
                 data.blend[i] = {};
             data.next = &common;
             SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
             auto arguments = RootSignature(rootsig, signature.ptr(), &data);
-            auto name = ps_name + "_" + std::to_string(blends | statistics << 8 | late << 9 | coarse << 10);
+            auto name =
+                ps_name + "_" + std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11);
             return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, name.c_str(),
                                    [&shader](auto args, auto name, auto bitcode, auto error) {
                                      return SM50Compile(shader, args, name, bitcode, error);
@@ -1639,16 +1656,20 @@ public:
 
   WMT::RenderPipelineState
   RenderTargets(
-      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse
+      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
+      WMTPixelFormat DSVFormat
   ) override {
     Mask &= rtv_mask;
     DSVPlanar &= dsv_mask;
+    // a pipeline of any depth stencil format is made without one, which a pass without a view keeps
+    bool any_format = dsv_any_format && DSVPlanar;
     Statistics &= pixel_shader || statistics_geometry_;
     Coarse &= pixel_shader && coarse_shading;
     // a pixel shader's discard of the depth bounds test takes its samples out of an occlusion query only before the
     // depth and stencil tests
     bool late = Occluded && depth_bounds_emulated && pixel_shader;
-    if (!Pipeline || (!Statistics && !late && !Coarse && Mask == rtv_mask && DSVPlanar == dsv_mask))
+    if (!Pipeline ||
+        (!Statistics && !late && !Coarse && Mask == rtv_mask && (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
       return Pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
     auto described = pipeline_descriptors_.find(Pipeline.handle);
@@ -1659,7 +1680,8 @@ public:
     auto key = Mask | (DSVPlanar << D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) |
                (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
                (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3)) |
-               (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4));
+               (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4)) |
+               (uint64_t(any_format ? DSVFormat : WMTPixelFormatInvalid) << 32);
     auto found = descriptor.variants.find(key);
     if (found != descriptor.variants.end())
       return found->second;
@@ -1669,10 +1691,13 @@ public:
     auto pipeline = std::visit(
         [&](auto info) {
           // a pipeline without a pixel shader may have the depth bounds test's fragment function, which has no variants
+          // a pipeline of any depth stencil format was converted without the depth its shader outputs, which a
+          // variant with the view's depth keeps
+          bool depth = any_format && (DSVPlanar & 1) && ref_ps.PixelShader.DepthOutput;
           if (auto blends = blend_mask_ & Mask;
-              pixel_shader && (Statistics || late || Coarse || blends != blend_mask_)) {
-            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10];
-            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends)))
+              pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth)) {
+            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11];
+            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends, depth)))
               return WMT::Reference<WMT::RenderPipelineState>{};
             info.fragment_function = ps;
           }
@@ -1688,8 +1713,12 @@ public:
               info.colors[i] = {.pixel_format = WMTPixelFormatInvalid};
           if (!(DSVPlanar & 1))
             info.depth_pixel_format = WMTPixelFormatInvalid;
+          else if (any_format)
+            info.depth_pixel_format = DSVFormat;
           if (!(DSVPlanar & 2))
             info.stencil_pixel_format = WMTPixelFormatInvalid;
+          else if (any_format)
+            info.stencil_pixel_format = DSVFormat;
           return device_->GetMTLDevice().newRenderPipelineState(info, error);
         },
         descriptor.info

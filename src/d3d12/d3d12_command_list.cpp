@@ -1583,7 +1583,8 @@ public:
       if (pass->colors[i].attachment)
         mask |= 1u << i;
     return pso_graphics_->RenderTargets(
-        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading()
+        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading(),
+        dsv.Texture ? dsv.Texture->pixelFormat(dsv.View) : WMTPixelFormatInvalid
     );
   }
 
@@ -2705,7 +2706,8 @@ public:
       dirty_state_.set(DirtyState::VertexBuffer);
     if (!pso_graphics_ || pso_graphics_->forced_sample_count != graphics_pso->forced_sample_count ||
         ((pso_graphics_->rtv_mask ^ graphics_pso->rtv_mask) & ((1u << num_rtvs) - 1)) ||
-        (dsv.Texture && pso_graphics_->dsv_mask != graphics_pso->dsv_mask))
+        (dsv.Texture && ((pso_graphics_->dsv_mask ^ graphics_pso->dsv_mask) &
+                         DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)))))
       allocator_->InvalidateCurrentPass();
     if (graphics_pso->shader_blend)
       dirty_state_.set(DirtyState::BlendFactor);
