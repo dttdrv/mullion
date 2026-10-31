@@ -158,6 +158,10 @@ conservative_triangle(
   auto min = [&](pvalue a, pvalue b) { return air.CreateFPBinOp(AIRBuilder::fmin, a, b, false); };
   auto max = [&](pvalue a, pvalue b) { return air.CreateFPBinOp(AIRBuilder::fmax, a, b, false); };
   auto abs = [&](pvalue a) { return air.CreateFPUnOp(AIRBuilder::fabs, a, false); };
+  // an index past the last viewport selects the first (D3D11.3 15.8.1)
+  viewport_index = builder.CreateSelect(
+      builder.CreateICmpULT(viewport_index, builder.getInt32(SM50_VIEWPORTS)), viewport_index, builder.getInt32(0)
+  );
   auto viewport = builder.CreateLoad(types._float4, builder.CreateGEP(types._float4, viewports, {viewport_index}));
   auto state = builder.CreateLoad(
       types._float4,
@@ -875,7 +879,6 @@ convert_dxbc_geometry_shader(
         viewport_index = builder.CreateExtractElement(
             builder.CreateLoad(types._int4, ring_at(slot[0], viewport_reg)), uint64_t(viewport_component)
         );
-      viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
       auto triangle = conservative_triangle(builder, air, types, clip, function->getArg(viewports_idx), viewport_index);
       auto primitive = builder.CreateLoad(types._int, emitted);
       builder.CreateStore(builder.CreateAdd(primitive, one_const), emitted);

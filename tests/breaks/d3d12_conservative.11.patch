@@ -1,9 +1,11 @@
 # a mesh shader's triangles are not grown
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index d4b54e5..e594d5a 100644
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -3832,6 +3832,8 @@
+@@ -3977,6 +3977,8 @@ convert_dxil(
+       }
        Value *viewport = primitive_outputs[2] ? (Value *)word(conservative_primitives, p, cm->registers[1].size() + 2) : ir.getInt32(0);
-       viewport = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport, ir.getInt32(15), false);
        auto triangle = conservative_triangle(ir, air, ctx.types, clip, cm->viewports, viewport);
 +      for (uint32_t u = 0; u < 3; u++)
 +        triangle.position[u] = clip[u];
