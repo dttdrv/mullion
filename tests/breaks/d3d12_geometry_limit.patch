@@ -1,0 +1,14 @@
+# airconv: a geometry shader's emits past maxvertexcount are not dropped
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 9c1ad57..dcd4097 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1044,7 +1044,7 @@ convert_dxbc_geometry_shader(
+   resource_map.call_emit = [&](uint32_t stream) -> IREffect {
+     auto emitted = builder.CreateLoad(types._int, emits);
+     builder.CreateStore(builder.CreateAdd(emitted, one_const), emits);
+-    auto after_emit = guard(builder.CreateICmpULT(emitted, builder.getInt32(max_vertex_out)));
++    auto after_emit = guard(builder.getTrue());
+     if (statistics && stream < 4) {
+       auto length = builder.CreateAdd(builder.CreateLoad(types._int, strip_length[stream]), one_const);
+       builder.CreateStore(length, strip_length[stream]);
