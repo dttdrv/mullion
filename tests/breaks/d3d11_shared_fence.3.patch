@@ -1,12 +1,14 @@
 # opening a shared fence creates an independent Metal event
+diff --git a/src/mullion/mullion_fence.cpp b/src/mullion/mullion_fence.cpp
+index 73fd154..8f5cf80 100644
 --- a/src/mullion/mullion_fence.cpp
 +++ b/src/mullion/mullion_fence.cpp
-@@ -179,7 +179,7 @@
-     ERR("openSharedEvent: Failed to look up mach port");
+@@ -180,7 +180,7 @@ openSharedEvent(WMT::Device mtl, D3DKMT_HANDLE device, HANDLE handle, D3DKMT_HAN
      return {};
    }
--  return mtl.newSharedEventWithMachPort(mach_port);
-+  return mtl.newSharedEvent();
+   WMT::SharedNameHold hold(mach_port_name);
+-  auto event = mtl.newSharedEventWithMachPort(mach_port);
++  auto event = mtl.newSharedEvent();
+   hold.keep(event.handle);
+   return event;
  }
- 
- HRESULT

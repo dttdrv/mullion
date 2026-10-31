@@ -78,7 +78,7 @@ shareEvent(D3DKMT_HANDLE device, WMT::SharedEvent event) {
   }
   char mach_port_name[54];
   makeUniqueName(mach_port_name);
-  if (!WMTBootstrapRegister(mach_port_name, mach_port)) {
+  if (!WMTBootstrapRegister(mach_port_name, event.handle, mach_port)) {
     ERR("shareEvent: Failed to register mach port for shared fence");
     return 0;
   }
@@ -179,7 +179,10 @@ openSharedEvent(WMT::Device mtl, D3DKMT_HANDLE device, HANDLE handle, D3DKMT_HAN
     ERR("openSharedEvent: Failed to look up mach port");
     return {};
   }
-  return mtl.newSharedEventWithMachPort(mach_port);
+  WMT::SharedNameHold hold(mach_port_name);
+  auto event = mtl.newSharedEventWithMachPort(mach_port);
+  hold.keep(event.handle);
+  return event;
 }
 
 HRESULT

@@ -1309,8 +1309,9 @@ MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info) {
 }
 
 WINEMETAL_API bool
-WMTBootstrapRegister(const char *name, mach_port_t mach_port) {
-  struct unixcall_bootstrap params;
+WMTBootstrapRegister(const char *name, obj_handle_t object, mach_port_t mach_port) {
+  struct unixcall_bootstrap params = {};
+  params.object = object;
   strncpy(params.name, name, sizeof(params.name) - 1);
   params.name[sizeof(params.name) - 1] = '\0';
   params.mach_port = mach_port;
@@ -1320,7 +1321,8 @@ WMTBootstrapRegister(const char *name, mach_port_t mach_port) {
 
 WINEMETAL_API bool
 WMTBootstrapLookUp(const char *name, mach_port_t *mach_port) {
-  struct unixcall_bootstrap params;
+  struct unixcall_bootstrap params = {};
+  params.object = 0;
   strncpy(params.name, name, sizeof(params.name) - 1);
   params.name[sizeof(params.name) - 1] = '\0';
   params.mach_port = 0;
@@ -1989,4 +1991,12 @@ WINEMETAL_API void
 MTL4CommandBuffer_orderAliases(obj_handle_t buffer, bool inside) {
   struct unixcall_generic_obj_uint64_noret p = {.handle = buffer, .arg = inside};
   UNIX_CALL(WMTUnixMetal4OrderAliases, &p);
+}
+
+WINEMETAL_API void
+WMTBootstrapKeep(const char *name, obj_handle_t object) {
+  struct unixcall_bootstrap params = {.object = object};
+  strncpy(params.name, name, sizeof(params.name) - 1);
+  params.name[sizeof(params.name) - 1] = '\0';
+  UNIX_CALL(WMTUnixBootstrapKeep, &params);
 }

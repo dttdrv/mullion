@@ -1691,4 +1691,26 @@ InitializeTileRenderPipelineInfo(WMTTileRenderPipelineInfo &info) {
   info.fail_on_binary_archive_miss = false;
 }
 
+// the hold a successful WMTBootstrapLookUp took on a shared name: the object made from the looked-up port keeps the
+// name (keep, while that object surely lives), or the hold is dropped when this goes
+class SharedNameHold {
+  std::string name_;
+  bool held_ = true;
+
+public:
+  explicit SharedNameHold(std::string name) : name_(std::move(name)) {}
+  SharedNameHold(const SharedNameHold &) = delete;
+  SharedNameHold &operator=(const SharedNameHold &) = delete;
+  ~SharedNameHold() {
+    keep(NULL_OBJECT_HANDLE);
+  }
+
+  void
+  keep(obj_handle_t object) {
+    if (held_)
+      WMTBootstrapKeep(name_.c_str(), object);
+    held_ = false;
+  }
+};
+
 } // namespace WMT

@@ -409,6 +409,7 @@ struct unixcall_setmetalcachepath {
 };
 
 struct unixcall_bootstrap {
+  obj_handle_t object;
   char name[128];
   uint32_t mach_port;
   uint32_t reserved;

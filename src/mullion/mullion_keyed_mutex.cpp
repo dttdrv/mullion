@@ -75,7 +75,7 @@ KeyedMutex::create(WMT::Device device) {
   }
   char mach_port_name[54];
   makeUniqueName(mach_port_name);
-  if (!WMTBootstrapRegister(mach_port_name, mach_port)) {
+  if (!WMTBootstrapRegister(mach_port_name, event.handle, mach_port)) {
     ERR("KeyedMutex: Failed to register mach port.");
     return {};
   }
@@ -113,11 +113,13 @@ KeyedMutex::import(WMT::Device device, D3DKMT_HANDLE global_kmt) {
     ERR("KeyedMutex: Failed to lookup mach port.");
     return {};
   }
+  WMT::SharedNameHold hold(mach_port_name);
 
   auto ret = Rc(new KeyedMutex());
   ret->global_kmt_ = global_kmt;
   ret->local_kmt_ = open.hKeyedMutex;
   ret->event_ = device.newSharedEventWithMachPort(mach_port);
+  hold.keep(ret->event_.handle);
   return ret;
 }
 
