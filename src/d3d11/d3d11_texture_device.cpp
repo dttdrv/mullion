@@ -456,7 +456,15 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
       }
     } else {
       for (auto sub : EnumerateSubresources(finalDesc)) {
-        auto &data = pInitialData[sub.SubresourceId];
+        auto data = pInitialData[sub.SubresourceId];
+        // a Texture1D's pitches have no meaning (D3D11_SUBRESOURCE_DATA) and may be anything, 0 among them; its Metal
+        // texture is a 2D one, one row high, whose row is as wide as the level
+        if constexpr (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
+          uint32_t row, image, length;
+          if (FAILED(GetLinearTextureLayout(pDevice, finalDesc, sub.MipLevel, row, image, length, false)))
+            return E_FAIL;
+          data.SysMemPitch = data.SysMemSlicePitch = row;
+        }
         initializer.initWithData(
             texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel, data.pSysMem, data.SysMemPitch,
             data.SysMemSlicePitch, format_desc.Flag
