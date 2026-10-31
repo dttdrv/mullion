@@ -663,12 +663,15 @@ llvm::Error convert_dxbc_pixel_shader(
         if (pso_alpha_to_coverage) {
           // o0.a of 0 or less, or NaN, covers no sample, 1 or more all n, and between them the nearest count of
           // samples (D3D11.3 17.18)
-          auto output = ctx.resource.output.ptr_float4;
-          auto output_ty = llvm::cast<llvm::PointerType>(output->getType())->getNonOpaquePointerElementType();
-          auto o0 = builder.CreateLoad(
-            output_ty->getArrayElementType(), builder.CreateConstInBoundsGEP2_32(output_ty, output, 0, 0)
-          );
-          auto alpha = builder.CreateExtractElement(o0, 3);
+          auto alpha = ctx.resource.coverage_alpha;
+          if (!alpha) {
+            auto output = ctx.resource.output.ptr_float4;
+            auto output_ty = llvm::cast<llvm::PointerType>(output->getType())->getNonOpaquePointerElementType();
+            auto o0 = builder.CreateLoad(
+              output_ty->getArrayElementType(), builder.CreateConstInBoundsGEP2_32(output_ty, output, 0, 0)
+            );
+            alpha = builder.CreateExtractElement(o0, 3);
+          }
           auto zero = llvm::ConstantFP::get(ctx.types._float, 0.0), one = llvm::ConstantFP::get(ctx.types._float, 1.0);
           alpha = builder.CreateSelect(builder.CreateFCmpOGT(alpha, zero), alpha, zero);
           alpha = builder.CreateSelect(builder.CreateFCmpOLT(alpha, one), alpha, one);
@@ -1089,6 +1092,17 @@ llvm::Error convert_dxbc_pixel_shader(
   builder.SetInsertPoint(epilogue_bb);
   if (coarse)
     coarse->Leave(builder, air, resource_map);
+  // alpha-to-coverage takes o0.a from before the output merger blends (D3D11.3 17.18), and the shader's own blend of
+  // target 0 writes over o0
+  if (pso_alpha_to_coverage && held[0] != ~0u)
+    resource_map.coverage_alpha = builder.CreateExtractElement(
+      builder.CreateLoad(
+        types._float4, builder.CreateConstInBoundsGEP2_32(
+                         llvm::ArrayType::get(types._float4, max_output_register), resource_map.output.ptr_float4, 0, 0
+                       )
+      ),
+      3
+    );
   for (uint32_t rt = 0; rt < 8; rt++)
     if (held[rt] != ~0u)
       blend_output(
