@@ -1,0 +1,12 @@
+# a write between two samples of one sampler no longer keeps their branches apart: what reads it moves above it
+--- a/src/airconv/transforms/merge_sample_branches.cpp
++++ b/src/airconv/transforms/merge_sample_branches.cpp
+@@ -86,8 +86,6 @@ Join(Diamond &First, const Diamond &Second) {
+   for (auto &I : *Between) {
+     if (isa<PHINode>(I) || I.isTerminator())
+       continue;
+-    if (I.mayHaveSideEffects() && !Derivative(I))
+-      return false;
+     if (Feeds(I))
+       After.insert(&I), Later.push_back(&I);
+     else

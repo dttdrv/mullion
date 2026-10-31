@@ -1,0 +1,12 @@
+# what uses a sample's value between it and the next sample moves after the second sample in reverse order
+--- a/src/airconv/transforms/merge_sample_branches.cpp
++++ b/src/airconv/transforms/merge_sample_branches.cpp
+@@ -110,7 +110,7 @@ Join(Diamond &First, const Diamond &Second) {
+   for (auto &Phi : make_early_inc_range(Between->phis()))
+     Phi.moveBefore(At);
+   for (auto I : Later)
+-    I->moveBefore(At);
++    I->moveBefore(Second.Join->getFirstNonPHI());
+   for (auto [From, To] : {std::pair{Second.Own, First.Own}, std::pair{Second.Scaled, First.Scaled}}) {
+     To->getTerminator()->eraseFromParent();
+     To->getInstList().splice(To->end(), From->getInstList());

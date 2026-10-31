@@ -502,9 +502,10 @@ public:
   // Metal biases the footprint's minor axis before an anisotropic filter clamps the footprint's ratio, which can undo
   // the bias; D3D biases the LOD of the clamped footprint ("biasedLOD = output.LOD + MipLODBias", D3D11.3 7.18.11).
   // so a pixel shader's sample of a 2D texture through a sampler that may be anisotropic scales its gradients
-  // instead, which keeps the ratio; without anisotropy that is the biased LOD too, so one sample serves every sampler
-  // a static sampler's anisotropy and bias, known when the pipeline is made (SamplerDescriptor), by its metadata, and
-  // the metadata each bias DecodeSamplerBias made was read from, which a sample may add its own to
+  // instead, which keeps the ratio, and one through a sampler that is not keeps Metal's LOD and bias. a static
+  // sampler's anisotropy and bias are known when the pipeline is made (SamplerDescriptor): KnownSamplers holds them by
+  // the sampler's metadata, and SamplerBiases the metadata each bias DecodeSamplerBias made was read from, which a
+  // sample may add its own to. a descriptor's sampler is known only from its metadata, and its quad branches on it
   struct KnownSampler {
     bool Anisotropic, Biased;
   };

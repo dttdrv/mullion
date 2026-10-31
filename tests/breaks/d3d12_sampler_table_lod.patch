@@ -1,0 +1,14 @@
+# a descriptor's sampler that is not anisotropic samples without the sampler's or the sample's bias
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2380,7 +2380,10 @@ Converter::SampleImplicit(
+   ir.SetInsertPoint(Head);
+   ir.CreateCondBr(Whole, Own, Scaled)->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
+   ir.SetInsertPoint(Own);
++  auto Kept = Bias;
++  Bias = ConstantFP::get(air.getFloatTy(), 0);
+   auto Implicit = Biased();
++  Bias = Kept;
+   ir.CreateBr(Tail);
+   ir.SetInsertPoint(Scaled);
+   auto Gradient = Gradients();

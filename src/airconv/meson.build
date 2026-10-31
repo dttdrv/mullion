@@ -20,6 +20,7 @@ airconv_src = files([
  'transforms/guard_out_of_bounds.cpp',
  'transforms/hoist_loads.cpp',
  'transforms/lower_16bit_texread.cpp',
+ 'transforms/merge_sample_branches.cpp',
  'transforms/simdgroup_implicit_membarrier.cpp',
 ])
 

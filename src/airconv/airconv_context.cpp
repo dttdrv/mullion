@@ -36,6 +36,7 @@
 
 #include "transforms/guard_out_of_bounds.hpp"
 #include "transforms/lower_16bit_texread.hpp"
+#include "transforms/merge_sample_branches.hpp"
 #include "transforms/simdgroup_implicit_membarrier.hpp"
 #include "transforms/hoist_loads.hpp"
 
@@ -149,6 +150,11 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
     // Create a small function pass pipeline to cleanup after all the global
     // optimizations.
     FunctionPassManager GlobalCleanupPM;
+    // MULLION_AIRCONV_SKIP=sample-branch-merge leaves a branch per sample (SampleImplicit)
+    if (auto skip = (getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP")); !skip || !strstr(skip, "sample-branch-merge"))
+      GlobalCleanupPM.addPass(air::MergeSampleBranchesPass());
+    else
+      GlobalCleanupPM.addPass(air::MergeSampleBranchesPass(false));
     GlobalCleanupPM.addPass(InstCombinePass());
 
     GlobalCleanupPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
