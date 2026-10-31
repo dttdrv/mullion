@@ -3402,9 +3402,11 @@ shared_name_release(struct shared_name *entry) {
   pthread_mutex_unlock(&shared_names_lock);
   if (!last)
     return;
-  /* the cancel handler runs after the last request handler, and destroys the receive right */
-  dispatch_source_cancel(entry->source);
-  dispatch_release(entry->source);
+  /* the cancel handler runs after the last request handler, destroys the receive right and frees entry, which it can
+   * do before dispatch_source_cancel returns */
+  dispatch_source_t source = entry->source;
+  dispatch_source_cancel(source);
+  dispatch_release(source);
 }
 
 /* attached to each object that keeps a name: the name goes with the last of them */
