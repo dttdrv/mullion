@@ -38,6 +38,7 @@
 #include "sha1/sha1_util.hpp"
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -552,6 +553,60 @@ public:
   // a sampler has a border color Metal lacks (PopulateWMTSamplerInfo), so pipelines made from now on emulate it
   // (MTLD3D12PipelineState::borderless)
   std::atomic<bool> custom_borders{false};
+
+  // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
+  // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so
+  // that a title whose threads take any free allocator each frame still finds them (dttdrv/mullion#32: Starfield makes
+  // about 450 a frame from many allocators). at most kCommands commands in all, the oldest given back to Metal first:
+  // keeping every one ran Starfield out of memory
+  struct IndirectCommandBuffers {
+    struct Pooled {
+      WMT::Reference<WMT::IndirectCommandBuffer> icb;
+      uint64_t gpu_resource_id;
+      uint64_t key;
+      // what it was made with: the kind (with no padding and no resource ID), its size and its storage
+      WMTIndirectCommandBufferInfo kind;
+      uint64_t capacity;
+      WMTResourceOptions options;
+      bool
+      Is(uint64_t key_, const WMTIndirectCommandBufferInfo &kind_, uint64_t capacity_, WMTResourceOptions options_) const {
+        return key == key_ && capacity == capacity_ && options == options_ && !memcmp(&kind, &kind_, sizeof(kind));
+      }
+    };
+    static constexpr uint64_t kCommands = 1 << 18;
+
+    bool
+    Take(uint64_t key, const WMTIndirectCommandBufferInfo &kind, uint64_t capacity, WMTResourceOptions options,
+         Pooled &out) {
+      std::lock_guard lock(mutex);
+      for (auto it = entries.begin(); it != entries.end(); ++it)
+        if (it->Is(key, kind, capacity, options)) {
+          out = std::move(*it);
+          commands -= out.capacity;
+          entries.erase(it);
+          return true;
+        }
+      return false;
+    }
+    void
+    Give(Pooled &&pooled) {
+      if (!pooled.icb || pooled.capacity > kCommands)
+        return;
+      std::lock_guard lock(mutex);
+      commands += pooled.capacity;
+      entries.push_back(std::move(pooled));
+      while (commands > kCommands) {
+        commands -= entries.front().capacity;
+        entries.pop_front();
+      }
+    }
+
+  private:
+    mullion::mutex mutex;
+    // oldest first
+    std::deque<Pooled> entries;
+    uint64_t commands = 0;
+  } indirect_command_buffers;
 
   // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
   std::atomic<uint32_t> max_mesh_threadgroups{0};
