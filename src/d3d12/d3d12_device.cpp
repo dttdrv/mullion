@@ -234,6 +234,13 @@ TraceResource(HRESULT hr, const char *how, const D3D12_RESOURCE_DESC *desc, void
   return hr;
 }
 
+class MTLD3D12DeviceImpl;
+// D3D12 devices are singletons per adapter, adapters the same when their LUIDs are (Microsoft Learn,
+// D3D12CreateDevice, Remarks): the device of each LUID, while the application holds it. the list holds no reference;
+// a device leaves it as it is destroyed
+static mullion::mutex device_singletons_lock;
+static std::vector<std::pair<LUID, MTLD3D12DeviceImpl *>> device_singletons;
+
 class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DDestructionNotifier, ID3D12DeviceConfiguration1>> {
   bool experimental_shader_models_ = ExperimentalShaderModelsEnabled();
   uint32_t simd_width_ = 0, total_lanes_ = 0;
@@ -301,11 +308,26 @@ public:
   }
 
   ~MTLD3D12DeviceImpl() {
+    {
+      std::lock_guard lock(device_singletons_lock);
+      std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
+    }
     if (local_kmt_) {
       D3DKMT_DESTROYDEVICE destroy = {};
       destroy.hDevice = local_kmt_;
       D3DKMTDestroyDevice(&destroy);
     }
+  }
+
+  // a reference for D3D12CreateDevice, unless the application has released its last one: a device whose count reached
+  // zero is on its way out, even while internal references keep it a little longer
+  bool
+  AddRefIfReferenced() {
+    uint32_t count = m_refCount.load();
+    while (count)
+      if (m_refCount.compare_exchange_weak(count, count + 1))
+        return true;
+    return false;
   }
 
   D3DKMT_HANDLE
@@ -2711,10 +2733,29 @@ AccelerationStructure::~AccelerationStructure() {
 
 HRESULT
 CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
-  auto device = Com(new MTLD3D12DeviceImpl(adapter));
-  HRESULT hr = device->Initialize();
+  DXGI_ADAPTER_DESC desc;
+  HRESULT hr = adapter->GetDesc(&desc);
   if (FAILED(hr))
     return hr;
+  // under the lock, so that two calls at once make one device
+  std::lock_guard lock(device_singletons_lock);
+  Com<MTLD3D12DeviceImpl> device;
+  for (auto &[luid, existing] : device_singletons)
+    if (luid.LowPart == desc.AdapterLuid.LowPart && luid.HighPart == desc.AdapterLuid.HighPart &&
+        existing->AddRefIfReferenced())
+      device = Com<MTLD3D12DeviceImpl>::transfer(existing);
+  if (device) {
+    if (FAILED(hr = device->GetDeviceRemovedReason()))
+      return hr;
+    return device->QueryInterface(riid, ppDevice);
+  }
+  device = Com(new MTLD3D12DeviceImpl(adapter));
+  if (FAILED(hr = device->Initialize()))
+    return hr;
+  std::erase_if(device_singletons, [&](auto &entry) {
+    return entry.first.LowPart == desc.AdapterLuid.LowPart && entry.first.HighPart == desc.AdapterLuid.HighPart;
+  });
+  device_singletons.emplace_back(desc.AdapterLuid, device.ptr());
   return device->QueryInterface(riid, ppDevice);
 };
 
