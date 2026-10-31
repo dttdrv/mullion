@@ -297,6 +297,17 @@ public:
   bool private_storage = false;
 };
 
+// the event object an app's handle names, for a signal that may come after the app has closed its handle: Windows
+// references the object, so a closed handle's value, which a new object may have taken, is never signaled. a handle
+// of its own, closed with the last copy; null for a handle that names no object
+inline std::shared_ptr<void>
+EventObject(HANDLE event) {
+  HANDLE own;
+  if (!DuplicateHandle(GetCurrentProcess(), event, GetCurrentProcess(), &own, 0, FALSE, DUPLICATE_SAME_ACCESS))
+    return nullptr;
+  return std::shared_ptr<void>(own, CloseHandle);
+}
+
 struct Reached {
   std::atomic<uint64_t> value;
 

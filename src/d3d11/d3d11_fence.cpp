@@ -62,7 +62,7 @@ public:
     if (!Event)
       return event.waitUntilSignaledValue(Value, ~0ull) ? S_OK : E_FAIL;
     auto shared_event_listener = this->m_parent->GetMullionDevice().queue().GetSharedEventListener();
-    MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value);
+    MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value, true);
     return S_OK;
   };
 };

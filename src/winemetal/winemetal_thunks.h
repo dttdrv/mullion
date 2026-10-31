@@ -350,6 +350,7 @@ struct unixcall_mtlsharedevent_setevent {
   obj_handle_t event_handle;
   obj_handle_t shared_event_listener;
   uint64_t value;
+  uint64_t reference;
 };
 
 struct unixcall_mtlsharedevent_createmachport {

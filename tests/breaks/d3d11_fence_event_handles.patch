@@ -1,0 +1,14 @@
+# the D3D11 fence's and Flush1's notifications set the app's handle, as they did before
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index b929414..f79f7d4 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3079,7 +3079,7 @@ _MTLSharedEvent_setWin32EventAtValue(void *obj) {
+   // it closes once it has. both run on Wine threads: this one and the listener's runloop. a notification Metal drops,
+   // as it does when the event goes, or that comes after the listener stopped, leaves its handle to the listener's
+   // thread. a handle that names no object has nothing to set
+-  bool reference = params->reference;
++  bool reference = false;
+   void *process = (void *)~(uintptr_t)0;
+   if (reference && NtDuplicateObject(process, nt_event_handle, process, &nt_event_handle, 0, 0, 2))
+     return STATUS_SUCCESS;

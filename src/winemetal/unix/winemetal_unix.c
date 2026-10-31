@@ -3021,15 +3021,72 @@ typedef struct {
   MTLSharedEventListener *shared_listener;
   pthread_mutex_t mutex;
   bool stopped;
+  // the handles of their own that notifications set, until they have set them: the listener's thread closes those
+  // left when it stops, as no notification sets an event after that. under `mutex`
+  void **referenced;
+  uint32_t referenced_count, referenced_capacity;
 } *shared_event_listener_t;
 
 extern NTSTATUS NtSetEvent(void *handle, void *prev_state);
+extern NTSTATUS NtDuplicateObject(
+    void *source_process, void *source, void *dest_process, void **dest, uint32_t access, uint32_t attributes,
+    uint32_t options
+);
+extern NTSTATUS NtClose(void *handle);
+
+// a handle of a notification's own joins the listener's; false when there is no room for it
+static bool
+shared_event_listener_keep(shared_event_listener_t q, void *handle) {
+  pthread_mutex_lock(&q->mutex);
+  if (q->referenced_count == q->referenced_capacity) {
+    uint32_t capacity = q->referenced_capacity ? 2 * q->referenced_capacity : 16;
+    void **referenced = realloc(q->referenced, capacity * sizeof(*referenced));
+    if (!referenced) {
+      pthread_mutex_unlock(&q->mutex);
+      return false;
+    }
+    q->referenced = referenced;
+    q->referenced_capacity = capacity;
+  }
+  q->referenced[q->referenced_count++] = handle;
+  pthread_mutex_unlock(&q->mutex);
+  return true;
+}
+
+// the notification that sets a handle of its own takes it back from the listener; false when the listener has closed
+// it
+static bool
+shared_event_listener_take(shared_event_listener_t q, void *handle) {
+  bool kept = false;
+  pthread_mutex_lock(&q->mutex);
+  for (uint32_t i = 0; i < q->referenced_count; i++)
+    if (q->referenced[i] == handle) {
+      q->referenced[i] = q->referenced[--q->referenced_count];
+      kept = true;
+      break;
+    }
+  pthread_mutex_unlock(&q->mutex);
+  return kept;
+}
 
 static NTSTATUS
 _MTLSharedEvent_setWin32EventAtValue(void *obj) {
   struct unixcall_mtlsharedevent_setevent *params = obj;
-  void *nt_event_handle = (shared_event_listener_t)params->event_handle;
+  void *nt_event_handle = (void *)params->event_handle;
   shared_event_listener_t q = (shared_event_listener_t)params->shared_event_listener;
+  // a caller's handle may be closed, and its value given to another object, before the event has the value: the
+  // notification sets the event object through a handle of its own (DUPLICATE_SAME_ACCESS, in this process), which
+  // it closes once it has. both run on Wine threads: this one and the listener's runloop. a notification Metal drops,
+  // as it does when the event goes, or that comes after the listener stopped, leaves its handle to the listener's
+  // thread. a handle that names no object has nothing to set
+  bool reference = params->reference;
+  void *process = (void *)~(uintptr_t)0;
+  if (reference && NtDuplicateObject(process, nt_event_handle, process, &nt_event_handle, 0, 0, 2))
+    return STATUS_SUCCESS;
+  if (reference && !shared_event_listener_keep(q, nt_event_handle)) {
+    NtClose(nt_event_handle);
+    return STATUS_SUCCESS;
+  }
   [(id<MTLSharedEvent>)params->shared_event
       notifyListener:q->shared_listener
              atValue:params->value
@@ -3043,7 +3100,11 @@ _MTLSharedEvent_setWin32EventAtValue(void *obj) {
 #endif
                  }
                  CFRunLoopPerformBlock(q->runloop_ref, kCFRunLoopCommonModes, ^{
+                   if (reference && !shared_event_listener_take(q, nt_event_handle))
+                     return;
                    NtSetEvent(nt_event_handle, NULL);
+                   if (reference)
+                     NtClose(nt_event_handle);
                  });
                  CFRunLoopWakeUp(q->runloop_ref);
                }];
@@ -3067,6 +3128,11 @@ _SharedEventListener_start(void *obj) {
     if (!stopped)
       CFRunLoopRun();
     pthread_mutex_lock(&q->mutex);
+    for (uint32_t i = 0; i < q->referenced_count; i++)
+      NtClose(q->referenced[i]);
+    free(q->referenced);
+    q->referenced = NULL;
+    q->referenced_count = q->referenced_capacity = 0;
     [q->shared_listener release];
     pthread_mutex_unlock(&q->mutex);
     CFRunLoopRemoveSource(runloop, source, kCFRunLoopCommonModes);
@@ -3086,6 +3152,8 @@ _SharedEventListener_create(void *obj) {
     q->shared_listener = [[MTLSharedEventListener alloc] init];
     q->mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     q->stopped = false;
+    q->referenced = NULL;
+    q->referenced_count = q->referenced_capacity = 0;
   }
   params->ret = (obj_handle_t)q;
   return STATUS_SUCCESS;

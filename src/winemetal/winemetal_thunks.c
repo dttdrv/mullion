@@ -1146,13 +1146,14 @@ MTLSharedEvent_signalValue(obj_handle_t event, uint64_t value) {
 
 WINEMETAL_API void
 MTLSharedEvent_setWin32EventAtValue(
-    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value
+    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value, bool reference
 ) {
   struct unixcall_mtlsharedevent_setevent params;
   params.shared_event = event;
   params.shared_event_listener = shared_event_listener;
   params.event_handle = (obj_handle_t)PtrToUInt64(nt_event_handle);
   params.value = at_value;
+  params.reference = reference;
   UNIX_CALL(104, &params);
 }
 
