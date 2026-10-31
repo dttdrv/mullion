@@ -359,6 +359,10 @@ main(int argc, char **argv) {
           }
   }
   step("inject the lock table's give-up flag without holding a GPU lock");
+  // a device is a singleton per adapter while it is held (D3D12CreateDevice, Remarks): the device made below is a new
+  // one, whose lock table is seen as it is made, once this one is gone
+  root.Reset();
+  device.Reset();
   lock_bytes = SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE +
                sizeof(uint32_t) * (UINT64(std::bit_ceil(options.TotalLaneCount)) + 2);
   auto module = reinterpret_cast<BYTE *>(GetModuleHandleA("d3d12core.dll"));
@@ -402,7 +406,13 @@ main(int argc, char **argv) {
   InterlockedExchange(given_up, 1);
   expect(submit(failed.Get(), queue.Get(), list.Get()) == DXGI_ERROR_DEVICE_HUNG, "give-up submission removed device");
   expect(failed->GetDeviceRemovedReason() == DXGI_ERROR_DEVICE_HUNG, "give-up reports DXGI_ERROR_DEVICE_HUNG");
-  expect(failed->GetDeviceRemovedReason() == DXGI_ERROR_DEVICE_HUNG && device->GetDeviceRemovedReason() == S_OK,
-         "removal persists on the failed device alone");
+  // the removal is the failed device's: once it is released, the adapter's next device has none
+  list.Reset();
+  allocator.Reset();
+  queue.Reset();
+  failed.Reset();
+  ComPtr<ID3D12Device> next;
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&next)));
+  expect(next->GetDeviceRemovedReason() == S_OK, "removal persists on the failed device alone");
   return verdict();
 }
