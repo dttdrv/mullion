@@ -1,0 +1,14 @@
+# a placed buffer keeps a public reference on its heap, which the application's Release then counts
+diff --git a/src/d3d12/d3d12_buffer.cpp b/src/d3d12/d3d12_buffer.cpp
+index f90c865..4ff2292 100644
+--- a/src/d3d12/d3d12_buffer.cpp
++++ b/src/d3d12/d3d12_buffer.cpp
+@@ -30,7 +30,7 @@ class MTLD3D12Buffer : public MTLD3D12Pageable<MTLD3D12Resource> {
+   bool reserved_ = false;
+   // the heap a placed buffer is on, which it keeps: the heap's residency is the buffer's
+   // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
+-  Com<MTLD3D12Heap, false> heap_;
++  Com<MTLD3D12Heap> heap_;
+ 
+ public:
+   MTLD3D12Buffer(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12Resource>(pDevice) {}

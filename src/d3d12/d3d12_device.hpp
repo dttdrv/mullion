@@ -291,6 +291,8 @@ struct Tiling {
 
 class MTLD3D12Heap : public ID3D12Heap {
 public:
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
   WMT::Reference<WMT::Heap> heap;
   std::shared_ptr<void> memory;
   // a heap of textures alone that the CPU never reaches is private, as its textures then are (Metal places only
