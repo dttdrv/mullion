@@ -6,8 +6,10 @@
 #include "rc/util_rc.hpp"
 #include "thread.hpp"
 #include "winemetal.h"
+#include "wsi_platform.hpp"
 #include <atomic>
 #include <deque>
+#include <memory>
 
 namespace mullion {
 
@@ -135,8 +137,9 @@ private:
   HWND window_;
   WMT::Reference<WMT::Texture> window_target_;
   struct WindowFrame {
+    // placed here: a 32-bit process reads no memory Metal allocates
+    std::unique_ptr<void, void (*)(void *)> pixels{nullptr, wsi::aligned_free};
     WMT::Reference<WMT::Buffer> buffer;
-    void *pixels;
     uint32_t width, height;
     uint64_t number;
   };
