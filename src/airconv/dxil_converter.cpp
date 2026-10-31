@@ -2756,25 +2756,22 @@ convert_dxil(
     }
     case CBufferLoad: {
       // DXIL.rst CBufferLoad aligns the offset; DXR shader records can put root constants after one DWORD. past the
-      // bound size it reads 0 (D3D11.3 7.5): from the start instead, its value dropped, as LoadConstantBuffer does
+      // bound size it reads 0 (D3D11.3 7.5): from a row of zeros instead, as LoadConstantBuffer does
       auto &buffer = *handles[a(1)].cbuffer;
       auto offset = ir.CreateZExt(a(2), ir.getInt64Ty());
-      Value *inside = nullptr;
-      if (buffer.Metadata) {
-        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
-        inside = ir.CreateICmpULE(end, buffer.Metadata);
-        offset = ir.CreateSelect(inside, offset, ir.getInt64(0));
-      }
       auto space = buffer.Pointer->getType()->getPointerAddressSpace();
-      auto pointer = ir.CreateGEP(
+      Value *pointer = ir.CreateGEP(
           ir.getInt8Ty(), ir.CreatePointerCast(buffer.Pointer, ir.getInt8Ty()->getPointerTo(space)), offset
       );
+      if (buffer.Metadata) {
+        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+        auto zero = ir.CreatePointerCast(dxbc.ZeroRow(), ir.getInt8Ty()->getPointerTo(space));
+        pointer = ir.CreateSelect(ir.CreateICmpULE(end, buffer.Metadata), pointer, zero);
+      }
       ret = ir.CreateAlignedLoad(
           ty, ir.CreatePointerCast(pointer, ty->getPointerTo(space)),
           std::min(Align(constant(a(3))), getKnownAlignment(buffer.Pointer, ctx.module.getDataLayout()))
       );
-      if (inside)
-        ret = ir.CreateSelect(inside, ret, Constant::getNullValue(ty));
       break;
     }
     case CBufferLoadLegacy: {
