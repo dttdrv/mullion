@@ -1,0 +1,7 @@
+Metal 3, fence: in order every time: true
+Metal 4, nothing: in order every time: false
+Metal 4, fence: in order every time: true
+Metal 4, fence, a command buffer each, committed together: in order every time: true
+Metal 4, queue barrier: in order every time: true
+Metal 4, render then compute, nothing: in order every time: false
+Metal 4, render then compute, fence after fragments: in order every time: true
