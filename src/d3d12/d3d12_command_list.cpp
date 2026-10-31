@@ -741,6 +741,10 @@ public:
     shading_rate_combiners_[0] = shading_rate_combiners_[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
     shading_rate_image_ = nullptr;
     shading_rate_pass_ = nullptr;
+    // the samples in the bounds were found for another recording's depth and range, in a pass the allocator may give
+    // again
+    depth_bounds_pass_ = nullptr;
+    depth_bounds_stale_ = true;
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
@@ -3435,6 +3439,10 @@ public:
     }
     active_queries_.push_back({static_cast<MTLD3D12QueryHeap *>(pHeap), Index, (uint32_t)visibility_slots_.size()});
     CountVisibility();
+    // a pipeline that emulates the depth bounds test has a variant for draws an occlusion query counts
+    // (MTLD3D12GraphicsPipelineState::RenderTargets)
+    if (pso_graphics_ && pso_graphics_->depth_bounds_emulated)
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
   };
 
   void STDMETHODCALLTYPE
@@ -3506,6 +3514,8 @@ public:
     occlusion_sums_.push_back({heap, {Index, query->first, count, Type == D3D12_QUERY_TYPE_BINARY_OCCLUSION}});
     active_queries_.erase(query);
     CountVisibility();
+    if (pso_graphics_ && pso_graphics_->depth_bounds_emulated)
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
   };
 
   void STDMETHODCALLTYPE

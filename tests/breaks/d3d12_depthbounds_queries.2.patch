@@ -1,0 +1,16 @@
+# Reset and ClearState keep the pass whose depth bounds samples were found last, and whether they are stale.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 2e16f99..7835b19 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -741,10 +741,6 @@ public:
+     shading_rate_combiners_[0] = shading_rate_combiners_[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+     shading_rate_image_ = nullptr;
+     shading_rate_pass_ = nullptr;
+-    // the samples in the bounds were found for another recording's depth and range, in a pass the allocator may give
+-    // again
+-    depth_bounds_pass_ = nullptr;
+-    depth_bounds_stale_ = true;
+ 
+     rootsig_graphics_ = nullptr;
+     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
