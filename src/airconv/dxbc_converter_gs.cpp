@@ -499,9 +499,14 @@ convert_dxbc_geometry_shader(
                       topology == air::MeshOutputTopology::Triangle &&
                       max_vertex_out >= 3;
   uint32_t triangles = conservative ? max_vertex_out - 2 : 0;
+  // a Metal mesh has at most 256 vertices. a geometry shader may declare more where its vertices are smaller than a
+  // position, its output being 1024 scalars at most (D3D11.3 13.3), as one that only streams out: stream output takes
+  // all its vertices, the rasterizer the first 256
+  constexpr uint32_t mesh_vertex_limit = 256;
+  uint32_t mesh_vertices = std::min<uint32_t>(max_vertex_out, mesh_vertex_limit);
   // it's intended to declare a bit more max primitive count
   auto mesh_idx = func_signature.DefineInput(air::InputMesh{
-      conservative ? 3 * triangles : (uint32_t)max_vertex_out, conservative ? triangles : (uint32_t)max_vertex_out, topology
+      conservative ? 3 * triangles : mesh_vertices, conservative ? triangles : mesh_vertices, topology
   });
   uint32_t tg_in_grid_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
   // a tessellated draw's mesh threadgroups have the domain stage's threads, of which the first does the work
@@ -612,6 +617,13 @@ convert_dxbc_geometry_shader(
   builder.CreateStore(zero_const, vertex_offset);
   auto primitive_count = builder.CreateAlloca(types._int, nullptr, "primitive_count");
   builder.CreateStore(zero_const, primitive_count);
+  // the emits so far, on every stream, and those to the rasterized stream where the mesh has fewer vertices than the
+  // shader declares
+  auto emits = builder.CreateAlloca(types._int, nullptr, "emits");
+  builder.CreateStore(zero_const, emits);
+  llvm::Value *rasterized_emits = nullptr;
+  if (mesh_vertices < (uint32_t)max_vertex_out)
+    builder.CreateStore(zero_const, rasterized_emits = builder.CreateAlloca(types._int, nullptr, "rasterized_emits"));
 
   auto mesh_ptr = function->getArg(mesh_idx);
 
@@ -1026,8 +1038,13 @@ convert_dxbc_geometry_shader(
     });
     rejoin(next);
   };
-  // stream output sees every stream, the rasterizer only its own
+  // stream output sees every stream, the rasterizer only its own. every emit counts towards maxvertexcount, whatever
+  // its stream, and one past it is dropped: "Hardware must enforce the limit above by stopping writes" (D3D11.3 13.3),
+  // so it is in neither stream output, the statistics nor the mesh
   resource_map.call_emit = [&](uint32_t stream) -> IREffect {
+    auto emitted = builder.CreateLoad(types._int, emits);
+    builder.CreateStore(builder.CreateAdd(emitted, one_const), emits);
+    auto after_emit = guard(builder.CreateICmpULT(emitted, builder.getInt32(max_vertex_out)));
     if (statistics && stream < 4) {
       auto length = builder.CreateAdd(builder.CreateLoad(types._int, strip_length[stream]), one_const);
       builder.CreateStore(length, strip_length[stream]);
@@ -1038,8 +1055,16 @@ convert_dxbc_geometry_shader(
     }
     if (so && stream < 4)
       so_emit(stream);
-    if (stream == rasterized_stream)
+    if (stream == rasterized_stream && rasterized_emits) {
+      auto drawn = builder.CreateLoad(types._int, rasterized_emits);
+      builder.CreateStore(builder.CreateAdd(drawn, one_const), rasterized_emits);
+      auto after_mesh = guard(builder.CreateICmpULT(drawn, builder.getInt32(mesh_vertices)));
       co_yield mesh_emit();
+      rejoin(after_mesh);
+    } else if (stream == rasterized_stream) {
+      co_yield mesh_emit();
+    }
+    rejoin(after_emit);
     co_return {};
   };
   resource_map.call_cut = [&](uint32_t stream) -> IREffect {
