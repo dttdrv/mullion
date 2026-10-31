@@ -4421,6 +4421,9 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Buffer : NSObject {
   // the next encoder begins with a barrier against all the queue's work before it that makes aliased memory
   // consistent (MTL4CommandBuffer_orderAliases)
   bool order_aliases;
+  // the open compute encoder began with that barrier, and has been the buffer's only encoder since: all the queue's
+  // work since the barrier is its own, which a barrier inside it orders (`inside` asks for that)
+  bool compute_aliases, aliases_inside;
   double after;
   // the sample the open compute encoder's last pass ended with
   obj_handle_t stamp_heap;
@@ -4501,6 +4504,7 @@ API_AVAILABLE(macos(26.0)) metal4_allocators(id<MTL4CommandQueue> queue) {
              afterEncoderStages:MTLStageDispatch | MTLStageBlit | MTLStageAccelerationStructure];
   [state->encoder endEncoding];
   compute = nil;
+  compute_aliases = false;
   stamp_heap = 0;
 }
 - (void)dealloc {
@@ -4709,15 +4713,21 @@ _MTL4CommandBuffer_encoder(void *obj) {
   struct unixcall_metal4_encoder *p = obj;
   if (@available(macOS 26.0, *)) {
     MullionMetal4Buffer *owner = (MullionMetal4Buffer *)p->buffer;
-    // a barrier against the queue's earlier work takes an encoder of its own: the open compute encoder ends first
-    if (owner->order_aliases)
+    // a barrier against the queue's earlier work takes an encoder of its own: the open compute encoder ends first.
+    // when that encoder began with one and is all the work since, the barrier is inside it, against its own work
+    // (d3d12_alias_chain)
+    bool inside = owner->order_aliases && owner->aliases_inside && owner->compute_aliases && p->kind != WMTMetal4Render;
+    if (owner->order_aliases && !inside)
       [owner closeCompute];
     if (p->kind != WMTMetal4Render && owner->compute) {
       MullionMetal4Encoder *state = owner->compute;
       [(id<MTL4ComputeCommandEncoder>)state->encoder
           barrierAfterEncoderStages:[(id<MTL4ComputeCommandEncoder>)state->encoder stages]
                 beforeEncoderStages:MTLStageDispatch | MTLStageBlit | MTLStageAccelerationStructure
-                  visibilityOptions:MTL4VisibilityOptionDevice];
+                  visibilityOptions:inside ? MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias
+                                           : MTL4VisibilityOptionDevice];
+      if (inside)
+        owner->order_aliases = false;
       // the barrier starts this pass where that sample ended the last, and Metal drops a timestamp that follows
       // another with no work between
       struct WMTSampleBufferAttachmentInfo *sample = p->samples.ptr, start = {0};
@@ -4817,6 +4827,7 @@ _MTL4CommandBuffer_encoder(void *obj) {
       [state->encoder waitForFence:owner->fence
                beforeEncoderStages:MTLStageDispatch | MTLStageBlit | MTLStageAccelerationStructure];
       owner->compute = state;
+      owner->compute_aliases = owner->order_aliases;
     }
     if (!state->encoder) {
       [owner fail:[NSError errorWithDomain:MTL4CommandQueueErrorDomain
@@ -4845,9 +4856,12 @@ _MTL4CommandBuffer_encoder(void *obj) {
 
 static NTSTATUS
 _MTL4CommandBuffer_orderAliases(void *obj) {
-  struct unixcall_generic_obj_noret *p = obj;
-  if (@available(macOS 26.0, *))
-    ((MullionMetal4Buffer *)p->handle)->order_aliases = true;
+  struct unixcall_generic_obj_uint64_noret *p = obj;
+  if (@available(macOS 26.0, *)) {
+    MullionMetal4Buffer *buffer = (MullionMetal4Buffer *)p->handle;
+    buffer->order_aliases = true;
+    buffer->aliases_inside = p->arg;
+  }
   return STATUS_SUCCESS;
 }
 

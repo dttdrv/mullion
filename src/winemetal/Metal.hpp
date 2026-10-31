@@ -999,8 +999,8 @@ public:
     MTL4CommandBuffer_waitForEvent(handle, event, value);
   }
   void
-  orderAliases() {
-    MTL4CommandBuffer_orderAliases(handle);
+  orderAliases(bool inside = false) {
+    MTL4CommandBuffer_orderAliases(handle, inside);
   }
   void
   commit() {
