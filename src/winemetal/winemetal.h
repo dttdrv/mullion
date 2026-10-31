@@ -2110,9 +2110,16 @@ WINEMETAL_API bool WMTSetMetalShaderCachePath(const char *path);
 
 WINEMETAL_API obj_handle_t MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info);
 
-WINEMETAL_API bool WMTBootstrapRegister(const char *name, mach_port_t mach_port);
+// registers `mach_port`, the port of `object` (an MTLSharedEvent or MTLTexture), under `name` for other processes to
+// look up; the name lasts while object, or an object WMTBootstrapKeep gave it, does (winemetal_unix.c, shared_name)
+WINEMETAL_API bool WMTBootstrapRegister(const char *name, obj_handle_t object, mach_port_t mach_port);
 
+// a send right to the port registered under `name`; each success is followed by WMTBootstrapKeep
 WINEMETAL_API bool WMTBootstrapLookUp(const char *name, mach_port_t *mach_port);
+
+// `object`, made from the port WMTBootstrapLookUp gave, keeps the name too when this process registered it; 0 when no
+// object was made. WMT::SharedNameHold (Metal.hpp) makes the call
+WINEMETAL_API void WMTBootstrapKeep(const char *name, obj_handle_t object);
 
 WINEMETAL_API mach_port_t MTLSharedEvent_createMachPort(obj_handle_t event);
 
@@ -2481,7 +2488,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferPopDebugGroup, WMTUnixFlightWrite, WMTUnixMetal4NewBuffer, WMTUnixMetal4Encoder,
        WMTUnixMetal4Commands, WMTUnixMetal4EndEncoder, WMTUnixMetal4Commit, WMTUnixMetal4Feedback, WMTUnixMetal4Wait,
        WMTUnixMetal4CounterHeap, WMTUnixMetal4Frequency, WMTUnixMetal4Present, WMTUnixMetal4WaitEvent,
-       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixCallCount };
+       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixBootstrapKeep,
+       WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

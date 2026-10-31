@@ -15,6 +15,9 @@
 // "The name is limited to MAX_PATH characters." names below that limit succeed; a longer one is invalid.
 // DuplicateHandle: "The duplicate handle refers to the same object as the original handle."
 // https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle
+// Windows keeps the fence while any handle to it is open; Mullion keeps it openable while an object of the creating
+// process made from it lives (winemetal_unix.c, shared_name), so each open after the creator's release has an opened
+// fence alive in that process. an open with none alive fails here, and is not tested.
 #include "d3d11_test.hpp"
 #include <d3d11_4.h>
 #include <cstdlib>
@@ -103,9 +106,9 @@ main(int argc, char **argv) {
                                  DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
       return verdict();
     CloseHandle(shared);
+    CHECK(other5->OpenSharedFence(duplicate, IID_PPV_ARGS(&receiver)));
     if (release_creator)
       creator.Reset();
-    CHECK(other5->OpenSharedFence(duplicate, IID_PPV_ARGS(&receiver)));
     CHECK(device5->OpenSharedFence(duplicate, IID_PPV_ARGS(&sender)));
     expect(receiver->GetCompletedValue() == initial, "receiver initial value is %llu", receiver->GetCompletedValue());
     CHECK(receiver->SetEventOnCompletion(initial + 1, completed));
@@ -149,8 +152,8 @@ main(int argc, char **argv) {
                                DUPLICATE_SAME_ACCESS), "DuplicateHandle: %lu", GetLastError()))
     return verdict();
   CloseHandle(shared);
-  creator.Reset();
   CHECK(device5->OpenSharedFence(duplicate, IID_PPV_ARGS(&sender)));
+  creator.Reset();
   SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
   HANDLE ready = CreateEventA(&attributes, FALSE, FALSE, nullptr);
   if (!expect(ready != nullptr, "CreateEvent: %lu", GetLastError()))

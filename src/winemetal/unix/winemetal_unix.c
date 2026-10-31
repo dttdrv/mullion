@@ -3247,31 +3247,253 @@ CREATES(_MTLDevice_newSharedTexture)(void *obj) {
 /* Private API to register a mach port with the bootstrap server */
 extern kern_return_t bootstrap_register2(mach_port_t bp, name_t service_name, mach_port_t sp, int flags);
 
+/* A shared object's name. launchd keeps a name until the receive right of the port registered under it dies, and a
+ * process cannot remove its own name (bootstrap_register2 of MACH_PORT_NULL fails), so the object's port is not
+ * registered: its receive right lives in the GPU driver and never dies. The name holds a receive right of this
+ * process's own instead, which answers each request sent to it with a copy of the object's port, and is destroyed
+ * when the last object of this process made from that port goes; launchd then drops the name. An open after that, or
+ * after this process exits, fails, where Windows keeps the object while any NT handle to it is open. */
+struct shared_name {
+  struct shared_name *next;
+  char name[128];
+  mach_port_t receive; /* registered under the name */
+  mach_port_t port;    /* a send right to the object's port, handed out */
+  uint32_t objects;    /* objects of this process that keep the name, under shared_names_lock */
+  dispatch_source_t source;
+};
+
+/* the request an opener sends to the name's port, a bare header, and the answer it gets on its reply port */
+enum { shared_name_request = 0x4d4c534e, shared_name_reply_id = shared_name_request + 100 };
+struct shared_name_reply {
+  mach_msg_header_t header;
+  mach_msg_body_t body;
+  mach_msg_port_descriptor_t port;
+};
+
+static pthread_mutex_t shared_names_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct shared_name *shared_names;
+
+static struct shared_name *
+shared_name_find(const char *name) {
+  for (struct shared_name *entry = shared_names; entry; entry = entry->next)
+    if (!strcmp(entry->name, name))
+      return entry;
+  return NULL;
+}
+
+static void
+shared_name_release(struct shared_name *entry) {
+  pthread_mutex_lock(&shared_names_lock);
+  bool last = !--entry->objects;
+  if (last)
+    for (struct shared_name **link = &shared_names; *link; link = &(*link)->next)
+      if (*link == entry) {
+        *link = entry->next;
+        break;
+      }
+  pthread_mutex_unlock(&shared_names_lock);
+  if (!last)
+    return;
+  /* the cancel handler runs after the last request handler, and destroys the receive right */
+  dispatch_source_cancel(entry->source);
+  dispatch_release(entry->source);
+}
+
+/* attached to each object that keeps a name: the name goes with the last of them */
+@interface WMTSharedNameKeeper : NSObject {
+@public
+  struct shared_name *entry;
+}
+@end
+
+@implementation WMTSharedNameKeeper
+- (void)dealloc {
+  shared_name_release(entry);
+  [super dealloc];
+}
+@end
+
+static void
+shared_name_keep(struct shared_name *entry, id object) {
+  WMTSharedNameKeeper *keeper = [[WMTSharedNameKeeper alloc] init];
+  keeper->entry = entry;
+  objc_setAssociatedObject(object, keeper, keeper, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  [keeper release];
+}
+
+static void
+shared_name_answer(struct shared_name *entry) {
+  union {
+    mach_msg_header_t header;
+    char buffer[sizeof(mach_msg_header_t) + MAX_TRAILER_SIZE];
+  } request;
+  for (;;) {
+    kern_return_t kr = mach_msg(
+        &request.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(request), entry->receive, 0, MACH_PORT_NULL
+    );
+    if (kr == MACH_RCV_TOO_LARGE)
+      continue;
+    if (kr != KERN_SUCCESS)
+      return;
+    if (request.header.msgh_id != shared_name_request || request.header.msgh_size != sizeof(mach_msg_header_t) ||
+        (request.header.msgh_bits & MACH_MSGH_BITS_COMPLEX) ||
+        MACH_MSGH_BITS_REMOTE(request.header.msgh_bits) != MACH_MSG_TYPE_PORT_SEND_ONCE) {
+      mach_msg_destroy(&request.header);
+      continue;
+    }
+    struct shared_name_reply reply = {};
+    reply.header.msgh_bits = MACH_MSGH_BITS_COMPLEX | MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0);
+    reply.header.msgh_size = sizeof(reply);
+    reply.header.msgh_remote_port = request.header.msgh_remote_port;
+    reply.header.msgh_id = shared_name_reply_id;
+    reply.body.msgh_descriptor_count = 1;
+    reply.port.name = entry->port;
+    reply.port.disposition = MACH_MSG_TYPE_COPY_SEND;
+    reply.port.type = MACH_MSG_PORT_DESCRIPTOR;
+    /* an opener that stopped waiting left a dead name, which the failed send did not consume */
+    if (mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL, 0, MACH_PORT_NULL) ==
+        MACH_SEND_INVALID_DEST)
+      mach_port_deallocate(mach_task_self(), request.header.msgh_remote_port);
+  }
+}
+
+static dispatch_queue_t
+shared_name_queue(void) {
+  static dispatch_once_t once;
+  static dispatch_queue_t queue;
+  dispatch_once(&once, ^{ queue = dispatch_queue_create("mullion-shared-names", DISPATCH_QUEUE_SERIAL); });
+  return queue;
+}
+
+/* registers the name of `object`, whose port is `mach_port`; the name lasts while object does */
 static NTSTATUS
 _WMTBootstrapRegister(void *obj) {
   struct unixcall_bootstrap *params = obj;
-  mach_port_t rp = params->mach_port;
   mach_port_t bp;
 
-  if (task_get_bootstrap_port(mach_task_self(), &bp) != KERN_SUCCESS)
+  if (!params->object || task_get_bootstrap_port(mach_task_self(), &bp) != KERN_SUCCESS)
     return STATUS_UNSUCCESSFUL;
-  NTSTATUS ret = bootstrap_register2(bp, params->name, rp, 0) != KERN_SUCCESS ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;
+  struct shared_name *entry = calloc(1, sizeof(*entry));
+  if (!entry || mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &entry->receive) != KERN_SUCCESS) {
+    free(entry);
+    mach_port_deallocate(mach_task_self(), bp);
+    return STATUS_UNSUCCESSFUL;
+  }
+  memcpy(entry->name, params->name, sizeof(entry->name));
+  entry->name[sizeof(entry->name) - 1] = 0;
+  /* the name hands out a send right of its own to the object's port, which must be one */
+  entry->port = params->mach_port;
+  kern_return_t kr = entry->port ? mach_port_mod_refs(mach_task_self(), entry->port, MACH_PORT_RIGHT_SEND, 1)
+                                 : KERN_INVALID_NAME;
+  /* launchd copies the send right it is given */
+  if (kr == KERN_SUCCESS) {
+    kr = mach_port_insert_right(mach_task_self(), entry->receive, entry->receive, MACH_MSG_TYPE_MAKE_SEND);
+    if (kr == KERN_SUCCESS) {
+      kr = bootstrap_register2(bp, entry->name, entry->receive, 0);
+      mach_port_deallocate(mach_task_self(), entry->receive);
+    }
+    if (kr != KERN_SUCCESS)
+      mach_port_deallocate(mach_task_self(), entry->port);
+  }
   mach_port_deallocate(mach_task_self(), bp);
-  return ret;
+  if (kr != KERN_SUCCESS) {
+    mach_port_mod_refs(mach_task_self(), entry->receive, MACH_PORT_RIGHT_RECEIVE, -1);
+    free(entry);
+    return STATUS_UNSUCCESSFUL;
+  }
+  entry->objects = 1;
+  entry->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, entry->receive, 0, shared_name_queue());
+  dispatch_source_set_event_handler(entry->source, ^{ shared_name_answer(entry); });
+  dispatch_source_set_cancel_handler(entry->source, ^{
+    mach_port_mod_refs(mach_task_self(), entry->receive, MACH_PORT_RIGHT_RECEIVE, -1);
+    mach_port_deallocate(mach_task_self(), entry->port);
+    free(entry);
+  });
+  pthread_mutex_lock(&shared_names_lock);
+  entry->next = shared_names;
+  shared_names = entry;
+  pthread_mutex_unlock(&shared_names_lock);
+  shared_name_keep(entry, (id)params->object);
+  dispatch_resume(entry->source);
+  return STATUS_SUCCESS;
 }
 
+/* a send right to the port of the object registered under the name: this process's own, or the answer of the
+ * process that registered it. a name of this process's own is held until WMTBootstrapKeep passes the hold to the
+ * object made from the port, or drops it, so the name cannot go in between */
 static NTSTATUS
 _WMTBootstrapLookUp(void *obj) {
   struct unixcall_bootstrap *params = obj;
-  mach_port_t rp = 0;
-  mach_port_t bp;
+  mach_port_t bp, name_port = 0, reply_port;
+
+  params->mach_port = 0;
+  params->name[sizeof(params->name) - 1] = 0;
+  pthread_mutex_lock(&shared_names_lock);
+  struct shared_name *entry = shared_name_find(params->name);
+  if (entry && mach_port_mod_refs(mach_task_self(), entry->port, MACH_PORT_RIGHT_SEND, 1) == KERN_SUCCESS) {
+    entry->objects++;
+    params->mach_port = entry->port;
+  }
+  pthread_mutex_unlock(&shared_names_lock);
+  if (entry)
+    return params->mach_port ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 
   if (task_get_bootstrap_port(mach_task_self(), &bp) != KERN_SUCCESS)
     return STATUS_UNSUCCESSFUL;
-  NTSTATUS ret = bootstrap_look_up(bp, params->name, &rp) != KERN_SUCCESS ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;
+  kern_return_t kr = bootstrap_look_up(bp, params->name, &name_port);
   mach_port_deallocate(mach_task_self(), bp);
-  params->mach_port = rp;
-  return ret;
+  if (kr != KERN_SUCCESS)
+    return STATUS_UNSUCCESSFUL;
+  if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &reply_port) != KERN_SUCCESS) {
+    mach_port_deallocate(mach_task_self(), name_port);
+    return STATUS_UNSUCCESSFUL;
+  }
+  union {
+    mach_msg_header_t request;
+    struct shared_name_reply reply;
+    char buffer[sizeof(struct shared_name_reply) + MAX_TRAILER_SIZE];
+  } msg = {};
+  msg.request.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE);
+  msg.request.msgh_size = sizeof(msg.request);
+  msg.request.msgh_remote_port = name_port;
+  msg.request.msgh_local_port = reply_port;
+  msg.request.msgh_id = shared_name_request;
+  /* a registering process that has gone answers with a send-once notification, not a port */
+  kr = mach_msg(
+      &msg.request, MACH_SEND_MSG | MACH_RCV_MSG | MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT, sizeof(msg.request),
+      sizeof(msg), reply_port, 5000, MACH_PORT_NULL
+  );
+  /* a request that was not sent comes back with its rights */
+  if (kr == MACH_SEND_TIMED_OUT || kr == MACH_SEND_INTERRUPTED)
+    mach_msg_destroy(&msg.request);
+  if (kr == KERN_SUCCESS) {
+    if (msg.reply.header.msgh_id == shared_name_reply_id && (msg.reply.header.msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+        msg.reply.body.msgh_descriptor_count == 1 && msg.reply.port.type == MACH_MSG_PORT_DESCRIPTOR &&
+        msg.reply.port.disposition == MACH_MSG_TYPE_PORT_SEND)
+      params->mach_port = msg.reply.port.name;
+    else
+      mach_msg_destroy(&msg.reply.header);
+  }
+  mach_port_mod_refs(mach_task_self(), reply_port, MACH_PORT_RIGHT_RECEIVE, -1);
+  mach_port_deallocate(mach_task_self(), name_port);
+  return params->mach_port ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+}
+
+/* passes the hold WMTBootstrapLookUp took on a name of this process to `object`, made from the port, which then
+ * keeps the name as its registrant does; without an object the hold is dropped. a name another process registered
+ * is kept by that process's objects alone */
+static NTSTATUS
+_WMTBootstrapKeep(void *obj) {
+  struct unixcall_bootstrap *params = obj;
+  params->name[sizeof(params->name) - 1] = 0;
+  pthread_mutex_lock(&shared_names_lock);
+  struct shared_name *entry = shared_name_find(params->name);
+  pthread_mutex_unlock(&shared_names_lock);
+  if (entry && params->object)
+    shared_name_keep(entry, (id)params->object);
+  else if (entry)
+    shared_name_release(entry);
+  return STATUS_SUCCESS;
 }
 
 @protocol MTLDeviceSPI <MTLDevice>
@@ -6094,6 +6316,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_WMTBootstrapKeep,
 };
 
 #ifndef MULLION_NATIVE
@@ -6293,6 +6516,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_WMTBootstrapKeep,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

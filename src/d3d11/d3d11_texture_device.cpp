@@ -494,13 +494,13 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
       return hr;
     SharedResourceData runtimeData;
     MakeUniqueSharedName(runtimeData.mach_port_name);
-    if (!WMTBootstrapRegister(runtimeData.mach_port_name, mach_port)) {
+    if (!WMTBootstrapRegister(runtimeData.mach_port_name, texture->current()->texture().handle, mach_port)) {
       ERR("DeviceTexture: Failed to register mach port for shared texture");
       return E_FAIL;
     }
     if (texture->chroma &&
         !WMTBootstrapRegister((std::string(runtimeData.mach_port_name) + ".uv").c_str(),
-                              texture->chroma->current()->machPort))
+                              texture->chroma->current()->texture().handle, texture->chroma->current()->machPort))
       return E_FAIL;
     runtimeData.dimension = tag::dimension;
     memcpy(&runtimeData.desc, pDesc, sizeof(typename tag::DESC1));
@@ -596,7 +596,7 @@ HRESULT
 ImportSharedTextureInternal(
     MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, 
     D3DKMT_HANDLE &hResource, D3DKMT_HANDLE hGlobalShare, D3DKMT_HANDLE hSharedKeyedMutex, REFIID riid,
-    void **ppTexture, const char *Name = nullptr
+    void **ppTexture, const char *Name, WMT::SharedNameHold &Hold
 ) {
   WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
@@ -607,13 +607,15 @@ ImportSharedTextureInternal(
   auto allocation = texture->import(MachPort);
   if (!allocation)
     return E_FAIL;
+  Hold.keep(allocation->texture().handle);
   texture->rename(std::move(allocation));
   MTL_DXGI_FORMAT_DESC format;
   MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format);
   if (format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) {
     mach_port_t chroma_port;
-    if (!Name || !WMTBootstrapLookUp((std::string(Name) + ".uv").c_str(), &chroma_port))
+    if (!WMTBootstrapLookUp((std::string(Name) + ".uv").c_str(), &chroma_port))
       return E_FAIL;
+    WMT::SharedNameHold chroma_hold(std::string(Name) + ".uv");
     MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format, 1);
     info.pixel_format = format.PixelFormat;
     info.width /= format.SubsampleWidth;
@@ -622,6 +624,7 @@ ImportSharedTextureInternal(
     auto chroma = texture->chroma->import(chroma_port);
     if (!chroma)
       return E_FAIL;
+    chroma_hold.keep(chroma->texture().handle);
     texture->chroma->rename(std::move(chroma));
   }
 
@@ -738,27 +741,30 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   mach_port_t mach_port;
   if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
     ERR("ImportSharedTexture: Failed to look up mach port");
-  } else switch (runtimeData.dimension) {
-  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-    hr = ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle, riid,
-        ppTexture
-    );
-    break;
-  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-    hr = ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle, riid,
-        ppTexture, runtimeData.mach_port_name
-    );
-    break;
-  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-    hr = ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle, riid,
-        ppTexture
-    );
-    break;
-  default:
-    ERR("ImportSharedTexture: Unsupported resource dimension");
+  } else {
+    WMT::SharedNameHold hold(runtimeData.mach_port_name);
+    switch (runtimeData.dimension) {
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+      hr = ImportSharedTextureInternal<tag_texture_1d>(
+          pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
+          riid, ppTexture, runtimeData.mach_port_name, hold
+      );
+      break;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+      hr = ImportSharedTextureInternal<tag_texture_2d>(
+          pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
+          riid, ppTexture, runtimeData.mach_port_name, hold
+      );
+      break;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+      hr = ImportSharedTextureInternal<tag_texture_3d>(
+          pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
+          riid, ppTexture, runtimeData.mach_port_name, hold
+      );
+      break;
+    default:
+      ERR("ImportSharedTexture: Unsupported resource dimension");
+    }
   }
   if (open.hResource) {
     D3DKMT_DESTROYALLOCATION destroy = {};
@@ -834,25 +840,30 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   mach_port_t mach_port;
   if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
     ERR("ImportSharedTexture: Failed to look up mach port");
-  } else switch (runtimeData.dimension) {
-  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-    hr = ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture
-    );
-    break;
-  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-    hr = ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
-        runtimeData.mach_port_name
-    );
-    break;
-  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-    hr = ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture
-    );
-    break;
-  default:
-    ERR("ImportSharedTexture: Unsupported resource dimension");
+  } else {
+    WMT::SharedNameHold hold(runtimeData.mach_port_name);
+    switch (runtimeData.dimension) {
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+      hr = ImportSharedTextureInternal<tag_texture_1d>(
+          pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
+          runtimeData.mach_port_name, hold
+      );
+      break;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+      hr = ImportSharedTextureInternal<tag_texture_2d>(
+          pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
+          runtimeData.mach_port_name, hold
+      );
+      break;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+      hr = ImportSharedTextureInternal<tag_texture_3d>(
+          pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
+          runtimeData.mach_port_name, hold
+      );
+      break;
+    default:
+      ERR("ImportSharedTexture: Unsupported resource dimension");
+    }
   }
   if (open.hResource) {
     D3DKMT_DESTROYALLOCATION destroy = {};

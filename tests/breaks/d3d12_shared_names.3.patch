@@ -1,0 +1,13 @@
+# the name's receive right is destroyed as soon as it is registered, while its object lives
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 3bfe156..f8afd4d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3414,6 +3414,7 @@ _WMTBootstrapRegister(void *obj) {
+   shared_names = entry;
+   pthread_mutex_unlock(&shared_names_lock);
+   shared_name_keep(entry, (id)params->object);
++  mach_port_mod_refs(mach_task_self(), entry->receive, MACH_PORT_RIGHT_RECEIVE, -1);
+   dispatch_resume(entry->source);
+   return STATUS_SUCCESS;
+ }
