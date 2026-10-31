@@ -321,7 +321,7 @@ struct Reached {
   void
   Expect(uint64_t expected, std::function<void()> &&reached) {
     std::lock_guard<mullion::mutex> lock(mutex_);
-    if (expected <= value)
+    if (expected <= value || Has(expected))
       return reached();
     waiting_.emplace_back(expected, std::move(reached));
     Waiting(expected);
@@ -339,6 +339,12 @@ struct Reached {
   }
 
 protected:
+  // whether others have already given the fence a value that this object has not had yet
+  virtual bool
+  Has(uint64_t expected) {
+    return false;
+  }
+
   // a value that others can reach too is watched for once something waits for it
   virtual void
   Waiting(uint64_t expected) {}
