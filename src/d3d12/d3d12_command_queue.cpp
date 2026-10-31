@@ -2347,8 +2347,9 @@ public:
                           cmdbuf = inflight.cmdbuf, desc, footprint, row, number, path]() mutable {
       if (present)
         present();
-      if (cmdbuf.status() != WMTCommandBufferStatusCompleted) {
-        ERR("D3D12 frame failed: ", path, ": GPU work did not complete");
+      // Metal 4's completion comes when the GPU is done, before the status does (SettleFeedback): only an error fails
+      if (cmdbuf.status() == WMTCommandBufferStatusError) {
+        ERR("D3D12 frame failed: ", path, ": GPU work failed");
         return;
       }
       std::ofstream file(str::topath(path.c_str()).c_str(), std::ios::binary);
