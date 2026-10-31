@@ -1500,6 +1500,20 @@ convert_dxil(
         ty->getArrayElementType(), b.CreateInBoundsGEP(ty, ray_field(field), {b.getInt32(0), element})
     );
   };
+  // the device's lock table, which the 64-bit atomics' locks and the header of the structure of nothing are in: the
+  // global root arguments', or for a ray tracing shader with no global root signature its dispatch's. null where
+  // neither has one (airconv's command line, with no root signature)
+  auto atomic_locks = [&]() -> Value * {
+    if (auto locks = ctx.binding.GetAtomicLocks(air); locks || !ray)
+      return locks;
+    auto &b = ctx.builder;
+    auto i64 = b.getInt64Ty();
+    auto address = b.CreateLoad(
+        i64, b.CreateGEP(i64, b.CreateBitCast(ray_value(RayDispatch), i64->getPointerTo(2)),
+                         b.getInt32(offsetof(SM50_RAY_DISPATCH, atomic_locks) / sizeof(uint64_t)))
+    );
+    return b.CreateIntToPtr(address, b.getInt32Ty()->getPointerTo(1));
+  };
   auto ray_call = [&](uint32_t slot, Value *first, Value *second) {
     auto &b = ctx.builder;
     auto i8p = b.getInt8PtrTy();
@@ -3308,7 +3322,7 @@ convert_dxil(
         ret = UndefValue::get(ty);
         break;
       }
-      auto locks = ty->isIntegerTy(64) ? ctx.binding.GetAtomicLocks(air) : nullptr;
+      auto locks = ty->isIntegerTy(64) ? atomic_locks() : nullptr;
       if (locks) {
         // aliases key the backing allocation and its coordinates, rather than the Metal view and relative slice
         auto texel = [&]() -> Word64 {
@@ -3851,9 +3865,10 @@ convert_dxil(
       auto i64 = ir.getInt64Ty();
       auto structure_ty = opaque("struct._instance_acceleration_structure_t")->getPointerTo(1);
       auto address = ir.CreatePtrToInt(handles[a(2)].buffer->Pointer, i64);
-      auto nothing = ir.CreateSub(
-          ir.CreatePtrToInt(ctx.binding.GetAtomicLocks(air), i64), ir.getInt64(SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE)
-      );
+      auto locks = atomic_locks();
+      if (!locks)
+        return make_error<UnsupportedFeature>("TraceRayInline without a lock table");
+      auto nothing = ir.CreateSub(ir.CreatePtrToInt(locks, i64), ir.getInt64(SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE));
       auto header = ir.CreateIntToPtr(
           ir.CreateSelect(ir.CreateICmpEQ(address, ir.getInt64(0)), nothing, address), i64->getPointerTo(1)
       );
@@ -4133,7 +4148,7 @@ convert_dxil(
         wide.push_back(cx);
   for (auto I : wide) {
     ir.SetInsertPoint(I);
-    auto locks = ctx.binding.GetAtomicLocks(air);
+    auto locks = atomic_locks();
     if (!locks)
       return make_error<UnsupportedFeature>("64-bit groupshared atomic without a lock table");
     Value *ret;
