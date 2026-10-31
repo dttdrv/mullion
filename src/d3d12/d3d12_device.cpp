@@ -1158,6 +1158,34 @@ public:
       Heap->AddConstantBufferView(Index, 0, 0);
   };
 
+  // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
+  // before, whose resource may be gone. Direct3D leaves what such a slot holds undefined; the null view is of the
+  // dimension and format asked for, or of the resource's when no description was given. without one, a multisampled
+  // resource's null shader resource view is multisampled, which a shader reads as a type of its own (TextureType);
+  // 1D, 2D and their arrays all read as one, and an unordered access view is never multisampled
+  template <typename ViewDesc>
+  static ViewDesc
+  RefusedViewDesc(ID3D12Resource *pResource, const ViewDesc *pDesc) {
+    static_assert(UINT(D3D12_UAV_DIMENSION_BUFFER) == D3D12_SRV_DIMENSION_BUFFER &&
+                  UINT(D3D12_UAV_DIMENSION_TEXTURE2D) == D3D12_SRV_DIMENSION_TEXTURE2D &&
+                  UINT(D3D12_UAV_DIMENSION_TEXTURE3D) == D3D12_SRV_DIMENSION_TEXTURE3D);
+    ViewDesc desc{};
+    auto resource = pResource->GetDesc();
+    if (pDesc) {
+      desc = *pDesc;
+    } else {
+      auto dimension = resource.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER    ? D3D12_SRV_DIMENSION_BUFFER
+                       : resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? D3D12_SRV_DIMENSION_TEXTURE3D
+                                                                                  : D3D12_SRV_DIMENSION_TEXTURE2D;
+      if (std::is_same_v<ViewDesc, D3D12_SHADER_RESOURCE_VIEW_DESC> && resource.SampleDesc.Count > 1)
+        dimension = resource.DepthOrArraySize > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY : D3D12_SRV_DIMENSION_TEXTURE2DMS;
+      desc.ViewDimension = decltype(desc.ViewDimension)(dimension);
+    }
+    if (desc.Format == DXGI_FORMAT_UNKNOWN)
+      desc.Format = resource.Format;
+    return desc;
+  }
+
   void STDMETHODCALLTYPE
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
@@ -1171,7 +1199,11 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateShaderResourceView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+      auto null_desc = RefusedViewDesc(pResource, pDesc);
+      Heap->AddShaderResourceView(Index, &null_desc);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1185,7 +1217,11 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor))) {
+      auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+      auto null_desc = RefusedViewDesc(pResource, pDesc);
+      Heap->AddUnorderedAccessView(Index, &null_desc);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1198,7 +1234,10 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateRenderTargetView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+      Heap->AddRenderTarget(Index, nullptr);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1211,7 +1250,10 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateDepthStencilView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateDepthStencilView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+      Heap->AddRenderTarget(Index, nullptr);
+    }
   };
 
   void STDMETHODCALLTYPE
