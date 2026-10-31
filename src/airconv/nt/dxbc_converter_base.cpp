@@ -2061,6 +2061,16 @@ Converter::operator()(const InstSampleCompare &sample) {
   llvm::Value *ArrayIndex = nullptr;
 
   switch (Tex->Logical) {
+  case Texture::texture1d:
+    Coord = LoadOperand(sample.src_address, kMaskComponentX);
+    Coord = ir.CreateInsertElement(llvm::ConstantFP::getNullValue(air.getFloatTy(2)), Coord, 0ull);
+    break;
+  case Texture::texture1d_array:
+    Coord = LoadOperand(sample.src_address, kMaskComponentX);
+    Coord = ir.CreateInsertElement(llvm::ConstantFP::getNullValue(air.getFloatTy(2)), Coord, 0ull);
+    ArrayIndex = LoadOperand(sample.src_address, kMaskComponentY);
+    ArrayIndex = ClampArrayIndex(ArrayIndex, Tex->Metadata);
+    break;
   case Texture::depth2d:
     Coord = LoadOperand(sample.src_address, kMaskVecXY);
     break;
