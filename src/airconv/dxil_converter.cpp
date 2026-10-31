@@ -4016,7 +4016,6 @@ convert_dxil(
           clip[k] = ir.CreateInsertElement(clip[k], real(word(conservative_vertices, corner[k], position_at + c)), c);
       }
       Value *viewport = primitive_outputs[2] ? (Value *)word(conservative_primitives, p, cm->registers[1].size() + 2) : ir.getInt32(0);
-      viewport = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport, ir.getInt32(15), false);
       auto triangle = conservative_triangle(ir, air, ctx.types, clip, cm->viewports, viewport);
       auto blend = [&](const ConservativeTriangle::Weights &parts, uint32_t u, uint32_t column) {
         Value *sum = nullptr;
