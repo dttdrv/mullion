@@ -3052,7 +3052,8 @@ public:
       if (AttachmentDesc.DepthFormat == DXGI_FORMAT_D16_UNORM)
         Depth = std::nextafter(Depth, 1.0f);
     }
-    if (Rects) {
+    // no rectangles clear the whole view, whatever the array is, as vkd3d-proton does
+    if (Rects && RectCount) {
       UsedTexture(AttachmentDesc.Texture);
       allocator_->clear_rtv_.begin(AttachmentDesc.Texture, AttachmentDesc.View, 0, CheckedFlags);
       for (unsigned i = 0; i < RectCount; i++) {
@@ -3103,7 +3104,8 @@ public:
       return;
     auto stored = RenderTargetColor(AttachmentDesc.Format, Color);
     Color = stored.data();
-    if (Rects) {
+    // no rectangles clear the whole view, whatever the array is, as vkd3d-proton does
+    if (Rects && RectCount) {
       UsedTexture(AttachmentDesc.Texture);
       allocator_->clear_rtv_.begin(AttachmentDesc.Texture, AttachmentDesc.View, AttachmentDesc.DepthPlane);
       for (unsigned i = 0; i < RectCount; i++) {
