@@ -28,6 +28,9 @@ class MTLD3D12Buffer : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_HEAP_PROPERTIES heap_props_;
   D3D12_HEAP_FLAGS heap_flags_;
   bool reserved_ = false;
+  // the heap a placed buffer is on, which it keeps: the heap's residency is the buffer's
+  // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
+  Com<MTLD3D12Heap, false> heap_;
 
 public:
   MTLD3D12Buffer(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12Resource>(pDevice) {}
@@ -45,6 +48,7 @@ public:
     reserved_ = Reserved;
     heap_props_ = *pHeapProps;
     heap_flags_ = HeapFlags;
+    heap_ = pHeap;
 
     if (desc_.Alignment) {
       if (desc_.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
