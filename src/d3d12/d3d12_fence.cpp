@@ -134,32 +134,25 @@ Watcher::Look(PTP_WAIT wait) {
 class MTLD3D12FenceImpl : public MTLD3D12DeviceChild<MTLD3D12Fence> {
   D3D12_FENCE_FLAGS flags_;
   std::shared_ptr<Completion> completion_ = std::make_shared<Completion>();
-  D3DKMT_HANDLE allocation_ = 0;
+  // the registered name of a shared fence's mach port, which its handles carry; empty for a fence that is not shared
+  char mach_port_name_[54] = {};
 
 public:
   MTLD3D12FenceImpl(
       MTLD3D12Device *pDevice, D3D12_FENCE_FLAGS flags, WMT::Reference<WMT::SharedEvent> &&event = {},
-      D3DKMT_HANDLE allocation = 0
+      const char (&mach_port_name)[54] = {}
   ) :
       MTLD3D12DeviceChild<MTLD3D12Fence>(pDevice),
-      flags_(flags),
-      allocation_(allocation) {
+      flags_(flags) {
+    memcpy(mach_port_name_, mach_port_name, sizeof(mach_port_name_));
     completion = completion_;
     completion_->event = std::move(event);
     completion_->listener = &device_->GetEventListener();
   }
 
   ~MTLD3D12FenceImpl() {
-    {
-      std::lock_guard lock(device_->fences.mutex);
-      device_->fences.values.erase(completion);
-    }
-    if (allocation_) {
-      D3DKMT_DESTROYALLOCATION destroy = {};
-      destroy.hDevice = device_->GetLocalD3DKMT();
-      destroy.hResource = allocation_;
-      D3DKMTDestroyAllocation(&destroy);
-    }
+    std::lock_guard lock(device_->fences.mutex);
+    device_->fences.values.erase(completion);
   }
 
   // a removed device has reached every fence it has (LoseDevice)
@@ -170,7 +163,7 @@ public:
       if (!(event = device_->GetMTLDevice().newSharedEvent()))
         return E_OUTOFMEMORY;
       event.signalValue(InitialValue);
-      if (!(allocation_ = shareEvent(device_->GetLocalD3DKMT(), event)))
+      if (!shareEvent(event, mach_port_name_))
         return E_FAIL;
     }
     // an opened fence has the value of the fence it opens, a created one its initial value
@@ -189,9 +182,9 @@ public:
       completion_->event.signalValue(Value);
   }
 
-  D3DKMT_HANDLE
-  SharedAllocation() override {
-    return allocation_;
+  HRESULT
+  CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) override {
+    return mach_port_name_[0] ? shareHandle(mach_port_name_, attributes, name, handle) : E_INVALIDARG;
   }
 
   ULONG STDMETHODCALLTYPE
@@ -286,12 +279,12 @@ CreateFence(MTLD3D12Device *pDevice, UINT64 InitialValue, D3D12_FENCE_FLAGS Flag
 
 HRESULT
 OpenFence(
-    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, D3DKMT_HANDLE Allocation, REFIID riid,
+    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, const char (&MachPortName)[54], REFIID riid,
     void **ppFence
 ) {
   if (!Event)
     return E_INVALIDARG;
-  auto fence = Com(new MTLD3D12FenceImpl(pDevice, D3D12_FENCE_FLAG_SHARED, std::move(Event), Allocation));
+  auto fence = Com(new MTLD3D12FenceImpl(pDevice, D3D12_FENCE_FLAG_SHARED, std::move(Event), MachPortName));
   if (HRESULT hr = fence->Initialize(0); FAILED(hr))
     return hr;
   if (!ppFence)

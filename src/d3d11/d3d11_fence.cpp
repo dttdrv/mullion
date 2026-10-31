@@ -8,19 +8,12 @@ namespace mullion {
 
 class MTLD3D11FenceImpl : public MTLD3D11DeviceChild<MTLD3D11Fence> {
 public:
-  MTLD3D11FenceImpl(MTLD3D11Device *pDevice, WMT::Reference<WMT::SharedEvent> event, D3DKMT_HANDLE handle) :
+  MTLD3D11FenceImpl(MTLD3D11Device *pDevice, WMT::Reference<WMT::SharedEvent> event, bool shared,
+                    const char (&name)[54]) :
       MTLD3D11DeviceChild<MTLD3D11Fence>(pDevice) {
     this->event = std::move(event);
-    local_kmt = handle;
-  };
-
-  ~MTLD3D11FenceImpl() {
-    if (local_kmt) {
-      D3DKMT_DESTROYALLOCATION destroy = {};
-      destroy.hDevice = this->m_parent->GetLocalD3DKMT();
-      destroy.hResource = local_kmt;
-      D3DKMTDestroyAllocation(&destroy);
-    }
+    this->shared = shared;
+    memcpy(this->mach_port_name, name, sizeof(this->mach_port_name));
   };
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
@@ -47,9 +40,11 @@ public:
   CreateSharedHandle(const SECURITY_ATTRIBUTES *pAttributes, DWORD Access,
                      const WCHAR *Name, HANDLE *pHandle) final {
     InitReturnPtr(pHandle);
-    if (!pHandle || !local_kmt || Access != GENERIC_ALL)
+    // "CreateSharedHandle requires SHARED and GENERIC_ALL; invalid parameters return DXGI_ERROR_INVALID_CALL"
+    // (tests/d3d11/d3d11_shared_fence.cpp)
+    if (!pHandle || !shared || Access != GENERIC_ALL)
       return DXGI_ERROR_INVALID_CALL;
-    return shareHandle(local_kmt, pAttributes, Access, Name, pHandle);
+    return shareHandle(mach_port_name, pAttributes, Name, pHandle);
   };
 
   UINT64 STDMETHODCALLTYPE GetCompletedValue() final {
@@ -81,27 +76,24 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
   if (!event)
     return E_OUTOFMEMORY;
   event.signalValue(InitialValue);
-  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), 0));
-  if (shared) {
-    fence->local_kmt = shareEvent(pDevice->GetLocalD3DKMT(), fence->event);
-    if (!fence->local_kmt)
-      return E_FAIL;
-  }
+  char mach_port_name[54] = {};
+  if (shared && !shareEvent(event, mach_port_name))
+    return E_FAIL;
+  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), shared, mach_port_name));
   if (!ppFence)
     return S_FALSE;
   return fence->QueryInterface(riid, ppFence);
 }
 
 HRESULT
-OpenSharedFence(MTLD3D11Device *pDevice, HANDLE hResource,
-                REFIID riid, void **ppFence) {
+OpenSharedFence(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppFence) {
   InitReturnPtr(ppFence);
 
-  D3DKMT_HANDLE allocation;
-  auto event = openSharedEvent(pDevice->GetMTLDevice(), pDevice->GetLocalD3DKMT(), hResource, allocation);
-  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), allocation));
-  if (!fence->event)
+  char mach_port_name[54];
+  auto event = openSharedEvent(pDevice->GetMTLDevice(), hResource, mach_port_name);
+  if (!event)
     return E_INVALIDARG;
+  auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), true, mach_port_name));
   if (!ppFence)
     return S_FALSE;
   return fence->QueryInterface(riid, ppFence);

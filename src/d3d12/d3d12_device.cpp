@@ -285,22 +285,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
-  std::once_flag sharing_;
-  D3DKMT_HANDLE local_kmt_ = 0;
+  std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
-
-  void
-  Share() {
-    std::call_once(sharing_, [this] {
-      D3DKMT_CREATEDEVICE create = {};
-      create.hAdapter = adapter_->GetLocalD3DKMT();
-      if (create.hAdapter && !D3DKMTCreateDevice(&create))
-        local_kmt_ = create.hDevice;
-      else
-        WARN("Failed to create D3DKMT device");
-      event_listener_ = std::make_unique<EventListener>();
-    });
-  }
 
 public:
   MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
@@ -308,15 +294,8 @@ public:
   }
 
   ~MTLD3D12DeviceImpl() {
-    {
-      std::lock_guard lock(device_singletons_lock);
-      std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
-    }
-    if (local_kmt_) {
-      D3DKMT_DESTROYDEVICE destroy = {};
-      destroy.hDevice = local_kmt_;
-      D3DKMTDestroyDevice(&destroy);
-    }
+    std::lock_guard lock(device_singletons_lock);
+    std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
   }
 
   // a reference for D3D12CreateDevice, unless the application has released its last one: a device whose count reached
@@ -330,15 +309,9 @@ public:
     return false;
   }
 
-  D3DKMT_HANDLE
-  GetLocalD3DKMT() override {
-    Share();
-    return local_kmt_;
-  }
-
   EventListener &
   GetEventListener() override {
-    Share();
+    std::call_once(listening_, [this] { event_listener_ = std::make_unique<EventListener>(); });
     return *event_listener_;
   }
 
@@ -1523,18 +1496,17 @@ public:
     if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence))))
       return E_NOTIMPL;
     // a fence made with D3D12_FENCE_FLAG_SHARED, whose Access "is GENERIC_ALL" (ID3D12Device::CreateSharedHandle)
-    auto allocation = static_cast<MTLD3D12Fence *>(fence.ptr())->SharedAllocation();
-    if (!allocation || access != GENERIC_ALL)
+    if (access != GENERIC_ALL)
       return E_INVALIDARG;
-    return shareHandle(allocation, attributes, access, name, handle);
+    return static_cast<MTLD3D12Fence *>(fence.ptr())->CreateSharedHandle(attributes, name, handle);
   };
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
     InitReturnPtr(object);
-    D3DKMT_HANDLE allocation;
-    auto event = openSharedEvent(GetMTLDevice(), GetLocalD3DKMT(), handle, allocation);
-    return OpenFence(this, std::move(event), allocation, riid, object);
+    char mach_port_name[54];
+    auto event = openSharedEvent(GetMTLDevice(), handle, mach_port_name);
+    return OpenFence(this, std::move(event), mach_port_name, riid, object);
   };
 
   HRESULT STDMETHODCALLTYPE

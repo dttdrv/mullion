@@ -65,42 +65,29 @@ EventListener::setEventOnValue(WMT::SharedEvent shared, HANDLE event, uint64_t v
 
 void makeUniqueName(char (&out)[54]);
 
-D3DKMT_HANDLE
-shareEvent(D3DKMT_HANDLE device, WMT::SharedEvent event) {
-  if (!(device & 0xc0000000)) {
-    ERR("shareEvent: Invalid device handle");
-    return 0;
-  }
+// a shared fence travels as an ordinary handle on any Wine: a file mapping whose contents name its event's mach port,
+// which winemetal's bootstrap resolves in any process of the session, so duplicated and inherited handles reopen it.
+// its tag refuses every other handle, as OpenSharedFence "only operates on fences" (ID3D11Device5::OpenSharedFence)
+struct SharedFenceData {
+  char tag[16];
+  char mach_port_name[54];
+};
+
+static constexpr char shared_fence_tag[16] = "MULLION_fence";
+
+bool
+shareEvent(WMT::SharedEvent event, char (&name)[54]) {
   mach_port_t mach_port = event.createMachPort();
   if (!mach_port) {
     ERR("shareEvent: Failed to create mach port for shared fence");
-    return 0;
+    return false;
   }
-  char mach_port_name[54];
-  makeUniqueName(mach_port_name);
-  if (!WMTBootstrapRegister(mach_port_name, event.handle, mach_port)) {
+  makeUniqueName(name);
+  if (!WMTBootstrapRegister(name, event.handle, mach_port)) {
     ERR("shareEvent: Failed to register mach port for shared fence");
-    return 0;
+    return false;
   }
-  // Wine's resource objects retain runtime data with the NT handle; synchronization objects do not
-  D3DKMT_CREATEALLOCATION create = {};
-  create.hDevice = device;
-  create.pPrivateRuntimeData = mach_port_name;
-  create.PrivateRuntimeDataSize = sizeof(mach_port_name);
-  create.Flags.StandardAllocation = create.Flags.ExistingSysMem = 1;
-  create.Flags.CreateResource = create.Flags.CreateShared = create.Flags.NtSecuritySharing = 1;
-  D3DDDI_ALLOCATIONINFO2 allocation = {};
-  allocation.pSystemMem = mach_port_name;
-  create.pAllocationInfo2 = &allocation;
-  create.NumAllocations = 1;
-  D3DKMT_CREATESTANDARDALLOCATION standard = {};
-  standard.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
-  create.pStandardAllocation = &standard;
-  if (D3DKMTCreateAllocation2(&create)) {
-    ERR("shareEvent: Failed to create D3DKMT handle");
-    return 0;
-  }
-  return create.hResource;
+  return true;
 }
 
 // `name` among the session's objects (BaseNamedObjects), which `buffer` holds
@@ -116,70 +103,59 @@ sessionName(const WCHAR *name, std::wstring &buffer, UNICODE_STRING &string, OBJ
 }
 
 HRESULT
-shareHandle(D3DKMT_HANDLE allocation, const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name,
-            HANDLE *handle) {
-  OBJECT_ATTRIBUTES attr = {};
-  attr.Length = sizeof(attr);
-  attr.SecurityDescriptor = attributes ? attributes->lpSecurityDescriptor : nullptr;
-  attr.Attributes = attributes && attributes->bInheritHandle ? OBJ_INHERIT : 0;
-  std::wstring buffer;
-  UNICODE_STRING name_str;
-  if (name) {
-    if (wcslen(name) > MAX_PATH)
-      return DXGI_ERROR_INVALID_CALL;
-    sessionName(name, buffer, name_str, attr);
-  }
-  if (D3DKMTShareObjects(1, &allocation, &attr, access, handle)) {
-    ERR("shareHandle: Failed to create shared handle");
+shareHandle(const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) {
+  if (name && wcslen(name) > MAX_PATH)
+    return DXGI_ERROR_INVALID_CALL;
+  HANDLE mapping = CreateFileMappingW(
+      INVALID_HANDLE_VALUE, const_cast<SECURITY_ATTRIBUTES *>(attributes), PAGE_READWRITE, 0, sizeof(SharedFenceData),
+      name
+  );
+  if (!mapping) {
+    ERR("shareHandle: Failed to create shared handle: ", GetLastError());
     return E_FAIL;
   }
+  // "If Name matches the name of an existing resource, CreateSharedHandle fails with DXGI_ERROR_NAME_ALREADY_EXISTS"
+  // (ID3D12Device::CreateSharedHandle)
+  if (name && GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(mapping);
+    return DXGI_ERROR_NAME_ALREADY_EXISTS;
+  }
+  auto data = static_cast<SharedFenceData *>(MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedFenceData)));
+  if (!data) {
+    ERR("shareHandle: Failed to write shared handle: ", GetLastError());
+    CloseHandle(mapping);
+    return E_FAIL;
+  }
+  memcpy(data->tag, shared_fence_tag, sizeof(shared_fence_tag));
+  memcpy(data->mach_port_name, event_name, sizeof(event_name));
+  UnmapViewOfFile(data);
+  *handle = mapping;
   return S_OK;
 }
 
 WMT::Reference<WMT::SharedEvent>
-openSharedEvent(WMT::Device mtl, D3DKMT_HANDLE device, HANDLE handle, D3DKMT_HANDLE &allocation) {
-  allocation = 0;
-  if (reinterpret_cast<uintptr_t>(handle) & 0xc0000000) {
-    WARN("openSharedEvent: Invalid shared handle type");
+openSharedEvent(WMT::Device mtl, HANDLE handle, char (&event_name)[54]) {
+  auto data = handle ? static_cast<const SharedFenceData *>(
+                           MapViewOfFile(handle, FILE_MAP_READ, 0, 0, sizeof(SharedFenceData))
+                       )
+                     : nullptr;
+  if (!data) {
+    WARN("openSharedEvent: handle is not a shared fence");
     return {};
   }
-  char mach_port_name[54] = {};
-  D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
-  query.hDevice = device;
-  query.hNtHandle = handle;
-  query.pPrivateRuntimeData = mach_port_name;
-  query.PrivateRuntimeDataSize = sizeof(mach_port_name);
-  if (D3DKMTQueryResourceInfoFromNtHandle(&query)) {
-    WARN(str::format("openSharedEvent: Failed to query resource: ", handle));
+  bool fence = !memcmp(data->tag, shared_fence_tag, sizeof(shared_fence_tag));
+  memcpy(event_name, data->mach_port_name, sizeof(event_name));
+  UnmapViewOfFile(data);
+  if (!fence || event_name[sizeof(event_name) - 1]) {
+    WARN("openSharedEvent: handle is not a shared fence");
     return {};
   }
-  if (query.PrivateRuntimeDataSize != sizeof(mach_port_name)) {
-    WARN(str::format("openSharedEvent: Unexpected size: ", query.PrivateRuntimeDataSize));
-    return {};
-  }
-  D3DKMT_OPENRESOURCEFROMNTHANDLE open = {};
-  D3DDDI_OPENALLOCATIONINFO2 info = {};
-  char driver_data;
-  open.hDevice = device;
-  open.hNtHandle = handle;
-  open.NumAllocations = 1;
-  open.pOpenAllocationInfo2 = &info;
-  open.pPrivateRuntimeData = mach_port_name;
-  open.PrivateRuntimeDataSize = sizeof(mach_port_name);
-  open.pTotalPrivateDriverDataBuffer = &driver_data;
-  if (D3DKMTOpenResourceFromNtHandle(&open)) {
-    WARN(str::format("openSharedEvent: Failed to open resource: ", handle));
-    return {};
-  }
-  allocation = open.hResource;
   mach_port_t mach_port;
-  if (open.PrivateRuntimeDataSize != sizeof(mach_port_name) || mach_port_name[sizeof(mach_port_name) - 1])
-    return {};
-  if (!WMTBootstrapLookUp(mach_port_name, &mach_port)) {
+  if (!WMTBootstrapLookUp(event_name, &mach_port)) {
     ERR("openSharedEvent: Failed to look up mach port");
     return {};
   }
-  WMT::SharedNameHold hold(mach_port_name);
+  WMT::SharedNameHold hold(event_name);
   auto event = mtl.newSharedEventWithMachPort(mach_port);
   hold.keep(event.handle);
   return event;
@@ -187,19 +163,21 @@ openSharedEvent(WMT::Device mtl, D3DKMT_HANDLE device, HANDLE handle, D3DKMT_HAN
 
 HRESULT
 openHandleByName(const WCHAR *name, DWORD access, HANDLE *handle) {
-  D3DKMT_OPENNTHANDLEFROMNAME open = {};
-  open.dwDesiredAccess = access;
+  // shared names are found in any case: Wine's win32u d3dkmt test, which runs on Windows, opens a resource by its
+  // lower-case name. OpenFileMappingW would compare them as they are
+  static auto open_section = reinterpret_cast<NTSTATUS(WINAPI *)(HANDLE *, ACCESS_MASK, const OBJECT_ATTRIBUTES *)>(
+      GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtOpenSection")
+  );
   OBJECT_ATTRIBUTES attr = {};
   attr.Length = sizeof(attr);
+  attr.Attributes = OBJ_CASE_INSENSITIVE;
   std::wstring buffer;
   UNICODE_STRING name_str;
   sessionName(name, buffer, name_str, attr);
-  open.pObjAttrib = &attr;
-  if (D3DKMTOpenNtHandleFromName(&open)) {
-    WARN(str::format("openHandleByName: Failed to open NT handle from name: ", name));
+  if (open_section(handle, access, &attr)) {
+    WARN(str::format("openHandleByName: Failed to open shared handle: ", name));
     return E_INVALIDARG;
   }
-  *handle = open.hNtHandle;
   return S_OK;
 }
 

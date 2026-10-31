@@ -29,8 +29,183 @@
 #include "util_win32_compat.h"
 
 #include <limits>
+#include <mutex>
+#include <random>
+#include <unordered_map>
 
 namespace mullion {
+
+#pragma region Shared Texture
+
+// a shared texture's handle is an ordinary file mapping whose bytes say which shared texture it belongs to: the
+// carrier pattern of d3d11_fence.cpp with a tag of its own, so "a shared texture still opens as a texture, and
+// cannot open as a fence" (tests/d3d11/d3d11_shared_fence.cpp). the texture itself travels as the mach port of
+// its Metal allocation under a unique bootstrap name; a planar texture registers its chroma plane under
+// "<name>.uv", and a keyed mutex's shared event carries its own name (tests/d3d11/d3d11_shared_resource.cpp)
+struct SharedTextureData {
+  char tag[16];
+  uint64_t share_id;
+  // the carrier's own name, so an opener that holds nothing but the share's identity - a name that resolved to it,
+  // or a handle of it - opens the object that holds the state
+  char mapping_name[64];
+  // the name the share was published under, if one was: every resource of the share holds that name open for as
+  // long as it lives, since "a name can be used by only one resource at a time" and the name belongs to the
+  // resource and not to the process that happened to create it
+  WCHAR published_name[MAX_PATH + 1];
+  // the access this share was published with: "dwAccess ... one or more of the following values: DXGI_SHARED_RESOURCE_
+  // READ 0x80000000, DXGI_SHARED_RESOURCE_WRITE 0x1" (Microsoft Learn, IDXGIResource1::CreateSharedHandle), which a
+  // later OpenSharedResourceByName is checked against
+  DWORD granted_access;
+  char mach_port_name[54];
+  char mutex_name[54];
+  D3D11_RESOURCE_DIMENSION dimension;
+  union {
+    D3D11_TEXTURE1D_DESC desc1d;
+    D3D11_TEXTURE2D_DESC1 desc2d;
+    D3D11_TEXTURE3D_DESC1 desc3d;
+  } desc;
+};
+
+// the carrier holds the identity and, past it, the keyed mutex's state, so one object carries both: a handle of
+// this share is a handle to this object - "The duplicate handle refers to the same object as the original handle"
+// (Microsoft Learn, DuplicateHandle) - and so is a handle to the name the share was published under, which is why
+// a handle kept after every resource of the share is released still opens the mutex the share was made with
+struct SharedTextureCarrier {
+  SharedTextureData data;
+  SharedMutexState mutex;
+};
+static constexpr size_t shared_texture_mutex_offset = offsetof(SharedTextureCarrier, mutex);
+
+static constexpr char shared_texture_tag[16] = "MULLION_texture";
+
+// "dwDesiredAccess ... accepts the same flags as dxgi.IDXGIResource1::CreateSharedHandle's dwAccess" (Microsoft
+// Learn, IDXGIResource1::OpenSharedResourceByName)
+static bool
+WriteRequested(DWORD access) {
+  return (access & (DXGI_SHARED_RESOURCE_WRITE | GENERIC_WRITE | GENERIC_ALL)) != 0;
+}
+
+// the carrier a name resolves to is a file mapping, so the DXGI access an open asks for is the file mapping
+// access it means: a reader opens the mapping for reading, and a caller that asked for writing opens it for both
+static DWORD
+MappingAccess(DWORD access) {
+  return WriteRequested(access) ? FILE_MAP_ALL_ACCESS : FILE_MAP_READ;
+}
+
+struct TextureShare;
+
+static std::mutex share_registry_mutex;
+static std::unordered_map<uint64_t, TextureShare *> share_registry;
+
+// the share's own mapping is named after its id, so a marshalled legacy handle resolves in any process of the
+// session: "You can also marshal this handle to another process to share a resource with a device in another
+// process" (Microsoft Learn, IDXGIResource::GetSharedHandle). the name also gives the handle the lifetime that
+// page spells out: "If no resource objects exist on any devices that refer to this resource, the handle is no
+// longer valid. To extend the lifetime of the handle and video memory, you must open the shared resource on a
+// device" - every live resource keeps the share's mapping open, and the name dies with the last of them
+static void
+ShareMappingName(uint64_t id, char (&out)[64]) {
+  snprintf(out, 64, "MULLION_shared_texture_%016llx", (unsigned long long)id);
+}
+
+// the marker bit names a legacy handle and is never part of an id. a 32-bit HANDLE and a 64-bit HANDLE of the
+// same share must be the same integer: the marker is bit 30, which both widths carry, so a truncated 64-bit
+// GetSharedHandle is still a legacy handle a 32-bit OpenSharedResource can name (not a width-local bit 62)
+static constexpr uint64_t legacy_handle_marker = uint64_t(1) << 30;
+static constexpr uint64_t share_id_range = uint64_t(1) << 30;
+
+static uint64_t
+MakeShareId() {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dis;
+  return dis(gen) & (share_id_range - 1);
+}
+
+// the live shared textures of this process. a legacy handle is a plain identity value and not a kernel handle
+// (CloseHandle and DuplicateHandle must fail with ERROR_INVALID_HANDLE)
+struct TextureShare {
+  void incRef() {
+    refcount.fetch_add(1u, std::memory_order_acquire);
+  }
+
+  // JoinShare takes its reference under the same lock, so a count that reaches 0 under it is final. dropped before
+  // the lock, another thread could find the share, take it up and release it, and delete it before this one looks
+  void decRef() {
+    std::lock_guard<std::mutex> lock(share_registry_mutex);
+    if (refcount.fetch_sub(1u, std::memory_order_acq_rel) != 1u)
+      return;
+    share_registry.erase(data.share_id);
+    if (carrier)
+      UnmapViewOfFile(carrier);
+    if (named_mapping)
+      CloseHandle(named_mapping);
+    if (published_name)
+      CloseHandle(published_name);
+    delete this;
+  }
+
+  HANDLE legacyHandle() const {
+    return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(data.share_id | legacy_handle_marker));
+  }
+
+  const char *
+  mappingName() const {
+    return data.mapping_name;
+  }
+
+  SharedTextureData data;
+  // this process's view of the share's own object: the identity in `data` and the keyed mutex's state past it
+  SharedTextureCarrier *carrier = nullptr;
+  HANDLE named_mapping = nullptr;      // the carrier, opened by its name or taken from a handle of the share
+  HANDLE published_name = nullptr;     // the name this share was published under, if a name was published
+  std::atomic<uint32_t> refcount = {0u};
+};
+
+static bool
+IsLegacySharedHandle(HANDLE hResource) {
+  return (uint64_t(uintptr_t(hResource)) & legacy_handle_marker) != 0;
+}
+
+// one share is one entry per process however its handle arrives; the entry holds the share's object open while any
+// resource of the share lives here. the object is opened by the name its identity records - its id - and that name
+// lives for as long as the object does, so a handle of the share left after every resource went is itself one of
+// the object's references and still resolves
+static Rc<TextureShare>
+JoinShare(const SharedTextureData &data, HANDLE carried = nullptr) {
+  std::lock_guard<std::mutex> lock(share_registry_mutex);
+  auto it = share_registry.find(data.share_id);
+  if (it != share_registry.end())
+    return Rc<TextureShare>(it->second);
+  auto share = Rc<TextureShare>(new TextureShare());
+  share->data = data;
+  share->named_mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, share->mappingName());
+  if (!share->named_mapping && carried) {
+    // the caller's own handle keeps the object alive even where no name resolved it
+    HANDLE duplicate = nullptr;
+    if (DuplicateHandle(GetCurrentProcess(), carried, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+      share->named_mapping = duplicate;
+  }
+  if (share->named_mapping) {
+    share->carrier = static_cast<SharedTextureCarrier *>(
+        MapViewOfFile(share->named_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedTextureCarrier))
+    );
+    // the object has to be this share's carrier and not some other mapping of that shape
+    if (share->carrier && (memcmp(share->carrier->data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
+                           share->carrier->data.share_id != data.share_id)) {
+      UnmapViewOfFile(share->carrier);
+      share->carrier = nullptr;
+    }
+    // a share that was published under a name holds that name open while any resource of the share is alive in
+    // this process, so the name outlives the process that published it, as the resource it belongs to does
+    if (share->carrier && share->carrier->data.published_name[0])
+      share->published_name = OpenFileMappingW(FILE_MAP_READ, FALSE, share->carrier->data.published_name);
+  }
+  share_registry.emplace(data.share_id, share.ptr());
+  return share;
+}
+
+#pragma endregion
 
 #pragma region DeviceTexture
 
@@ -47,8 +222,7 @@ class DeviceTexture : public TResourceBase<tag_texture, IMTLMinLODClampable> {
 private:
   Rc<RenamableTexturePool> renamable_;
   float min_lod = 0.0;
-  D3DKMT_HANDLE local_kmt_ = 0;
-  D3DKMT_HANDLE global_kmt_ = 0;
+  Rc<TextureShare> share_;
 
   using SRVBase =
       TResourceViewBase<tag_shader_resource_view<DeviceTexture<tag_texture>>>;
@@ -170,24 +344,14 @@ public:
       }
 
   DeviceTexture(
-      const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, D3DKMT_HANDLE localHandle, D3DKMT_HANDLE globalHandle,
-      Rc<KeyedMutex> && keyed_mutex, MTLD3D11Device *pDevice
+      const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, Rc<TextureShare> &&share,
+      Rc<KeyedMutex> &&keyed_mutex, MTLD3D11Device *pDevice
   ) :
-      TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
-      local_kmt_(localHandle), global_kmt_(globalHandle) {
+      TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice), share_(std::move(share)) {
         this->texture_ = std::move(u_texture);
         this->texture_->centered = centered(*pDesc);
         this->keyed_mutex_ = std::move(keyed_mutex);
       }
-
-  ~DeviceTexture() {
-    if (local_kmt_) {
-      D3DKMT_DESTROYALLOCATION destroy = {};
-      destroy.hDevice = this->m_parent->GetLocalD3DKMT();
-      destroy.hResource = local_kmt_;
-      D3DKMTDestroyAllocation(&destroy);
-    }
-  }
 
   Rc<StagingResource> staging(UINT) final { return nullptr; }
   Rc<DynamicBuffer> dynamicBuffer(UINT*, UINT*) final { return {}; }
@@ -336,11 +500,11 @@ public:
       return S_OK;
     }
 
-    if (!global_kmt_) {
+    if (!share_) {
       return E_INVALIDARG;
     }
 
-    *pSharedHandle = reinterpret_cast<HANDLE>(global_kmt_);
+    *pSharedHandle = share_->legacyHandle();
     return S_OK;
   }
 
@@ -350,51 +514,72 @@ public:
     if (this->wrapped_resource)
       return TResourceBase<tag_texture, IMTLMinLODClampable>::CreateSharedHandle(Attributes, Access, pName, pNTHandle);
     InitReturnPtr(pNTHandle);
-    if (!local_kmt_ || !(this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE))
+    if (!pNTHandle || !share_ || !(this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE))
       return E_INVALIDARG;
+    // "The name is limited to MAX_PATH characters." (Microsoft Learn, ID3D11Fence::CreateSharedHandle)
+    if (pName && wcslen(pName) > MAX_PATH)
+      return DXGI_ERROR_INVALID_CALL;
+    if (!share_->carrier)
+      return E_FAIL;
 
-    OBJECT_ATTRIBUTES attr = {};
-    attr.Length = sizeof(attr);
-    attr.SecurityDescriptor = const_cast<SECURITY_ATTRIBUTES*>(Attributes);
+    // the access this handle grants is what a later open of the share by name is checked against
+    share_->data.granted_access = Access;
+    share_->carrier->data.granted_access = Access;
 
-    WCHAR buffer[MAX_PATH];
-    UNICODE_STRING name_str;
-    if (pName) {
-      DWORD session, len, name_len = wcslen(pName);
-
-      ProcessIdToSessionId(GetCurrentProcessId(), &session);
-      len = swprintf(buffer, ARRAYSIZE(buffer), L"\\Sessions\\%u\\BaseNamedObjects\\", session);
-      memcpy(buffer + len, pName, (name_len + 1) * sizeof(WCHAR));
-      name_str.MaximumLength = name_str.Length = (len + name_len) * sizeof(WCHAR);
-      name_str.MaximumLength += sizeof(WCHAR);
-      name_str.Buffer = buffer;
-
-      attr.ObjectName = &name_str;
-      attr.Attributes = OBJ_CASE_INSENSITIVE;
+    // "the name is in the same namespace as the name of any other object that can be opened by a process, such as a
+    // file, a mutex, or an event, and a name can be used by only one resource at a time" and "Creation fails if the
+    // name is already used" with DXGI_ERROR_NAME_ALREADY_EXISTS (Microsoft Learn, IDXGIResource1::CreateSharedHandle)
+    if (pName && !share_->published_name) {
+      // the carrier is named after the share's id, and one object has one name, so the caller's name is published
+      // as a mapping of the same identity: an open by that name finds the identity, whose `mapping_name` is the
+      // carrier that holds the share's state. every resource of the share then holds this name open, its creator
+      // included, so the name lives as long as a resource of the share does anywhere
+      swprintf(share_->carrier->data.published_name, MAX_PATH + 1, L"%s", pName);
+      swprintf(share_->data.published_name, MAX_PATH + 1, L"%s", pName);
+      SECURITY_ATTRIBUTES internal = {sizeof(internal), nullptr, FALSE};
+      if (Attributes)
+        internal = *Attributes;
+      // the caller's inheritance belongs to the handle at the end of this call; this object's own handle is not the
+      // caller's, so it is never inherited, while the security descriptor is the object's and is handed to it
+      internal.bInheritHandle = FALSE;
+      HANDLE published = CreateFileMappingW(
+          INVALID_HANDLE_VALUE, &internal, PAGE_READWRITE, 0, sizeof(SharedTextureData), pName
+      );
+      if (!published) {
+        ERR("DeviceTexture: Failed to publish the shared texture's name: ", GetLastError());
+        return E_FAIL;
+      }
+      if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(published);
+        WARN("DeviceTexture: the shared texture's name is already in use");
+        return DXGI_ERROR_NAME_ALREADY_EXISTS;
+      }
+      void *view = MapViewOfFile(published, FILE_MAP_WRITE, 0, 0, sizeof(SharedTextureData));
+      if (!view) {
+        ERR("DeviceTexture: Failed to write the shared texture's name: ", GetLastError());
+        CloseHandle(published);
+        return E_FAIL;
+      }
+      memcpy(view, &share_->data, sizeof(SharedTextureData));
+      UnmapViewOfFile(view);
+      share_->published_name = published;
     }
 
-    if (D3DKMTShareObjects(1, &local_kmt_, &attr, Access, pNTHandle)) {
-      ERR("DeviceTexture: Failed to create shared handle");
+    // the caller gets a handle to the share's own object: "The duplicate handle refers to the same object as the
+    // original handle" (Microsoft Learn, DuplicateHandle), which is what makes a kept handle outlive every resource
+    // of the share, inheriting or being duplicated into another process as the caller asked
+    BOOL inherit = Attributes ? Attributes->bInheritHandle : FALSE;
+    if (!DuplicateHandle(GetCurrentProcess(), share_->named_mapping, GetCurrentProcess(), pNTHandle, 0, inherit,
+                         DUPLICATE_SAME_ACCESS)) {
+      ERR("DeviceTexture: Failed to create shared handle: ", GetLastError());
       return E_FAIL;
     }
-
     return S_OK;
   }
 
   void SetMinLOD(float MinLod) override { min_lod = MinLod; }
 
   float GetMinLOD() override { return min_lod; }
-};
-
-struct SharedResourceData {
-  char mach_port_name[54];
-  D3D11_RESOURCE_DIMENSION dimension;
-  union {
-    D3D11_TEXTURE1D_DESC desc1d;
-    D3D11_TEXTURE2D_DESC1 desc2d;
-    D3D11_TEXTURE3D_DESC1 desc3d;
-  } desc;
-  D3DKMT_HANDLE mutex_handle;
 };
 
 template <typename tag>
@@ -477,10 +662,6 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
   auto shared_flag =
       D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
   if (finalDesc.MiscFlags & shared_flag) {
-    if (!(pDevice->GetLocalD3DKMT() & 0xc0000000)) {
-      ERR("DeviceTexture: Invalid device handle");
-      return E_FAIL;
-    }
     // use a dedicated path for now, because there are other works for private storage mode
 
     Flags<TextureAllocationFlag> flags;
@@ -500,50 +681,74 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     HRESULT hr = initialize(std::move(allocation));
     if (FAILED(hr))
       return hr;
-    SharedResourceData runtimeData;
-    MakeUniqueSharedName(runtimeData.mach_port_name);
-    if (!WMTBootstrapRegister(runtimeData.mach_port_name, texture->current()->texture().handle, mach_port)) {
+    // a shared allocation is observed from other devices and processes, which cannot order against this queue:
+    // the initial contents must land in it before any handle to the share exists, so the initializer's batched
+    // uploads are flushed and waited for here
+    if (auto seq = initializer.flushToWait())
+      initializer.wait(seq);
+    Rc<TextureShare> share(new TextureShare());
+    memcpy(share->data.tag, shared_texture_tag, sizeof(shared_texture_tag));
+    share->data.share_id = MakeShareId();
+    MakeUniqueSharedName(share->data.mach_port_name);
+    share->data.dimension = tag::dimension;
+    memcpy(&share->data.desc, pDesc, sizeof(typename tag::DESC1));
+    if (!WMTBootstrapRegister(share->data.mach_port_name, texture->current()->texture().handle, mach_port)) {
       ERR("DeviceTexture: Failed to register mach port for shared texture");
       return E_FAIL;
     }
     if (texture->chroma &&
-        !WMTBootstrapRegister((std::string(runtimeData.mach_port_name) + ".uv").c_str(),
+        !WMTBootstrapRegister((std::string(share->data.mach_port_name) + ".uv").c_str(),
                               texture->chroma->current()->texture().handle, texture->chroma->current()->machPort))
       return E_FAIL;
-    runtimeData.dimension = tag::dimension;
-    memcpy(&runtimeData.desc, pDesc, sizeof(typename tag::DESC1));
+
+    // the share's object: the carrier holds the identity and the keyed mutex's state, so one handle of this share
+    // says everything the share is. it stays mapped here for as long as the share lives, since the state is the
+    // share's own bytes and the mutex that owns them maps the same object
+    {
+      char mapping_name[64];
+      ShareMappingName(share->data.share_id, mapping_name);
+      snprintf(share->data.mapping_name, sizeof(share->data.mapping_name), "%s", mapping_name);
+      share->named_mapping = CreateFileMappingA(
+          INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedTextureCarrier), mapping_name
+      );
+      if (!share->named_mapping) {
+        ERR("DeviceTexture: Failed to create the share's mapping: ", GetLastError());
+        return E_FAIL;
+      }
+      if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        ERR("DeviceTexture: Shared texture id collision");
+        return E_FAIL;
+      }
+      share->carrier = static_cast<SharedTextureCarrier *>(
+          MapViewOfFile(share->named_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedTextureCarrier))
+      );
+      if (!share->carrier) {
+        ERR("DeviceTexture: Failed to map the share's mapping: ", GetLastError());
+        return E_FAIL;
+      }
+      memset(share->carrier, 0, sizeof(SharedTextureCarrier));
+      share->carrier->data = share->data;
+    }
 
     Rc<KeyedMutex> keyed_mutex = {};
     if (finalDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) {
-      keyed_mutex = KeyedMutex::create(pDevice->GetMTLDevice());
+      // the mutex's state lives in the share's carrier, so every handle of the share carries it: a handle kept
+      // after the resources of the share are released still names the key, its owner and its abandonment
+      keyed_mutex = KeyedMutex::create(pDevice->GetMTLDevice(), share->named_mapping, shared_texture_mutex_offset);
+      if (!keyed_mutex)
+        return E_FAIL;
+      snprintf(share->carrier->data.mutex_name, sizeof(share->data.mutex_name), "%s", keyed_mutex->name());
+      // the identity the share hands out is the carrier's, which now names the mutex's shared event too
+      share->data = share->carrier->data;
     }
-    runtimeData.mutex_handle = keyed_mutex ? keyed_mutex->globalHandle() : 0;
 
-    D3DKMT_CREATEALLOCATION create = {};
-    create.hDevice = pDevice->GetLocalD3DKMT();
-    create.pPrivateRuntimeData = &runtimeData;
-    create.PrivateRuntimeDataSize = sizeof(runtimeData);
-    create.Flags.StandardAllocation = 1;
-    create.NumAllocations = 1;
-    D3DDDI_ALLOCATIONINFO2 allocationInfo = {};
-    create.pAllocationInfo2 = &allocationInfo;
-    D3DKMT_CREATESTANDARDALLOCATION standardAllocation = {};
-    create.pStandardAllocation = &standardAllocation;
-    standardAllocation.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
-    create.Flags.ExistingSysMem = 1;
-    D3DDDI_ALLOCATIONINFO systemMem;
-    allocationInfo.pSystemMem = &systemMem;
-    create.Flags.CreateResource = 1;
-    create.Flags.CreateShared = 1;
-    create.Flags.NtSecuritySharing = !!(finalDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
-    if (D3DKMTCreateAllocation2(&create)) {
-      ERR("DeviceTexture: Failed to create D3DKMT for shared texture");
-      return E_FAIL;
+    {
+      std::lock_guard<std::mutex> lock(share_registry_mutex);
+      share_registry.emplace(share->data.share_id, share.ptr());
     }
 
     *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
-        ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), create.hResource,
-                                   create.hGlobalShare, std::move(keyed_mutex), pDevice))
+        ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), std::move(share), std::move(keyed_mutex), pDevice))
     );
     return S_OK;
   }
@@ -602,9 +807,8 @@ CreateDeviceTexture3D(MTLD3D11Device *pDevice,
 template <typename tag>
 HRESULT
 ImportSharedTextureInternal(
-    MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, 
-    D3DKMT_HANDLE &hResource, D3DKMT_HANDLE hGlobalShare, D3DKMT_HANDLE hSharedKeyedMutex, REFIID riid,
-    void **ppTexture, const char *Name, WMT::SharedNameHold &Hold
+    MTLD3D11Device *pDevice, const Rc<TextureShare> &share, const typename tag::DESC1 *pDescUnchecked, REFIID riid,
+    void **ppTexture
 ) {
   WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
@@ -612,18 +816,24 @@ ImportSharedTextureInternal(
     return E_INVALIDARG;
 
   auto texture = Rc<Texture>(new Texture(info, pDevice->GetMTLDevice()));
-  auto allocation = texture->import(MachPort);
+  mach_port_t mach_port = 0;
+  if (!WMTBootstrapLookUp(share->data.mach_port_name, &mach_port)) {
+    ERR("ImportSharedTexture: Failed to look up mach port");
+    return E_INVALIDARG;
+  }
+  WMT::SharedNameHold hold(share->data.mach_port_name);
+  auto allocation = texture->import(mach_port);
   if (!allocation)
     return E_FAIL;
-  Hold.keep(allocation->texture().handle);
+  hold.keep(allocation->texture().handle);
   texture->rename(std::move(allocation));
   MTL_DXGI_FORMAT_DESC format;
   MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format);
   if (format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) {
     mach_port_t chroma_port;
-    if (!WMTBootstrapLookUp((std::string(Name) + ".uv").c_str(), &chroma_port))
+    if (!WMTBootstrapLookUp((std::string(share->data.mach_port_name) + ".uv").c_str(), &chroma_port))
       return E_FAIL;
-    WMT::SharedNameHold chroma_hold(std::string(Name) + ".uv");
+    WMT::SharedNameHold chroma_hold(std::string(share->data.mach_port_name) + ".uv");
     MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format, 1);
     info.pixel_format = format.PixelFormat;
     info.width /= format.SubsampleWidth;
@@ -637,12 +847,20 @@ ImportSharedTextureInternal(
   }
 
   Rc<KeyedMutex> keyed_mutex;
-  if (hSharedKeyedMutex & 0xc0000000)
-    keyed_mutex = KeyedMutex::import(pDevice->GetMTLDevice(), hSharedKeyedMutex);
+  if (finalDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) {
+    if (!share->carrier || !share->named_mapping) {
+      ERR("ImportSharedTexture: the share's keyed mutex state is gone");
+      return E_FAIL;
+    }
+    keyed_mutex = KeyedMutex::import(
+        pDevice->GetMTLDevice(), share->named_mapping, shared_texture_mutex_offset, share->data.mutex_name
+    );
+    if (!keyed_mutex)
+      return E_FAIL;
+  }
 
   Com<DeviceTexture<tag>> device_texture =
-      new DeviceTexture<tag>(&finalDesc, std::move(texture), hResource, hGlobalShare, std::move(keyed_mutex), pDevice);
-  hResource = 0;
+      new DeviceTexture<tag>(&finalDesc, std::move(texture), Rc<TextureShare>(share), std::move(keyed_mutex), pDevice);
   return device_texture->QueryInterface(riid, ppTexture);
 }
 
@@ -705,7 +923,7 @@ HRESULT
 ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppTexture) {
   InitReturnPtr(ppTexture);
 
-  if (!(reinterpret_cast<uintptr_t>(hResource) & 0xc0000000)) {
+  if (!IsLegacySharedHandle(hResource)) {
     WARN("ImportSharedTexture: Invalid shared handle type");
     return E_INVALIDARG;
   }
@@ -713,81 +931,52 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (ppTexture == nullptr)
     return S_FALSE;
 
-  struct SharedResourceData runtimeData;
-
-  D3DKMT_QUERYRESOURCEINFO query = {};
-  query.hDevice = pDevice->GetLocalD3DKMT();
-  query.hGlobalShare = reinterpret_cast<uintptr_t>(hResource);
-  query.pPrivateRuntimeData = &runtimeData;
-  query.PrivateRuntimeDataSize = sizeof(runtimeData);
-
-  if (D3DKMTQueryResourceInfo(&query)) {
-    WARN("ImportSharedTexture: Failed to query resource: ", hResource);
+  // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
+  // made it, for as long as any device anywhere still holds a resource of the share
+  char mapping_name[64];
+  ShareMappingName(uint64_t(uintptr_t(hResource)) & ~legacy_handle_marker, mapping_name);
+  HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, mapping_name);
+  if (!mapping) {
+    // "released sharing chain retained its handle": no resource of the share exists anywhere any more
+    WARN("ImportSharedTexture: shared handle is no longer valid");
+    return E_INVALIDARG;
+  }
+  SharedTextureData data = {};
+  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData));
+  if (!view) {
+    WARN("ImportSharedTexture: shared handle is unreadable: ", GetLastError());
+    CloseHandle(mapping);
+    return E_INVALIDARG;
+  }
+  memcpy(&data, view, sizeof(data));
+  UnmapViewOfFile(view);
+  CloseHandle(mapping);
+  if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
+      data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.mutex_name[sizeof(data.mutex_name) - 1]) {
+    WARN("ImportSharedTexture: handle is not a shared texture");
     return E_INVALIDARG;
   }
 
-  if (query.PrivateRuntimeDataSize != sizeof(runtimeData)) {
-    WARN("ImportSharedTexture: Unexpected size: ", query.PrivateRuntimeDataSize);
-    return E_INVALIDARG;
-  } 
+  auto share = JoinShare(data);
 
-  D3DDDI_OPENALLOCATIONINFO2 alloc = {};
-  D3DKMT_OPENRESOURCE open = {};
-  open.hDevice = pDevice->GetLocalD3DKMT();
-  open.hGlobalShare = reinterpret_cast<uintptr_t>(hResource);
-  open.NumAllocations = 1;
-  open.pOpenAllocationInfo2 = &alloc;
-  open.pPrivateRuntimeData = &runtimeData;
-  open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
-
-  if (D3DKMTOpenResource2(&open)) {
-    WARN("ImportSharedTexture: Failed to open resource: ", hResource);
+  switch (share->data.dimension) {
+  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+    return ImportSharedTextureInternal<tag_texture_1d>(pDevice, share, &share->data.desc.desc1d, riid, ppTexture);
+  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+    return ImportSharedTextureInternal<tag_texture_2d>(pDevice, share, &share->data.desc.desc2d, riid, ppTexture);
+  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+    return ImportSharedTextureInternal<tag_texture_3d>(pDevice, share, &share->data.desc.desc3d, riid, ppTexture);
+  default:
+    ERR("ImportSharedTexture: Unsupported resource dimension");
     return E_INVALIDARG;
   }
-
-  HRESULT hr = E_INVALIDARG;
-  mach_port_t mach_port;
-  if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
-    ERR("ImportSharedTexture: Failed to look up mach port");
-  } else {
-    WMT::SharedNameHold hold(runtimeData.mach_port_name);
-    switch (runtimeData.dimension) {
-    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-      hr = ImportSharedTextureInternal<tag_texture_1d>(
-          pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
-          riid, ppTexture, runtimeData.mach_port_name, hold
-      );
-      break;
-    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-      hr = ImportSharedTextureInternal<tag_texture_2d>(
-          pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
-          riid, ppTexture, runtimeData.mach_port_name, hold
-      );
-      break;
-    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-      hr = ImportSharedTextureInternal<tag_texture_3d>(
-          pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, open.hGlobalShare, runtimeData.mutex_handle,
-          riid, ppTexture, runtimeData.mach_port_name, hold
-      );
-      break;
-    default:
-      ERR("ImportSharedTexture: Unsupported resource dimension");
-    }
-  }
-  if (open.hResource) {
-    D3DKMT_DESTROYALLOCATION destroy = {};
-    destroy.hDevice = pDevice->GetLocalD3DKMT();
-    destroy.hResource = open.hResource;
-    D3DKMTDestroyAllocation(&destroy);
-  }
-  return hr;
 }
 
 HRESULT
 ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppTexture) {
   InitReturnPtr(ppTexture);
 
-  if (reinterpret_cast<uintptr_t>(hResource) & 0xc0000000) {
+  if (IsLegacySharedHandle(hResource)) {
     WARN("ImportSharedTextureFromNtHandle: Invalid shared handle type");
     return E_INVALIDARG;
   }
@@ -795,102 +984,69 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   if (ppTexture == nullptr)
     return S_FALSE;
 
-  struct SharedResourceData runtimeData;
-
-  D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
-  query.hDevice = pDevice->GetLocalD3DKMT();
-  query.hNtHandle = hResource;
-  query.pPrivateRuntimeData = &runtimeData;
-  query.PrivateRuntimeDataSize = sizeof(runtimeData);
-
-  if (D3DKMTQueryResourceInfoFromNtHandle(&query)) {
-    WARN(str::format("ImportSharedTextureFromNtHandle: Failed to query resource: ", hResource));
+  SharedTextureData data = {};
+  void *view = hResource ? MapViewOfFile(hResource, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData)) : nullptr;
+  if (!view) {
+    WARN("ImportSharedTextureFromNtHandle: handle is not a shared texture");
     return E_INVALIDARG;
   }
-  
-  if (query.PrivateRuntimeDataSize != sizeof(runtimeData)) {
-    WARN(str::format("ImportSharedTextureFromNtHandle: Unexpected size: ", query.PrivateRuntimeDataSize));
+  memcpy(&data, view, sizeof(data));
+  UnmapViewOfFile(view);
+  if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)) ||
+      data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.mutex_name[sizeof(data.mutex_name) - 1]) {
+    WARN("ImportSharedTextureFromNtHandle: handle is not a shared texture");
     return E_INVALIDARG;
   }
 
-  D3DDDI_OPENALLOCATIONINFO2 alloc = {};
-  D3DKMT_OPENRESOURCEFROMNTHANDLE open = {};
-  char dummy;
+  // the handle carries the share's object, so this process's entry is that object even where nothing else of the
+  // share is left anywhere
+  auto share = JoinShare(data, hResource);
 
-  open.hDevice = pDevice->GetLocalD3DKMT();
-  open.hNtHandle = hResource;
-  open.NumAllocations = 1;
-  open.pOpenAllocationInfo2 = &alloc;
-  open.pPrivateRuntimeData = &runtimeData;
-  open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
-  open.pTotalPrivateDriverDataBuffer = &dummy;
-  open.TotalPrivateDriverDataBufferSize = 0;
-
-  if (D3DKMTOpenResourceFromNtHandle(&open)) {
-    WARN(str::format("ImportSharedTextureFromNtHandle: Failed to open resource: ", hResource));
+  switch (data.dimension) {
+  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+    return ImportSharedTextureInternal<tag_texture_1d>(pDevice, share, &share->data.desc.desc1d, riid, ppTexture);
+  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+    return ImportSharedTextureInternal<tag_texture_2d>(pDevice, share, &share->data.desc.desc2d, riid, ppTexture);
+  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+    return ImportSharedTextureInternal<tag_texture_3d>(pDevice, share, &share->data.desc.desc3d, riid, ppTexture);
+  default:
+    ERR("ImportSharedTextureFromNtHandle: Unsupported resource dimension");
     return E_INVALIDARG;
   }
-
-  if (open.hSyncObject) {
-    WARN(str::format("ImportSharedTextureFromNtHandle: Ignoring bundled sync object"));
-    D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroySync = {};
-    destroySync.hSyncObject = open.hSyncObject;
-    D3DKMTDestroySynchronizationObject(&destroySync);
-  }
-  if (open.hKeyedMutex) {
-    WARN(str::format("ImportSharedTextureFromNtHandle: Ignoring bundled keyed mutex"));
-    D3DKMT_DESTROYKEYEDMUTEX destroyMutex = {};
-    destroyMutex.hKeyedMutex = open.hKeyedMutex;
-    D3DKMTDestroyKeyedMutex(&destroyMutex);
-  }
-
-  HRESULT hr = E_INVALIDARG;
-  mach_port_t mach_port;
-  if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
-    ERR("ImportSharedTexture: Failed to look up mach port");
-  } else {
-    WMT::SharedNameHold hold(runtimeData.mach_port_name);
-    switch (runtimeData.dimension) {
-    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-      hr = ImportSharedTextureInternal<tag_texture_1d>(
-          pDevice, &runtimeData.desc.desc1d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
-          runtimeData.mach_port_name, hold
-      );
-      break;
-    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-      hr = ImportSharedTextureInternal<tag_texture_2d>(
-          pDevice, &runtimeData.desc.desc2d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
-          runtimeData.mach_port_name, hold
-      );
-      break;
-    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-      hr = ImportSharedTextureInternal<tag_texture_3d>(
-          pDevice, &runtimeData.desc.desc3d, mach_port, open.hResource, 0, runtimeData.mutex_handle, riid, ppTexture,
-          runtimeData.mach_port_name, hold
-      );
-      break;
-    default:
-      ERR("ImportSharedTexture: Unsupported resource dimension");
-    }
-  }
-  if (open.hResource) {
-    D3DKMT_DESTROYALLOCATION destroy = {};
-    destroy.hDevice = pDevice->GetLocalD3DKMT();
-    destroy.hResource = open.hResource;
-    D3DKMTDestroyAllocation(&destroy);
-  }
-  return hr;
 }
 
 HRESULT
 ImportSharedTextureByName(
     MTLD3D11Device *pDevice, LPCWSTR lpName, DWORD dwDesiredAccess, REFIID riid, void **ppTexture
 ) {
-  HANDLE handle;
-  if (FAILED(openHandleByName(lpName, dwDesiredAccess, &handle)))
+  // "opens a shared resource using a name of a shared resource that was created with the NT handle sharing flag"
+  // (Microsoft Learn, IDXGIResource1::OpenSharedResourceByName): the name a CreateSharedHandle published resolves
+  // to the share's identity, which names the carrier that holds the share's keyed mutex state
+  HANDLE mapping = OpenFileMappingW(MappingAccess(dwDesiredAccess), FALSE, lpName);
+  if (!mapping) {
+    WARN("ImportSharedTextureByName: Failed to open shared texture by name");
     return E_INVALIDARG;
-  HRESULT res = ImportSharedTextureFromNtHandle(pDevice, handle, riid, ppTexture);
-  CloseHandle(handle);
+  }
+
+  SharedTextureData data = {};
+  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData));
+  if (!view) {
+    WARN("ImportSharedTextureByName: the name is unreadable: ", GetLastError());
+    CloseHandle(mapping);
+    return E_INVALIDARG;
+  }
+  memcpy(&data, view, sizeof(data));
+  UnmapViewOfFile(view);
+  // "returns E_ACCESSDENIED if permissions to access the resource are invalid": the access the share was published
+  // with is what an open that asks for more is refused with
+  if (WriteRequested(dwDesiredAccess) && !WriteRequested(data.granted_access)) {
+    WARN("ImportSharedTextureByName: the share was not published for writing");
+    CloseHandle(mapping);
+    return E_ACCESSDENIED;
+  }
+
+  HRESULT res = ImportSharedTextureFromNtHandle(pDevice, mapping, riid, ppTexture);
+  CloseHandle(mapping);
   return res;
 }
 
