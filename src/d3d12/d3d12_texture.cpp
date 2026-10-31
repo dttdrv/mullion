@@ -1085,6 +1085,8 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    if (!reserved_)
+      return NoTiling(TotalTileCount, PackedMipInfo, StandardTileShape, SubresourceTilingCount);
     UINT mips = desc_.MipLevels, slices = desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc_.DepthOrArraySize;
     D3D12_TILE_SHAPE shape{};
     D3D12_PACKED_MIP_INFO packed{UINT8(mips)};
@@ -1096,24 +1098,22 @@ public:
           UINT16(desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? extent(desc_.DepthOrArraySize, shape.DepthInTexels) : 1)
       };
     };
-    if (reserved_) {
-      auto size = device_->GetMTLDevice().sparseTileSize(
-          texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
-      );
-      shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
-      auto [first, bytes] = texture->current()->texture().sparseTail();
-      packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
-      packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
-      packed.NumTilesForPackedMips =
-          packed.NumPackedMips ? UINT((bytes + D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES - 1) / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) : 0;
-      for (UINT mip = 0; mip < packed.NumStandardMips; mip++) {
-        auto t = tiles(mip);
-        per_slice += t.WidthInTiles * t.HeightInTiles * t.DepthInTiles;
-      }
-      // without packed mips the start is 0 (D3D12_PACKED_MIP_INFO)
-      packed.StartTileIndexInOverallResource = packed.NumPackedMips ? per_slice : 0;
-      per_slice += packed.NumTilesForPackedMips;
+    auto size = device_->GetMTLDevice().sparseTileSize(
+        texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
+    );
+    shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
+    auto [first, bytes] = texture->current()->texture().sparseTail();
+    packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
+    packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
+    packed.NumTilesForPackedMips =
+        packed.NumPackedMips ? UINT((bytes + D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES - 1) / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) : 0;
+    for (UINT mip = 0; mip < packed.NumStandardMips; mip++) {
+      auto t = tiles(mip);
+      per_slice += t.WidthInTiles * t.HeightInTiles * t.DepthInTiles;
     }
+    // without packed mips the start is 0 (D3D12_PACKED_MIP_INFO)
+    packed.StartTileIndexInOverallResource = packed.NumPackedMips ? per_slice : 0;
+    per_slice += packed.NumTilesForPackedMips;
     if (TotalTileCount)
       *TotalTileCount = per_slice * slices;
     if (PackedMipInfo)

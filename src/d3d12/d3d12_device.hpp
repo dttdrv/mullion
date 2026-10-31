@@ -229,6 +229,21 @@ public:
   ) = 0;
 };
 
+// GetResourceTiling of a resource that is not reserved, which has no tiles: no tiles, a zero packed mip description
+// and tile shape, and no subresource tilings, as vkd3d-proton gives
+inline void
+NoTiling(UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
+         UINT *SubresourceTilingCount) {
+  if (TotalTileCount)
+    *TotalTileCount = 0;
+  if (PackedMipInfo)
+    *PackedMipInfo = {};
+  if (StandardTileShape)
+    *StandardTileShape = {};
+  if (SubresourceTilingCount)
+    *SubresourceTilingCount = 0;
+}
+
 // a resource's tiles as D3D12 numbers them (MTLD3D12Resource::GetResourceTiling)
 struct Tiling {
   std::vector<D3D12_SUBRESOURCE_TILING> subresources;

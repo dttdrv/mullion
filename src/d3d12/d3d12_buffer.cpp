@@ -303,6 +303,8 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    if (!reserved_)
+      return NoTiling(TotalTileCount, PackedMipInfo, StandardTileShape, SubresourceTilingCount);
     UINT tile = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
     UINT tiles = UINT((desc_.Width + tile - 1) / tile);
     if (TotalTileCount)
