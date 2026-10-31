@@ -1498,8 +1498,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetDeviceRemovedReason() {
+    SettleCommandQueueFeedback(this);
     return removed_;
   };
+
+  HRESULT
+  RemovedReason() final {
+    return removed_;
+  }
 
   void
   LoseDevice(HRESULT Reason) {

@@ -2481,7 +2481,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferPopDebugGroup, WMTUnixFlightWrite, WMTUnixMetal4NewBuffer, WMTUnixMetal4Encoder,
        WMTUnixMetal4Commands, WMTUnixMetal4EndEncoder, WMTUnixMetal4Commit, WMTUnixMetal4Feedback, WMTUnixMetal4Wait,
        WMTUnixMetal4CounterHeap, WMTUnixMetal4Frequency, WMTUnixMetal4Present, WMTUnixMetal4WaitEvent,
-       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixCallCount };
+       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixMetal4WaitGPU,
+       WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
@@ -2558,6 +2559,9 @@ WINEMETAL_API void MTL4CommandEncoder_endEncoding(obj_handle_t encoder, bool seg
 WINEMETAL_API void MTL4CommandBuffer_commit(obj_handle_t buffer);
 WINEMETAL_API struct WMTMetal4Feedback MTL4CommandBuffer_feedback(obj_handle_t buffer);
 WINEMETAL_API void MTL4CommandBuffer_waitUntilCompleted(obj_handle_t buffer);
+// the GPU is done with the buffer's work, or the buffer failed: what it wrote is there. its feedback (status(), the
+// error, its GPU times) may come later, which waitUntilCompleted waits for too
+WINEMETAL_API void MTL4CommandBuffer_waitForGPU(obj_handle_t buffer);
 WINEMETAL_API obj_handle_t MTL4CounterHeap_new(obj_handle_t device, uint64_t count);
 WINEMETAL_API uint64_t MTLDevice_queryTimestampFrequency(obj_handle_t device);
 WINEMETAL_API void MTL4CommandBuffer_present(obj_handle_t buffer, obj_handle_t drawable, double after);
