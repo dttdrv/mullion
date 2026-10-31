@@ -3021,7 +3021,34 @@ typedef struct {
   MTLSharedEventListener *shared_listener;
   pthread_mutex_t mutex;
   bool stopped;
+  // the listener's thread and each notification Metal holds: the last of them frees the listener
+  _Atomic(uint32_t) references;
 } *shared_event_listener_t;
+
+static void
+shared_event_listener_release(shared_event_listener_t q) {
+  if (atomic_fetch_sub_explicit(&q->references, 1, memory_order_acq_rel) != 1)
+    return;
+  [q->shared_listener release];
+  pthread_mutex_destroy(&q->mutex);
+  free(q);
+}
+
+// a notification's hold on its listener. Metal releases it with the notification's block, once the event has run the
+// block or goes away without having reached its value, which can be long after the listener was destroyed: the
+// devices a shared event was shared with signal it as before
+@interface WMTListenerHold : NSObject {
+@public
+  shared_event_listener_t listener;
+}
+@end
+
+@implementation WMTListenerHold
+- (void)dealloc {
+  shared_event_listener_release(listener);
+  [super dealloc];
+}
+@end
 
 extern NTSTATUS NtSetEvent(void *handle, void *prev_state);
 
@@ -3030,23 +3057,37 @@ _MTLSharedEvent_setWin32EventAtValue(void *obj) {
   struct unixcall_mtlsharedevent_setevent *params = obj;
   void *nt_event_handle = (shared_event_listener_t)params->event_handle;
   shared_event_listener_t q = (shared_event_listener_t)params->shared_event_listener;
+  WMTListenerHold *hold = [[WMTListenerHold alloc] init];
+  atomic_fetch_add_explicit(&q->references, 1, memory_order_relaxed);
+  hold->listener = q;
   [(id<MTLSharedEvent>)params->shared_event
       notifyListener:q->shared_listener
              atValue:params->value
                block:^(id<MTLSharedEvent> _e, uint64_t _v) {
-                 // NOTE: must ensure no more notification comes after listener been destroyed.
-                 while (!atomic_load_explicit(&q->runloop_ref, memory_order_acquire)) {
+                 shared_event_listener_t q = hold->listener;
+                 // the runloop is set once its thread has started, and lives until the listener is stopped: a
+                 // stopped listener sets nothing more
+                 for (;;) {
+                   pthread_mutex_lock(&q->mutex);
+                   CFRunLoopRef runloop = atomic_load_explicit(&q->runloop_ref, memory_order_acquire);
+                   bool stopped = q->stopped;
+                   if (runloop && !stopped) {
+                     CFRunLoopPerformBlock(runloop, kCFRunLoopCommonModes, ^{
+                       NtSetEvent(nt_event_handle, NULL);
+                     });
+                     CFRunLoopWakeUp(runloop);
+                   }
+                   pthread_mutex_unlock(&q->mutex);
+                   if (runloop || stopped)
+                     break;
 #if defined(__x86_64__)
                    _mm_pause();
 #elif defined(__aarch64__)
-          __asm__ __volatile__("yield");
+                   __asm__ __volatile__("yield");
 #endif
                  }
-                 CFRunLoopPerformBlock(q->runloop_ref, kCFRunLoopCommonModes, ^{
-                   NtSetEvent(nt_event_handle, NULL);
-                 });
-                 CFRunLoopWakeUp(q->runloop_ref);
                }];
+  [hold release];
   return STATUS_SUCCESS;
 }
 
@@ -3066,13 +3107,9 @@ _SharedEventListener_start(void *obj) {
     pthread_mutex_unlock(&q->mutex);
     if (!stopped)
       CFRunLoopRun();
-    pthread_mutex_lock(&q->mutex);
-    [q->shared_listener release];
-    pthread_mutex_unlock(&q->mutex);
     CFRunLoopRemoveSource(runloop, source, kCFRunLoopCommonModes);
     CFRelease(source);
-    pthread_mutex_destroy(&q->mutex);
-    free(q);
+    shared_event_listener_release(q);
   }
   return STATUS_SUCCESS;
 }
@@ -3086,6 +3123,7 @@ _SharedEventListener_create(void *obj) {
     q->shared_listener = [[MTLSharedEventListener alloc] init];
     q->mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     q->stopped = false;
+    q->references = 1;
   }
   params->ret = (obj_handle_t)q;
   return STATUS_SUCCESS;
