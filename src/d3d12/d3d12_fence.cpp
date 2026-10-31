@@ -20,41 +20,109 @@
 #include "d3d12_device_child.hpp"
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
+#include <set>
 
 namespace mullion {
+
+struct Completion;
+
+// the shared fences something has waited on. a notification of any of their events raises one event, which makes
+// each fence that is still there take its event's value. the event and its wait last as long as the process: a
+// notification Metal keeps for a value a fence never gets, or for a fence that is gone, costs no handle or wait, and
+// sets nothing else
+class Watcher {
+public:
+  HANDLE reached = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+  static Watcher &
+  Get() {
+    static Watcher *watcher = new Watcher;
+    return *watcher;
+  }
+
+  void
+  Watch(std::weak_ptr<Completion> completion) {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    // a fence that is gone leaves the list here too, as no notification may ever come for it, and its entry keeps the
+    // storage of its completion. a sweep each time the list has doubled since the last one costs O(1) a fence
+    if (watched_.size() >= 2 * swept_) {
+      std::erase_if(watched_, [](auto &watched) { return watched.expired(); });
+      swept_ = std::max<size_t>(watched_.size(), 16);
+    }
+    watched_.push_back(std::move(completion));
+  }
+
+private:
+  mullion::mutex mutex_;
+  std::vector<std::weak_ptr<Completion>> watched_;
+  size_t swept_ = 16;
+
+  Watcher() {
+    auto wait = CreateThreadpoolWait(
+        [](PTP_CALLBACK_INSTANCE, void *context, PTP_WAIT wait, TP_WAIT_RESULT) {
+          static_cast<Watcher *>(context)->Look(wait);
+        },
+        this, nullptr
+    );
+    SetThreadpoolWait(wait, reached, nullptr);
+  }
+
+  void Look(PTP_WAIT wait);
+};
 
 // a shared fence's value is its event's, which the devices it is shared with signal too. Metal's events only rise, so
 // a shared fence is not set back
 struct Completion : Reached, std::enable_shared_from_this<Completion> {
   WMT::Reference<WMT::SharedEvent> event;
   EventListener *listener;
+  // the values Metal notifies the watcher of, of those the event did not have when last asked; under Reached's lock,
+  // which Waiting runs under
+  std::set<uint64_t> notified;
+  bool watched = false;
 
-  // the listener sets `reached` once the event has `expected`, which gives the completion, if it still lives, the
-  // event's value. a watch the event never reaches stays, without the completion
+  // the event's value, once it is past this object's
+  void
+  Look() {
+    uint64_t signaled = event.signaledValue();
+    if (signaled > value)
+      Reach(signaled);
+  }
+
+  // one notification for each value something waits for, which raises the watcher's event once the event has it
   void
   Waiting(uint64_t expected) override {
     if (!event)
       return;
-    struct Watch {
-      std::weak_ptr<Completion> completion;
-      HANDLE reached;
-    };
-    auto watch = new Watch{weak_from_this(), CreateEventW(nullptr, FALSE, FALSE, nullptr)};
-    auto wait = CreateThreadpoolWait(
-        [](PTP_CALLBACK_INSTANCE, void *context, PTP_WAIT wait, TP_WAIT_RESULT) {
-          auto watch = static_cast<Watch *>(context);
-          if (auto completion = watch->completion.lock())
-            completion->Reach(completion->event.signaledValue());
-          CloseThreadpoolWait(wait);
-          CloseHandle(watch->reached);
-          delete watch;
-        },
-        watch, nullptr
-    );
-    SetThreadpoolWait(wait, watch->reached, nullptr);
-    listener->setEventOnValue(event, watch->reached, expected);
+    uint64_t signaled = event.signaledValue();
+    std::erase_if(notified, [&](uint64_t notifying) { return notifying <= signaled; });
+    if (!notified.insert(expected).second)
+      return;
+    auto &watcher = Watcher::Get();
+    if (!std::exchange(watched, true))
+      watcher.Watch(weak_from_this());
+    listener->setEventOnValue(event, watcher.reached, expected);
   }
 };
+
+void
+Watcher::Look(PTP_WAIT wait) {
+  // set again first: a notification that comes while the fences are looked at has them looked at again
+  SetThreadpoolWait(wait, reached, nullptr);
+  std::vector<std::shared_ptr<Completion>> live;
+  {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    // a fence that is gone leaves the list
+    std::erase_if(watched_, [&](auto &watched) {
+      if (auto completion = watched.lock()) {
+        live.push_back(std::move(completion));
+        return false;
+      }
+      return true;
+    });
+  }
+  for (auto &completion : live)
+    completion->Look();
+}
 
 class MTLD3D12FenceImpl : public MTLD3D12DeviceChild<MTLD3D12Fence> {
   D3D12_FENCE_FLAGS flags_;
