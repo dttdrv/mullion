@@ -93,7 +93,13 @@ main(int argc, char **argv) {
   wc.lpszClassName = L"d3d11_fullscreen";
   if (!expect(RegisterClassW(&wc) != 0, "register window class"))
     return verdict();
-  for (UINT version : {10u, 11u, 12u}) {
+#ifdef TEST_D3D12
+  const auto versions = {10u, 11u, 12u};
+#else
+  // the library builds no Direct3D 12 here (src/meson.build)
+  const auto versions = {10u, 11u};
+#endif
+  for (UINT version : versions) {
     step("seed=%u Direct3D=%u device", seed, version);
     ComPtr<IUnknown> device;
     ComPtr<ID3D12Device> d3d12;

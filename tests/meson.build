@@ -30,7 +30,8 @@ configure_file(input : 'host/resource_cases.py', output : 'resource_cases.hpp',
 
 subdir('dx11')
 # as the library builds D3D12 (src/meson.build)
-if get_option('enable_d3d12') and cpu_family != 'x86'
+test_d3d12 = get_option('enable_d3d12') and cpu_family != 'x86'
+if test_d3d12
   levels = run_command(cpp.cmd_array() + ['-E', '-P', '-x', 'c++', '-include', 'd3dcommon.h', '/dev/null'],
                        check: true).stdout().split('enum D3D_FEATURE_LEVEL')[1].split('{')[1].split('}')[0]
   names = []
