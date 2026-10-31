@@ -2066,8 +2066,11 @@ WINEMETAL_API void MTLCommandBuffer_encodeWaitForEvent(obj_handle_t cmdbuf, obj_
 
 WINEMETAL_API void MTLSharedEvent_signalValue(obj_handle_t event, uint64_t value);
 
+// sets the NT event once `event` has `at_value`. with `reference`, the event object the handle names now, through a
+// handle of the notification's own: the caller may close its handle before then. without, the handle itself, which
+// stays open until the notification has come
 WINEMETAL_API void MTLSharedEvent_setWin32EventAtValue(
-    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value
+    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value, bool reference
 );
 
 WINEMETAL_API obj_handle_t MTLDevice_newFence(obj_handle_t device);

@@ -58,7 +58,7 @@ EventListener::setEventOnValue(Fence const *fence, HANDLE event, uint64_t value)
 
 void
 EventListener::setEventOnValue(WMT::SharedEvent shared, HANDLE event, uint64_t value) {
-  MTLSharedEvent_setWin32EventAtValue(shared.handle, shared_event_listener_, event, value);
+  MTLSharedEvent_setWin32EventAtValue(shared.handle, shared_event_listener_, event, value, false);
 }
 
 #ifdef _WIN32

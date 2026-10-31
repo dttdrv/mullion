@@ -1,0 +1,17 @@
+# ID3D12Fence::SetEventOnCompletion sets the app's handle when the value comes, as it did before
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 9c9d7c1..b38773a 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -174,9 +174,9 @@ public:
+       auto object = EventObject(Event);
+       if (!object)
+         return FAIL(E_INVALIDARG);
+-      completion->Expect(Value, [object, waited] {
++      completion->Expect(Value, [object, waited, Event] {
+         waited();
+-        SetEvent(object.get());
++        SetEvent(Event);
+       });
+     } else {
+       completion->Expect(Value)->wait(false);

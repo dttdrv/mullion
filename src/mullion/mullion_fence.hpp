@@ -87,6 +87,7 @@ public:
   EventListener();
   ~EventListener();
 
+  // `event` is one of Mullion's own, which stays open until the notification has come
   void setEventOnValue(Fence const *fence, HANDLE event, uint64_t value);
   void setEventOnValue(WMT::SharedEvent shared, HANDLE event, uint64_t value);
 

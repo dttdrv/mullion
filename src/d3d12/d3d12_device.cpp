@@ -1740,12 +1740,15 @@ public:
   ) {
     if (!FenceCount || (Flags != D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL && Flags != D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY))
       return FAIL(E_INVALIDARG);
+    auto object = hEvent ? EventObject(hEvent) : nullptr;
+    if (hEvent && !object)
+      return FAIL(E_INVALIDARG);
     auto set = std::make_shared<std::atomic<bool>>();
     auto done = [=, began = diag::profile ? diag::Now() : 0, thread = GetCurrentThreadId()] {
       if (began)
         diag::Waited("fence", began, thread);
-      if (hEvent)
-        SetEvent(hEvent);
+      if (object)
+        SetEvent(object.get());
       *set = true;
       set->notify_all();
     };

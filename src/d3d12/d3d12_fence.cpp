@@ -170,12 +170,15 @@ public:
       if (began)
         diag::Waited("fence", began, thread);
     };
-    if (Event)
-      completion->Expect(Value, [Event, waited] {
+    if (Event) {
+      auto object = EventObject(Event);
+      if (!object)
+        return FAIL(E_INVALIDARG);
+      completion->Expect(Value, [object, waited] {
         waited();
-        SetEvent(Event);
+        SetEvent(object.get());
       });
-    else {
+    } else {
       completion->Expect(Value)->wait(false);
       waited();
     }
