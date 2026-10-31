@@ -1,0 +1,14 @@
+# the fragment function of a pipeline without a pixel shader leaves the sample mask out of the samples it keeps.
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index db0c0f9..a996e72 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -846,7 +846,7 @@ struct Group {
+       source += "  out.samples = " +
+                 std::string(bounds ? "(bounds.x ? samples[uint(in.position.y) * bounds.y + uint(in.position.x)] : ~0u)"
+                                    : "~0u") +
+-                " & " + std::to_string(sample_mask) + "u;\n  if (!out.samples)\n    discard_fragment();\n";
++                ";\n  if (!out.samples)\n    discard_fragment();\n";
+     source += "  return out;\n}\n";
+     WMT::Reference<WMT::Error> err;
+     auto library = device_->GetMTLDevice().newLibraryWithSource(source, err);
