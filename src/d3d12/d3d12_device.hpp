@@ -500,6 +500,9 @@ public:
   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip_cut = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
   uint32_t slot_mask = 0;
   uint32_t rtv_mask = 0, dsv_mask = 0;
+  // a pipeline whose DSVFormat is unknown but that tests depth or stencil tests the view bound, whatever its format
+  // (dsv_mask has both planes): its variants take the format (RenderTargets)
+  bool dsv_any_format = false;
   enum WMTTriangleFillMode fill_mode;
   enum WMTCullMode cull_mode;
   enum WMTDepthClipMode depth_clip_mode;
@@ -522,7 +525,7 @@ public:
 
   virtual WMT::RenderPipelineState RenderTargets(
       WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics = false,
-      bool Occluded = false, bool Coarse = false
+      bool Occluded = false, bool Coarse = false, WMTPixelFormat DSVFormat = WMTPixelFormatInvalid
   ) = 0;
   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
 };

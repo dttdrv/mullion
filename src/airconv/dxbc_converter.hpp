@@ -599,6 +599,8 @@ public:
   uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   // a pixel shader that runs per pixel or sample at any shading rate (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool ps_fine_shading = false;
+  // a pixel shader that outputs depth (MTL_PIXEL_SHADER_REFLECTION's DepthOutput)
+  bool ps_depth_output = false;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
   // a DXIL library's ray tracing shaders, by their functions' names
   struct RayShader {

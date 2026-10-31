@@ -2058,6 +2058,7 @@ static int SM50InitializeUncached(
       // EvaluateAttribute* evaluates where the shader chooses, which coarse shading does not move
       pRefl->PixelShader.FineShading = sm50_shader->ps_fine_shading || sm50_shader->shader_info.pull_mode_reg_mask;
       pRefl->PixelShader.Barycentrics = sm50_shader->shader_info.use_barycentrics;
+      pRefl->PixelShader.DepthOutput = sm50_shader->ps_depth_output;
       for (auto &out : sm50_shader->output_signature) {
         if (out.reg() >= std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats))
           continue;
