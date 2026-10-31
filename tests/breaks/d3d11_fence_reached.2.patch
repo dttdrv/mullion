@@ -1,0 +1,14 @@
+# a fence takes its event to have a value only once the event is past it
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index a3a772f..976a4f6 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -63,7 +63,7 @@ public:
+       return event.waitUntilSignaledValue(Value, ~0ull) ? S_OK : E_FAIL;
+     // a value the event already has raises the event at once, as Windows does, not when a notification of it comes
+     // back from Metal's listener. a value reached after this is notified, as Metal notifies at once of one it has
+-    if (Value <= event.signaledValue()) {
++    if (Value < event.signaledValue()) {
+       SetEvent(Event);
+       return S_OK;
+     }
