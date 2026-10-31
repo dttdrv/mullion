@@ -61,6 +61,12 @@ public:
     // a null event blocks until the value, as ID3D12Fence's does
     if (!Event)
       return event.waitUntilSignaledValue(Value, ~0ull) ? S_OK : E_FAIL;
+    // a value the event already has raises the event at once, as Windows does, not when a notification of it comes
+    // back from Metal's listener. a value reached after this is notified, as Metal notifies at once of one it has
+    if (Value <= event.signaledValue()) {
+      SetEvent(Event);
+      return S_OK;
+    }
     auto shared_event_listener = this->m_parent->GetMullionDevice().queue().GetSharedEventListener();
     MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value, true);
     return S_OK;
