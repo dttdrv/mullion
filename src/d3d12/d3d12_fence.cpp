@@ -88,6 +88,13 @@ struct Completion : Reached, std::enable_shared_from_this<Completion> {
       Reach(signaled);
   }
 
+  // the devices it is shared with, and a fence object it was opened as, raise the event without this completion: a
+  // value the event has is reached at once, as Windows does, not when a notification of it comes back
+  bool
+  Has(uint64_t expected) override {
+    return event && expected <= event.signaledValue();
+  }
+
   // one notification for each value something waits for, which raises the watcher's event once the event has it
   void
   Waiting(uint64_t expected) override {
@@ -159,17 +166,15 @@ public:
   HRESULT
   Initialize(UINT64 InitialValue) {
     auto &event = completion_->event;
-    if (event)
-      completion_->value = event.signaledValue();
-    else if (flags_ & (D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER)) {
+    if (!event && (flags_ & (D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER))) {
       if (!(event = device_->GetMTLDevice().newSharedEvent()))
         return E_OUTOFMEMORY;
       event.signalValue(InitialValue);
       if (!(allocation_ = shareEvent(device_->GetLocalD3DKMT(), event)))
         return E_FAIL;
     }
-    if (!event)
-      completion_->value = InitialValue;
+    // an opened fence has the value of the fence it opens, a created one its initial value
+    completion_->value = event ? event.signaledValue() : InitialValue;
     std::lock_guard lock(device_->fences.mutex);
     if (FAILED(device_->RemovedReason()))
       return DXGI_ERROR_DEVICE_REMOVED;
