@@ -2986,6 +2986,9 @@ public:
 
   void STDMETHODCALLTYPE
   IASetVertexBuffers(UINT StartSlot, UINT Count, const D3D12_VERTEX_BUFFER_VIEW *Views) {
+    // a range past the last slot is invalid, and changes no slot, as in vkd3d-proton
+    if (StartSlot >= vertex_buffers_.size() || Count > vertex_buffers_.size() - StartSlot)
+      return;
     if (Bundled() && Record([=, v = Views ? std::vector(Views, Views + Count) : std::vector<D3D12_VERTEX_BUFFER_VIEW>()](auto *l) { l->IASetVertexBuffers(StartSlot, Count, Views ? v.data() : nullptr); }))
       return;
     if (!Views)
