@@ -37,6 +37,7 @@
 #include "transforms/guard_out_of_bounds.hpp"
 #include "transforms/lower_16bit_texread.hpp"
 #include "transforms/simdgroup_implicit_membarrier.hpp"
+#include "transforms/hoist_loads.hpp"
 
 using namespace llvm;
 
@@ -154,9 +155,16 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
 
     GlobalCleanupPM.addPass(air::Lower16BitTexReadPass());
     // MULLION_AIRCONV_SKIP names what the converter leaves out, to find the one a shader goes wrong with
-    if (auto skip = (getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP")); !skip || !strstr(skip, "simdgroup-barrier"))
+    auto skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    if (!skip || !strstr(skip, "simdgroup-barrier"))
       GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
     GlobalCleanupPM.addPass(air::GuardOutOfBoundsPass());
+    // loads move ahead of what uses them, at most 32 registers of values ahead (MULLION_AIRCONV_HOIST_LOADS, which
+    // the shader cache's key has, for another window): more, and Metal's compiler spills them
+    if (!skip || !strstr(skip, "hoist-loads")) {
+      auto window = getenv("MULLION_AIRCONV_HOIST_LOADS");
+      GlobalCleanupPM.addPass(air::HoistLoadsPass(window ? atoi(window) : 32));
+    }
 
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM), true /* ? */));
   }
