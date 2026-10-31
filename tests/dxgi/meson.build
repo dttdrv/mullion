@@ -6,6 +6,9 @@ test('dxgi_adapter', dxgi_adapter, timeout : 300)
 test('dxgi_adapter_vendor', dxgi_adapter, args : ['-', '106b'], timeout : 300)
 # and over a configuration file whose last section is another executable's
 test('dxgi_adapter_vendor_file', dxgi_adapter, args : ['-', '106b', '-'], timeout : 300)
+# times its calls against the display's refresh, so it runs alone
+test('dxgi_vblank', executable('dxgi_vblank', ['dxgi_vblank.cpp'], dependencies : dxgi_test_deps),
+     suite : 'timing', is_parallel : false, timeout : 300)
 # these present to a real window
 foreach name : ['buffers', 'color_space', 'composition', 'factory', 'formats', 'gamma', 'latency', 'object', 'output', 'present', 'present_regions', 'resize_queues', 'swapchain_flags']
   test('dxgi_' + name, executable('dxgi_' + name, ['dxgi_' + name + '.cpp'], dependencies : dxgi_test_deps),
