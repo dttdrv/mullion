@@ -619,25 +619,28 @@ main(int argc, char **argv) {
          "a truncated stream subobject was accepted");
   stream_desc.SizeInBytes = saved_size;
 
-  step("seed %u: null arguments and another device", seed);
+  step("seed %u: null arguments and the device made again", seed);
   ComPtr<ID3D12PipelineState> pipeline;
   expect(library->LoadComputePipeline(nullptr, &computes[0], IID_PPV_ARGS(&pipeline)) == E_INVALIDARG,
          "a null name was accepted");
   expect(library->LoadGraphicsPipeline(names[0].c_str(), nullptr, IID_PPV_ARGS(&pipeline)) == E_INVALIDARG,
          "a null descriptor was accepted");
-  ComPtr<ID3D12Device> other_device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&other_device)));
-  auto other_root = root_signature(other_device.Get(), {2, params, 0, nullptr, root_flags});
-  if (!expect(other_root, "the other device's root signature was not made"))
+  // a device is a singleton per adapter (D3D12CreateDevice, Remarks): made again, it is this one, whose pipelines the
+  // library stores
+  ComPtr<ID3D12Device2> made_again;
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&made_again)));
+  expect(made_again.Get() == device.Get(), "the device made again is another device");
+  auto made_again_root = root_signature(made_again.Get(), {2, params, 0, nullptr, root_flags});
+  if (!expect(made_again_root, "the root signature of the device made again was not made"))
     return verdict();
-  auto foreign = computes[0];
-  foreign.pRootSignature = other_root.Get();
-  CHECK(other_device->CreateComputePipelineState(&foreign, IID_PPV_ARGS(&pipeline)));
-  expect(library->StorePipeline(L"foreign", pipeline.Get()) == E_INVALIDARG,
-         "a pipeline from another device was stored");
+  auto same = computes[0];
+  same.pRootSignature = made_again_root.Get();
+  CHECK(made_again->CreateComputePipelineState(&same, IID_PPV_ARGS(&pipeline)));
+  expect(library->StorePipeline(L"again", pipeline.Get()) == S_OK,
+         "a pipeline of the device made again was not stored");
   pipeline.Reset();
-  other_root.Reset();
-  other_device.Reset();
+  made_again_root.Reset();
+  made_again.Reset();
   step("seed %u: concurrent stores", seed);
   CHECK(device->CreateComputePipelineState(&computes[0], IID_PPV_ARGS(&pipeline)));
   std::array<HRESULT, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> answers;
