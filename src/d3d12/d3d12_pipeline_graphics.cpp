@@ -801,17 +801,29 @@ struct Group {
 
   // a fragment function for a pipeline without a pixel shader that does what a pixel shader would: discards the pixels
   // whose squares miss the polygon the mesh stage passes on in SM50_CONSERVATIVE_VARYINGS, as airconv's conservative
-  // pixel shaders do, writing their depth; and of no sample in the depth bounds of a GPU without the test, keeping the
-  // samples that are, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds does
+  // pixel shaders do, writing their depth; of no sample in the depth bounds of a GPU without the test, keeping the
+  // samples that are, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds does; and keeps the samples of the
+  // pipeline's sample mask, which Metal's pipelines do not have, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's sample_mask
+  // does. the device keeps one of each
   WMT::Reference<WMT::Function>
-  TestFragment(bool conservative, bool bounds) {
+  TestFragment(bool conservative, bool bounds, uint32_t sample_mask) {
+    std::lock_guard<mullion::mutex> lock(device_->test_fragments_mutex);
+    auto &function = device_->test_fragments[{conservative, bounds, sample_mask}];
+    if (!function)
+      function = CompileTestFragment(conservative, bounds, sample_mask);
+    return function;
+  }
+
+  WMT::Reference<WMT::Function>
+  CompileTestFragment(bool conservative, bool bounds, uint32_t sample_mask) {
+    bool masked = bounds || sample_mask != ~0u;
     auto corners = std::to_string(SM50_CONSERVATIVE_CORNERS);
     std::string source = "#include <metal_stdlib>\nusing namespace metal;\nstruct In {\n  float4 position [[position]];\n";
     for (uint32_t i = 0; conservative && i < SM50_CONSERVATIVE_VARYINGS; i++)
       source += "  float v" + std::to_string(i) + " [[user(mullion_conservative" + std::to_string(i) + "), flat]];\n";
     source += "};\nstruct Out {\n";
     source += conservative ? "  float z [[depth(any)]];\n" : "";
-    source += bounds ? "  uint samples [[sample_mask]];\n" : "";
+    source += masked ? "  uint samples [[sample_mask]];\n" : "";
     source += "};\nfragment Out test_fragment(In in [[stage_in]]";
     if (bounds)
       source += ", constant uint2 &bounds [[buffer(" + std::to_string(SM50_BINDING_INDEX_DEPTH_BOUNDS) +
@@ -841,11 +853,11 @@ struct Group {
   out.z = in.position.z;
 )";
     }
-    if (bounds)
-      source += R"(  out.samples = bounds.x ? samples[uint(in.position.y) * bounds.y + uint(in.position.x)] : ~0u;
-  if (!out.samples)
-    discard_fragment();
-)";
+    if (masked)
+      source += "  out.samples = " +
+                std::string(bounds ? "(bounds.x ? samples[uint(in.position.y) * bounds.y + uint(in.position.x)] : ~0u)"
+                                   : "~0u") +
+                " & " + std::to_string(sample_mask) + "u;\n  if (!out.samples)\n    discard_fragment();\n";
     source += "  return out;\n}\n";
     WMT::Reference<WMT::Error> err;
     auto library = device_->GetMTLDevice().newLibraryWithSource(source, err);
@@ -1018,9 +1030,12 @@ public:
     info.support_indirect_command_buffers = std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo> ||
                                             device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
 
-    // Metal takes no alpha-to-coverage with an integer target 0, where the pixel shader makes the coverage
+    // Metal takes no alpha-to-coverage with an integer target 0, and takes it from the color the fragment function
+    // returns, which a target 0 the pixel shader blends itself (ShaderBlend) has blended: the pixel shader makes the
+    // coverage then
     info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput &&
-                                     !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info.colors[0].pixel_format)));
+                                     !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info.colors[0].pixel_format))) &&
+                                     !blend[0].blend;
     for (unsigned i = 0; i < std::size(blend); i++)
       blend_mask_ |= uint32_t(blend[i].blend) << i;
     shader_blend = blend_mask_;
@@ -1346,6 +1361,11 @@ public:
                          : InitializePSO(pDesc, info, dual_source_blending, blend)))
       return hr;
 
+    // the sample mask selects output samples, which rendering with UAVs alone has none of (D3D11.3 3.5.6.4)
+    bool attached = pDesc->DSVFormat != DXGI_FORMAT_UNKNOWN ||
+                    std::any_of(pDesc->RTVFormats, pDesc->RTVFormats + pDesc->NumRenderTargets,
+                                [](auto format) { return format != DXGI_FORMAT_UNKNOWN; });
+    uint32_t sample_mask = attached ? pDesc->SampleMask : ~0u;
     if (pDesc->PS.pShaderBytecode) {
       auto sha1 = Sha1HashState::compute(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength);
 
@@ -1356,11 +1376,7 @@ public:
       data_ps.disable_depth_output =
           (mesh ? mesh_info.depth_pixel_format : info.depth_pixel_format) == WMTPixelFormatInvalid;
       data_ps.unorm_output_reg_mask = 0;
-      // the sample mask selects output samples, which rendering with UAVs alone has none of (D3D11.3 3.5.6.4)
-      bool attached = pDesc->DSVFormat != DXGI_FORMAT_UNKNOWN ||
-                      std::any_of(pDesc->RTVFormats, pDesc->RTVFormats + pDesc->NumRenderTargets,
-                                  [](auto format) { return format != DXGI_FORMAT_UNKNOWN; });
-      data_ps.sample_mask = attached ? pDesc->SampleMask : ~0u;
+      data_ps.sample_mask = sample_mask;
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
       data_ps.next = &common;
       data_ps.pipeline_statistics = false;
@@ -1424,8 +1440,14 @@ public:
           };
     }
 
-    // without a pixel shader, one that only does the tests a pixel shader would
-    if ((conservative || depth_bounds_emulated) && !ps_func && !(ps_func = TestFragment(conservative, depth_bounds_emulated)))
+    // without a pixel shader, one that only does the tests a pixel shader would, and keeps the samples of a sample
+    // mask that leaves some of the rasterizer's out (D3D11.3 17.17: "SampleMask is always applied")
+    auto raster_samples = mesh ? mesh_info.raster_sample_count : info.raster_sample_count;
+    uint32_t all_samples = raster_samples >= 32 ? ~0u : (1u << raster_samples) - 1;
+    if ((sample_mask & all_samples) == all_samples)
+      sample_mask = ~0u;
+    if ((conservative || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
+        !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask)))
       return E_FAIL;
 
     auto geometry_inputs = [&] {

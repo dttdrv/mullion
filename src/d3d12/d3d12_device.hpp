@@ -40,9 +40,11 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -769,6 +771,11 @@ public:
   WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
 
   WMT::Reference<WMT::DepthStencilState> default_depth_stencil_state;
+
+  // the fragment functions of pipelines without a pixel shader, by what they do (conservative rasterization, the depth
+  // bounds test, the sample mask): compiled once each (MTLD3D12GraphicsPipelineState's TestFragment)
+  std::map<std::tuple<bool, bool, uint32_t>, WMT::Reference<WMT::Function>> test_fragments;
+  mullion::mutex test_fragments_mutex;
 
   // whether acceleration structures keep what they were built from, which serializing and decoding them gives back
   // (d3d12.keepAccelerationStructureInputs)
