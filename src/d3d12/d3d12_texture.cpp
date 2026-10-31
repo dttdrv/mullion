@@ -266,6 +266,13 @@ EncodeComponentMapping(UINT Shader4ComponentMapping, WMTPixelFormat Format) {
   return WMTPixelFormat(ENCODE_FORMAT_SWIZZLE(Format, Map[MappingR], Map[MappingG], Map[MappingB], Map[MappingA]));
 }
 
+// whether `count` slices from slice `first` lie in the `length` a resource has: a render target or depth stencil view
+// that runs past the end is refused, as Metal makes no view and no render pass of slices that are not there
+static bool
+WithinSlices(UINT first, UINT count, UINT length) {
+  return first < length && count <= length - first;
+}
+
 class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_RESOURCE_DESC desc_;
   D3D12_HEAP_PROPERTIES heap_props_;
@@ -898,8 +905,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture1DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture1DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture1DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture1DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture1DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture1DArray.FirstArraySlice
+                                      : ViewDesc.Texture1DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -922,8 +932,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture2DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DArray.FirstArraySlice
+                                      : ViewDesc.Texture2DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -942,8 +955,11 @@ public:
       view_descriptor.firstMiplevel = 0;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DMSArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DMSArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DMSArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DMSArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DMSArray.FirstArraySlice
+                                      : ViewDesc.Texture2DMSArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -954,9 +970,13 @@ public:
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = 0;
       view_descriptor.arraySize = 1;
+      // -1 is the W slices from FirstWSlice to the end of the mip (D3D12_TEX3D_RTV)
       auto ArraySize = std::max<UINT16>(desc_.DepthOrArraySize >> ViewDesc.Texture3D.MipSlice, 1);
       RenderTargetDesc.DepthPlane = ViewDesc.Texture3D.FirstWSlice;
-      RenderTargetDesc.RenderTargetArrayLength = ViewDesc.Texture3D.WSize == ~0u ? ArraySize : ViewDesc.Texture3D.WSize;
+      RenderTargetDesc.RenderTargetArrayLength =
+          ViewDesc.Texture3D.WSize == ~0u ? ArraySize - ViewDesc.Texture3D.FirstWSlice : ViewDesc.Texture3D.WSize;
+      if (!WithinSlices(ViewDesc.Texture3D.FirstWSlice, RenderTargetDesc.RenderTargetArrayLength, ArraySize))
+        return FAIL(E_INVALIDARG);
       View = texture->createView(view_descriptor);
       break;
     }
@@ -1021,8 +1041,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture1DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture1DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture1DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture1DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture1DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture1DArray.FirstArraySlice
+                                      : ViewDesc.Texture1DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1041,8 +1064,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture2DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DArray.FirstArraySlice
+                                      : ViewDesc.Texture2DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1061,8 +1087,11 @@ public:
       view_descriptor.firstMiplevel = 0;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DMSArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DMSArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DMSArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DMSArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DMSArray.FirstArraySlice
+                                      : ViewDesc.Texture2DMSArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
