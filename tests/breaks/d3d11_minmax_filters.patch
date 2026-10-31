@@ -1,0 +1,15 @@
+# a D3D11 sampler state's reduction is not passed on, so its minimum and maximum filters average
+# family native,native-metal3
+diff --git a/src/d3d11/d3d11_state_object.cpp b/src/d3d11/d3d11_state_object.cpp
+index 0279068..5d73cb8 100644
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -779,7 +779,7 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
+   auto reduction = D3D11_DECODE_FILTER_REDUCTION(desc.Filter);
+   auto sampler = Sampler::createSampler(
+       device->GetMTLDevice(), info, desc.MipLODBias, nullptr,
+-      reduction == D3D11_FILTER_REDUCTION_TYPE_MINIMUM   ? SM50_SAMPLER_REDUCTION_MINIMUM
++      false   ? SM50_SAMPLER_REDUCTION_MINIMUM
+       : reduction == D3D11_FILTER_REDUCTION_TYPE_MAXIMUM ? SM50_SAMPLER_REDUCTION_MAXIMUM
+                                                          : SM50_SAMPLER_REDUCTION_NONE
+   );

@@ -2812,6 +2812,8 @@ convert_dxil(
       bool compute = ctx.shader_type == D3D11_SB_COMPUTE_SHADER;
       Value *residency_level = nullptr, *residency_bias = bias, *residency_clamp = nullptr;
       Value *residency_dx = nullptr, *residency_dy = nullptr;
+      // how the sample takes its LOD, for a minimum or maximum filter; a comparison filter does not reduce
+      std::optional<Converter::Footprint> footprint;
       std::function<std::pair<Value *, Value *>(Value *, Value *)> read;
       if (compute && (op == Sample || op == SampleBias)) {
         auto [dx, dy] = quad_gradients(coord);
@@ -2820,6 +2822,7 @@ convert_dxil(
         auto gx = dxbc.BiasGradient(dx, bias), gy = dxbc.BiasGradient(dy, bias);
         auto clamp = min_lod(tex, a(op == Sample ? 10 : 11));
         residency_dx = gx, residency_dy = gy, residency_clamp = clamp, residency_bias = nullptr;
+        footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
         read = [&, gx, gy, clamp](Value *s, Value *) {
           return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
         };
@@ -2838,6 +2841,7 @@ convert_dxil(
         case Sample: {
           auto options = std::pair{llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(10))}};
           residency_bias = options.first.bias, residency_clamp = options.second.lod;
+          footprint = {.Bias = options.first.bias, .MinLOD = options.second.lod};
           read = [&, options](Value *s, Value *) {
             return dxbc.SampleImplicit(
                 *tex.texture, s, smp.sampler->Metadata, coord, array, offset, nullptr, options.first.bias,
@@ -2851,6 +2855,7 @@ convert_dxil(
               llvm::air::sample_bias{ir.CreateFAdd(a(10), bias)}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}
           };
           residency_bias = options.first.bias, residency_clamp = options.second.lod;
+          footprint = {.Bias = options.first.bias, .MinLOD = options.second.lod};
           read = [&, options](Value *s, Value *) {
             return dxbc.SampleImplicit(
                 *tex.texture, s, smp.sampler->Metadata, coord, array, offset, nullptr, options.first.bias,
@@ -2862,16 +2867,18 @@ convert_dxil(
         case SampleLevel: {
           auto lod = llvm::air::sample_level{min_lod(tex, ir.CreateFAdd(a(10), bias))};
           residency_level = lod.lod;
+          footprint = {.Level = a(10)};
           read = [&, lod](Value *s, Value *) {
             return air.CreateSample(texture, handle, s, coord, array, offset, lod);
           };
           break;
         }
         case SampleGrad: {
-          auto gx = dxbc.BiasGradient(vec(call, 10, logical, coord_ty), bias);
-          auto gy = dxbc.BiasGradient(vec(call, 13, logical, coord_ty), bias);
+          auto dx = vec(call, 10, logical, coord_ty), dy = vec(call, 13, logical, coord_ty);
+          auto gx = dxbc.BiasGradient(dx, bias), gy = dxbc.BiasGradient(dy, bias);
           auto clamp = min_lod(tex, a(16));
           residency_dx = gx, residency_dy = gy, residency_clamp = clamp, residency_bias = nullptr;
+          footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
           read = [&, gx, gy, clamp](Value *s, Value *) {
             return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
           };
@@ -2913,6 +2920,11 @@ convert_dxil(
           *tex.texture, sampler, smp.sampler->Border, smp.sampler->Metadata, value,
           [&](Value *s) { return read(s, nullptr).first; }, reference
       );
+      if (footprint)
+        std::tie(value, residency) = dxbc.MinMaxFilter(
+            *tex.texture, sampler, smp.sampler->Border, smp.sampler->Metadata, coord, array, offset, *footprint,
+            {value, residency}
+        );
       ret = to_struct(ty, value, residency);
       break;
     }

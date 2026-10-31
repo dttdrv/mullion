@@ -46,6 +46,15 @@ static cl::opt<std::string>
 static cl::opt<std::string>
   GeometryAfterVertex("geometry-after-vertex", cl::desc("Compile vertex shader with supplied geometry shader"));
 
+static cl::opt<std::string> RootSignature(
+  "root-signature", cl::desc("Bind resources as a serialized D3D12 root signature does (D3D12SerializeRootSignature)")
+);
+
+static cl::opt<bool> NoCustomBorder(
+  "no-custom-border", cl::init(false),
+  cl::desc("Leave out custom border colors, as a pipeline made before any sampler has one does")
+);
+
 static cl::opt<bool>
   EmitLLVM("S", cl::init(false), cl::desc("Write output as LLVM assembly"));
 
@@ -252,10 +261,26 @@ int main(int argc, char **argv) {
 
   SM50_SHADER_COMMON_DATA data;
   data.metal_version = SM50_SHADER_METAL_320;
-  data.flags = {};
+  data.flags = NoCustomBorder ? SM50_SHADER_FLAG_NO_CUSTOM_BORDER : SM50_SHADER_FLAG{};
   data.simd_width = 0; // no device to ask; a vertex shader's wave has no lane count here
   data.next = 0;
   data.type = SM50_SHADER_COMMON;
+
+  std::unique_ptr<MemoryBuffer> RootSignatureBuffer;
+  SM50_SHADER_ROOT_SIGNATURE_DATA rootsig{};
+  if (!RootSignature.getValue().empty()) {
+    auto FileOrErr = MemoryBuffer::getFile(RootSignature, /*IsText=*/false);
+    if (std::error_code EC = FileOrErr.getError()) {
+      SMDiagnostic(RootSignature, SourceMgr::DK_Error, "Could not open root signature: " + EC.message())
+        .print(argv[0], errs());
+      return 1;
+    }
+    RootSignatureBuffer = std::move(*FileOrErr);
+    rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
+    rootsig.bytecode = RootSignatureBuffer->getBufferStart();
+    rootsig.bytecode_length = RootSignatureBuffer->getBufferSize();
+    data.next = &rootsig;
+  }
 
   if (!HullBeforeDomain.getValue().empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =

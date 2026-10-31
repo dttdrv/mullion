@@ -510,15 +510,40 @@ public:
   };
   std::map<llvm::Value *, KnownSampler> KnownSamplers;
   std::map<llvm::Value *, llvm::Value *> SamplerBiases;
+  // a static sampler's reduction, known when the pipeline is made, by its metadata: whether it is a minimum or
+  // maximum filter (MinMaxFilter)
+  std::map<llvm::Value *, bool> KnownReductions;
   void
   NoteSampler(const SamplerDescriptor &Descriptor) {
     if (Descriptor.Anisotropic && Descriptor.Biased)
       KnownSamplers[Descriptor.Metadata] = {*Descriptor.Anisotropic, *Descriptor.Biased};
+    if (Descriptor.Reduces)
+      KnownReductions[Descriptor.Metadata] = *Descriptor.Reduces;
   }
 
   std::pair<llvm::Value *, llvm::Value *> SampleImplicit(
       const TextureResourceHandle &Tex, llvm::Value *Sampler, llvm::Value *SamplerMetadata, llvm::Value *Coord,
       llvm::Value *ArrayIndex, const int32_t Offset[3], llvm::Value *Reference, llvm::Value *Bias, llvm::Value *MinLOD
+  );
+
+  // how a sample chooses its LOD (D3D11.3 7.18.11): an explicit `Level`, gradients, or its quad's derivatives in a
+  // pixel shader, with `Bias` the sampler's and the sample's own together; then the view's and the sample's `MinLOD`
+  struct Footprint {
+    llvm::Value *Level = nullptr; // before the sampler's bias and clamps
+    llvm::Value *DDX = nullptr, *DDY = nullptr;
+    llvm::Value *Bias = nullptr;
+    llvm::Value *MinLOD = nullptr;
+  };
+
+  // `Filtered`, the value and status of a sample, with D3D's minimum and maximum filters: "fetches the same set of
+  // texels that a normal texture filter would fetch, but ... returns the min() or max() of the texels fetched, on a
+  // per-component basis", and a texel the filter weights 0 "still do[es] not contribute" (D3D11.3 5.9.4.5.6). Metal's
+  // samplers average where the metadata asks for a reduction (SM50_SAMPLER_REDUCTION), so those samples read the
+  // texels themselves. a static sampler that does not reduce costs nothing; any other sampler costs a branch
+  std::pair<llvm::Value *, llvm::Value *> MinMaxFilter(
+      const TextureResourceHandle &Tex, llvm::Value *Sampler, llvm::Value *Border, llvm::Value *SamplerMetadata,
+      llvm::Value *Coord, llvm::Value *ArrayIndex, const int32_t Offset[3], const Footprint &Footprint,
+      std::pair<llvm::Value *, llvm::Value *> Filtered
   );
 
   // a sample's texels and status, where Metal's own are wrong: a reserved texture a shader can write reports no

@@ -240,6 +240,13 @@ enum WMTCompareFunction : uint8_t {
   WMTCompareFunctionAlways = 7,
 };
 
+// MTLSamplerReductionMode (macOS 26), which Metal ignores unless the min, mag and mip filters are all linear
+enum WMTSamplerReductionMode : uint8_t {
+  WMTSamplerReductionModeWeightedAverage = 0,
+  WMTSamplerReductionModeMinimum = 1,
+  WMTSamplerReductionModeMaximum = 2,
+};
+
 struct WMTSamplerInfo {
   enum WMTSamplerMinMagFilter min_filter;
   enum WMTSamplerMinMagFilter mag_filter;
@@ -255,6 +262,7 @@ struct WMTSamplerInfo {
   bool normalized_coords;
   bool lod_average;
   bool support_argument_buffers;
+  enum WMTSamplerReductionMode reduction_mode;
   uint64_t gpu_resource_id; // out
 };
 
@@ -1776,6 +1784,9 @@ WINEMETAL_API bool MTLDevice_supportsShaderBarycentricCoordinates(obj_handle_t d
 
 WINEMETAL_API uint64_t MTLDevice_maxArgumentBufferSamplerCount(obj_handle_t device);
 
+// whether a sampler's reductionMode reaches what it samples: measured once per device, as no property says so
+WINEMETAL_API bool MTLDevice_supportsSamplerReduction(obj_handle_t device);
+
 WINEMETAL_API bool MTLDevice_supportsTextureSampleCount(obj_handle_t device, uint8_t sample_count);
 
 WINEMETAL_API bool MTLDevice_hasUnifiedMemory(obj_handle_t device);
@@ -2481,7 +2492,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferPopDebugGroup, WMTUnixFlightWrite, WMTUnixMetal4NewBuffer, WMTUnixMetal4Encoder,
        WMTUnixMetal4Commands, WMTUnixMetal4EndEncoder, WMTUnixMetal4Commit, WMTUnixMetal4Feedback, WMTUnixMetal4Wait,
        WMTUnixMetal4CounterHeap, WMTUnixMetal4Frequency, WMTUnixMetal4Present, WMTUnixMetal4WaitEvent,
-       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixCallCount };
+       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases,
+       WMTUnixDeviceSupportsSamplerReduction, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

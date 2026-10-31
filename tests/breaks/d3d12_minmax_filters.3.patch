@@ -1,0 +1,16 @@
+# no address mode is applied: every axis clamps, so a wrapped, mirrored or border texel is the edge's
+# family native,native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index c420b8e..022cfe0 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2575,8 +2575,7 @@ Converter::MinMaxFilter(
+         ir.CreateUDiv(Modes, ir.getInt32(SM50_SAMPLER_ADDRESS_COUNT)),
+         Field(SM50_SAMPLER_METADATA_ADDRESS_W, SM50_SAMPLER_METADATA_ADDRESS_W_BITS),
+     };
+-    if (Info.is_cube)
+-      AxisModes[0] = AxisModes[1] = ir.getInt32(SM50_SAMPLER_ADDRESS_CLAMP);
++    AxisModes[0] = AxisModes[1] = AxisModes[2] = ir.getInt32(SM50_SAMPLER_ADDRESS_CLAMP);
+ 
+     // the texels, as Metal reads them, and the border color, Metal's or the sampler's own (SM50_SAMPLER_BORDER)
+     auto PositionTy = air.getTextureRWPositionType(Tex.Texture);

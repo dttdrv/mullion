@@ -1,0 +1,15 @@
+# the sampler's reduction is ignored: every sample averages, as Metal's sampler does
+# family native,native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index c420b8e..a28cb16 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2391,7 +2391,7 @@ Converter::MinMaxFilter(
+     return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(SamplerMetadata, Shift), ir.getInt32Ty()), (1u << Bits) - 1);
+   };
+   auto Reduction = Field(SM50_SAMPLER_METADATA_REDUCTION, SM50_SAMPLER_METADATA_REDUCTION_BITS);
+-  auto Reduces = ir.CreateICmpNE(Reduction, ir.getInt32(SM50_SAMPLER_REDUCTION_NONE));
++  auto Reduces = ir.getFalse();
+   if (auto Known = dyn_cast<ConstantInt>(Reduces); Known && Known->isZero())
+     return Filtered;
+ 

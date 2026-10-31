@@ -800,6 +800,19 @@ void PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_S
 // true when the sampler needs a custom border color (SM50_SAMPLER_BORDER)
 bool PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLER_DESC const &Desc);
 
+// a filter's reduction, when it is a minimum or maximum filter (SM50_SAMPLER_REDUCTION)
+inline SM50_SAMPLER_REDUCTION
+SamplerReduction(D3D12_FILTER Filter) {
+  switch (D3D12_DECODE_FILTER_REDUCTION(Filter)) {
+  case D3D12_FILTER_REDUCTION_TYPE_MINIMUM:
+    return SM50_SAMPLER_REDUCTION_MINIMUM;
+  case D3D12_FILTER_REDUCTION_TYPE_MAXIMUM:
+    return SM50_SAMPLER_REDUCTION_MAXIMUM;
+  default:
+    return SM50_SAMPLER_REDUCTION_NONE;
+  }
+}
+
 inline std::tuple<MTLD3D12RenderTargetDescriptorHeap *, UINT>
 GetRenderTargetHeap(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
 #ifdef MULLION_USE_EMBEDDED_HEAP_POINTER

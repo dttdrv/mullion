@@ -270,6 +270,10 @@ CREATES(_MTLDevice_newSamplerState)(void *obj) {
   sampler_desc.lodAverage = info->lod_average;
   sampler_desc.normalizedCoordinates = info->normalized_coords;
   sampler_desc.supportArgumentBuffers = info->support_argument_buffers;
+  if (info->reduction_mode != WMTSamplerReductionModeWeightedAverage) {
+    if (@available(macOS 26.0, *))
+      sampler_desc.reductionMode = (MTLSamplerReductionMode)info->reduction_mode;
+  }
 
   id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sampler_desc];
   info->gpu_resource_id = info->support_argument_buffers ? [sampler gpuResourceID]._impl : 0;
@@ -1606,6 +1610,93 @@ static NTSTATUS
 _MTLDevice_supportsShaderBarycentricCoordinates(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = [(id<MTLDevice>)params->handle supportsShaderBarycentricCoordinates];
+  return STATUS_SUCCESS;
+}
+
+// a 2x1 texture of 0 and 1, sampled at its middle with every filter linear, as reductionMode needs: a sampler that
+// reduces reads 0 for the minimum and 1 for the maximum, one that averages 0.5 for both. an M4 (Apple9, macOS 27.2)
+// averages, whatever the mode, filter or format
+static bool
+probe_sampler_reduction(id<MTLDevice> device) {
+  bool honoured = false;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      NSString *source = @"#include <metal_stdlib>\n"
+                          "using namespace metal;\n"
+                          "kernel void probe(texture2d<float> t [[texture(0)]], sampler lo [[sampler(0)]],\n"
+                          "                  sampler hi [[sampler(1)]], device float *out [[buffer(0)]]) {\n"
+                          "  out[0] = t.sample(lo, float2(0.5, 0.5), level(0)).r;\n"
+                          "  out[1] = t.sample(hi, float2(0.5, 0.5), level(0)).r;\n"
+                          "}\n";
+      NSError *error = nil;
+      id<MTLLibrary> library = [[device newLibraryWithSource:source options:nil error:&error] autorelease];
+      id<MTLFunction> function = [[library newFunctionWithName:@"probe"] autorelease];
+      id<MTLComputePipelineState> pipeline =
+          function ? [[device newComputePipelineStateWithFunction:function error:&error] autorelease] : nil;
+      MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                       width:2
+                                                                                      height:1
+                                                                                   mipmapped:NO];
+      desc.storageMode = MTLStorageModeShared;
+      id<MTLTexture> texture = [[device newTextureWithDescriptor:desc] autorelease];
+      const uint8_t texels[] = {0, 0, 0, 0, 255, 255, 255, 255};
+      [texture replaceRegion:MTLRegionMake2D(0, 0, 2, 1) mipmapLevel:0 withBytes:texels bytesPerRow:sizeof(texels)];
+      id<MTLSamplerState> samplers[2];
+      for (unsigned i = 0; i < 2; i++) {
+        MTLSamplerDescriptor *sampler_desc = [[MTLSamplerDescriptor alloc] init];
+        sampler_desc.minFilter = sampler_desc.magFilter = MTLSamplerMinMagFilterLinear;
+        sampler_desc.mipFilter = MTLSamplerMipFilterLinear;
+        sampler_desc.reductionMode = i ? MTLSamplerReductionModeMaximum : MTLSamplerReductionModeMinimum;
+        samplers[i] = [[device newSamplerStateWithDescriptor:sampler_desc] autorelease];
+        [sampler_desc release];
+      }
+      id<MTLBuffer> out =
+          [[device newBufferWithLength:2 * sizeof(float) options:MTLResourceStorageModeShared] autorelease];
+      id<MTLCommandQueue> queue = [[device newCommandQueue] autorelease];
+      if (pipeline && texture && samplers[0] && samplers[1] && out && queue) {
+        id<MTLCommandBuffer> cmdbuf = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [cmdbuf computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+        [encoder setTexture:texture atIndex:0];
+        [encoder setSamplerStates:samplers withRange:NSMakeRange(0, 2)];
+        [encoder setBuffer:out offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+        const float *read = out.contents;
+        honoured = cmdbuf.status == MTLCommandBufferStatusCompleted && read[0] == 0.0f && read[1] == 1.0f;
+      }
+    }
+  }
+  return honoured;
+}
+
+static NTSTATUS
+_MTLDevice_supportsSamplerReduction(void *obj) {
+  struct unixcall_generic_obj_uint64_ret *params = obj;
+  // the devices measured so far, by their registry IDs
+  static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+  static struct {
+    uint64_t id;
+    bool honoured;
+  } measured[16];
+  static unsigned count;
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  uint64_t registry = device.registryID;
+  pthread_mutex_lock(&mutex);
+  unsigned i = 0;
+  while (i < count && measured[i].id != registry)
+    i++;
+  if (i == count) {
+    bool honoured = probe_sampler_reduction(device);
+    if (count < sizeof(measured) / sizeof(measured[0]))
+      measured[count++] = (typeof(measured[0])){registry, honoured};
+    params->ret = honoured;
+  } else {
+    params->ret = measured[i].honoured;
+  }
+  pthread_mutex_unlock(&mutex);
   return STATUS_SUCCESS;
 }
 
@@ -6094,6 +6185,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_MTLDevice_supportsSamplerReduction,
 };
 
 #ifndef MULLION_NATIVE
@@ -6293,6 +6385,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_supportsShaderBarycentricCoordinates,
     &_WMTTraceWrite,
     &_MTL4CommandBuffer_orderAliases,
+    &_MTLDevice_supportsSamplerReduction,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");
