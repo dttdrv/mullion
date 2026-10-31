@@ -95,6 +95,14 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   // Metal 4: the next command buffer's first encoder orders aliased memory too, for a barrier its command buffer ended
   // before an encoder could
   bool order_aliases_ = false;
+  // MULLION_D3D12_ALIASES_INSIDE (on unless 0), Metal 4: an aliasing barrier between work of the buffer's one compute
+  // encoder, which began with the last, is a barrier inside it (MTL4CommandBuffer_orderAliases), and is encoded on any
+  // thread (Parallel). otherwise the next encoder begins with a barrier against all the queue's work before it
+  static bool
+  AliasesInside() {
+    static const bool inside = env::getEnvVar("MULLION_D3D12_ALIASES_INSIDE") != "0";
+    return Metal4 && inside;
+  }
   WMT::Reference<WMT::Fence> fence_;
   // the clock of the timestamps the queue's work writes: Metal 3 samples nanoseconds, a Metal 4 counter heap ticks
   // (MTLDevice.h queryTimestampFrequency: "the frequency of the GPU timestamp in ticks per second")
@@ -332,6 +340,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       return !static_cast<const RenderEncoderData *>(pass)->omitted;
     case EncoderType::ComputeParts:
       return !static_cast<const ComputePartsEncoderData *>(pass)->indirect;
+    // a flag of the command buffer's, which EncodeParallel carries to the next where it ends one
+    case EncoderType::Settle:
+      return AliasesInside();
     default:
       return false;
     }
@@ -956,7 +967,7 @@ private:
     void
     OrderAliases() {
       if constexpr (Metal4) {
-        inflight->cmdbuf.orderAliases();
+        inflight->cmdbuf.orderAliases(AliasesInside());
         // and again at each command buffer after it, until a pass has taken it: one that ends first, or that is only a
         // queue's wait, has no encoder to begin with the barrier
         queue->order_aliases_ = true;
@@ -1978,6 +1989,11 @@ public:
 
       break;
     }
+    case EncoderType::Settle:
+      // the encoding threads' aliasing barriers (Parallel); the queue's are the scope's (OrderAliases)
+      if constexpr (Metal4)
+        cmdbuf.orderAliases(true);
+      break;
     default:
       break;
     }
@@ -2012,12 +2028,24 @@ public:
       syncs.push_back(NextSync(pass));
     std::vector<WMT::Reference<MetalCommandBuffer>> buffers(parts);
     buffers[0] = scope.inflight->cmdbuf;
+    // whether each part begins after an aliasing barrier that no encoder has taken yet: one a part ends with is the
+    // next part's, as OrderAliases carries it to the next command buffer. the last's is the queue's after them
+    std::vector<bool> carried(parts + 1);
+    carried[0] = order_aliases_;
+    for (unsigned k = 0; k < parts; k++) {
+      carried[k + 1] = carried[k];
+      for (auto i = bounds[k]; i < bounds[k + 1]; i++)
+        if (passes[i].first->type == EncoderType::Settle)
+          carried[k + 1] = true;
+        else if (passes[i].first->type != EncoderType::Null)
+          carried[k + 1] = false;
+    }
     // a part's command buffer is the slot's after the one before, which commits it next
     for (unsigned k = 1; k < parts; k++) {
       if constexpr (Metal4) {
         buffers[k] = NewCommandBuffer(inflight_cmdbuf_seq_.load(std::memory_order_relaxed) + k);
         // each part's encoders run apart from the first part's, so each orders aliased memory itself
-        if (order_aliases_ && buffers[k])
+        if ((order_aliases_ || carried[k]) && buffers[k])
           buffers[k].orderAliases();
       } else {
         buffers[k] = queue_.commandBuffer();
@@ -2060,7 +2088,7 @@ public:
     for (unsigned k = 0; k < parts; k++) {
       for (auto i = bounds[k]; i < bounds[k + 1]; i++)
         scope.inflight->encoders[size_t(passes[i].first->type)]++;
-      order_aliases_ = false;
+      order_aliases_ = carried[k + 1];
       if (sparse_mappings)
         scope.inflight->sparse_mappings = sparse_mappings;
       if (k + 1 < parts) {

@@ -1,0 +1,16 @@
+# Metal 4: an aliasing barrier inside the open compute encoder has device visibility alone, not resource-alias
+# family native
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 02aec7e..2932edc 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -4724,8 +4724,7 @@ _MTL4CommandBuffer_encoder(void *obj) {
+       [(id<MTL4ComputeCommandEncoder>)state->encoder
+           barrierAfterEncoderStages:[(id<MTL4ComputeCommandEncoder>)state->encoder stages]
+                 beforeEncoderStages:MTLStageDispatch | MTLStageBlit | MTLStageAccelerationStructure
+-                  visibilityOptions:inside ? MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias
+-                                           : MTL4VisibilityOptionDevice];
++                  visibilityOptions:MTL4VisibilityOptionDevice];
+       if (inside)
+         owner->order_aliases = false;
+       // the barrier starts this pass where that sample ended the last, and Metal drops a timestamp that follows

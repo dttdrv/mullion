@@ -2568,7 +2568,9 @@ WINEMETAL_API void MTL4CommandBuffer_present(obj_handle_t buffer, obj_handle_t d
 
 WINEMETAL_API void MTL4CommandBuffer_waitForEvent(obj_handle_t buffer, obj_handle_t event, uint64_t value);
 // the buffer's next encoder begins with a barrier, against all the queue's work before it, that makes memory reached
-// through aliased addresses consistent: a reserved buffer's tiles and a placed resource over the same heap memory
-WINEMETAL_API void MTL4CommandBuffer_orderAliases(obj_handle_t buffer);
+// through aliased addresses consistent: a reserved buffer's tiles and a placed resource over the same heap memory.
+// `inside`: when the next is a compute encoder's and the open one holds all the queue's work since the last such
+// barrier, a barrier of the same visibility inside the open one, against its own work, instead
+WINEMETAL_API void MTL4CommandBuffer_orderAliases(obj_handle_t buffer, bool inside);
 
 #endif
