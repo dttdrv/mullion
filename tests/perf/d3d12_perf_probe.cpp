@@ -20,6 +20,7 @@
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <dxcapi.h>
+#include "../dxbc_hash.hpp"
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
@@ -235,6 +236,9 @@ static std::vector<char> compile_dxil(const std::string &source, const char *ent
     IDxcBlob *object = nullptr;
     CHECK(result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&object), nullptr));
     out.assign((char *)object->GetBufferPointer(), (char *)object->GetBufferPointer() + object->GetBufferSize());
+    // DXC signs with a library the probe does not carry and leaves the hash zero, which Direct3D takes only as a
+    // preview's shader (INF-0004): the probe signs it, as the tests do
+    dxbc::sign(out);
     object->Release();
     result->Release();
     compiler->Release();
