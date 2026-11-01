@@ -22,8 +22,12 @@ public:
   uint64_t sampler_state_white_handle = 0;
   float border_color[4] = {};
 
-  static Rc<Sampler>
-  createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color = nullptr);
+  // `reduction` (SM50_SAMPLER_REDUCTION): a minimum or maximum filter, which Metal's sampler applies where it can and
+  // the shader emulates elsewhere (the metadata says which)
+  static Rc<Sampler> createSampler(
+      WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color = nullptr,
+      unsigned reduction = 0
+  );
 
 private:
   WMTSamplerInfo info_;

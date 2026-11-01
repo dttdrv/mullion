@@ -14,7 +14,7 @@ namespace mullion {
 // Metal holds maxArgumentBufferSamplerCount distinct samplers ("unique argument buffer samplers per app") and the
 // ones past it sample wrong with no error (measured on an M1 Pro). an id Metal gives again is the slot it reuses, so
 // the ids seen count the slots taken. past them a sampler is the held one of its filters, address modes, border and
-// comparison whose LOD clamps are nearest, then its anisotropy: a clamp picks the mip read, anisotropy only its taps
+// comparison and reduction whose LOD clamps are nearest, then its anisotropy: a clamp picks the mip read, anisotropy only its taps
 static WMT::Reference<WMT::SamplerState>
 NewState(WMT::Device device, WMTSamplerInfo &info) {
   static mullion::mutex mutex;
@@ -36,6 +36,7 @@ NewState(WMT::Device device, WMTSamplerInfo &info) {
         other.r_address_mode == info.r_address_mode && other.s_address_mode == info.s_address_mode &&
         other.t_address_mode == info.t_address_mode && other.border_color == info.border_color &&
         other.compare_function == info.compare_function && other.normalized_coords == info.normalized_coords &&
+        other.reduction_mode == info.reduction_mode &&
         other.lod_average == info.lod_average && other.support_argument_buffers == info.support_argument_buffers &&
         (!nearest || apart(other) < apart(*nearest)))
       nearest = &other;
@@ -61,8 +62,24 @@ Sampler::decRef() {
     delete this;
 };
 
+// whether the device's samplers reduce as their reductionMode says: Metal ignores the mode unless the min, mag and mip
+// filters are all linear (MTLSamplerDescriptor.reductionMode), and an M4 (Apple9, macOS 27.2) ignores it always. the
+// bridge measures each device once, when its first sampler that reduces is made
+static bool
+NativeReduction(WMT::Device device) {
+  bool honoured = device.supportsSamplerReduction();
+  static std::atomic<bool> said = false;
+  if (!said.exchange(true))
+    Logger::info(str::format("Sampler: Metal's reductionMode ", honoured ? "is" : "is not",
+                             " honoured; minimum and maximum filters are ",
+                             honoured ? "Metal's where every filter is linear" : "emulated in shaders"));
+  return honoured;
+}
+
 Rc<Sampler>
-Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color) {
+Sampler::createSampler(
+    WMT::Device device, const WMTSamplerInfo &info, float lod_bias, const float *border_color, unsigned reduction
+) {
   Rc<Sampler> ret = new Sampler();
   // the GPU keeps LOD clamps as 0 to 14 in steps of 1/64, rounded down, and anisotropy as a power of two: samplers
   // that differ only within one step share one Metal sampler
@@ -71,6 +88,14 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
   capped.lod_min_clamp = step(capped.lod_min_clamp);
   capped.lod_max_clamp = step(capped.lod_max_clamp);
   capped.max_anisotroy = std::bit_ceil(std::max(capped.max_anisotroy, 1u));
+  // a minimum or maximum filter is Metal's own where the device honours it, otherwise the shader's
+  // (SM50_SAMPLER_REDUCTION)
+  bool native = reduction != SM50_SAMPLER_REDUCTION_NONE && info.min_filter == WMTSamplerMinMagFilterLinear &&
+                info.mag_filter == WMTSamplerMinMagFilterLinear && info.mip_filter == WMTSamplerMipFilterLinear &&
+                NativeReduction(device);
+  capped.reduction_mode = !native                                    ? WMTSamplerReductionModeWeightedAverage
+                          : reduction == SM50_SAMPLER_REDUCTION_MINIMUM ? WMTSamplerReductionModeMinimum
+                                                                     : WMTSamplerReductionModeMaximum;
   ret->info_ = capped;
 
   ret->sampler_state = NewState(device, ret->info_);
@@ -120,6 +145,8 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
                   uint64_t(info.mag_filter == WMTSamplerMinMagFilterLinear) << SM50_SAMPLER_METADATA_MAG_LINEAR |
                   uint64_t(info.mip_filter == WMTSamplerMipFilterLinear) << SM50_SAMPLER_METADATA_MIP_LINEAR |
                   (uint64_t)info.max_anisotroy << SM50_SAMPLER_METADATA_ANISOTROPY |
+                  uint64_t(native ? SM50_SAMPLER_REDUCTION_NONE : reduction) << SM50_SAMPLER_METADATA_REDUCTION |
+                  (uint64_t)address(info.r_address_mode) << SM50_SAMPLER_METADATA_ADDRESS_W |
                   field(info.lod_min_clamp) << SM50_SAMPLER_METADATA_MIN_LOD |
                   (field_max - field(info.lod_max_clamp)) << SM50_SAMPLER_METADATA_MAX_LOD |
                   (uint64_t)info.compare_function << SM50_SAMPLER_METADATA_COMPARE |

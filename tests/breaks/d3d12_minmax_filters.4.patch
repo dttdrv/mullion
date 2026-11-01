@@ -1,0 +1,15 @@
+# the mip level is wrong: a point mip filter takes the mip below the LOD, not the nearest one
+# family native,native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index c420b8e..e6f75fd 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2560,7 +2560,7 @@ Converter::MinMaxFilter(
+         ir.CreateFCmpOLE(LOD, Real(0)), Bit(SM50_SAMPLER_METADATA_MAG_LINEAR), Bit(SM50_SAMPLER_METADATA_MIN_LINEAR)
+     );
+     auto MipLinear = Bit(SM50_SAMPLER_METADATA_MIP_LINEAR);
+-    auto First = air.CreateConvertToUnsigned(Floor(ir.CreateSelect(MipLinear, LOD, ir.CreateFAdd(LOD, Real(0.5)))));
++    auto First = air.CreateConvertToUnsigned(Floor(LOD));
+     First = air.CreateIntBinOp(AIRBuilder::min, First, Last, false);
+     std::pair<Value *, Value *> Levels[2] = {
+         {First, ir.getTrue()},

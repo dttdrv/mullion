@@ -1,0 +1,15 @@
+# a joined first sample's value is its unreduced one: what it feeds no longer reads its emulation
+# family native,native-metal3
+diff --git a/src/airconv/transforms/merge_minmax_branches.cpp b/src/airconv/transforms/merge_minmax_branches.cpp
+index 7c34152..dbfe65a 100644
+--- a/src/airconv/transforms/merge_minmax_branches.cpp
++++ b/src/airconv/transforms/merge_minmax_branches.cpp
+@@ -108,7 +108,7 @@ Join(Diamond &First, const Diamond &Second) {
+   // in their order, ahead of what followed the second sample
+   auto At = Second.Join->getFirstNonPHI();
+   for (auto &Phi : make_early_inc_range(Between->phis()))
+-    Phi.moveBefore(At);
++    Phi.replaceAllUsesWith(Phi.getIncomingValueForBlock(First.Head)), Phi.eraseFromParent();
+   for (auto I : Later)
+     I->moveBefore(At);
+   // the first emulation runs on into the second, and both arms of the first branch go to the second join

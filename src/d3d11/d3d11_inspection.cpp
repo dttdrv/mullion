@@ -81,10 +81,9 @@ MTLD3D11Inspection::MTLD3D11Inspection(WMT::Device pDevice)
   m_d3d11Options1.ClearViewAlsoSupportsDepthOnlyFormats = TRUE;
   // a default resource's memory is the GPU's alone
   m_d3d11Options1.MapOnDefaultBuffers = FALSE;
-  /**
-  TODO: supported by Apple10 family
-  */
-  m_d3d11Options1.MinMaxFiltering = FALSE;
+  // minimum and maximum filters: Metal's reductionMode where the device honours it, else the shader's
+  // (SM50_SAMPLER_REDUCTION)
+  m_d3d11Options1.MinMaxFiltering = TRUE;
   m_d3d11Options1.TiledResourcesTier = D3D11_TILED_RESOURCES_NOT_SUPPORTED;
 
   m_d3d11Options2.TiledResourcesTier = D3D11_TILED_RESOURCES_NOT_SUPPORTED;

@@ -1391,6 +1391,11 @@ public:
     return MTLDevice_supportsShaderBarycentricCoordinates(handle);
   }
 
+  bool
+  supportsSamplerReduction() {
+    return MTLDevice_supportsSamplerReduction(handle);
+  }
+
   uint64_t
   maxArgumentBufferSamplerCount() {
     return MTLDevice_maxArgumentBufferSamplerCount(handle);

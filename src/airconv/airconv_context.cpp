@@ -37,6 +37,7 @@
 #include "transforms/guard_out_of_bounds.hpp"
 #include "transforms/lower_16bit_texread.hpp"
 #include "transforms/merge_sample_branches.hpp"
+#include "transforms/merge_minmax_branches.hpp"
 #include "transforms/simdgroup_implicit_membarrier.hpp"
 #include "transforms/hoist_loads.hpp"
 
@@ -155,6 +156,11 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
       GlobalCleanupPM.addPass(air::MergeSampleBranchesPass());
     else
       GlobalCleanupPM.addPass(air::MergeSampleBranchesPass(false));
+    // MULLION_AIRCONV_SKIP=minmax-branch-merge leaves a minimum and maximum filter branch per sample (MinMaxFilter)
+    {
+      auto skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+      GlobalCleanupPM.addPass(air::MergeMinMaxBranchesPass(!skip || !strstr(skip, "minmax-branch-merge")));
+    }
     GlobalCleanupPM.addPass(InstCombinePass());
 
     GlobalCleanupPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));

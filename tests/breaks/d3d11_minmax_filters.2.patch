@@ -1,0 +1,16 @@
+# two samples' branches are joined whatever their conditions: the second sampler's emulation follows the first's
+# family native,native-metal3
+diff --git a/src/airconv/transforms/merge_minmax_branches.cpp b/src/airconv/transforms/merge_minmax_branches.cpp
+index 7c34152..1e241f2 100644
+--- a/src/airconv/transforms/merge_minmax_branches.cpp
++++ b/src/airconv/transforms/merge_minmax_branches.cpp
+@@ -68,8 +68,7 @@ struct Equal {
+ bool
+ Join(Diamond &First, const Diamond &Second) {
+   auto Between = First.Join;
+-  if (!Equal()(First.Branch->getCondition(), Second.Branch->getCondition()))
+-    return false;
++
+   // what the first sample's value feeds stays after it; the rest moves before the first branch. the emulation writes
+   // no memory, so nothing moved past it reads otherwise
+   SmallPtrSet<Instruction *, 16> After;

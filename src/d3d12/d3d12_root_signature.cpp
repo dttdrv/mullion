@@ -582,7 +582,10 @@ public:
         WMTSamplerInfo info;
         PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, desc.pStaticSamplers[i]);
 
-        auto sampler = Sampler::createSampler(device_->GetMTLDevice(), info, desc.pStaticSamplers[i].MipLODBias);
+        auto sampler = Sampler::createSampler(
+            device_->GetMTLDevice(), info, desc.pStaticSamplers[i].MipLODBias, nullptr,
+            SamplerReduction(desc.pStaticSamplers[i].Filter)
+        );
         static_samplers_encoded_.push_back(sampler->sampler_state_handle);
         static_samplers_encoded_.push_back(sampler->sampler_state_cube_handle);
         static_samplers_encoded_.push_back(sampler->metadata);

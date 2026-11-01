@@ -1,0 +1,15 @@
+# a texel the filter weights 0 is reduced too: each axis's second texel counts wherever the filter is linear
+# family native,native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index c420b8e..4ee4f53 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2668,7 +2668,7 @@ Converter::MinMaxFilter(
+         );
+         Scaled = Fixed(Scaled);
+         auto Below = Floor(Scaled);
+-        auto Weighted = ir.CreateAnd(Linear, ir.CreateFCmpOGT(ir.CreateFSub(Scaled, Below), Real(0)));
++        auto Weighted = Linear;
+         auto Left = air.CreateConvertToSigned(Below);
+         auto End = ir.CreateSub(N, ir.getInt32(1));
+         auto Inside = [&](Value *V) {

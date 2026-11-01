@@ -21,6 +21,7 @@
 #include "d3d11_device.hpp"
 #include "d3d11_state_object.hpp"
 #include "mullion_sampler.hpp"
+#include "airconv_public.h"
 #include "log/log.hpp"
 #include "../d3d10/d3d10_state_object.hpp"
 #include <bit>
@@ -777,7 +778,14 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
   info.support_argument_buffers = true;
   info.normalized_coords = true;
 
-  auto sampler = Sampler::createSampler(device->GetMTLDevice(), info, desc.MipLODBias);
+  // a minimum or maximum filter reduces the texels its filter weights above zero (D3D11.3 5.9.4.5.6)
+  auto reduction = D3D11_DECODE_FILTER_REDUCTION(desc.Filter);
+  auto sampler = Sampler::createSampler(
+      device->GetMTLDevice(), info, desc.MipLODBias, nullptr,
+      reduction == D3D11_FILTER_REDUCTION_TYPE_MINIMUM   ? SM50_SAMPLER_REDUCTION_MINIMUM
+      : reduction == D3D11_FILTER_REDUCTION_TYPE_MAXIMUM ? SM50_SAMPLER_REDUCTION_MAXIMUM
+                                                         : SM50_SAMPLER_REDUCTION_NONE
+  );
 
   if (!sampler) {
     ERR("CreateSamplerState: failed to create sampler");

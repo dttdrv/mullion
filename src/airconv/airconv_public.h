@@ -399,9 +399,10 @@ enum SM50_SHADER_METAL_VERSION {
 
 /* the sampler metadata qword that shaders read next to the sampler states: MipLODBias as a signed 16-bit LOD in
    bits 0-15, then whether the minification, magnification and mip filters are linear and MaxAnisotropy (1 unless the
-   filter is anisotropic), then MinLOD and (the largest LOD field value - MaxLOD) as unsigned LOD fields, then the
-   comparison function (WMTCompareFunction), then the address modes of u and v as
-   u + SM50_SAMPLER_ADDRESS_COUNT * v. LODs have D3D's 8 fractional bits (D3D11.3 7.18.16) */
+   filter is anisotropic), then the reduction a shader emulates (SM50_SAMPLER_REDUCTION) and the address mode of w, then
+   MinLOD and (the largest LOD field value - MaxLOD) as unsigned LOD fields, then the comparison function
+   (WMTCompareFunction), then the address modes of u and v as u + SM50_SAMPLER_ADDRESS_COUNT * v. LODs have D3D's 8
+   fractional bits (D3D11.3 7.18.16) */
 enum SM50_SAMPLER_METADATA {
   SM50_SAMPLER_METADATA_LOD_FRACTION_BITS = 8,
   SM50_SAMPLER_METADATA_LOD_BITS = 12, /* up to LOD 15.996, past the last mip of a 16384 texel texture */
@@ -410,6 +411,10 @@ enum SM50_SAMPLER_METADATA {
   SM50_SAMPLER_METADATA_MIP_LINEAR = 18,
   SM50_SAMPLER_METADATA_ANISOTROPY = 19,
   SM50_SAMPLER_METADATA_ANISOTROPY_BITS = 5,
+  SM50_SAMPLER_METADATA_REDUCTION = 24,
+  SM50_SAMPLER_METADATA_REDUCTION_BITS = 2,
+  SM50_SAMPLER_METADATA_ADDRESS_W = 26,
+  SM50_SAMPLER_METADATA_ADDRESS_W_BITS = 3,
   SM50_SAMPLER_METADATA_MIN_LOD = 32,
   SM50_SAMPLER_METADATA_MAX_LOD = 44,
   SM50_SAMPLER_METADATA_COMPARE = 56,
@@ -428,6 +433,14 @@ enum SM50_TEXTURE_VIEW_METADATA : uint64_t {
 enum SM50_TEXTURE_MULTISAMPLE_METADATA : uint64_t {
   SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE = 1 << 0,
   SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED = 1 << 1,
+};
+
+/* a minimum or maximum filter (D3D12_FILTER_REDUCTION_TYPE_MINIMUM, _MAXIMUM): the texels the filter would weight
+   above zero, reduced per channel. Metal's samplers average them, so the shader reads and reduces them itself */
+enum SM50_SAMPLER_REDUCTION {
+  SM50_SAMPLER_REDUCTION_NONE,
+  SM50_SAMPLER_REDUCTION_MINIMUM,
+  SM50_SAMPLER_REDUCTION_MAXIMUM,
 };
 
 /* WMTSamplerAddressMode, with one border */
