@@ -1556,6 +1556,34 @@ public:
             encoder.endEncoding();
           break;
         }
+        case EncoderType::Upscale: {
+          // MetalFX after all the work before it, and the work after it after MetalFX: an encoder that waits for
+          // the queue's fences updates the scaler's, which MetalFX waits for and updates, and one that waits for that
+          // updates the queue's (as the D3D11 context's scaler boundaries)
+          auto data = static_cast<UpscaleEncoderData *>(current);
+          WMT::Fence scaler_fence = data->temporal ? data->temporal->fence() : data->denoised->fence();
+          if (diag::trace_encoders)
+            scope.inflight->physical[WMTMetal4Blit] += 2;
+          auto begin = cmdbuf.blitCommandEncoder();
+          WaitAll([&](WMT::Fence fence) { begin.waitForFence(fence); });
+          begin.updateFence(scaler_fence);
+          begin.endEncoding();
+          if (data->temporal) {
+            cmdbuf.encodeTemporalScale(
+                data->temporal->scaler(), data->color, data->output, data->depth, data->motion, data->exposure,
+                scaler_fence, data->props
+            );
+          } else {
+            auto args = data->denoise;
+            args.fence = scaler_fence.handle;
+            cmdbuf.encodeDenoisedScale(data->denoised->scaler(), args);
+          }
+          auto end = cmdbuf.blitCommandEncoder();
+          end.waitForFence(scaler_fence);
+          end.updateFence(WMT::Fence(fence_));
+          end.endEncoding();
+          break;
+        }
         case EncoderType::ResolveTimestamps: {
           auto data = static_cast<ResolveTimestampsData *>(current);
           if (data->readback) {

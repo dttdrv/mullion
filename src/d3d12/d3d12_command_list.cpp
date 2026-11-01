@@ -27,6 +27,8 @@
 #include <span>
 #include <cmath>
 #include "util_env.hpp"
+#include "d3d12_interfaces.hpp"
+#include "mullion_scaler.hpp"
 
 namespace mullion {
 
@@ -818,6 +820,12 @@ public:
         riid == __uuidof(ID3D12GraphicsCommandList7) || riid == __uuidof(ID3D12GraphicsCommandList8) ||
         riid == __uuidof(ID3D12GraphicsCommandList9)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IMTLD3D12CommandListExt)) {
+      AddRef();
+      *ppvObject = static_cast<IMTLD3D12CommandListExt *>(&upscale_ext_);
       return S_OK;
     }
 
@@ -4955,6 +4963,283 @@ public:
           ordered = Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav));
       }
   }
+
+  // MetalFX (IMTLD3D12CommandListExt): a feature's scaler, and the inputs it was made for
+  struct UpscalerCache {
+    std::array<uint32_t, 14> key{};
+    Rc<TemporalScaler> temporal;
+    Rc<DenoisedScaler> denoised;
+  };
+
+  static Texture *
+  UpscaleTexture(ID3D12Resource *resource) {
+    return resource ? static_cast<MTLD3D12Resource *>(resource)->texture.ptr() : nullptr;
+  }
+
+  static WMT::Texture
+  UpscaleView(Texture *texture, WMTPixelFormat format = WMTPixelFormatInvalid) {
+    if (!texture)
+      return {};
+    if (format == WMTPixelFormatInvalid || format == texture->pixelFormat())
+      return texture->view(texture->fullView).texture;
+    return texture->view(texture->createView({.format = format, .type = WMTTextureType2D})).texture;
+  }
+
+  // the float format MetalFX reads motion vectors of a typeless or integer resource as
+  static WMTPixelFormat
+  MotionVectorFormat(WMTPixelFormat format) {
+    switch (format) {
+    case WMTPixelFormatRG16Uint:
+    case WMTPixelFormatRG16Float:
+    case WMTPixelFormatRG16Sint:
+    case WMTPixelFormatRG16Snorm:
+    case WMTPixelFormatRG16Unorm:
+      return WMTPixelFormatRG16Float;
+    case WMTPixelFormatRG32Uint:
+    case WMTPixelFormatRG32Float:
+    case WMTPixelFormatRG32Sint:
+      return WMTPixelFormatRG32Float;
+    case WMTPixelFormatRGBA16Sint:
+    case WMTPixelFormatRGBA16Snorm:
+    case WMTPixelFormatRGBA16Uint:
+    case WMTPixelFormatRGBA16Unorm:
+    case WMTPixelFormatRGBA16Float:
+      return WMTPixelFormatRGBA16Float;
+    default:
+      return WMTPixelFormatInvalid;
+    }
+  }
+
+  // the pass, after everything before it and before everything after it
+  UpscaleEncoderData *
+  RecordUpscale() {
+    OrderingPoint();
+    allocator_->InvalidateCurrentPass();
+    auto pass = allocator_->AllocatePass<UpscaleEncoderData>();
+    pass->type = EncoderType::Upscale;
+    allocator_->InvalidateCurrentPass();
+    OrderingPoint();
+    return pass;
+  }
+
+  HRESULT
+  TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, void **ppCache) {
+    if (!pDesc || !ppCache)
+      return E_INVALIDARG;
+    auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
+         depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
+         exposure = UpscaleTexture(pDesc->ExposureTexture);
+    if (!color || !output || !depth || !motion)
+      return E_INVALIDARG;
+    auto motion_format = MotionVectorFormat(motion->pixelFormat());
+    if (motion_format == WMTPixelFormatInvalid) {
+      ERR("TemporalUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
+      return E_INVALIDARG;
+    }
+    if (pDesc->MotionVectorInDisplayRes) {
+      static bool warned = false;
+      if (!std::exchange(warned, true))
+        WARN("TemporalUpscale: motion vectors at the output resolution are not supported yet");
+    }
+    auto &cache = *reinterpret_cast<UpscalerCache **>(ppCache);
+    if (!cache)
+      cache = new UpscalerCache;
+    std::array<uint32_t, 14> key{1,
+                                 color->width(),
+                                 color->height(),
+                                 output->width(),
+                                 output->height(),
+                                 uint32_t(color->pixelFormat()),
+                                 uint32_t(output->pixelFormat()),
+                                 uint32_t(depth->pixelFormat()),
+                                 uint32_t(motion_format),
+                                 uint32_t(!!pDesc->AutoExposure)};
+    if (!cache->temporal || cache->key != key) {
+      WMTFXTemporalScalerInfo info{};
+      info.color_format = color->pixelFormat();
+      info.output_format = output->pixelFormat();
+      info.depth_format = depth->pixelFormat();
+      info.motion_format = motion_format;
+      info.input_width = color->width();
+      info.input_height = color->height();
+      info.output_width = output->width();
+      info.output_height = output->height();
+      info.input_content_min_scale = 1.0f;
+      info.input_content_max_scale = 3.0f;
+      info.auto_exposure = pDesc->AutoExposure;
+      info.input_content_properties_enabled = true;
+      info.requires_synchronous_initialization = true;
+      cache->temporal = new TemporalScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
+      if (!cache->temporal->scaler().handle) {
+        cache->temporal = nullptr;
+        ERR("TemporalUpscale: MetalFX has no temporal scaler for ", info.input_width, "x", info.input_height, " to ",
+            info.output_width, "x", info.output_height);
+        return E_FAIL;
+      }
+      cache->key = key;
+      Logger::info(str::format(
+          "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
+          info.output_height, device_->UsesMetal4() ? " (Metal 4)" : ""
+      ));
+    }
+    auto pass = RecordUpscale();
+    pass->temporal = cache->temporal;
+    pass->color = UpscaleView(color);
+    pass->output = UpscaleView(output);
+    pass->depth = UpscaleView(depth);
+    pass->motion = UpscaleView(motion, motion_format);
+    pass->exposure = UpscaleView(exposure);
+    pass->props = WMTFXTemporalScalerProps{
+        pDesc->InputContentWidth ? pDesc->InputContentWidth : color->width(),
+        pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
+        bool(pDesc->InReset),
+        bool(pDesc->DepthReversed),
+        pDesc->MotionVectorScaleX,
+        pDesc->MotionVectorScaleY,
+        pDesc->JitterOffsetX,
+        pDesc->JitterOffsetY,
+        pDesc->PreExposure,
+    };
+    return S_OK;
+  }
+
+  HRESULT
+  DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, void **ppCache) {
+    if (!pDesc || !ppCache)
+      return E_INVALIDARG;
+    auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
+         depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
+         diffuse = UpscaleTexture(pDesc->DiffuseAlbedo), specular = UpscaleTexture(pDesc->SpecularAlbedo),
+         normals = UpscaleTexture(pDesc->Normals),
+         roughness = pDesc->RoughnessInNormalAlpha ? normals : UpscaleTexture(pDesc->Roughness),
+         hit_distance = UpscaleTexture(pDesc->SpecularHitDistance), exposure = UpscaleTexture(pDesc->ExposureTexture);
+    if (!color || !output || !depth || !motion || !diffuse || !specular || !normals || !roughness)
+      return E_INVALIDARG;
+    auto motion_format = MotionVectorFormat(motion->pixelFormat());
+    if (motion_format == WMTPixelFormatInvalid) {
+      ERR("DenoisedUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
+      return E_INVALIDARG;
+    }
+    if (pDesc->RoughnessInNormalAlpha) {
+      static bool warned = false;
+      if (!std::exchange(warned, true))
+        WARN("DenoisedUpscale: roughness in the normals' alpha is read from their first channel");
+    }
+    auto &cache = *reinterpret_cast<UpscalerCache **>(ppCache);
+    if (!cache)
+      cache = new UpscalerCache;
+    std::array<uint32_t, 14> key{2,
+                                 color->width(),
+                                 color->height(),
+                                 output->width(),
+                                 output->height(),
+                                 uint32_t(color->pixelFormat()),
+                                 uint32_t(output->pixelFormat()),
+                                 uint32_t(depth->pixelFormat()),
+                                 uint32_t(motion_format),
+                                 uint32_t(diffuse->pixelFormat()),
+                                 uint32_t(specular->pixelFormat()),
+                                 uint32_t(normals->pixelFormat()),
+                                 uint32_t(roughness->pixelFormat()),
+                                 uint32_t(hit_distance ? hit_distance->pixelFormat() : 0) << 1 | !!pDesc->AutoExposure};
+    if (!cache->denoised || cache->key != key) {
+      WMTFXDenoisedScalerInfo info{};
+      info.color_format = color->pixelFormat();
+      info.depth_format = depth->pixelFormat();
+      info.motion_format = motion_format;
+      info.diffuse_albedo_format = diffuse->pixelFormat();
+      info.specular_albedo_format = specular->pixelFormat();
+      info.normal_format = normals->pixelFormat();
+      info.roughness_format = roughness->pixelFormat();
+      info.specular_hit_distance_format = hit_distance ? hit_distance->pixelFormat() : WMTPixelFormatInvalid;
+      info.output_format = output->pixelFormat();
+      info.input_width = color->width();
+      info.input_height = color->height();
+      info.output_width = output->width();
+      info.output_height = output->height();
+      info.auto_exposure = pDesc->AutoExposure;
+      info.requires_synchronous_initialization = true;
+      cache->denoised = new DenoisedScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
+      if (!cache->denoised->scaler().handle) {
+        cache->denoised = nullptr;
+        ERR("DenoisedUpscale: MetalFX has no denoised scaler for ", info.input_width, "x", info.input_height, " to ",
+            info.output_width, "x", info.output_height);
+        return E_FAIL;
+      }
+      cache->key = key;
+      Logger::info(str::format(
+          "MetalFX: denoised upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
+          info.output_height, device_->UsesMetal4() ? " (Metal 4)" : ""
+      ));
+    }
+    auto pass = RecordUpscale();
+    pass->denoised = cache->denoised;
+    auto &args = pass->denoise;
+    args.color = UpscaleView(color).handle;
+    args.depth = UpscaleView(depth).handle;
+    args.motion = UpscaleView(motion, motion_format).handle;
+    args.diffuse_albedo = UpscaleView(diffuse).handle;
+    args.specular_albedo = UpscaleView(specular).handle;
+    args.normal = UpscaleView(normals).handle;
+    args.roughness = UpscaleView(roughness).handle;
+    args.specular_hit_distance = UpscaleView(hit_distance).handle;
+    args.exposure = UpscaleView(exposure).handle;
+    args.output = UpscaleView(output).handle;
+    args.pre_exposure = pDesc->PreExposure;
+    args.jitter_offset_x = pDesc->JitterOffsetX;
+    args.jitter_offset_y = pDesc->JitterOffsetY;
+    args.motion_vector_scale_x = pDesc->MotionVectorScaleX;
+    args.motion_vector_scale_y = pDesc->MotionVectorScaleY;
+    args.reset = pDesc->InReset;
+    args.depth_reversed = pDesc->DepthReversed;
+    memcpy(args.world_to_view, pDesc->WorldToView, sizeof(args.world_to_view));
+    memcpy(args.view_to_clip, pDesc->ViewToClip, sizeof(args.view_to_clip));
+    return S_OK;
+  }
+
+  class UpscaleExt final : public IMTLD3D12CommandListExt {
+  public:
+    explicit UpscaleExt(MTLD3D12GraphicsCommandListImpl *list) : list_(list) {}
+
+    HRESULT STDMETHODCALLTYPE
+    QueryInterface(REFIID riid, void **ppvObject) final {
+      return list_->QueryInterface(riid, ppvObject);
+    }
+    ULONG STDMETHODCALLTYPE
+    AddRef() final {
+      return list_->AddRef();
+    }
+    ULONG STDMETHODCALLTYPE
+    Release() final {
+      return list_->Release();
+    }
+    BOOL STDMETHODCALLTYPE
+    SupportsTemporalUpscale() final {
+      return list_->device_->GetMTLDevice().supportsFXTemporalScaler();
+    }
+    BOOL STDMETHODCALLTYPE
+    SupportsDenoisedUpscale() final {
+      // MetalFX's denoiser is there from macOS 26, which Metal 4 needs too
+      return list_->device_->GetMTLDevice().supportsFamily(WMTGPUFamilyMetal4) &&
+             list_->device_->GetMTLDevice().supportsFXTemporalScaler();
+    }
+    HRESULT STDMETHODCALLTYPE
+    TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, void **ppCache) final {
+      return list_->TemporalUpscale(pDesc, ppCache);
+    }
+    HRESULT STDMETHODCALLTYPE
+    DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, void **ppCache) final {
+      return list_->DenoisedUpscale(pDesc, ppCache);
+    }
+    void STDMETHODCALLTYPE
+    ReleaseUpscaler(void *pCache) final {
+      delete static_cast<UpscalerCache *>(pCache);
+    }
+
+  private:
+    MTLD3D12GraphicsCommandListImpl *list_;
+  };
+  UpscaleExt upscale_ext_{this};
 };
 
 HRESULT STDMETHODCALLTYPE
