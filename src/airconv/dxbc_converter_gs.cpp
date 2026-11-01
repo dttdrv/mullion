@@ -2035,6 +2035,12 @@ convert_dxbc_vertex_for_geometry_shader(
   // stream output's second pass starts each object threadgroup's primitives after those of every one before it
   SM50_SHADER_STREAM_OUTPUT_DATA *so = nullptr;
   args_get_data<SM50_SHADER_STREAM_OUTPUT, SM50_SHADER_STREAM_OUTPUT_DATA>(pArgs, &so);
+  // a mesh function alone, without an object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only): a threadgroup
+  // runs the warp's vertices into threadgroup memory and passes its triangles on itself
+  bool mesh_only = pass_through && pso_data->mesh_only;
+  if (mesh_only && (is_strip || input_primitive != D3D10_SB_PRIMITIVE_TRIANGLE || so || pso_data->quad_lines ||
+                    pso_data->conservative))
+    return llvm::make_error<UnsupportedFeature>("a mesh stage alone takes lists of triangles only");
   bool so_base = so && !so->counting;
   bool is_indexed_draw = ia_layout && ia_layout->index_buffer_format > 0;
   // with an index buffer view (D3D12), whether the draw has indices is known only at run time
@@ -2069,13 +2075,72 @@ convert_dxbc_vertex_for_geometry_shader(
   if (!binding_map)
     return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
-  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
+  uint32_t payload_idx = mesh_only ? ~0u : func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
   // (warp_size, 1, 1)
   uint32_t thread_id_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
   // (warp_count, instance_count, 1)
   // warp_count = ceil(index_count / warp_size)
   uint32_t tg_id_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
-  func_signature.DefineInput(air::InputMeshGridProperties{});
+  if (!mesh_only)
+    func_signature.DefineInput(air::InputMeshGridProperties{});
+  // the mesh stage alone outputs the warp's triangles as the pass-through mesh stage does
+  // (convert_pass_through_geometry_shader): the position, the varyings, the clip distances, and the primitive's ID,
+  // layer and viewport
+  struct MeshVarying {
+    uint32_t reg, component, index;
+    bool integer;
+  };
+  std::vector<MeshVarying> mesh_varyings;
+  uint32_t mesh_clip_at = 0;
+  bool mesh_clip_varyings = mesh_only && pso_data->clip_distance_varyings;
+  if (mesh_only) {
+    auto [vertices, primitives, per_primitive] = get_vertex_primitive_count_in_warp(
+        input_primitive, false, pShaderInternal->max_output_register
+    );
+    func_signature.DefineInput(air::InputMesh{primitives * 3, primitives, air::MeshOutputTopology::Triangle});
+    func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
+    uint32_t declared = 0;
+    for (auto &element : pShaderInternal->output_signature) {
+      switch (element.systemValue()) {
+      case D3D10_SB_NAME_POSITION:
+        func_signature.DefineMeshVertexOutput(air::OutputPosition{.type = air::msl_float4});
+        continue;
+      case D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX:
+        func_signature.DefineMeshPrimitiveOutput(air::OutputRenderTargetArrayIndex{});
+        continue;
+      case D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX:
+        func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
+        continue;
+      case D3D10_SB_NAME_UNDEFINED:
+      case D3D10_SB_NAME_CLIP_DISTANCE:
+      case D3D10_SB_NAME_CULL_DISTANCE:
+      case D3D12_SB_NAME_SHADING_RATE:
+        break;
+      default:
+        continue;
+      }
+      if (std::exchange(declared, declared | 1u << element.reg()) >> element.reg() & 1)
+        continue;
+      auto component_types = pShaderInternal->register_types(element.reg(), element.componentType());
+      for (uint32_t c = 0; c < 4; c++) {
+        uint32_t index = mesh_varyings.size();
+        mesh_varyings.push_back({element.reg(), c, index, component_types[c] != RegisterComponentType::Float});
+        func_signature.DefineMeshVertexOutput(air::OutputMeshData{
+            .user = varying_name(element.reg(), c), .type = varying_type(component_types[c]), .index = index
+        });
+      }
+    }
+    mesh_clip_at = mesh_varyings.size();
+    for (uint32_t i = 0; mesh_clip_varyings && i < pShaderInternal->clip_distance_scalars.size(); i++)
+      func_signature.DefineMeshVertexOutput(
+          air::OutputMeshData{.user = clip_varying_name(i), .type = air::msl_float, .index = mesh_clip_at + i}
+      );
+    if (!mesh_clip_varyings && pShaderInternal->clip_distance_scalars.size())
+      func_signature.DefineMeshVertexOutput(air::OutputClipDistance{.count = pShaderInternal->clip_distance_scalars.size()}
+      );
+  }
+  // the stage before the rasterizer scales the positions it writes (llvm::air::AIRBuilder::RasterScale)
+  uint32_t mesh_raster_scale = mesh_only ? DefineRasterScale(func_signature) : ~0u;
   uint32_t draw_argument_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
       .location_index = SM50_BINDING_INDEX_DRAW_ARGUMENTS,
@@ -2142,7 +2207,9 @@ convert_dxbc_vertex_for_geometry_shader(
   auto dispatch = llvm::BasicBlock::Create(context, "dispatch", function);
   auto return_ = llvm::BasicBlock::Create(context, "return", function);
 
-  auto payload = function->getArg(payload_idx);
+  auto payload = mesh_only ? nullptr : function->getArg(payload_idx);
+  if (mesh_only)
+    air.RasterScale = function->getArg(mesh_raster_scale);
   auto thread_position_in_group = function->getArg(thread_id_idx);
   auto warp_vertex_id = builder.CreateExtractElement(thread_position_in_group, (uint32_t)0);
 
@@ -2189,10 +2256,28 @@ convert_dxbc_vertex_for_geometry_shader(
         "a primitive whose vertices' output registers do not fit an object threadgroup's payload"
     );
 
-  auto payload_output_ptr = builder.CreateConstInBoundsGEP1_32(
+  // the mesh stage alone keeps the warp's vertices' output registers in threadgroup memory
+  llvm::GlobalVariable *mesh_vertices = nullptr;
+  if (mesh_only) {
+    auto registers = llvm::ArrayType::get(types._int4, max_output_register);
+    mesh_vertices = new llvm::GlobalVariable(
+        module, llvm::ArrayType::get(registers, warp_vertex_count), false, llvm::GlobalValue::InternalLinkage,
+        llvm::UndefValue::get(llvm::ArrayType::get(registers, warp_vertex_count)), "mesh_vertices", nullptr,
+        llvm::GlobalValue::NotThreadLocal, (uint32_t)air::AddressSpace::threadgroup
+    );
+    resource_map.output.ptr_int4 = builder.CreateGEP(
+        mesh_vertices->getValueType(), mesh_vertices, {builder.getInt32(0), warp_vertex_id}
+    );
+    resource_map.output.ptr_float4 = builder.CreateBitCast(
+        resource_map.output.ptr_int4,
+        llvm::ArrayType::get(types._float4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::threadgroup)
+    );
+  }
+  auto payload_output_ptr = mesh_only ? nullptr : builder.CreateConstInBoundsGEP1_32(
       types._int, payload, 4
   );
 
+  if (!mesh_only) {
   resource_map.output.ptr_int4 = builder.CreateBitCast(
       payload_output_ptr,
       llvm::ArrayType::get(types._int4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::object_data)
@@ -2209,6 +2294,7 @@ convert_dxbc_vertex_for_geometry_shader(
       resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_float4,
       {warp_vertex_id}
   );
+  }
 
   resource_map.output_element_count = max_output_register;
 
@@ -2565,6 +2651,99 @@ convert_dxbc_vertex_for_geometry_shader(
                 stream_output_targets_type(context, types), function->getArg(so_idx), 4))), warp_id),
             so_before[0], strip_offset))
       return err;
+  }
+
+  if (mesh_only) {
+    // each of the group's first threads passes one of its triangles on, compacted after those before it that are
+    // valid and that no cull distance culls (D3D11.3 15.4.2: every vertex behind one, negative or NaN), its ID counting
+    // every primitive before it in the draw's instance (8.17)
+    auto is_lane = builder.CreateICmpULT(warp_vertex_id, builder.getInt32(warp_primitive_count));
+    auto lane = builder.CreateSelect(is_lane, warp_vertex_id, builder.getInt32(0));
+    auto component = [&](pvalue vertex, uint32_t reg, uint32_t c) {
+      return builder.CreateLoad(
+          types._int, builder.CreateGEP(
+                          mesh_vertices->getValueType(), mesh_vertices,
+                          {builder.getInt32(0), vertex, builder.getInt32(reg), builder.getInt32(c)}
+                      )
+      );
+    };
+    auto real = [&](pvalue bits) { return builder.CreateBitCast(bits, types._float); };
+    auto corner = [&](uint32_t k) { return builder.CreateAdd(builder.CreateMul(lane, builder.getInt32(3)), builder.getInt32(k)); };
+    auto one = builder.getInt32(1);
+    pvalue keep = builder.CreateAnd(
+        is_lane, builder.CreateICmpNE(builder.CreateAnd(builder.CreateLShr(valid_primitive_mask, lane), one), builder.getInt32(0))
+    );
+    for (auto &distance : pShaderInternal->cull_distance_scalars) {
+      pvalue behind = builder.getTrue();
+      for (uint32_t k = 0; k < 3; k++)
+        behind = builder.CreateAnd(
+            behind, builder.CreateFCmpULT(real(component(corner(k), distance.reg, distance.component)), air.getFloat(0))
+        );
+      keep = builder.CreateAnd(keep, builder.CreateNot(behind));
+    }
+    auto ballot = builder.CreateTrunc(
+        builder.CreateCall(
+            module.getOrInsertFunction(
+                "air.simd_ballot.i64", llvm::FunctionType::get(builder.getInt64Ty(), {builder.getInt1Ty()}, false),
+                llvm::AttributeList::get(context, {{~0U, llvm::Attribute::get(context, llvm::Attribute::Convergent)}})
+            ),
+            {keep}
+        ),
+        types._int
+    );
+    auto below = builder.CreateSub(builder.CreateShl(one, lane), one);
+    air.CreateSetMeshPrimitiveCount(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, ballot));
+    auto emit = llvm::BasicBlock::Create(context, "mesh_emit", function);
+    builder.CreateCondBr(keep, emit, return_);
+    builder.SetInsertPoint(emit);
+    auto slot = air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(ballot, below));
+    air.CreateSetMeshPrimitiveID(
+        slot, builder.CreateAdd(
+                  primitives_before,
+                  air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid_primitive_mask, below))
+              )
+    );
+    // the first vertex chooses the primitive's layer and viewport (D3D11.3 15.8.1), an out-of-range viewport being 0
+    for (auto &element : pShaderInternal->output_signature) {
+      auto name = element.systemValue();
+      if (name != D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX && name != D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX)
+        continue;
+      auto value = component(corner(0), element.reg(), std::countr_zero(element.mask()));
+      if (name == D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX)
+        air.CreateSetMeshRenderTargetArrayIndex(slot, value);
+      else
+        air.CreateSetMeshViewportArrayIndex(slot, value);
+    }
+    for (uint32_t k = 0; k < 3; k++) {
+      auto vertex = builder.CreateAdd(builder.CreateMul(slot, builder.getInt32(3)), builder.getInt32(k));
+      auto from = corner(k);
+      for (auto &element : pShaderInternal->output_signature) {
+        if (element.systemValue() != D3D10_SB_NAME_POSITION)
+          continue;
+        pvalue position = llvm::UndefValue::get(types._float4);
+        for (uint32_t c = 0; c < 4; c++)
+          position = builder.CreateInsertElement(position, real(component(from, element.reg(), c)), c);
+        air.CreateSetMeshPosition(vertex, position);
+      }
+      for (auto &v : mesh_varyings) {
+        auto value = component(from, v.reg, v.component);
+        air.CreateSetMeshVertexData(vertex, builder.getInt32(v.index), v.integer ? value : real(value));
+      }
+      for (auto distance : llvm::enumerate(pShaderInternal->clip_distance_scalars)) {
+        auto value = real(component(from, distance.value().reg, distance.value().component));
+        if (mesh_clip_varyings)
+          air.CreateSetMeshVertexData(vertex, builder.getInt32(mesh_clip_at + distance.index()), value);
+        else
+          air.CreateSetMeshClipDistance(vertex, builder.getInt32(distance.index()), value);
+      }
+      air.CreateSetMeshIndex(vertex, vertex);
+    }
+    builder.CreateBr(return_);
+    builder.SetInsertPoint(return_);
+    builder.CreateRetVoid();
+    dispatch->eraseFromParent();
+    module.getOrInsertNamedMetadata("air.mesh")->addOperand(function_metadata);
+    return llvm::Error::success();
   }
 
   builder.CreateCondBr(

@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 92
+#define AIRCONV_VERSION 93
 
 #ifdef __cplusplus
 #include <string>
@@ -678,6 +678,11 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA {
   bool conservative;
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
+  /* passing a list of triangles through (pass_through): the vertex shader runs in a mesh function alone, with no
+     object stage, a mesh threadgroup of the warp's threads (SM50GeometryWarp) running its vertices and passing on its
+     triangles, those its cull distances cull left out. the draw binds what the object stage would read to the mesh
+     stage, and launches the warps as mesh threadgroups (SM50CompileGeometryPipelineVertex makes it) */
+  bool mesh_only;
 };
 
 struct SM50_SHADER_PSO_TESSELLATOR_DATA {

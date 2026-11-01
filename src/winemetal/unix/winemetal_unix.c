@@ -1060,13 +1060,18 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
 }
 
 /* a geometry draw's `warps` x `instances` object threadgroups, in Metal draws of at most `max` of them (0: one draw),
- * each told its first object threadgroup and instance (SM50_BINDING_INDEX_DRAW_ORIGIN) */
+ * each told its first object threadgroup and instance (SM50_BINDING_INDEX_DRAW_ORIGIN); or mesh threadgroups of a mesh
+ * function alone (`mesh_only`, WMTRenderCommandMullionMeshDraw), told theirs in the mesh stage */
 static void
-draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max) {
+draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max,
+                    bool mesh_only) {
   uint32_t origin[2] = {0, 0};
-  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(1, 1, 1);
+  MTLSize object = MTLSizeMake(mesh_only ? 1 : threads, 1, 1), mesh = MTLSizeMake(mesh_only ? threads : 1, 1, 1);
   if (!max || (uint64_t)warps * instances <= max) {
-    [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+    if (mesh_only)
+      [encoder setMeshBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+    else
+      [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
     [encoder drawMeshThreadgroups:MTLSizeMake(warps, instances, 1)
         threadsPerObjectThreadgroup:object
           threadsPerMeshThreadgroup:mesh];
@@ -1078,7 +1083,10 @@ draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_
     for (uint64_t warp = 0; warp < warps; warp += width) {
       origin[0] = warp;
       origin[1] = instance;
-      [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+      if (mesh_only)
+        [encoder setMeshBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
+      else
+        [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
       [encoder drawMeshThreadgroups:MTLSizeMake(MIN(width, warps - origin[0]), MIN(height, instances - origin[1]), 1)
           threadsPerObjectThreadgroup:object
             threadsPerMeshThreadgroup:mesh];
@@ -1110,6 +1118,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     enum WMTRenderCommandType type = next->type;
     if (!pipeline && ((type >= WMTRenderCommandDraw && type <= WMTRenderCommandDrawMeshThreadgroupsIndirect) ||
                       (type >= WMTRenderCommandMullionGeometryDraw && type <= WMTRenderCommandMullionGeometryDrawIndexedIndirect) ||
+         type == WMTRenderCommandMullionMeshDraw ||
                       (type >= WMTRenderCommandMullionTessellationMeshDraw &&
                        type <= WMTRenderCommandExecuteCommandsInBuffer) ||
                       type == WMTRenderCommandExecuteCommandsInBufferIndirect)) {
@@ -1334,7 +1343,14 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       struct wmtcmd_render_mullion_geometry_draw *body = (struct wmtcmd_render_mullion_geometry_draw *)next;
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
       draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
-                          body->max_object_threadgroups);
+                          body->max_object_threadgroups, false);
+      break;
+    }
+    case WMTRenderCommandMullionMeshDraw: {
+      struct wmtcmd_render_mullion_geometry_draw *body = (struct wmtcmd_render_mullion_geometry_draw *)next;
+      [encoder setMeshBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
+      draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
+                          body->max_object_threadgroups, true);
       break;
     }
     case WMTRenderCommandMullionGeometryDrawIndexed: {
@@ -1344,7 +1360,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                        atIndex:SM50_BINDING_INDEX_INDEX_BUFFER];
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
       draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
-                          body->max_object_threadgroups);
+                          body->max_object_threadgroups, false);
       break;
     }
     case WMTRenderCommandMullionGeometryDrawIndirect: {
@@ -2351,6 +2367,7 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   bool conservative;
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
+  bool mesh_only;
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA32 {
@@ -2477,6 +2494,7 @@ sm50_compilation_argument32_convert(
       data->conservative = src->conservative;
       data->flat_inputs = src->flat_inputs;
       data->noperspective_inputs = src->noperspective_inputs;
+      data->mesh_only = src->mesh_only;
       break;
     }
     case SM50_SHADER_MESH_SHADER: {
@@ -5405,13 +5423,14 @@ _MTL4CommandBuffer_present(void *obj) {
 
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
-    MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max
+    MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max, bool mesh_only
 ) {
   id<MTL4RenderCommandEncoder> encoder = (id<MTL4RenderCommandEncoder>)state->encoder;
   uint32_t origin[2] = {0, 0};
-  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(1, 1, 1);
+  MTLSize object = MTLSizeMake(mesh_only ? 1 : threads, 1, 1), mesh = MTLSizeMake(mesh_only ? threads : 1, 1, 1);
   if (!max || (uint64_t)warps * instances <= max) {
-    metal4_bytes(state, Metal4ObjectBinding, origin, sizeof(origin), SM50_BINDING_INDEX_DRAW_ORIGIN);
+    metal4_bytes(state, mesh_only ? Metal4MeshBinding : Metal4ObjectBinding, origin, sizeof(origin),
+                 SM50_BINDING_INDEX_DRAW_ORIGIN);
     [encoder drawMeshThreadgroups:MTLSizeMake(warps, instances, 1)
         threadsPerObjectThreadgroup:object
           threadsPerMeshThreadgroup:mesh];
@@ -5423,7 +5442,8 @@ API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
     for (uint64_t warp = 0; warp < warps; warp += width) {
       origin[0] = warp;
       origin[1] = instance;
-      metal4_bytes(state, Metal4ObjectBinding, origin, sizeof(origin), SM50_BINDING_INDEX_DRAW_ORIGIN);
+      metal4_bytes(state, mesh_only ? Metal4MeshBinding : Metal4ObjectBinding, origin, sizeof(origin),
+                   SM50_BINDING_INDEX_DRAW_ORIGIN);
       [encoder drawMeshThreadgroups:MTLSizeMake(MIN(width, warps - origin[0]), MIN(height, instances - origin[1]), 1)
           threadsPerObjectThreadgroup:object
             threadsPerMeshThreadgroup:mesh];
@@ -5455,6 +5475,7 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
     if (!pipeline &&
         ((type >= WMTRenderCommandDraw && type <= WMTRenderCommandDrawMeshThreadgroupsIndirect) ||
          (type >= WMTRenderCommandMullionGeometryDraw && type <= WMTRenderCommandMullionGeometryDrawIndexedIndirect) ||
+         type == WMTRenderCommandMullionMeshDraw ||
          (type >= WMTRenderCommandMullionTessellationMeshDraw && type <= WMTRenderCommandExecuteCommandsInBuffer) ||
          type == WMTRenderCommandExecuteCommandsInBufferIndirect)) {
       next = next->next.ptr;
@@ -5664,11 +5685,14 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
                        visibilityOptions:MTL4VisibilityOptionDevice];
       break;
     }
-    case WMTRenderCommandMullionGeometryDraw: {
+    case WMTRenderCommandMullionGeometryDraw:
+    case WMTRenderCommandMullionMeshDraw: {
       struct wmtcmd_render_mullion_geometry_draw *body = (struct wmtcmd_render_mullion_geometry_draw *)next;
-      metal4_offset(state, Metal4ObjectBinding, body->draw_arguments_offset, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
+      bool mesh_only = type == WMTRenderCommandMullionMeshDraw;
+      metal4_offset(state, mesh_only ? Metal4MeshBinding : Metal4ObjectBinding, body->draw_arguments_offset,
+                    SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       metal4_draw_geometry_parts(
-          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups
+          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups, mesh_only
       );
       break;
     }
@@ -5680,7 +5704,7 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
       );
       metal4_offset(state, Metal4ObjectBinding, body->draw_arguments_offset, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       metal4_draw_geometry_parts(
-          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups
+          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups, false
       );
       break;
     }

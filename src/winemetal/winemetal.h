@@ -1264,7 +1264,9 @@ enum WMTRenderCommandType : uint16_t {
   WMTRenderCommandDrawMeshThreadgroups,
   WMTRenderCommandDrawMeshThreadgroupsIndirect,
   WMTRenderCommandMemoryBarrier,
-  Unused0,
+  /* a geometry draw (wmtcmd_render_mullion_geometry_draw) of a pipeline whose mesh function runs alone: the warps are
+     mesh threadgroups, and what the object stage would read is bound to the mesh stage */
+  WMTRenderCommandMullionMeshDraw,
   Unused1,
   Unused2,
   WMTRenderCommandMullionGeometryDraw,

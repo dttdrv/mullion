@@ -433,8 +433,9 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
       auto &[next, type, strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat,
-             noperspective] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
-      hash(strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat, noperspective);
+             noperspective, mesh_only] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
+      hash(strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat, noperspective,
+           mesh_only);
       break;
     }
     case SM50_SHADER_GS_PASS_THROUGH: {
@@ -715,7 +716,8 @@ protected:
   WMT::Reference<WMT::RenderPipelineState>
   GeometryVariant(
       const std::shared_ptr<GeometryInputs> &inputs, sm50_shader_t shader_vs, sm50_shader_t shader_gs,
-      D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status
+      D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status,
+      bool mesh_only = false
   ) {
     status = E_FAIL;
     auto &in = *inputs;
@@ -724,6 +726,7 @@ protected:
     D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
     SM50_SHADER_STREAM_OUTPUT_DATA so;
     auto pso_gs = GeometryArguments(in, so, strip, counting, primitive, pass_through, false);
+    pso_gs.mesh_only = mesh_only;
     in.ia_layout.elements = in.elements.data();
     in.ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
     in.ia_layout.next = &pso_gs;
@@ -739,7 +742,8 @@ protected:
     );
     if (!vs_func)
       return variant;
-    auto gs_func = GeometryFunction(in, shader_vs, shader_gs, GS, pso_gs, status);
+    // a mesh function alone needs no other
+    auto gs_func = mesh_only ? vs_func : GeometryFunction(in, shader_vs, shader_gs, GS, pso_gs, status);
     if (!gs_func)
       return variant;
     // a pipeline statistics query's variant counts in the geometry shader as well
@@ -761,12 +765,12 @@ protected:
       };
     }
     auto info = in.info;
-    info.object_function = vs_func.handle;
+    info.object_function = mesh_only ? obj_handle_t{} : vs_func.handle;
     info.mesh_function = gs_func.handle;
     bool rasterized = (shader_gs || pass_through) && !counting && (!in.stream_output || so.rasterized_stream != ~0u);
     info.fragment_function = rasterized ? in.ps.handle : obj_handle_t{};
     info.rasterization_enabled = rasterized;
-    info.payload_memory_length = SM50_GEOMETRY_PAYLOAD_SIZE;
+    info.payload_memory_length = mesh_only ? 0 : SM50_GEOMETRY_PAYLOAD_SIZE;
     if (!(variant = CreatePipeline(info, err, std::move(statistics)))) {
       ERR("Failed to create geometry PSO of shaders ", name, ": ", err.description().getUTF8String());
       DumpShaders({VS, GS});
@@ -1300,6 +1304,9 @@ public:
                         (ref_vs.CullDistances || (stream_output && so_data.rasterized_stream == 0) || quad_lines ||
                          conservative);
     geometry_shader |= pass_through;
+    // a mesh stage that runs a shader of the pipeline's reads its root arguments; the vertex shader's primitives passed
+    // on alone read none (mesh_only below runs the vertex shader there too)
+    mesh_reads_root_arguments = mesh_shader || tessellation || pDesc->GS.pShaderBytecode;
     mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
@@ -1524,14 +1531,25 @@ public:
       if (!inputs)
         return FAIL(E_FAIL);
       // D3D12_PRIMITIVE_TOPOLOGY_TYPE's point, line and triangle are D3D10_SB_PRIMITIVE's
-      auto variant = [&](bool strip, bool counting = false) {
+      auto variant = [&](bool strip, bool counting = false, bool mesh_only = false) {
         return GeometryVariant(
-            inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr
+            inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr,
+            mesh_only
         );
       };
       bool strips = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
                               : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
-      if (!patches && (!(pso = variant(false)) || (strips && !(pso_strip = variant(true)))))
+      // lists of triangles a vertex shader's cull distances pass through: a mesh function alone runs the vertex shader
+      // and passes them on, with no object stage before it, which costs about as much as the triangles themselves
+      // (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only). strips keep the object stage, as do stream output,
+      // conservative rasterization, quadrilateral lines and geometry shaders. MULLION_D3D12_CULL_MESH_ONLY=0 keeps it
+      // everywhere
+      static const bool mesh_only_lists = env::getEnvVar("MULLION_D3D12_CULL_MESH_ONLY") != "0";
+      mesh_only = mesh_only_lists && pass_through && !sm50_shader_t(shader_gs) && ref_vs.CullDistances &&
+                  pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
+                  !conservative && !quad_lines;
+      mesh_reads_root_arguments |= mesh_only;
+      if (!patches && (!(pso = variant(false, false, mesh_only)) || (strips && !(pso_strip = variant(true)))))
         return hr;
       if (!patches && stream_output &&
           (!(so_count = variant(false, true)) || (strips && !(so_count_strip = variant(true, true)))))

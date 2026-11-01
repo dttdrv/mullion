@@ -1,0 +1,14 @@
+# a pipeline whose mesh function runs the vertex shader counts as any other geometry pipeline, which leaves the vertex buffers unbound in its mesh stage after a geometry shader's draw
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2719,7 +2719,7 @@ public:
+     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
+       bool adjacency = p->adjacency && Adjacency(topology_);
+       return (p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) |
+-             p->mesh_reads_root_arguments << 1 | p->mesh_only << 2;
++             p->mesh_reads_root_arguments << 1;
+     };
+     if (!pso_graphics_ || stages(pso_graphics_.ptr()) != stages(graphics_pso))
+       dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature, DirtyState::VertexBuffer);

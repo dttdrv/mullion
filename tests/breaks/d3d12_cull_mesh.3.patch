@@ -1,0 +1,14 @@
+# the mesh stage culls a triangle whose first two vertices are behind a distance
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2675,7 +2675,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     );
+     for (auto &distance : pShaderInternal->cull_distance_scalars) {
+       pvalue behind = builder.getTrue();
+-      for (uint32_t k = 0; k < 3; k++)
++      for (uint32_t k = 0; k < 2; k++)
+         behind = builder.CreateAnd(
+             behind, builder.CreateFCmpULT(real(component(corner(k), distance.reg, distance.component)), air.getFloat(0))
+         );
