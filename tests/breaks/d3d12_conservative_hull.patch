@@ -1,0 +1,14 @@
+# the hull grows the polygon by a 64th of a pixel less than half: squares it overlaps by less are left out
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 1bca39e..6f0b97c 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -252,7 +252,7 @@ conservative_triangle(
+     // the square's quadrants once, so the polygon's n corners and the square's 4 make n + 4 points, some repeated: a
+     // corner repeated, or an edge along an axis, adds a point of its own again. a segment's two ends turn half a
+     // turn each, and a point all of it at its first corner
+-    const double half = 0.5 + 1.0 / 256;
++    const double half = 0.5 - 1.0 / 64;
+     const uint32_t n = SM50_CONSERVATIVE_CORNERS;
+     auto positive = builder.CreateFCmpOGE(polygon_area, f(0));
+     std::array<pvalue, 2> corner[n];

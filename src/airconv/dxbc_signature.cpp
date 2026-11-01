@@ -469,6 +469,7 @@ void handle_signature_ps(
     }
     case D3D11_SB_OPERAND_TYPE_INNER_COVERAGE:
       // the conservative rasterizer's pixel test has it (conservative_overlap)
+      sm50_shader->shader_info.use_inner_coverage = true;
       break;
     default:
       // unimplemented vertex input: the declaration is ignored

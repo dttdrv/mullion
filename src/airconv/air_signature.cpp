@@ -829,6 +829,14 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("mtl_threads_per_simdgroup");
           return msl_uint.get_llvm_type(context);
         },
+        [&](const InputThreadsPerThreadgroup &) {
+          metadata_field.string("air.threads_per_threadgroup")
+            ->string("air.arg_type_name")
+            ->string("uint3")
+            ->string("air.arg_name")
+            ->string("mtl_threads_per_threadgroup");
+          return msl_uint3.get_llvm_type(context);
+        },
         [&](const InputThreadgroupsPerGrid &) {
           metadata_field.string("air.threadgroups_per_grid")
             ->string("air.arg_type_name")

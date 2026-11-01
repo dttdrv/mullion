@@ -1,0 +1,14 @@
+# the conservative viewports are bound again only for another pipeline, not another viewport
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 2963c00..1166a7d 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1202,7 +1202,7 @@ public:
+     }
+ 
+     // the conservative rasterizer's viewports and state, bound again when they or the pipeline change
+-    bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState) || dirty_state_.test(DirtyState::Viewport);
++    bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState);
+     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
+       // a pipeline for a topology with adjacency is made here, and may fail
+       auto pipeline = Pipeline();

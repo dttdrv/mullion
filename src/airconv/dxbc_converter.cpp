@@ -789,6 +789,9 @@ llvm::Error convert_dxbc_pixel_shader(
   uint32_t conservative_position = ~0u, conservative_window[SM50_CONSERVATIVE_VARYINGS],
            conservative_rcp_w[SM50_CONSERVATIVE_RCP_W], conservative_coverage = ~0u, conservative_sample = ~0u;
   std::vector<std::pair<uint32_t, uint32_t>> conservative_over_w; // an input, and where it is interpolated
+  // a hull covers just the pixels the primitive touches: the shader tests them only for SV_InnerCoverage
+  bool conservative_hull = pso_data && pso_data->conservative && pso_data->conservative_hull;
+  bool conservative_test = pso_data && pso_data->conservative && (!conservative_hull || shader_info->use_inner_coverage);
   if (pso_data && pso_data->conservative) {
     auto &inputs = func_signature.Inputs();
     for (uint32_t i = 0; i < inputs.size(); i++) {
@@ -830,7 +833,7 @@ llvm::Error convert_dxbc_pixel_shader(
         });
     conservative_position =
         func_signature.DefineInput(air::InputPosition{.interpolation = air::Interpolation::center_no_perspective});
-    for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++)
+    for (uint32_t i = 0; conservative_test && i < SM50_CONSERVATIVE_VARYINGS; i++)
       conservative_window[i] = func_signature.DefineInput(air::InputFragmentStageIn{
           .user = "mullion_conservative" + std::to_string(i),
           .type = air::msl_float,
@@ -838,11 +841,17 @@ llvm::Error convert_dxbc_pixel_shader(
           .pull_mode = false
       });
     // the depth, clamped to the viewport's range (D3D11.3 17.10): Metal clamps what a function that may discard
-    // interpolates past it wrongly, and what one writes as it should (probe-depth-clamp.m)
+    // interpolates past it wrongly, and what one writes as it should (probe-depth-clamp.m). a hull's own pixels need
+    // no discard, so only a shader that discards or writes memory itself writes it
     bool writes_depth = std::ranges::any_of(func_signature.Outputs(), [](auto &output) {
       return std::holds_alternative<air::OutputDepth>(output);
     });
-    if (!writes_depth && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
+    // every discard and coverage the converter adds counts: the depth bounds, the pipeline's sample mask,
+    // alpha-to-coverage, clip distances tested per sample and coarse pixels
+    bool clamps_wrongly = !conservative_hull || shader_info->discards || !shader_info->uavMap.empty() ||
+                          pso_data->depth_bounds || pso_sample_mask != 0xffffffff || pso_alpha_to_coverage ||
+                          pso_data->clip_distances || coarse_shading;
+    if (!writes_depth && clamps_wrongly && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
       auto at = func_signature.DefineOutput(air::OutputDepth{air::DepthArgument::any});
       epilogue >> [=](pvalue value) {
         return make_irvalue([=](struct context ctx) {
@@ -940,7 +949,7 @@ llvm::Error convert_dxbc_pixel_shader(
   llvm::SmallPtrSet<llvm::Instruction *, 32> conservative_own;
   if (conservative_position != ~0u) {
     pvalue window[SM50_CONSERVATIVE_VARYINGS];
-    for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++)
+    for (uint32_t i = 0; conservative_test && i < SM50_CONSERVATIVE_VARYINGS; i++)
       window[i] = function->getArg(conservative_window[i]);
     auto position = function->getArg(conservative_position);
     // what reads the inputs gets them divided by the 1/w Metal interpolates with them, and the position's w over it
@@ -972,15 +981,19 @@ llvm::Error convert_dxbc_pixel_shader(
            ~conservative_sample ? builder.CreateShl(builder.getInt32(1), function->getArg(conservative_sample)) : all}
       );
     }
-    auto [culled, inside] = conservative_overlap(builder, air, position, window);
-    resource_map.inner_coverage = builder.CreateZExt(inside, builder.getInt32Ty());
-    auto discard = llvm::BasicBlock::Create(context, "conservative_discard", function, epilogue_bb);
-    auto live = llvm::BasicBlock::Create(context, "conservative_live", function, epilogue_bb);
-    builder.CreateCondBr(culled, discard, live);
-    builder.SetInsertPoint(discard);
-    air.CreateDiscard();
-    builder.CreateBr(live);
-    builder.SetInsertPoint(live);
+    if (conservative_test) {
+      auto [culled, inside] = conservative_overlap(builder, air, position, window);
+      resource_map.inner_coverage = builder.CreateZExt(inside, builder.getInt32Ty());
+      if (!conservative_hull) {
+        auto discard = llvm::BasicBlock::Create(context, "conservative_discard", function, epilogue_bb);
+        auto live = llvm::BasicBlock::Create(context, "conservative_live", function, epilogue_bb);
+        builder.CreateCondBr(culled, discard, live);
+        builder.SetInsertPoint(discard);
+        air.CreateDiscard();
+        builder.CreateBr(live);
+        builder.SetInsertPoint(live);
+      }
+    }
     for (auto &block : *function)
       for (auto &instruction : block)
         conservative_own.insert(&instruction);
@@ -2155,6 +2168,8 @@ static int SM50InitializeUncached(
       pRefl->PixelShader.DepthOutput = sm50_shader->ps_depth_output;
       pRefl->PixelShader.EarlyTests = sm50_shader->func_signature.EarlyFragmentTests();
       pRefl->PixelShader.Discards = sm50_shader->shader_info.discards;
+      pRefl->PixelShader.VertexValues = sm50_shader->shader_info.vertex_value_reg_mask != 0;
+      pRefl->PixelShader.InnerCoverage = sm50_shader->shader_info.use_inner_coverage;
       for (auto &out : sm50_shader->output_signature) {
         if (out.reg() >= std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats))
           continue;

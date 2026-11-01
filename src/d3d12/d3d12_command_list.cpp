@@ -1206,6 +1206,8 @@ public:
         CountVisibility();
     }
 
+    // the conservative rasterizer's viewports and state, bound again when they or the pipeline change
+    bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState) || dirty_state_.test(DirtyState::Viewport);
     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
       // a pipeline for a topology with adjacency is made here, and may fail
       auto pipeline = Pipeline();
@@ -1291,7 +1293,7 @@ public:
 
     // a conservative rasterizer's mesh stage grows triangles by pixels of the viewport each chooses, clipping depth
     // as the pipeline does and facing as it does
-    if (pso_graphics_->conservative) {
+    if (pso_graphics_->conservative && conservative_dirty) {
       auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(SM50_CONSERVATIVE_VIEWPORTS), 16);
       auto data = static_cast<SM50_CONSERVATIVE_VIEWPORTS *>(mapped);
       memset(data, 0, sizeof(*data));
@@ -1666,6 +1668,8 @@ public:
       cmd.instance_count = Args.InstanceCount;
       cmd.vertex_per_warp = vertex_per_warp;
       cmd.max_object_threadgroups = *parts;
+      // a conservative hull's points, a thread each
+      cmd.mesh_threads = pso_graphics_->conservative_hull ? SM50_CONSERVATIVE_HULL_POINTS : 1;
     };
     if (!pso_graphics_->stream_output)
       return draw();

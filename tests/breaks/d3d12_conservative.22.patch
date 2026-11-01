@@ -1,11 +1,13 @@
 # a conservative pixel shader writes no depth
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+index 8d33ffa..884a1a2 100644
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -555,7 +555,7 @@
-     bool writes_depth = std::ranges::any_of(func_signature.Outputs(), [](auto &output) {
-       return std::holds_alternative<air::OutputDepth>(output);
-     });
--    if (!writes_depth && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
+@@ -827,7 +827,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     bool clamps_wrongly = !conservative_hull || shader_info->use_discard || !shader_info->uavMap.empty() ||
+                           pso_data->depth_bounds || pso_sample_mask != 0xffffffff || pso_alpha_to_coverage ||
+                           pso_data->clip_distances || coarse_shading;
+-    if (!writes_depth && clamps_wrongly && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
 +    if (false) {
        auto at = func_signature.DefineOutput(air::OutputDepth{air::DepthArgument::any});
        epilogue >> [=](pvalue value) {

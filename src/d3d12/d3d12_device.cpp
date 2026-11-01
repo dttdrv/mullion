@@ -793,7 +793,9 @@ public:
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS3 *>(pFeatureData);
       out->CastingFullyTypedFormatSupported = TRUE;
-      // Metal 4's shading language reads barycentrics and inputs at each vertex (SM50_SHADER_METAL_400)
+      // Metal 4's shading language reads barycentrics and inputs at each vertex (SM50_SHADER_METAL_400), which
+      // GetAttributeAtVertex needs: winemetal draws a triangle to see that the inputs it reads are the vertices'
+      // (macOS 27.2 on an Apple M4 reads others, tests/native/vertex_value)
       out->BarycentricsSupported = GetMTLDevice().supportsFamily(WMTGPUFamilyMetal4) &&
                                    GetMTLDevice().supportsShaderBarycentricCoordinates();
       out->CopyQueueTimestampQueriesSupported = FALSE;

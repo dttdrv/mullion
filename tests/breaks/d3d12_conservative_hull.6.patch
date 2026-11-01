@@ -1,0 +1,14 @@
+# the hull always turns as a polygon of positive area does, a counterclockwise or degenerate one too
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 1bca39e..afaef13 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -312,7 +312,7 @@ conservative_triangle(
+     for (uint32_t v = 1; v < SM50_CONSERVATIVE_HULL_POINTS; v++)
+       for (uint32_t axis = 0; axis < 2; axis++)
+         points[v][axis] = builder.CreateSelect(
+-            clockwise, turned_points[v][axis], turned_points[SM50_CONSERVATIVE_HULL_POINTS - v][axis]
++            builder.getTrue(), turned_points[v][axis], turned_points[SM50_CONSERVATIVE_HULL_POINTS - v][axis]
+         );
+   } else {
+     // the triangle's edges moved out by the square, where its corners are before the eye

@@ -1,0 +1,14 @@
+# a pass-through pipeline and a geometry shader's count as the same stages: the root arguments are not bound again for the mesh stage
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index b64d5da..27826d1 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2708,7 +2708,7 @@ public:
+     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
+       bool adjacency = p->adjacency && Adjacency(topology_);
+       return int(p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) +
+-             int(p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) * p->mesh_reads_root_arguments;
++             0;
+     };
+     if (!pso_graphics_ || stages(pso_graphics_.ptr()) != stages(graphics_pso))
+       dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature, DirtyState::VertexBuffer);
