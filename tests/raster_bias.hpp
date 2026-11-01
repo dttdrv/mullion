@@ -164,7 +164,12 @@ inline std::vector<Case> cases() {
 }
 inline void compare(const Format &f, const Case &c, const char *rows, size_t pitch, unsigned pixel_bytes = 0) {
   auto covered = raster::expected(geometry(c));
-  const float offset = bias(f, c);
+  // a state's denormal "may or may not be flushed before use by the hardware" (D3D11.3 3.1): a denormal clamp clamps,
+  // or is zero and does not
+  auto flushed = c;
+  if (std::fpclassify(c.clamp) == FP_SUBNORMAL)
+    flushed.clamp = 0;
+  const float offsets[] = {bias(f, c), bias(f, flushed)};
   unsigned wrong = 0;
   const unsigned bytes = pixel_bytes ? pixel_bytes : (f.depth + f.stencil + f.unused) / CHAR_BIT;
   // three interpolator products, their sum, and the bias add bound the float32 rounding error.
@@ -172,35 +177,40 @@ inline void compare(const Format &f, const Case &c, const char *rows, size_t pit
   constexpr double conversion_tolerance = 0.6; // D3D11.3 3.2.3.6, integer-side ULP tolerance
   for (unsigned y = 0; y < raster::height; y++)
     for (unsigned x = 0; x < raster::width; x++) {
-      float depth =
-          covered[y * raster::width + x][0]
-              ? std::fmin(
-                    c.high,
-                    std::fmax(c.low, c.low + (c.z + c.dx * (x + 0.5f) + c.dy * (y + 0.5f)) * (c.high - c.low) + offset))
-              : 1;
       const char *at = rows + y * pitch + x * bytes;
-      bool equal;
-      double actual, want;
-      if (f.floating) {
-        float got;
-        memcpy(&got, at, sizeof(got));
-        actual = got;
-        want = depth;
-        float tolerance = c.dx == 0 && c.dy == 0 ? 0
-                                                 : interpolation_operations * std::numeric_limits<float>::epsilon() *
-                                                       std::max(depth, 0.5f);
-        equal = std::isfinite(got) && std::abs(got - depth) <= tolerance;
-      } else {
-        uint32_t got = 0;
-        memcpy(&got, at, f.depth / CHAR_BIT);
-        uint32_t max = uint32_t((uint64_t(1) << f.depth) - 1);
-        actual = got;
-        want = double(depth) * max;
-        double interpolation =
-            c.dx == 0 && c.dy == 0
-                ? 0
-                : interpolation_operations * std::numeric_limits<float>::epsilon() * std::max(depth, 0.5f) * max;
-        equal = std::abs(actual - want) <= conversion_tolerance + interpolation;
+      bool equal = false;
+      double actual = 0, want = 0;
+      for (size_t i = 0; i < std::size(offsets) && !equal; i++) {
+        float depth = covered[y * raster::width + x][0]
+                          ? std::fmin(c.high, std::fmax(c.low, c.low +
+                                                                   (c.z + c.dx * (x + 0.5f) + c.dy * (y + 0.5f)) *
+                                                                       (c.high - c.low) +
+                                                                   offsets[i]))
+                          : 1;
+        double expected;
+        if (f.floating) {
+          float got;
+          memcpy(&got, at, sizeof(got));
+          actual = got;
+          expected = depth;
+          float tolerance = c.dx == 0 && c.dy == 0 ? 0
+                                                   : interpolation_operations * std::numeric_limits<float>::epsilon() *
+                                                         std::max(depth, 0.5f);
+          equal = std::isfinite(got) && std::abs(got - depth) <= tolerance;
+        } else {
+          uint32_t got = 0;
+          memcpy(&got, at, f.depth / CHAR_BIT);
+          uint32_t max = uint32_t((uint64_t(1) << f.depth) - 1);
+          actual = got;
+          expected = double(depth) * max;
+          double interpolation =
+              c.dx == 0 && c.dy == 0
+                  ? 0
+                  : interpolation_operations * std::numeric_limits<float>::epsilon() * std::max(depth, 0.5f) * max;
+          equal = std::abs(actual - expected) <= conversion_tolerance + interpolation;
+        }
+        if (!i)
+          want = expected;
       }
       if (!equal && wrong++ < 4)
         expect(false, "depth %u,%u = %.10g, want %.10g", x, y, actual, want);
