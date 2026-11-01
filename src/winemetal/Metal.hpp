@@ -759,6 +759,10 @@ class FXSpatialScaler : public Object {
 public:
 };
 
+class FXDenoisedScaler : public Object {
+public:
+};
+
 class LogContainer : public Object {
 public:
   std::vector<Object>
@@ -911,6 +915,11 @@ public:
   void
   encodeSpatialScale(FXSpatialScaler scaler, Texture color, Texture output, Fence fence) {
     MTLCommandBuffer_encodeSpatialScale(handle, scaler, color, output, fence);
+  }
+
+  void
+  encodeDenoisedScale(FXDenoisedScaler scaler, const WMTFXDenoisedScaleArgs &args) {
+    MTLCommandBuffer_encodeDenoisedScale(handle, scaler, &args, false);
   }
 
   void
@@ -1073,6 +1082,21 @@ public:
   void
   presentDrawableAfterMinimumDuration(MetalDrawable drawable, double after) {
     MTL4CommandBuffer_present(handle, drawable, after);
+  }
+  void
+  encodeSpatialScale(FXSpatialScaler scaler, Texture color, Texture output, Fence fence) {
+    MTL4CommandBuffer_encodeSpatialScale(handle, scaler, color, output, fence);
+  }
+  void
+  encodeTemporalScale(
+      FXTemporalScaler scaler, Texture color, Texture output, Texture depth, Texture motion, Texture exposure,
+      Fence fence, const WMTFXTemporalScalerProps &props
+  ) {
+    MTL4CommandBuffer_encodeTemporalScale(handle, scaler, color, output, depth, motion, exposure, fence, &props);
+  }
+  void
+  encodeDenoisedScale(FXDenoisedScaler scaler, const WMTFXDenoisedScaleArgs &args) {
+    MTLCommandBuffer_encodeDenoisedScale(handle, scaler, &args, true);
   }
 };
 
@@ -1414,6 +1438,23 @@ public:
   Reference<FXSpatialScaler>
   newSpatialScaler(const WMTFXSpatialScalerInfo &info) {
     return Reference<FXSpatialScaler>(MTLDevice_newSpatialScaler(handle, &info));
+  }
+
+  // a scaler Metal 4 command buffers encode (MTL4FXSpatialScaler); empty where the device has none
+  Reference<FXSpatialScaler>
+  newSpatialScaler4(const WMTFXSpatialScalerInfo &info) {
+    return Reference<FXSpatialScaler>(MTLDevice_newSpatialScaler4(handle, &info));
+  }
+
+  Reference<FXTemporalScaler>
+  newTemporalScaler4(const WMTFXTemporalScalerInfo &info) {
+    return Reference<FXTemporalScaler>(MTLDevice_newTemporalScaler4(handle, &info));
+  }
+
+  // empty where the device has none (before macOS 26, or without MetalFX denoising)
+  Reference<FXDenoisedScaler>
+  newDenoisedScaler(const WMTFXDenoisedScalerInfo &info, bool metal4) {
+    return Reference<FXDenoisedScaler>(MTLDevice_newDenoisedScaler(handle, &info, metal4));
   }
 
   Reference<BinaryArchive>

@@ -4,6 +4,8 @@
 #include "log/log.hpp"
 #include "nvapi_lite_common.h"
 #include "util_string.hpp"
+#include "config/config.hpp"
+#include <algorithm>
 #include "winemetal.h"
 #include "wsi_monitor.hpp"
 #include <string>
@@ -35,23 +37,52 @@ NvAPI_Unload() {
   return NVAPI_OK;
 };
 
+// the driver reported: the display adapter's in Windows' device list (DriverVersion, which a Wine can be set
+// to report; NVIDIA's 617.14 is x.x.16.1714, the last five digits), so NVAPI and the device list agree,
+// else the one this NVAPI's headers come from (NVAPI_SDK_VERSION, 57218 = 572.18). The branch is r617_00. Games and
+// NVIDIA's libraries check both, and copy the branch as a string, so it ends with its NUL
+static NvU32
+DriverVersion() {
+  static NvU32 version = [] {
+    WCHAR text[64];
+    DWORD size = sizeof(text);
+    unsigned a, b, c, d;
+    if (RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0000",
+            L"DriverVersion", RRF_RT_REG_SZ, nullptr, text, &size
+        ) == ERROR_SUCCESS &&
+        swscanf(text, L"%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+      NvU32 nvidia = (c * 10000 + d) % 100000;
+      if (nvidia >= 30000)
+        return nvidia;
+    }
+    return NvU32(NVAPI_SDK_VERSION);
+  }();
+  return version;
+}
+
+static void
+DriverBranch(NvAPI_ShortString branch) {
+  auto text = std::format("r{}_00", DriverVersion() / 100);
+  memset(branch, 0, sizeof(NvAPI_ShortString));
+  memcpy(branch, text.c_str(), std::min(text.size(), sizeof(NvAPI_ShortString) - 1));
+}
+
 NVAPI_INTERFACE
 NvAPI_SYS_GetDriverAndBranchVersion(NvU32 *pDriverVersion,
                                     NvAPI_ShortString szBuildBranchString) {
-  std::string build_str = std::format("r{}_000", NVAPI_SDK_VERSION);
-
   if (!pDriverVersion || !szBuildBranchString)
     return NVAPI_INVALID_ARGUMENT;
 
-  memcpy(szBuildBranchString, build_str.c_str(), build_str.size());
-  *pDriverVersion = 99999;
+  DriverBranch(szBuildBranchString);
+  *pDriverVersion = DriverVersion();
 
   return NVAPI_OK;
 }
 
 NVAPI_INTERFACE
 NvAPI_GetDisplayDriverVersion(NvDisplayHandle hNvDisplay, NV_DISPLAY_DRIVER_VERSION *pVersion) {
-  std::string build_str = std::format("r{}_000", NVAPI_SDK_VERSION);
   std::string adapter_str = "NVIDIA GeForce RTX";
 
   if (!pVersion)
@@ -60,9 +91,10 @@ NvAPI_GetDisplayDriverVersion(NvDisplayHandle hNvDisplay, NV_DISPLAY_DRIVER_VERS
   if (pVersion->version != NV_DISPLAY_DRIVER_VERSION_VER)
     return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
 
-  pVersion->drvVersion = 99999;
+  pVersion->drvVersion = DriverVersion();
   pVersion->bldChangeListNum = 0;
-  memcpy(pVersion->szBuildBranchString, build_str.c_str(), build_str.size());
+  DriverBranch(pVersion->szBuildBranchString);
+  memset(pVersion->szAdapterString, 0, sizeof(pVersion->szAdapterString));
   memcpy(pVersion->szAdapterString, adapter_str.c_str(), adapter_str.size());
 
   return NVAPI_OK;
@@ -277,6 +309,22 @@ NvAPI_EnumPhysicalGPUs(NvPhysicalGpuHandle nvGPUHandle[NVAPI_MAX_PHYSICAL_GPUS],
   }
 
   return NVAPI_OK;
+}
+
+// a logical GPU is one physical one here, both named by the Metal device's registry ID
+NVAPI_INTERFACE
+NvAPI_GetLogicalGPUFromPhysicalGPU(NvPhysicalGpuHandle hPhysicalGPU, NvLogicalGpuHandle *pLogicalGPU) {
+  if (!pLogicalGPU)
+    return NVAPI_INVALID_ARGUMENT;
+
+  auto devices = WMT::CopyAllDevices();
+  for (unsigned i = 0; i < devices.count(); i++) {
+    if (uint64_t(hPhysicalGPU) == devices.object(i).registryID()) {
+      *pLogicalGPU = (NvLogicalGpuHandle)hPhysicalGPU;
+      return NVAPI_OK;
+    }
+  }
+  return NVAPI_EXPECTED_PHYSICAL_GPU_HANDLE;
 }
 
 NVAPI_INTERFACE
@@ -727,11 +775,28 @@ NvAPI_DRS_LoadSettings(NvDRSSessionHandle hSession) {
   return NVAPI_NOT_SUPPORTED;
 }
 
+// the adapter's LUID as DXGI reports it (dxgi_adapter.cpp): Wine's for the primary display where there is one Metal
+// device, else one made from the Metal registry ID. Streamline and games match NVIDIA's GPUs to DXGI adapters by it
+// (NvAPI_GPU_GetLogicalGpuInfo, NvAPI_GPU_GetAdapterIdFromPhysicalGpu), so DLSS is unsupported where they differ
 LUID
 GetAdapterLuid(WMT::Device device) {
-  /**
-  TODO: duplicated impl in `dxgi_adapter.cpp`
-  */
+  if (WMT::CopyAllDevices().count() == 1) {
+    auto gdi = GetModuleHandleA("gdi32.dll");
+    auto open_adapter = gdi ? reinterpret_cast<NTSTATUS(WINAPI *)(D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *)>(
+                                  GetProcAddress(gdi, "D3DKMTOpenAdapterFromGdiDisplayName"))
+                            : nullptr;
+    auto close_adapter = gdi ? reinterpret_cast<NTSTATUS(WINAPI *)(const D3DKMT_CLOSEADAPTER *)>(
+                                   GetProcAddress(gdi, "D3DKMTCloseAdapter"))
+                             : nullptr;
+    D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME open = {};
+    if (open_adapter && wsi::getDisplayName(wsi::getDefaultMonitor(), open.DeviceName) && !open_adapter(&open)) {
+      D3DKMT_CLOSEADAPTER close = {};
+      close.hAdapter = open.hAdapter;
+      if (close_adapter)
+        close_adapter(&close);
+      return open.AdapterLuid;
+    }
+  }
   return std::bit_cast<LUID>(__builtin_bswap64(device.registryID()));
 }
 
@@ -795,7 +860,17 @@ NvAPI_GPU_GetLogicalGpuInfo(NvLogicalGpuHandle hLogicalGpu, NV_LOGICAL_GPU_DATA 
   return NVAPI_OK;
 }
 
+static void *QueryInterfaceImpl(NvU32 id);
+
+// MULLION_LOG_LEVEL=debug lists every function a program asks for, and whether it got one
 extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
+  void *function = QueryInterfaceImpl(id);
+  if (Logger::logLevel() <= LogLevel::Debug)
+    Logger::debug(str::format("nvapi: QueryInterface ", std::hex, id, function ? "" : " (none)"));
+  return function;
+}
+
+static void *QueryInterfaceImpl(NvU32 id) {
   switch (id) {
   case 0x0150e828:
     return (void *)&NvAPI_Initialize;
@@ -841,6 +916,8 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
     return (void *)&NvAPI_EnumPhysicalGPUs;
   case 0x48b3ea59:
     return (void *)&NvAPI_EnumLogicalGPUs;
+  case 0xadd604d1:
+    return (void *)&NvAPI_GetLogicalGPUFromPhysicalGPU;
   case 0x34ef9506:
     return (void *)&NvAPI_GetPhysicalGPUsFromDisplay;
   case 0x351da224:
@@ -914,3 +991,17 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
 }
 
 }; // namespace mullion
+
+// NVAPI answers only programs Mullion shows an NVIDIA GPU to (dxgi.customVendorId = 10de): any other, Steam's GPU
+// queries among them, finds no NVAPI, as it would on another vendor's GPU
+extern "C" BOOL WINAPI
+DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  if (reason != DLL_PROCESS_ATTACH)
+    return TRUE;
+  auto vendor = mullion::Config::getInstance().getOption<std::string>("dxgi.customVendorId");
+  std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) { return std::tolower(c); });
+  if (vendor != "10de" && vendor != "0x10de")
+    return FALSE;
+  DisableThreadLibraryCalls(instance);
+  return TRUE;
+}

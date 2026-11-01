@@ -1,5 +1,6 @@
 nvngx_src = [
   'nvngx.cpp',
+  'nvngx_d3d12.cpp',
 ]
 
 nvngx_ld_args      = []

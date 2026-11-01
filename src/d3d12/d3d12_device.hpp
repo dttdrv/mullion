@@ -104,6 +104,8 @@ __CRT_UUID_DECL(ID3D12GraphicsCommandList9, 0x34ed2808, 0xffe6, 0x4c2b, 0xb1, 0x
 
 namespace mullion {
 
+class SpatialScaler;
+
 bool ExperimentalShaderModelsEnabled();
 HRESULT DeserializeLibraryRootSignature(const void *Library, SIZE_T Size, LPCWSTR Name, REFIID riid, void **Deserializer);
 
@@ -155,11 +157,12 @@ extern const std::string dump_frames;
 class MTLD3D12CommandQueue : public ID3D12CommandQueue {
 public:
   // `swapchain` owns the presenter and what it draws with: a present the queue holds back keeps it. `copies` take
-  // `previous` onto every slice of `backbuffer` first; `view` of it is shown
+  // `previous` onto every slice of `backbuffer` first; `view` of it is shown, upscaled into `upscaled` by `scaler`
+  // (MetalFX) where they are given
   virtual HRESULT Present(
       IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, TextureViewKey view,
       HANDLE hLantecyWaitable, double after, uint64_t id, uint64_t number, ID3D12Resource *previous = nullptr,
-      std::vector<PresentCopy> copies = {}
+      std::vector<PresentCopy> copies = {}, SpatialScaler *scaler = nullptr, WMT::Texture upscaled = {}
   ) = 0;
 };
 

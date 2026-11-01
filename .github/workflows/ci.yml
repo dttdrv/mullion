@@ -735,6 +735,28 @@ jobs:
       - name: Check ARM64X
         run: python3 .github/check-arm64x.py ./combined/${{ env.PACKAGE_TAG }}/aarch64-windows/*.dll
 
+      # NGX loads only a core whose signature chains to a trusted root: nvngx.dll is signed with Mullion's NGX key
+      # (src/nvngx/signing), whose certificate DXGI trusts in the prefix with MULLION_ENABLE_NVEXT=1. Without the
+      # MULLION_NGX_SIGNING_KEY secret (a fork's run) the archive has it unsigned, which NGX refuses
+      - name: Sign NGX
+        env:
+          MULLION_NGX_SIGNING_KEY: ${{ secrets.MULLION_NGX_SIGNING_KEY }}
+        run: |
+          if [ -z "$MULLION_NGX_SIGNING_KEY" ]; then
+            echo "::warning::MULLION_NGX_SIGNING_KEY is not set: nvngx.dll stays unsigned, and NGX will not load it"
+            exit 0
+          fi
+          brew install osslsigncode
+          key=$(mktemp)
+          printf '%s\n' "$MULLION_NGX_SIGNING_KEY" > "$key"
+          for dll in ./combined/${{ env.PACKAGE_TAG }}/*-windows/nvngx.dll; do
+            osslsigncode sign -certs src/nvngx/signing/mullion-ngx.pem -key "$key" -n "Mullion NGX" -h sha256 \
+              -in "$dll" -out "$dll.signed"
+            mv "$dll.signed" "$dll"
+            osslsigncode verify -CAfile src/nvngx/signing/mullion-ngx.pem -in "$dll"
+          done
+          rm -f "$key"
+
       - name: Add Installer and Licences
         run: |
           dir=./combined/${{ env.PACKAGE_TAG }}

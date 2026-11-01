@@ -548,8 +548,10 @@ public:
     if constexpr (EnableMetalFX) {
       Com<D3D11ResourceCommon> upscaled;
       D3D11_TEXTURE2D_DESC1 upscaled_desc_ = backbuffer_desc;
+      // the display's (or the window's) resolution; the factor where the layer has no size yet
       upscaled_desc_.Height *= scale_factor;
       upscaled_desc_.Width *= scale_factor;
+      presenter->upscaleOutputSize(desc.Width, desc.Height, upscaled_desc_.Width, upscaled_desc_.Height);
       upscaled_desc_.ArraySize = 1;
       HRESULT hr = mullion::CreateDeviceTexture2D(
           device_, &upscaled_desc_, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&upscaled)
@@ -560,8 +562,8 @@ public:
       WMTFXSpatialScalerInfo info;
       info.input_height = desc.Height;
       info.input_width = desc.Width;
-      info.output_height = desc.Height * scale_factor;
-      info.output_width = desc.Width * scale_factor;
+      info.output_height = upscaled_desc_.Height;
+      info.output_width = upscaled_desc_.Width;
       info.color_format = backbuffers[0]->texture()->pixelFormat();
       info.output_format = upscaled->texture()->pixelFormat();
       Rc<SpatialScaler> scaler = new SpatialScaler(device_->GetMTLDevice(), info);
@@ -637,10 +639,14 @@ public:
                               ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
                               : colorspace_,
                           LayerSupportEDR());
-    if (presenter->changeLayerProperties(
-            desc_.Format, target_color_space, settings_.target_width * scale_factor,
-            settings_.target_height * scale_factor, desc_.SampleDesc.Count
-        ))
+    double width = settings_.target_width * scale_factor, height = settings_.target_height * scale_factor;
+    if constexpr (EnableMetalFX) {
+      if (upscaled_backbuffer_) {
+        width = upscaled_backbuffer_->texture()->width();
+        height = upscaled_backbuffer_->texture()->height();
+      }
+    }
+    if (presenter->changeLayerProperties(desc_.Format, target_color_space, width, height, desc_.SampleDesc.Count))
       device_context_->WaitUntilGPUIdle();
   };
 

@@ -1808,6 +1808,125 @@ _MTLCommandBuffer_encodeSpatialScale(void *obj) {
 }
 
 static NTSTATUS
+CREATES(_MTLDevice_newSpatialScaler4)(void *obj) {
+  struct unixcall_mtldevice_newfxspatialscaler *params = obj;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (@available(macOS 26.0, *)) {
+    id<MTLDevice> device = (id<MTLDevice>)params->device;
+    const struct WMTFXSpatialScalerInfo *info = params->info.ptr;
+    MTL4CompilerDescriptor *compiler_desc;
+    id<MTL4Compiler> compiler;
+    MTLFXSpatialScalerDescriptor *desc;
+
+    if (![MTLFXSpatialScalerDescriptor supportsMetal4FX:device])
+      return STATUS_SUCCESS;
+    compiler_desc = [[MTL4CompilerDescriptor alloc] init];
+    compiler = [device newCompilerWithDescriptor:compiler_desc error:nil];
+    [compiler_desc release];
+    if (!compiler)
+      return STATUS_SUCCESS;
+    desc = [[MTLFXSpatialScalerDescriptor alloc] init];
+    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
+    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
+    desc.inputWidth = info->input_width;
+    desc.inputHeight = info->input_height;
+    desc.outputWidth = info->output_width;
+    desc.outputHeight = info->output_height;
+    params->ret = (obj_handle_t)[desc newSpatialScalerWithDevice:device compiler:compiler];
+    [desc release];
+    [compiler release];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS _MTL4CommandBuffer_encodeSpatialScale(void *obj);
+static NTSTATUS _MTL4CommandBuffer_encodeTemporalScale(void *obj);
+static NTSTATUS _MTLCommandBuffer_encodeDenoisedScale(void *obj);
+
+static id<MTL4Compiler>
+API_AVAILABLE(macos(26.0)) metalfx_compiler(id<MTLDevice> device) {
+  MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor alloc] init];
+  id<MTL4Compiler> compiler = [device newCompilerWithDescriptor:desc error:nil];
+  [desc release];
+  return compiler;
+}
+
+static NTSTATUS
+CREATES(_MTLDevice_newTemporalScaler4)(void *obj) {
+  struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (@available(macOS 26.0, *)) {
+    id<MTLDevice> device = (id<MTLDevice>)params->device;
+    const struct WMTFXTemporalScalerInfo *info = params->info.ptr;
+    MTLFXTemporalScalerDescriptor *desc;
+    id<MTL4Compiler> compiler;
+
+    if (![MTLFXTemporalScalerDescriptor supportsMetal4FX:device] || !(compiler = metalfx_compiler(device)))
+      return STATUS_SUCCESS;
+    desc = [[MTLFXTemporalScalerDescriptor alloc] init];
+    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
+    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
+    desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
+    desc.motionTextureFormat = to_metal_pixel_format(info->motion_format);
+    desc.inputWidth = info->input_width;
+    desc.inputHeight = info->input_height;
+    desc.outputWidth = info->output_width;
+    desc.outputHeight = info->output_height;
+    desc.inputContentMaxScale = info->input_content_max_scale;
+    desc.inputContentMinScale = info->input_content_min_scale;
+    desc.inputContentPropertiesEnabled = info->input_content_properties_enabled;
+    desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
+    desc.autoExposureEnabled = info->auto_exposure;
+    params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
+    [desc release];
+    [compiler release];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+CREATES(_MTLDevice_newDenoisedScaler)(void *obj) {
+  struct unixcall_mtldevice_newfxdenoisedscaler *params = obj;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (@available(macOS 26.0, *)) {
+    id<MTLDevice> device = (id<MTLDevice>)params->device;
+    const struct WMTFXDenoisedScalerInfo *info = params->info.ptr;
+    MTLFXTemporalDenoisedScalerDescriptor *desc;
+    id<MTL4Compiler> compiler = nil;
+
+    if (params->metal4 ? ![MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
+                       : ![MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device])
+      return STATUS_SUCCESS;
+    if (params->metal4 && !(compiler = metalfx_compiler(device)))
+      return STATUS_SUCCESS;
+    desc = [[MTLFXTemporalDenoisedScalerDescriptor alloc] init];
+    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
+    desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
+    desc.motionTextureFormat = to_metal_pixel_format(info->motion_format);
+    desc.diffuseAlbedoTextureFormat = to_metal_pixel_format(info->diffuse_albedo_format);
+    desc.specularAlbedoTextureFormat = to_metal_pixel_format(info->specular_albedo_format);
+    desc.normalTextureFormat = to_metal_pixel_format(info->normal_format);
+    desc.roughnessTextureFormat = to_metal_pixel_format(info->roughness_format);
+    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
+    if (info->specular_hit_distance_format != WMTPixelFormatInvalid) {
+      desc.specularHitDistanceTextureEnabled = YES;
+      desc.specularHitDistanceTextureFormat = to_metal_pixel_format(info->specular_hit_distance_format);
+    }
+    desc.inputWidth = info->input_width;
+    desc.inputHeight = info->input_height;
+    desc.outputWidth = info->output_width;
+    desc.outputHeight = info->output_height;
+    desc.autoExposureEnabled = info->auto_exposure;
+    desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
+    params->ret = params->metal4 ? (obj_handle_t)[desc newTemporalDenoisedScalerWithDevice:device compiler:compiler]
+                                 : (obj_handle_t)[desc newTemporalDenoisedScalerWithDevice:device];
+    [desc release];
+    [compiler release];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _NSString_string(void *obj) {
   struct unixcall_nsstring_string *params = obj;
   NSString *str = [NSString stringWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
@@ -1944,6 +2063,8 @@ _MetalLayer_getProps(void *obj) {
   props->drawable_height = layer.drawableSize.height;
   props->drawable_width = layer.drawableSize.width;
   props->pixel_format = layer.pixelFormat;
+  props->bounds_width = layer.bounds.size.width;
+  props->bounds_height = layer.bounds.size.height;
   return STATUS_SUCCESS;
 }
 
@@ -5405,6 +5526,114 @@ _MTL4CommandBuffer_present(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* the scaler encodes its own passes: the buffer's compute encoder ends first (updating the buffer's fence), and the
+ * textures are made resident in the buffer's residency set */
+static NTSTATUS
+_MTL4CommandBuffer_encodeSpatialScale(void *obj) {
+  struct unixcall_mtlcommandbuffer_spatial_scale *params = obj;
+  if (@available(macOS 26.0, *)) {
+    MullionMetal4Buffer *state = (MullionMetal4Buffer *)params->cmdbuf;
+    id<MTL4FXSpatialScaler> scaler = (id<MTL4FXSpatialScaler>)params->scaler;
+
+    [state closeCompute];
+    metal4_resident(state, (id<MTLTexture>)params->color);
+    metal4_resident(state, (id<MTLTexture>)params->output);
+    scaler.colorTexture = (id<MTLTexture>)params->color;
+    scaler.outputTexture = (id<MTLTexture>)params->output;
+    scaler.fence = (id<MTLFence>)params->fence;
+    [scaler encodeToCommandBuffer:state->buffer];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTL4CommandBuffer_encodeTemporalScale(void *obj) {
+  struct unixcall_mtlcommandbuffer_temporal_scale *params = obj;
+  if (@available(macOS 26.0, *)) {
+    MullionMetal4Buffer *state = (MullionMetal4Buffer *)params->cmdbuf;
+    id<MTL4FXTemporalScaler> scaler = (id<MTL4FXTemporalScaler>)params->scaler;
+    const struct WMTFXTemporalScalerProps *props = params->props.ptr;
+
+    [state closeCompute];
+    metal4_resident(state, (id<MTLTexture>)params->color);
+    metal4_resident(state, (id<MTLTexture>)params->output);
+    metal4_resident(state, (id<MTLTexture>)params->depth);
+    metal4_resident(state, (id<MTLTexture>)params->motion);
+    metal4_resident(state, (id<MTLTexture>)params->exposure);
+    scaler.colorTexture = (id<MTLTexture>)params->color;
+    scaler.outputTexture = (id<MTLTexture>)params->output;
+    scaler.depthTexture = (id<MTLTexture>)params->depth;
+    scaler.motionTexture = (id<MTLTexture>)params->motion;
+    scaler.exposureTexture = (id<MTLTexture>)params->exposure;
+    scaler.fence = (id<MTLFence>)params->fence;
+    scaler.inputContentWidth = props->input_content_width;
+    scaler.inputContentHeight = props->input_content_height;
+    scaler.reset = props->reset;
+    scaler.depthReversed = props->depth_reversed;
+    scaler.motionVectorScaleX = props->motion_vector_scale_x;
+    scaler.motionVectorScaleY = props->motion_vector_scale_y;
+    scaler.jitterOffsetX = props->jitter_offset_x;
+    scaler.jitterOffsetY = props->jitter_offset_y;
+    scaler.preExposure = props->pre_exposure;
+    [scaler encodeToCommandBuffer:state->buffer];
+  }
+  return STATUS_SUCCESS;
+}
+
+/* both kinds of scaler share their properties (MTLFXTemporalDenoisedScalerBase) */
+#define SET_DENOISED_SCALER(scaler, a)                                                                                 \
+  do {                                                                                                                 \
+    simd_float4x4 world_to_view, view_to_clip;                                                                         \
+    memcpy(&world_to_view, (a)->world_to_view, sizeof(world_to_view));                                                 \
+    memcpy(&view_to_clip, (a)->view_to_clip, sizeof(view_to_clip));                                                    \
+    (scaler).colorTexture = (id<MTLTexture>)(a)->color;                                                                \
+    (scaler).depthTexture = (id<MTLTexture>)(a)->depth;                                                                \
+    (scaler).motionTexture = (id<MTLTexture>)(a)->motion;                                                              \
+    (scaler).diffuseAlbedoTexture = (id<MTLTexture>)(a)->diffuse_albedo;                                               \
+    (scaler).specularAlbedoTexture = (id<MTLTexture>)(a)->specular_albedo;                                             \
+    (scaler).normalTexture = (id<MTLTexture>)(a)->normal;                                                              \
+    (scaler).roughnessTexture = (id<MTLTexture>)(a)->roughness;                                                        \
+    (scaler).specularHitDistanceTexture = (id<MTLTexture>)(a)->specular_hit_distance;                                  \
+    (scaler).exposureTexture = (id<MTLTexture>)(a)->exposure;                                                          \
+    (scaler).outputTexture = (id<MTLTexture>)(a)->output;                                                              \
+    (scaler).fence = (id<MTLFence>)(a)->fence;                                                                         \
+    (scaler).preExposure = (a)->pre_exposure;                                                                          \
+    (scaler).jitterOffsetX = (a)->jitter_offset_x;                                                                     \
+    (scaler).jitterOffsetY = (a)->jitter_offset_y;                                                                     \
+    (scaler).motionVectorScaleX = (a)->motion_vector_scale_x;                                                          \
+    (scaler).motionVectorScaleY = (a)->motion_vector_scale_y;                                                          \
+    (scaler).shouldResetHistory = (a)->reset;                                                                          \
+    (scaler).depthReversed = (a)->depth_reversed;                                                                      \
+    (scaler).worldToViewMatrix = world_to_view;                                                                        \
+    (scaler).viewToClipMatrix = view_to_clip;                                                                          \
+  } while (0)
+
+static NTSTATUS
+_MTLCommandBuffer_encodeDenoisedScale(void *obj) {
+  struct unixcall_mtlcommandbuffer_denoised_scale *params = obj;
+  if (@available(macOS 26.0, *)) {
+    const struct WMTFXDenoisedScaleArgs *args = params->args.ptr;
+    if (params->metal4) {
+      MullionMetal4Buffer *state = (MullionMetal4Buffer *)params->cmdbuf;
+      id<MTL4FXTemporalDenoisedScaler> scaler = (id<MTL4FXTemporalDenoisedScaler>)params->scaler;
+      const obj_handle_t textures[] = {args->color,  args->depth,     args->motion, args->diffuse_albedo,
+                                       args->specular_albedo, args->normal, args->roughness,
+                                       args->specular_hit_distance, args->exposure, args->output};
+
+      [state closeCompute];
+      for (unsigned i = 0; i < sizeof(textures) / sizeof(textures[0]); i++)
+        metal4_resident(state, (id<MTLTexture>)textures[i]);
+      SET_DENOISED_SCALER(scaler, args);
+      [scaler encodeToCommandBuffer:state->buffer];
+    } else {
+      id<MTLFXTemporalDenoisedScaler> scaler = (id<MTLFXTemporalDenoisedScaler>)params->scaler;
+      SET_DENOISED_SCALER(scaler, args);
+      [scaler encodeToCommandBuffer:(id<MTLCommandBuffer>)params->cmdbuf];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
     MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max
@@ -6459,6 +6688,12 @@ const void *__wine_unix_call_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLDevice_newSpatialScaler4,
+    &_MTL4CommandBuffer_encodeSpatialScale,
+    &_MTLDevice_newTemporalScaler4,
+    &_MTL4CommandBuffer_encodeTemporalScale,
+    &_MTLDevice_newDenoisedScaler,
+    &_MTLCommandBuffer_encodeDenoisedScale,
 };
 
 #ifndef MULLION_NATIVE
@@ -6660,6 +6895,12 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLDevice_newSpatialScaler4,
+    &_MTL4CommandBuffer_encodeSpatialScale,
+    &_MTLDevice_newTemporalScaler4,
+    &_MTL4CommandBuffer_encodeTemporalScale,
+    &_MTLDevice_newDenoisedScaler,
+    &_MTLCommandBuffer_encodeDenoisedScale,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

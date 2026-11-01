@@ -24,6 +24,7 @@
 #include "d3d12_acceleration_structure.hpp"
 #include "d3d12_command_allocator.hpp"
 #include "d3d12_device.hpp"
+#include "mullion_scaler.hpp"
 #include "d3d12_pageable.hpp"
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
@@ -1555,6 +1556,34 @@ public:
             encoder.endEncoding();
           break;
         }
+        case EncoderType::Upscale: {
+          // MetalFX after all the work before it, and the work after it after MetalFX: an encoder that waits for
+          // the queue's fences updates the scaler's, which MetalFX waits for and updates, and one that waits for that
+          // updates the queue's (as the D3D11 context's scaler boundaries)
+          auto data = static_cast<UpscaleEncoderData *>(current);
+          WMT::Fence scaler_fence = data->temporal ? data->temporal->fence() : data->denoised->fence();
+          if (diag::trace_encoders)
+            scope.inflight->physical[WMTMetal4Blit] += 2;
+          auto begin = cmdbuf.blitCommandEncoder();
+          WaitAll([&](WMT::Fence fence) { begin.waitForFence(fence); });
+          begin.updateFence(scaler_fence);
+          begin.endEncoding();
+          if (data->temporal) {
+            cmdbuf.encodeTemporalScale(
+                data->temporal->scaler(), data->color, data->output, data->depth, data->motion, data->exposure,
+                scaler_fence, data->props
+            );
+          } else {
+            auto args = data->denoise;
+            args.fence = scaler_fence.handle;
+            cmdbuf.encodeDenoisedScale(data->denoised->scaler(), args);
+          }
+          auto end = cmdbuf.blitCommandEncoder();
+          end.waitForFence(scaler_fence);
+          end.updateFence(WMT::Fence(fence_));
+          end.endEncoding();
+          break;
+        }
         case EncoderType::ResolveTimestamps: {
           auto data = static_cast<ResolveTimestampsData *>(current);
           if (data->readback) {
@@ -2270,7 +2299,7 @@ public:
   Present(
       IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, TextureViewKey view,
       HANDLE hLantecyWaitable, double after, uint64_t id, uint64_t number, ID3D12Resource *previous,
-      std::vector<PresentCopy> copies
+      std::vector<PresentCopy> copies, SpatialScaler *scaler, WMT::Texture upscaled
   ) override {
     if (device_->NamesPasses()) {
       std::chrono::steady_clock::time_point unset;
@@ -2279,11 +2308,17 @@ public:
     auto state = presenter->synchronizeLayerProperties();
     if (Holding() &&
         Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), view, hLantecyWaitable, after,
-              id, number, state, previous = Com(previous), copies] {
-          Commit(presenter, backbuffer.ptr(), view, state, hLantecyWaitable, after, id, number, previous.ptr(), copies);
+              id, number, state, previous = Com(previous), copies, scaler = Rc(scaler),
+              upscaled = WMT::Reference<WMT::Texture>(upscaled)] {
+          Commit(
+              presenter, backbuffer.ptr(), view, state, hLantecyWaitable, after, id, number, previous.ptr(), copies,
+              scaler.ptr(), upscaled
+          );
         }))
       return S_OK;
-    return Commit(presenter, backbuffer, view, state, hLantecyWaitable, after, id, number, previous, copies);
+    return Commit(
+        presenter, backbuffer, view, state, hLantecyWaitable, after, id, number, previous, copies, scaler, upscaled
+    );
   }
 
   void
@@ -2369,7 +2404,7 @@ public:
   Commit(
       Presenter *presenter, ID3D12Resource *backbuffer, TextureViewKey shown, const Presenter::PresentState &state,
       HANDLE hLantecyWaitable, double after, uint64_t id, uint64_t number, ID3D12Resource *previous,
-      const std::vector<PresentCopy> &copies
+      const std::vector<PresentCopy> &copies, SpatialScaler *scaler, WMT::Texture upscaled
   ) {
     Trace("Present");
     FLIGHT_HEAVY(Present, "queue %p: Present %llu", this, number);
@@ -2407,11 +2442,25 @@ public:
       }
     }
 
+    // MetalFX: the shown view, upscaled after all the work before it, and presented from `upscaled` once the scaler
+    // is done (as the D3D11 swap chain does)
+    WMT::Texture source = g->texture->view(shown).texture;
+    if (scaler && upscaled) {
+      auto begin = cmdbuf.blitCommandEncoder();
+      WaitAll([&](WMT::Fence fence) { begin.waitForFence(fence); });
+      begin.updateFence(scaler->fence());
+      begin.endEncoding();
+      cmdbuf.encodeSpatialScale(scaler->scaler(), source, upscaled, scaler->fence());
+      source = upscaled;
+    }
+
     unsigned present_encoders = 0;
     auto drawable = presenter->encodeCommands(
-        MetalCommandBuffer(cmdbuf), g->texture->view(shown).texture, state,
+        MetalCommandBuffer(cmdbuf), source, state,
         [&](auto encoder) {
           WaitAll([&](WMT::Fence fence) { encoder.waitForFence(fence, WMTRenderStageFragment); });
+          if (scaler && upscaled)
+            encoder.waitForFence(scaler->fence(), WMTRenderStageFragment);
         },
         [&](auto encoder) { encoder.updateFence(fence_, WMTRenderStageFragment); }, inflight_cmdbuf_seq_.load(),
         diag::trace_encoders ? &present_encoders : nullptr

@@ -1847,6 +1847,74 @@ WINEMETAL_API void MTLCommandBuffer_encodeSpatialScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t fence
 );
 
+/* MetalFX temporal upscaling for Metal 4 command buffers (MTL4FXTemporalScaler): 0 where the device has none */
+WINEMETAL_API obj_handle_t MTLDevice_newTemporalScaler4(obj_handle_t device, const struct WMTFXTemporalScalerInfo *info);
+
+WINEMETAL_API void MTL4CommandBuffer_encodeTemporalScale(
+    obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+);
+
+/* MetalFX temporal denoised upscaling (MTLFXTemporalDenoisedScaler, macOS 26): a ray-traced frame's noisy color,
+ * with its G-buffer, upscaled and denoised. A format of WMTPixelFormatInvalid leaves an optional input out */
+struct WMTFXDenoisedScalerInfo {
+  enum WMTPixelFormat color_format;
+  enum WMTPixelFormat depth_format;
+  enum WMTPixelFormat motion_format;
+  enum WMTPixelFormat diffuse_albedo_format;
+  enum WMTPixelFormat specular_albedo_format;
+  enum WMTPixelFormat normal_format;
+  enum WMTPixelFormat roughness_format;
+  enum WMTPixelFormat specular_hit_distance_format; /* optional */
+  enum WMTPixelFormat output_format;
+  uint32_t input_width;
+  uint32_t input_height;
+  uint32_t output_width;
+  uint32_t output_height;
+  bool auto_exposure;
+  bool requires_synchronous_initialization;
+};
+
+/* 0 where the device has none; metal4: a scaler Metal 4 command buffers encode */
+WINEMETAL_API obj_handle_t
+MTLDevice_newDenoisedScaler(obj_handle_t device, const struct WMTFXDenoisedScalerInfo *info, bool metal4);
+
+struct WMTFXDenoisedScaleArgs {
+  obj_handle_t color;
+  obj_handle_t depth;
+  obj_handle_t motion;
+  obj_handle_t diffuse_albedo;
+  obj_handle_t specular_albedo;
+  obj_handle_t normal;
+  obj_handle_t roughness;
+  obj_handle_t specular_hit_distance; /* optional */
+  obj_handle_t exposure;              /* optional */
+  obj_handle_t output;
+  obj_handle_t fence;
+  float pre_exposure;
+  float jitter_offset_x;
+  float jitter_offset_y;
+  float motion_vector_scale_x;
+  float motion_vector_scale_y;
+  bool reset;
+  bool depth_reversed;
+  /* column-major, which a D3D row-major matrix of row vectors is as it is in memory */
+  float world_to_view[16];
+  float view_to_clip[16];
+};
+
+WINEMETAL_API void
+MTLCommandBuffer_encodeDenoisedScale(
+    obj_handle_t cmdbuf, obj_handle_t scaler, const struct WMTFXDenoisedScaleArgs *args, bool metal4
+);
+
+/* MetalFX for Metal 4 command buffers (MTL4FXSpatialScaler): 0 where the device has none */
+WINEMETAL_API obj_handle_t MTLDevice_newSpatialScaler4(obj_handle_t device, const struct WMTFXSpatialScalerInfo *info);
+
+WINEMETAL_API void MTL4CommandBuffer_encodeSpatialScale(
+    obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t fence
+);
+
 WINEMETAL_API obj_handle_t NSString_string(const char *data, enum WMTStringEncoding encoding);
 
 WINEMETAL_API obj_handle_t NSString_alloc_init(const char *data, enum WMTStringEncoding encoding);
@@ -1876,6 +1944,9 @@ struct WMTLayerProps {
   bool display_sync_enabled;
   bool framebuffer_only;
   enum WMTPixelFormat pixel_format;
+  // the layer's size on screen, in its points (MetalLayer_getProps only; setProps leaves it)
+  double bounds_width;
+  double bounds_height;
 };
 
 WINEMETAL_API void MetalLayer_setProps(obj_handle_t layer, const struct WMTLayerProps *props);
@@ -2492,7 +2563,9 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixMetal4Commands, WMTUnixMetal4EndEncoder, WMTUnixMetal4Commit, WMTUnixMetal4Feedback, WMTUnixMetal4Wait,
        WMTUnixMetal4CounterHeap, WMTUnixMetal4Frequency, WMTUnixMetal4Present, WMTUnixMetal4WaitEvent,
        WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixMetal4WaitGPU,
-       WMTUnixBootstrapKeep, WMTUnixCallCount };
+       WMTUnixBootstrapKeep, WMTUnixDeviceNewSpatialScaler4, WMTUnixMetal4SpatialScale, WMTUnixDeviceNewTemporalScaler4,
+       WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler, WMTUnixCommandBufferDenoisedScale,
+       WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
