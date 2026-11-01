@@ -1,0 +1,13 @@
+# the converter reflects a shader's 64-bit atomics as taking locks also where they all split into 32-bit atomics
+# family native
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1202,7 +1202,7 @@ read_dxil(
+           atomics64.push_back(call);
+           shader->device_atomics64_native &= native_extreme(call);
+         }
+-  shader->device_atomics64 = !atomics64.empty() && !buffer_split(atomics64, info);
++  shader->device_atomics64 = !atomics64.empty();
+   // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory
+   auto coherent = [&](Value *handle) {
+     auto made = dyn_cast<CallInst>(handle);

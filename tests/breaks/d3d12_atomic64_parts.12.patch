@@ -1,0 +1,12 @@
+# the converter reflects a shader's 64-bit atomics as all native minimums and maximums, whatever they are
+# family native
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1200,7 +1200,6 @@ read_dxil(
+         else if (auto call = dyn_cast<CallInst>(&I); call && is_dx_op(call) && call->getType()->isIntegerTy(64) &&
+                  (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange)) {
+           atomics64.push_back(call);
+-          shader->device_atomics64_native &= native_extreme(call);
+         }
+   shader->device_atomics64 = !atomics64.empty() && !buffer_split(atomics64, info);
+   // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory

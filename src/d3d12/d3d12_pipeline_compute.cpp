@@ -59,8 +59,10 @@ public:
       return hr;
 
     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
-    groups_work_together = ref_cs.GroupsWorkTogether ||
-                           (ref_cs.DeviceAtomics64 && (device_->GetShaderFlags() & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64));
+    groups_work_together =
+        ref_cs.GroupsWorkTogether ||
+        (ref_cs.DeviceAtomics64 &&
+         (!ref_cs.DeviceAtomics64Native || (device_->GetShaderFlags() & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64)));
     if (groups_work_together)
       Logger::info(str::format("compute pipeline ", name, ": its threadgroups work together, it is dispatched in parts"));
 

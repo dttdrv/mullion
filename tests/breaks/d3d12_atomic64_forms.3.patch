@@ -1,12 +1,12 @@
 # uses unsigned comparison for signed atomic minimum
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -1872,7 +1872,7 @@
-   // DxilConstants.h AtomicBinOpCode order
-   auto atomic_op = [](uint32_t code) {
-     constexpr AtomicRMWInst::BinOp ops[] = {
--        AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::Min,
-+        AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::UMin,
-         AtomicRMWInst::Max, AtomicRMWInst::UMin, AtomicRMWInst::UMax, AtomicRMWInst::Xchg,
-     };
-     return ops[code];
+@@ -328,7 +328,7 @@ opcode(const CallInst *call) {
+ AtomicRMWInst::BinOp
+ atomic_op(uint32_t code) {
+   constexpr AtomicRMWInst::BinOp ops[] = {
+-      AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::Min,
++      AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::UMin,
+       AtomicRMWInst::Max, AtomicRMWInst::UMin, AtomicRMWInst::UMax, AtomicRMWInst::Xchg,
+   };
+   return ops[code];

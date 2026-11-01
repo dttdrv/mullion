@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 95
+#define AIRCONV_VERSION 96
 
 #ifdef __cplusplus
 #include <string>
@@ -207,9 +207,14 @@ struct MTL_SHADER_REFLECTION {
   /* a compute shader whose threadgroups wait for one another (a loop reads globally coherent memory): its dispatch
      may be made in parts, each with the stage-in region's origin at the part's first group */
   uint32_t GroupsWorkTogether;
-  /* a compute shader with 64-bit atomics on resources, whose emulation's locks wait for the threadgroups that hold
-     them: on a GPU without native 64-bit min and max its dispatch is made in parts as GroupsWorkTogether's */
+  /* a compute shader with 64-bit atomics on resources that take locks (not all split into 32-bit atomics), which wait
+     for the threadgroups that hold them: where they take locks its dispatch is made in parts as GroupsWorkTogether's. Metal promises progress only
+     between the SIMD-groups of one threadgroup (Metal Shading Language, kernel function input attributes), and a
+     holder waits behind the spinning SIMD-groups of the other threadgroups that share its GPU core */
   uint32_t DeviceAtomics64;
+  /* every one of them an unsigned minimum or maximum without a result, which a GPU with native 64-bit min and max runs
+     without a lock */
+  uint32_t DeviceAtomics64Native;
   /* a mesh shader's triangles a Metal mesh can grow for conservative rasterization (SM50_SHADER_MESH_SHADER_DATA's
      triangles), 0 where it cannot: lines, a shader that writes resources (its group runs once a slice), or outputs too
      large; and the most primitives it outputs */

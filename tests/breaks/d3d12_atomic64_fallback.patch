@@ -2,10 +2,10 @@
 # family 7
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2169,7 +2169,7 @@
-     auto extreme = atomic_op(constant(arg(call, 2)));
-     return extreme == AtomicRMWInst::UMax || extreme == AtomicRMWInst::UMin;
+@@ -2583,7 +2583,7 @@ convert_dxil(
+     return ret;
    };
+ 
 -  bool native_extremes = air.HasAtomicMinMax64() && std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
 +  bool native_extremes = std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
      return !call->getType()->isIntegerTy(64) || (opcode(call) != AtomicBinOp && opcode(call) != AtomicCompareExchange) ||

@@ -5,6 +5,12 @@
 // and the returned values must be the integers below the thread count, once each. a recording of a large grid
 // must also Close successfully without allocating a command per part; that grid is never submitted.
 // parts share one compute encoder and pipeline binding, ordered by memory barriers (Metal, memoryBarrier(scope:)).
+// a dispatch comes in parts where its 64-bit atomics take locks, whose holders wait behind the other threadgroups' SIMD
+// groups (Metal promises progress only between those of one threadgroup): an add that returns its old value on every
+// GPU, and an unsigned maximum without a result only where the GPU has no native 64-bit min and max (the Metal
+// Shading Language's atomic_ulong max and min return void). an add without a result, the shader's only 64-bit atomic,
+// on a raw buffer, is a 32-bit atomic on each half and takes no lock. a thread whose atomic has no result writes its
+// own index as the returned value.
 #include "d3d12_test.hpp"
 #include "../../src/airconv/airconv_public.h"
 #include "../../src/winemetal/winemetal.h"
@@ -18,7 +24,13 @@ RWByteAddressBuffer result : register(u0);
 void cs(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint3 local : SV_GroupThreadID) {
   uint3 cells = groups * uint3(TX, TY, TZ);
   uint t = tid.x + cells.x * (tid.y + cells.y * tid.z);
-#if ATOMIC64
+#if ATOMIC64 == 3
+  uint64_t old = t;
+  result.InterlockedAdd64(0, 1ull);
+#elif ATOMIC64 == 2
+  uint64_t old = t;
+  result.InterlockedMax64(0, uint64_t(t) + 1);
+#elif ATOMIC64
   uint64_t old;
   result.InterlockedAdd64(0, 1ull, old);
 #else
@@ -83,9 +95,11 @@ main(int argc, char **argv) {
                  record = 2 * vector_bytes + sizeof(uint64_t);
   const std::array<UINT, 3> threads[] = {{1, 1, 1}, {4, 2, 2}, {D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP, 1, 1}};
   const UINT budget = threads[1][0] * threads[1][1] * threads[1][2];
-  std::string shaders[std::size(threads)][2];
+  // a 32-bit add, a 64-bit add, a 64-bit maximum without a result, a 64-bit add without a result
+  enum { add32, add64, max64, split64, atomics };
+  std::string shaders[std::size(threads)][atomics];
   for (UINT shape = 0; shape < std::size(threads); shape++)
-    for (UINT atomic = 0; atomic < 2; atomic++) {
+    for (UINT atomic = 0; atomic < atomics; atomic++) {
       shaders[shape][atomic] = compiler.compile(
           hlsl, "cs", "cs_6_6",
           {"TX=" + std::to_string(threads[shape][0]), "TY=" + std::to_string(threads[shape][1]),
@@ -178,7 +192,8 @@ main(int argc, char **argv) {
     SetEnvironmentVariableA("MULLION_SHADER_FLAGS",
                             std::to_string(emulated ? SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64 : 0).c_str());
     for (UINT shape = 0; shape < std::size(threads); shape++)
-      for (UINT atomic = 0; atomic < 2; atomic++) {
+      for (UINT atomic = 0; atomic < atomics; atomic++) {
+        const bool locks = atomic == add64 || (atomic == max64 && emulated);
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{root.Get(), bytecode(shaders[shape][atomic])};
         ComPtr<ID3D12PipelineState> pipeline;
         CHECK(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline)));
@@ -188,7 +203,7 @@ main(int argc, char **argv) {
                                            {9, 5, 3}, {3, 9, 5}, {5, 3, 9}, {0, 5, 3}, {9, 0, 3}, {9, 5, 0}};
         for (auto grid : grids)
           for (UINT mode = Direct; mode < ModeCount; mode++) {
-            if (mode >= NoCommands && !(atomic && emulated))
+            if (mode >= NoCommands && !locks)
               continue;
             step("emulated %u, shape %u, atomic64 %u, %u by %u by %u groups, mode %u", emulated, shape, atomic,
                  grid[0], grid[1], grid[2], mode);
@@ -249,7 +264,7 @@ main(int argc, char **argv) {
             const bool runs = mode != EqualSkip && mode != NotEqualSkip && mode != CountZero &&
                               mode != IndirectEqualSkip && mode != IndirectNotEqualSkip && mode != NoCommands;
             const UINT draws = mode == TwoCommands ? maximum : 1, executed = runs ? draws * count : 0;
-            if (atomic && emulated) {
+            if (locks) {
               expect(part_groups == (runs ? draws * groups : 0), "%llu groups in parts, want %u", part_groups,
                      runs ? draws * groups : 0);
               expect(largest_part <= boundary, "part of %llu groups exceeds %u", largest_part, boundary);
@@ -260,7 +275,8 @@ main(int argc, char **argv) {
             CHECK(readback->Map(0, nullptr, (void **)&got));
             uint64_t total;
             memcpy(&total, got, sizeof(total));
-            expect(total == executed, "atomic count %llu, want %u", total, executed);
+            const UINT stored = atomic == max64 ? (runs ? count : 0) : executed;
+            expect(total == stored, "atomic result %llu, want %u", total, stored);
             std::vector<uint64_t> returned;
             const UINT cells[] = {grid[mode == TwoCommands ? 1 : 0] * threads[shape][0],
                                   grid[mode == TwoCommands ? 0 : 1] * threads[shape][1], grid[2] * threads[shape][2]};
@@ -288,12 +304,13 @@ main(int argc, char **argv) {
             }
             std::sort(returned.begin(), returned.end());
             for (UINT t = 0; t < returned.size(); t++)
-              expect(returned[t] == (draws - 1) * count + t, "returned value %u: %llu", t, returned[t]);
+              expect(returned[t] == (atomic >= max64 ? 0 : (draws - 1) * count) + t, "returned value %u: %llu", t,
+                     returned[t]);
             readback->Unmap(0, nullptr);
             if (trace::wrong)
               return verdict();
           }
-        if (atomic && emulated && per_group == D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP) {
+        if (locks && per_group == D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP) {
           step("record a large grid without submitting it");
           CHECK(allocator->Reset());
           CHECK(list->Reset(allocator.Get(), pipeline.Get()));

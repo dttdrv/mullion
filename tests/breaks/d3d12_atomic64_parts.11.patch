@@ -1,0 +1,14 @@
+# every dispatch with 64-bit atomics is split, also one whose atomics are all native minimums and maximums
+# family native
+--- a/src/d3d12/d3d12_pipeline_compute.cpp
++++ b/src/d3d12/d3d12_pipeline_compute.cpp
+@@ -61,8 +61,7 @@
+     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
+     groups_work_together =
+         ref_cs.GroupsWorkTogether ||
+-        (ref_cs.DeviceAtomics64 &&
+-         (!ref_cs.DeviceAtomics64Native || (device_->GetShaderFlags() & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64)));
++        ref_cs.DeviceAtomics64;
+     if (groups_work_together)
+       Logger::info(str::format("compute pipeline ", name, ": its threadgroups work together, it is dispatched in parts"));
+ 

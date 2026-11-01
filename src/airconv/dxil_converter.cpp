@@ -324,10 +324,74 @@ opcode(const CallInst *call) {
   return cast<ConstantInt>(call->getArgOperand(0))->getZExtValue();
 }
 
+// DxilConstants.h AtomicBinOpCode order
+AtomicRMWInst::BinOp
+atomic_op(uint32_t code) {
+  constexpr AtomicRMWInst::BinOp ops[] = {
+      AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::Min,
+      AtomicRMWInst::Max, AtomicRMWInst::UMin, AtomicRMWInst::UMax, AtomicRMWInst::Xchg,
+  };
+  return ops[code];
+}
+
+// Metal has its own 64-bit minimum and maximum, unsigned and without the old value. Unreal's Nanite writes its
+// visibility buffer so from every thread of its rasterizer, where the locks stall for seconds and give up.
+// they do not take the locks of the other 64-bit atomics, so a shader has them only when it has no other
+bool
+native_extreme(const CallInst *call) {
+  if (opcode(call) != AtomicBinOp || !call->use_empty())
+    return false;
+  auto extreme = atomic_op(cast<ConstantInt>(call->getArgOperand(2))->getZExtValue());
+  return extreme == AtomicRMWInst::UMax || extreme == AtomicRMWInst::UMin;
+}
+
 bool
 is_dx_op(const Value *value) {
   auto call = dyn_cast<CallInst>(value);
   return call && call->getCalledFunction() && call->getCalledFunction()->getName().startswith("dx.op.");
+}
+
+// the 64-bit atomics split64 does, as the op on 32-bit halves: a subtract is an add of the negated value
+std::optional<AtomicRMWInst::BinOp>
+split_kind(AtomicRMWInst::BinOp op) {
+  switch (op) {
+  case AtomicRMWInst::Add:
+  case AtomicRMWInst::Sub:
+    return AtomicRMWInst::Add;
+  case AtomicRMWInst::And:
+  case AtomicRMWInst::Or:
+  case AtomicRMWInst::Xor:
+    return op;
+  default:
+    return std::nullopt;
+  }
+}
+
+// a shader whose 64-bit atomics are all on raw or structured buffers and all one op that commutes with itself (add,
+// and, or or xor), none using its old value, splits them into 32-bit atomics without the locks (split64): that op.
+// a raw or structured buffer's words are a buffer's memory, whose 32-bit halves Metal has atomics on; a typed
+// buffer's or texture's 64-bit texels are not, and may alias a buffer's words
+std::optional<AtomicRMWInst::BinOp>
+buffer_split(ArrayRef<CallInst *> calls, const ShaderInfo &info) {
+  auto constant = [](Value *v) { return (uint32_t)cast<ConstantInt>(v)->getZExtValue(); };
+  auto raw_buffer = [&](Value *handle) {
+    auto made = dyn_cast<CallInst>(handle);
+    if (!made || !is_dx_op(made) || opcode(made) != CreateHandle || constant(made->getArgOperand(1)) != UAV)
+      return false;
+    auto uav = info.uavMap.find(constant(made->getArgOperand(2)));
+    return uav != info.uavMap.end() && uav->second.resource_type == shader::common::ResourceType::NonApplicable;
+  };
+  std::optional<AtomicRMWInst::BinOp> split;
+  for (auto call : calls)
+    if (call->getType()->isIntegerTy(64) && (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange)) {
+      auto kind = opcode(call) == AtomicBinOp && call->use_empty() && raw_buffer(call->getArgOperand(1))
+                      ? split_kind(atomic_op(constant(call->getArgOperand(2))))
+                      : std::nullopt;
+      if (!kind || (split && *split != *kind))
+        return std::nullopt;
+      split = kind;
+    }
+  return split;
 }
 
 // SM50_RAY_SHADER_CALLS of a library function and of the functions it calls
@@ -1124,7 +1188,8 @@ read_dxil(
             shader, id, D3D10_SB_INTERPOLATION_MODE(entry.input[id].interpolation), evaluated_barycentrics.contains(id)
         );
   // groupshared 64-bit atomics hash their locks with the threadgroup's position (`locked`); those on resources share
-  // their locks among threadgroups
+  // their locks among threadgroups, but where they split (buffer_split)
+  std::vector<CallInst *> atomics64;
   for (auto &F : M)
     for (auto &BB : F)
       for (auto &I : BB)
@@ -1133,8 +1198,11 @@ read_dxil(
         else if (auto cx = dyn_cast<AtomicCmpXchgInst>(&I); cx && cx->getCompareOperand()->getType()->isIntegerTy(64))
           used_ops.insert(GroupId);
         else if (auto call = dyn_cast<CallInst>(&I); call && is_dx_op(call) && call->getType()->isIntegerTy(64) &&
-                 (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange))
-          shader->device_atomics64 = true;
+                 (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange)) {
+          atomics64.push_back(call);
+          shader->device_atomics64_native &= native_extreme(call);
+        }
+  shader->device_atomics64 = !atomics64.empty() && !buffer_split(atomics64, info);
   // threadgroups work together when one waits for what another does: a loop that reads globally coherent memory
   auto coherent = [&](Value *handle) {
     auto made = dyn_cast<CallInst>(handle);
@@ -2110,14 +2178,6 @@ convert_dxil(
     return ir.CreateExtractElement(v, e.col + constant(arg(call, 3)));
   };
   auto fp_unary = [&](llvm::air::AIRBuilder::FPUnOp op, Value *v) { return air.CreateFPUnOp(op, v); };
-  // DxilConstants.h AtomicBinOpCode order
-  auto atomic_op = [](uint32_t code) {
-    constexpr AtomicRMWInst::BinOp ops[] = {
-        AtomicRMWInst::Add, AtomicRMWInst::And,  AtomicRMWInst::Or,   AtomicRMWInst::Xor,  AtomicRMWInst::Min,
-        AtomicRMWInst::Max, AtomicRMWInst::UMin, AtomicRMWInst::UMax, AtomicRMWInst::Xchg,
-    };
-    return ops[code];
-  };
 
   // Metal's SIMD-group functions, named as the Metal compiler names them (integers by signedness); every active lane
   // takes part, so they are convergent
@@ -2305,20 +2365,6 @@ convert_dxil(
       key = ir.CreateAdd(ir.CreateMul(key, ir.getInt64(0x9e3779b97f4a7c15)), ir.CreateZExt(thread_input(GroupId, c), i64));
     return {key, llvm::air::MemFlags::Threadgroup, [=, &ir] { return (Value *)ir.CreateLoad(i64, ptr); },
             [=, &ir](Value *v) { ir.CreateStore(v, ptr); }};
-  };
-  // the 64-bit atomics split64 does, as the op on 32-bit halves: a subtract is an add of the negated value
-  auto split_kind = [](AtomicRMWInst::BinOp op) -> std::optional<AtomicRMWInst::BinOp> {
-    switch (op) {
-    case AtomicRMWInst::Add:
-    case AtomicRMWInst::Sub:
-      return AtomicRMWInst::Add;
-    case AtomicRMWInst::And:
-    case AtomicRMWInst::Or:
-    case AtomicRMWInst::Xor:
-      return op;
-    default:
-      return std::nullopt;
-    }
   };
   // a 64-bit add, subtract, and, or or xor whose old value goes unused, as an atomic on each 32-bit half, without a
   // lock: a bitwise op's halves are independent, and an add carries into the high half when the low half wraps (each
@@ -2537,44 +2583,11 @@ convert_dxil(
     return ret;
   };
 
-  // Metal has its own 64-bit minimum and maximum, unsigned and without the old value. Unreal's Nanite writes its
-  // visibility buffer so from every thread of its rasterizer, where the locks stall for seconds and give up.
-  // they do not take the locks of the other 64-bit atomics, so a shader has them only when it has no other
-  auto native_extreme = [&](CallInst *call) {
-    if (opcode(call) != AtomicBinOp || !call->use_empty())
-      return false;
-    auto extreme = atomic_op(constant(arg(call, 2)));
-    return extreme == AtomicRMWInst::UMax || extreme == AtomicRMWInst::UMin;
-  };
   bool native_extremes = air.HasAtomicMinMax64() && std::all_of(calls.begin(), calls.end(), [&](CallInst *call) {
     return !call->getType()->isIntegerTy(64) || (opcode(call) != AtomicBinOp && opcode(call) != AtomicCompareExchange) ||
            native_extreme(call);
   });
-  // a raw or structured buffer's handle: its words are a buffer's memory, whose 32-bit halves Metal has atomics on. a
-  // typed buffer's or texture's 64-bit texels are not, and may alias a buffer's words
-  auto raw_buffer = [&](Value *handle) {
-    auto made = dyn_cast<CallInst>(handle);
-    if (!made || !is_dx_op(made) || opcode(made) != CreateHandle || constant(arg(made, 1)) != UAV)
-      return false;
-    auto uav = info.uavMap.find(constant(arg(made, 2)));
-    return uav != info.uavMap.end() && uav->second.resource_type == shader::common::ResourceType::NonApplicable;
-  };
-  // a shader whose 64-bit atomics are all on raw or structured buffers and all one op that commutes with itself (add,
-  // and, or or xor), none using its old value, splits them into 32-bit atomics without the locks (split64)
-  std::optional<AtomicRMWInst::BinOp> split_buffers;
-  if (!native_extremes) {
-    bool splits = true;
-    for (auto call : calls)
-      if (call->getType()->isIntegerTy(64) && (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange)) {
-        auto kind = opcode(call) == AtomicBinOp && call->use_empty() && raw_buffer(arg(call, 1))
-                        ? split_kind(atomic_op(constant(arg(call, 2))))
-                        : std::nullopt;
-        splits = splits && kind && (!split_buffers || *split_buffers == *kind);
-        split_buffers = kind;
-      }
-    if (!splits)
-      split_buffers.reset();
-  }
+  auto split_buffers = native_extremes ? std::nullopt : buffer_split(calls, info);
 
   for (auto call : calls) {
     ir.SetInsertPoint(call);

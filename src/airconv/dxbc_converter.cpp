@@ -2066,6 +2066,7 @@ static int SM50InitializeUncached(
     }
     pRefl->GroupsWorkTogether = sm50_shader->groups_work_together;
     pRefl->DeviceAtomics64 = sm50_shader->device_atomics64;
+    pRefl->DeviceAtomics64Native = sm50_shader->device_atomics64_native;
     // a mesh shader's conservative triangles: its outputs wait in threadgroup memory, 16 KB of it, for a mesh of its
     // triangles, three vertices each of its components and the conservative rasterizer's, each primitive its own
     // and four words. a group too large for one mesh runs once for each, which one that writes resources cannot
