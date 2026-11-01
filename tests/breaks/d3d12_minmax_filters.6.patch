@@ -1,0 +1,12 @@
+# a sampler with a custom border takes Metal's reduction where the device honours it
+--- a/src/mullion/mullion_sampler.cpp
++++ b/src/mullion/mullion_sampler.cpp
+@@ -91,7 +91,7 @@ Sampler::createSampler(
+   // a minimum or maximum filter is Metal's own where the device honours it, otherwise the shader's
+   // (SM50_SAMPLER_REDUCTION). a custom border is two Metal samples mixed by the border's weight, which only an
+   // average has: the shader reduces with that border itself
+-  bool native = reduction != SM50_SAMPLER_REDUCTION_NONE && !border_color &&
++  bool native = reduction != SM50_SAMPLER_REDUCTION_NONE &&
+                 info.min_filter == WMTSamplerMinMagFilterLinear &&
+                 info.mag_filter == WMTSamplerMinMagFilterLinear && info.mip_filter == WMTSamplerMipFilterLinear &&
+                 NativeReduction(device);

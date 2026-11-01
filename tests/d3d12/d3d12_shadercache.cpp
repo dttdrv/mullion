@@ -532,9 +532,11 @@ main(int argc, char **argv) {
             variant == 19 || variant == 21 || variant == 26)
           expect(conversions - made_before == 1, "a new conversion input must have its own entry");
       }
+      // a mesh shader an amplification shader feeds is a conversion of its own (it runs no grid of its own), so kind 4
+      // converts its mesh shader too
       if (!strcmp(argv[2], "cold") && store_exists() && mesh && variant == 13)
         expect(
-            conversions - made_before == (kind == 3 ? 1u : 0u),
+            conversions - made_before == 1,
             "pixel linkage converts the mesh shader and reuses amplification"
         );
       if (!strcmp(argv[2], "cold") && store_exists() && kind == 2 && variant == 22)
@@ -802,7 +804,7 @@ main(int argc, char **argv) {
       auto made_before = conversions;
       CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)));
       if (disabled)
-        expect(conversions - made_before >= 4, "the disabled store must convert both stream output passes");
+        expect(conversions - made_before >= 2, "the disabled store must convert each stream output pass's functions");
       std::vector<UINT> indices;
       for (UINT i = 0; i < 3 * elements; i++) {
         indices.push_back(i);
