@@ -547,6 +547,9 @@ public:
   float depth_bias;
   float scole_scale;
   float depth_bias_clamp;
+  // it rasterizes points or lines, which take no depth bias (D3D11.3 15.10); Metal gives them one with a stray slope
+  // when an indirect command buffer draws them, so none is set
+  bool unbiased = false;
   uint32_t forced_sample_count;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
   // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's

@@ -1139,6 +1139,8 @@ public:
     depth_bias = pDesc->RasterizerState.DepthBias;
     scole_scale = pDesc->RasterizerState.SlopeScaledDepthBias;
     depth_bias_clamp = pDesc->RasterizerState.DepthBiasClamp;
+    unbiased = !pDesc->GS.BytecodeLength && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT ||
+                                             pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
     winding = pDesc->RasterizerState.FrontCounterClockwise ? WMTWindingCounterClockwise : WMTWindingClockwise;
     forced_sample_count = pDesc->RasterizerState.ForcedSampleCount;
   }

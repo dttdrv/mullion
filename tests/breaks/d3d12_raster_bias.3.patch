@@ -1,0 +1,12 @@
+# points and lines keep the depth bias: an indirect command buffer gives them one with a stray slope
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1139,7 +1139,7 @@
+     depth_bias = pDesc->RasterizerState.DepthBias;
+     scole_scale = pDesc->RasterizerState.SlopeScaledDepthBias;
+     depth_bias_clamp = pDesc->RasterizerState.DepthBiasClamp;
+-    unbiased = !pDesc->GS.BytecodeLength && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT ||
++    unbiased = false && !pDesc->GS.BytecodeLength && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT ||
+                                              pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+     winding = pDesc->RasterizerState.FrontCounterClockwise ? WMTWindingCounterClockwise : WMTWindingClockwise;
+     forced_sample_count = pDesc->RasterizerState.ForcedSampleCount;

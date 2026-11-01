@@ -1228,9 +1228,11 @@ public:
       cmd_setrs.depth_clip_mode = pso_graphics_->conservative ? WMTDepthClipModeClamp : pso_graphics_->depth_clip_mode;
       cmd_setrs.fill_mode = pso_graphics_->fill_mode;
       // one by one: libstdc++ assigns no std::array to a std::tuple of references
-      auto [depth_bias, depth_bias_clamp, scole_scale] = depth_bias_.value_or(
-        std::array{pso_graphics_->depth_bias, pso_graphics_->depth_bias_clamp, pso_graphics_->scole_scale}
-      );
+      auto [depth_bias, depth_bias_clamp, scole_scale] =
+          pso_graphics_->unbiased ? std::array<FLOAT, 3>{}
+                                  : depth_bias_.value_or(std::array{
+                                        pso_graphics_->depth_bias, pso_graphics_->depth_bias_clamp, pso_graphics_->scole_scale
+                                    });
       cmd_setrs.depth_bias = depth_bias;
       cmd_setrs.depth_bias_clamp = depth_bias_clamp;
       cmd_setrs.scole_scale = scole_scale;
