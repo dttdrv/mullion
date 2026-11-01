@@ -56,6 +56,10 @@ inline int
 ctz(int x) {
   return x ? __builtin_ctz(x) : 32;
 }
+inline int
+popcount(uint x) {
+  return __builtin_popcount(x);
+}
 inline bool
 simd_all(bool b) {
   return b;

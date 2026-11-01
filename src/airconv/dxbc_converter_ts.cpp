@@ -5,6 +5,8 @@
 #include "nt/dxbc_converter_base.hpp"
 #include "tessellation_limits.hpp"
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
@@ -64,8 +66,19 @@ get_output_primitive(SM50ShaderInternal *pHullStage) {
   return primitive;
 }
 
+// MULLION_AIRCONV_SKIP=tessellation-groups: each workload takes a mesh threadgroup of its own, whose first thread
+// makes all its primitives
+static bool
+tessellation_groups() {
+  static const bool groups = [] {
+    auto skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return !skip || !strstr(skip, "tessellation-groups");
+  }();
+  return groups;
+}
+
 size_t
-estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group) {
+estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group, bool groups) {
   auto max_hs_output_register = pHullStage->max_output_register;
   auto cp_size_per_point = sizeof(uint32_t) * 4 * max_hs_output_register;
   auto cp_size_per_patch = cp_size_per_point * pHullStage->output_control_point_count;
@@ -77,10 +90,11 @@ estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t pat
   uint32_t max_workload_count = get_max_potential_workload_count(factor_int, pHullStage->tessellation_domain, pHullStage->tessellation_partition);
   constexpr uint32_t size_workload_info = sizeof(TessMeshWorkload);
 
-  // the patches' control points and constants, the first patch's number, the workloads, and the grid's first
-  // workload and instance (tessellation_payload_type)
+  // the patches' control points and constants, the first patch's number, the workloads, the grid's first
+  // workload and instance, and the groups of workloads (tessellation_payload_type)
   return cp_size_per_group + pc_size_per_group + sizeof(uint32_t) +
-         max_workload_count * patch_per_group * size_workload_info + 2 * sizeof(uint32_t);
+         max_workload_count * patch_per_group * size_workload_info + 2 * sizeof(uint32_t) +
+         (groups ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
 };
 
 std::pair<uint32_t, uint32_t>
@@ -112,29 +126,64 @@ get_final_maxtessfactor(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_
   );
 }
 
+// a mesh threadgroup takes as many of a patch's workloads as fit its mesh (tessellation_group_size), and all its
+// threads make their primitives together, one SIMD group of 32 as on every GPU with mesh shaders. not with a geometry
+// shader, which takes a workload's primitives one a threadgroup, nor where threadgroups share a workload's primitives
+uint32_t
+tessellation_group_limit(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int) {
+  SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
+  SM50_SHADER_COMMON_DATA *sm50_common = nullptr;
+  if (!tessellation_groups() ||
+      !args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess) ||
+      pso_tess->geometry)
+    return 0;
+  if (args_get_data<SM50_SHADER_COMMON, SM50_SHADER_COMMON_DATA>(pArgs, &sm50_common) && sm50_common->simd_width &&
+      sm50_common->simd_width != 32)
+    return 0;
+  if (tessellation_pieces(
+          factor_int, pHullStage->tessellation_domain, pHullStage->tessellator_output_primitive,
+          pso_tess->mesh_vertex_size, pso_tess->conservative
+      )
+          .primitives)
+    return 0;
+  // the hull shader's patches per object threadgroup and its largest factor were chosen for a payload without groups
+  // (SM50Initialize), and groups do not change them: a payload they would take past its limit has none
+  uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
+  if (estimate_payload_size(pHullStage, float(factor_int), patch_per_group, true) > 16384)
+    return 0;
+  return tessellation_group_size(
+      factor_int, pHullStage->tessellation_domain, pHullStage->tessellator_output_primitive, pso_tess->mesh_vertex_size
+  );
+}
+
 // the payload the hull stage leaves the mesh stage: the control points and patch constants of an object threadgroup's
 // patches, its first patch's number, and its workloads
 llvm::StructType *
 tessellation_payload_type(
-    SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context
+    SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context,
+    uint32_t group_limit
 ) {
   uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
   auto per_patch = llvm::ArrayType::get(
       llvm::ArrayType::get(types._int4, pHullStage->max_output_register), pHullStage->output_control_point_count
   );
-  return llvm::StructType::create(
-      context,
-      {llvm::ArrayType::get(per_patch, patch_per_group),
-       llvm::ArrayType::get(llvm::ArrayType::get(types._int, pHullStage->patch_constant_scalars.size()), patch_per_group),
-       types._int,
-       llvm::ArrayType::get(
-           types._int,
-           get_max_potential_workload_count(factor_int, pHullStage->tessellation_domain, pHullStage->tessellation_partition) * patch_per_group * sizeof(TessMeshWorkload) / 4
-       ),
-       // the grid's first workload and first geometry instance
-       types._int, types._int},
-      "payload"
-  );
+  uint32_t workloads =
+      get_max_potential_workload_count(factor_int, pHullStage->tessellation_domain, pHullStage->tessellation_partition) *
+      patch_per_group;
+  std::vector<llvm::Type *> fields{
+      llvm::ArrayType::get(per_patch, patch_per_group),
+      llvm::ArrayType::get(llvm::ArrayType::get(types._int, pHullStage->patch_constant_scalars.size()), patch_per_group),
+      types._int, llvm::ArrayType::get(types._int, workloads * sizeof(TessMeshWorkload) / 4),
+      // the grid's first workload (or group) and first geometry instance
+      types._int, types._int
+  };
+  // with groups, each patch's groups (tess_output), in a room as large as its workloads', and the groups of the
+  // patches before each
+  if (group_limit) {
+    fields.push_back(llvm::ArrayType::get(types._int, workloads));
+    fields.push_back(llvm::ArrayType::get(types._int, patch_per_group));
+  }
+  return llvm::StructType::create(context, fields, "payload");
 }
 
 // what the domain shader takes of a workload's patch from the payload (its control points, constants and number),
@@ -342,7 +391,8 @@ convert_dxbc_vertex_hull_shader(
     func_signature.UseMaxMeshWorkgroupSize(grids.workloads * workload_primitives * grids.instances);
   }
 
-  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context);
+  uint32_t group_limit = tessellation_group_limit(pHullStage, pArgs, factor_int);
+  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context, group_limit);
   uint32_t payload_struct_size = module.getDataLayout().getTypeAllocSize(payload_struct_type);
 
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = payload_struct_size});
@@ -452,7 +502,26 @@ convert_dxbc_vertex_hull_shader(
     return builder.CreateGEP(workload_counts_type, workload_counts, {builder.getInt32(0), patch});
   };
   builder.CreateStore(builder.getInt32(0), workload_count(patch_offset_in_group));
-  auto next_workload = builder.CreateAlloca(types._int);
+  // with groups of workloads, each patch's groups
+  llvm::GlobalVariable *group_counts = nullptr;
+  if (group_limit) {
+    group_counts = new llvm::GlobalVariable(
+        module, workload_counts_type, false, llvm::GlobalValue::InternalLinkage,
+        llvm::UndefValue::get(workload_counts_type), "group_counts", nullptr, llvm::GlobalValue::NotThreadLocal,
+        (uint32_t)air::AddressSpace::threadgroup
+    );
+    group_counts->setAlignment(llvm::Align(4));
+    builder.CreateStore(builder.getInt32(0), builder.CreateGEP(workload_counts_type, group_counts, {builder.getInt32(0), patch_offset_in_group}));
+  }
+  auto group_count = [&](llvm::GlobalVariable *array, llvm::Value *patch) {
+    return builder.CreateGEP(workload_counts_type, array, {builder.getInt32(0), patch});
+  };
+  // the patch's next workload; with groups, its next group, the vertices of the group being filled, its first
+  // workload and its most primitives (tess_output)
+  auto next_type = llvm::ArrayType::get(types._int, 5);
+  auto next_state = builder.CreateAlloca(next_type);
+  auto next_at = [&](uint32_t i) { return builder.CreateGEP(next_type, next_state, {builder.getInt32(0), builder.getInt32(i)}); };
+  auto next_workload = next_at(0);
   auto factors_type = llvm::ArrayType::get(types._float, 6);
   auto kept_factors = builder.CreateAlloca(factors_type);
 
@@ -794,50 +863,97 @@ convert_dxbc_vertex_hull_shader(
           tess_factors[domain.second[i]],
           builder.CreateGEP(factors_type, kept_factors, {builder.getInt32(0), builder.getInt32(i)})
       );
-    // the patch's workloads from `first` on, of which those before `capacity` are written; returns where they end
-    auto generate = [&](llvm::Value *first, uint32_t capacity) {
+    // the patch's workloads from `first` on, of which those before `capacity` are written at `workloads`, and with
+    // groups the groups' places at `groups`; returns where the workloads end
+    auto generate = [&](llvm::Value *first, uint32_t capacity, llvm::Value *workloads, llvm::Value *groups) {
       std::vector<llvm::Value *> factors;
       for (size_t i = 0; i < domain.second.size(); i++)
         factors.push_back(builder.CreateLoad(
             types._float, builder.CreateGEP(factors_type, kept_factors, {builder.getInt32(0), builder.getInt32(i)})
         ));
       builder.CreateStore(first, next_workload);
+      for (uint32_t i = 1; group_limit && i < 5; i++)
+        builder.CreateStore(builder.getInt32(0), next_at(i));
       dxbc.HullGenerateWorkload(
-          domain.first, patch_offset_in_group, next_workload,
-          builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(3), builder.getInt32(0)}),
-          capacity, get_partitioning(pHullStage), factors
+          domain.first, patch_offset_in_group, next_workload, workloads, capacity, groups, group_limit,
+          get_partitioning(pHullStage), factors
       );
       return builder.CreateLoad(types._int, next_workload);
     };
-    builder.CreateStore(generate(builder.getInt32(0), 0), workload_count(patch_offset_in_group));
-    builder.CreateBr(counted);
-
-    // every patch of the threadgroup is counted: a patch's workloads come after those of the patches before it, in
-    // the patches' order, whichever thread is first
-    builder.SetInsertPoint(counted);
-    air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
-    builder.CreateCondBr(
-        builder.CreateICmp(llvm::CmpInst::ICMP_EQ, resource_map.thread_id_in_patch, builder.getInt32(0)),
-        write_workloads, real_return
-    );
-
-    builder.SetInsertPoint(write_workloads);
-    llvm::Value *before = builder.getInt32(0), *all = builder.getInt32(0);
-    for (uint32_t i = 0; i < patch_per_group; i++) {
-      auto count = builder.CreateLoad(types._int, workload_count(builder.getInt32(i)));
-      all = builder.CreateAdd(all, count);
-      before = builder.CreateAdd(
-          before, builder.CreateSelect(builder.CreateICmpULT(builder.getInt32(i), patch_offset_in_group), count, builder.getInt32(0))
+    auto workloads_at = [&](llvm::Value *first) {
+      return builder.CreateGEP(
+          types._int,
+          builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(3), builder.getInt32(0)}),
+          builder.CreateMul(first, builder.getInt32(sizeof(TessMeshWorkload) / 4))
       );
+    };
+    // the dispatch's mesh threadgroups: one for each workload written or, with groups, each group
+    llvm::Value *dispatched = nullptr;
+    if (group_limit) {
+      // each patch writes its workloads and groups at once, in rooms of its own: the threadgroup's groups are the
+      // patches' in the patches' order, which the mesh stage finds by the groups of the patches before each
+      auto room = builder.CreateMul(patch_offset_in_group, builder.getInt32(max_workload_count));
+      generate(
+          builder.getInt32(0), max_workload_count, workloads_at(room),
+          builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(6), room})
+      );
+      builder.CreateStore(builder.CreateLoad(types._int, next_at(1)), group_count(group_counts, patch_offset_in_group));
+      builder.CreateBr(counted);
+
+      builder.SetInsertPoint(counted);
+      air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+      builder.CreateCondBr(
+          builder.CreateAnd(
+              builder.CreateICmpEQ(patch_offset_in_group, builder.getInt32(0)),
+              builder.CreateICmpEQ(resource_map.thread_id_in_patch, builder.getInt32(0))
+          ),
+          dispatch_mesh, real_return
+      );
+      write_workloads->eraseFromParent();
+
+      builder.SetInsertPoint(dispatch_mesh);
+      llvm::Value *groups = builder.getInt32(0);
+      for (uint32_t i = 0; i < patch_per_group; i++) {
+        builder.CreateStore(
+            groups, builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(7), builder.getInt32(i)})
+        );
+        groups = builder.CreateAdd(groups, builder.CreateLoad(types._int, group_count(group_counts, builder.getInt32(i))));
+      }
+      dispatched = groups;
+    } else {
+      builder.CreateStore(
+          generate(builder.getInt32(0), 0, workloads_at(builder.getInt32(0)), nullptr), workload_count(patch_offset_in_group)
+      );
+      builder.CreateBr(counted);
+
+      // every patch of the threadgroup is counted: a patch's workloads come after those of the patches before it, in
+      // the patches' order, whichever thread is first
+      builder.SetInsertPoint(counted);
+      air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+      builder.CreateCondBr(
+          builder.CreateICmp(llvm::CmpInst::ICMP_EQ, resource_map.thread_id_in_patch, builder.getInt32(0)),
+          write_workloads, real_return
+      );
+
+      builder.SetInsertPoint(write_workloads);
+      llvm::Value *before = builder.getInt32(0), *all = builder.getInt32(0);
+      for (uint32_t i = 0; i < patch_per_group; i++) {
+        auto count = builder.CreateLoad(types._int, workload_count(builder.getInt32(i)));
+        all = builder.CreateAdd(all, count);
+        before = builder.CreateAdd(
+            before, builder.CreateSelect(builder.CreateICmpULT(builder.getInt32(i), patch_offset_in_group), count, builder.getInt32(0))
+        );
+      }
+      generate(before, max_workload_count * patch_per_group, workloads_at(builder.getInt32(0)), nullptr);
+
+      builder.CreateCondBr(
+          builder.CreateICmp(llvm::CmpInst::ICMP_EQ, patch_offset_in_group, builder.getInt32(0)), dispatch_mesh,
+          real_return
+      );
+
+      builder.SetInsertPoint(dispatch_mesh);
+      dispatched = air.CreateIntBinOp(llvm::air::AIRBuilder::min, all, builder.getInt32(max_workload_count * patch_per_group));
     }
-    generate(before, max_workload_count * patch_per_group);
-
-    builder.CreateCondBr(
-        builder.CreateICmp(llvm::CmpInst::ICMP_EQ, patch_offset_in_group, builder.getInt32(0)), dispatch_mesh,
-        real_return
-    );
-
-    builder.SetInsertPoint(dispatch_mesh);
 
     // the mesh threadgroups of the workloads that were written: one for each, or with a geometry shader one for
     // each primitive and instance. a grid has no more than the device lets it, so the object threadgroups along the
@@ -851,13 +967,12 @@ convert_dxbc_vertex_hull_shader(
     auto first_instance = builder.CreateMul(
         builder.CreateURem(part, builder.getInt32(grids.instance_parts)), builder.getInt32(grids.instances)
     );
-    auto written = air.CreateIntBinOp(llvm::air::AIRBuilder::min, all, builder.getInt32(max_workload_count * patch_per_group));
     llvm::Value *meshgroup_to_dispatch = air.getInt3(1, workload_primitives, 1);
     meshgroup_to_dispatch = builder.CreateInsertElement(
         meshgroup_to_dispatch,
         air.CreateIntBinOp(
             llvm::air::AIRBuilder::min,
-            builder.CreateSub(air.CreateIntBinOp(llvm::air::AIRBuilder::max, written, first_workload), first_workload),
+            builder.CreateSub(air.CreateIntBinOp(llvm::air::AIRBuilder::max, dispatched, first_workload), first_workload),
             builder.getInt32(grids.workloads)
         ),
         (uint64_t)0
@@ -950,7 +1065,10 @@ convert_dxbc_tesselator_domain_shader(
   uint32_t thread_id_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
   uint32_t tg_id_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
 
-  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context);
+  // with groups, a threadgroup takes a group of workloads, one after another, of at most the vertices and primitives
+  // `group_limit` packs
+  uint32_t group_limit = tessellation_group_limit(pHullStage, pArgs, factor_int);
+  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context, group_limit);
   uint32_t payload_struct_size = module.getDataLayout().getTypeAllocSize(payload_struct_type);
 
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = payload_struct_size});
@@ -972,8 +1090,9 @@ convert_dxbc_tesselator_domain_shader(
   if (conservative && !pieces.primitives)
     return llvm::make_error<UnsupportedFeature>("conservative rasterization of a domain shader of vertices too large");
   uint32_t mesh_vertices = pieces.primitives ? pieces.primitives * corners
+                           : group_limit     ? group_limit & 0xffff
                                              : get_max_workload_vertices(factor_int, pHullStage->tessellation_domain);
-  uint32_t mesh_primitives = pieces.primitives ? pieces.primitives : mesh_vertices;
+  uint32_t mesh_primitives = pieces.primitives ? pieces.primitives : group_limit ? group_limit >> 16 : mesh_vertices;
   switch (pHullStage->tessellator_output_primitive) {
   case microsoft::D3D11_SB_TESSELLATOR_OUTPUT_POINT: {
     func_signature.DefineInput(air::InputMesh{mesh_vertices, mesh_primitives, air::MeshOutputTopology::Point});
@@ -1078,7 +1197,7 @@ convert_dxbc_tesselator_domain_shader(
 
   // the threadgroup's workload: its place in the grid, counted on from the grid's first (the hull stage shares the
   // patches' workloads between the grids of several object threadgroups)
-  auto workload_index = builder.CreateAdd(
+  llvm::Value *workload_index = builder.CreateAdd(
       builder.CreateExtractElement(function->getArg(tg_id_idx), 0ull),
       builder.CreateLoad(
           types._int,
@@ -1089,6 +1208,33 @@ convert_dxbc_tesselator_domain_shader(
           )
       )
   );
+  // with groups, the threadgroup's place is its group's: a group of the patch whose groups' first is the last at or
+  // before it (the patches before it have as many), in the patch's room. the group's first workload names its patch
+  llvm::Value *group_end = nullptr;
+  if (group_limit) {
+    auto payload = builder.CreateBitCast(function->getArg(payload_idx), payload_struct_type->getPointerTo(6));
+    uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
+    uint32_t room = get_max_potential_workload_count(factor_int, pHullStage->tessellation_domain, pHullStage->tessellation_partition);
+    auto group = workload_index;
+    llvm::Value *patch = builder.getInt32(0), *first_group = builder.getInt32(0);
+    for (uint32_t i = 1; i < patch_per_group; i++) {
+      auto groups_before = builder.CreateLoad(
+          types._int, builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(7), builder.getInt32(i)})
+      );
+      auto at_or_after = builder.CreateICmpULE(groups_before, group);
+      patch = builder.CreateSelect(at_or_after, builder.getInt32(i), patch);
+      first_group = builder.CreateSelect(at_or_after, groups_before, first_group);
+    }
+    auto base = builder.CreateMul(patch, builder.getInt32(room));
+    auto entry = builder.CreateLoad(
+        types._int, builder.CreateGEP(
+                        payload_struct_type, payload,
+                        {builder.getInt32(0), builder.getInt32(6), builder.CreateAdd(base, builder.CreateSub(group, first_group))}
+                    )
+    );
+    workload_index = builder.CreateAdd(base, builder.CreateAnd(entry, builder.getInt32(0xffff)));
+    group_end = builder.CreateAdd(base, builder.CreateLShr(entry, builder.getInt32(16)));
+  }
   auto thread_index = builder.CreateExtractElement(function->getArg(thread_id_idx), 0ull);
   // the first of the workload's primitives that are the threadgroup's, when several share them
   auto first_primitive = builder.CreateMul(
@@ -1146,7 +1292,8 @@ convert_dxbc_tesselator_domain_shader(
                               workload_index, first_primitive, actual_thread_index, pieces.primitives,
                               get_output_primitive(pHullStage), data
                           )
-                        : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
+                        : group_limit ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, data)
+                                      : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
 
   resource_map.domain = domain_location(location, builder, air);
 
@@ -1329,7 +1476,9 @@ convert_dxbc_tesselator_domain_shader(
   if (behind)
     air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   builder.CreateCondBr(
-      builder.CreateICmp(llvm::CmpInst::ICMP_EQ, thread_index, builder.getInt32(0)), generate_primitive, real_return
+      // a group's primitives are made by all its threads together
+      group_limit ? builder.getTrue() : builder.CreateICmp(llvm::CmpInst::ICMP_EQ, thread_index, builder.getInt32(0)),
+      generate_primitive, real_return
   );
   builder.SetInsertPoint(generate_primitive);
 
@@ -1339,7 +1488,25 @@ convert_dxbc_tesselator_domain_shader(
     dxbc.DomainGeneratePiece(
         workload_index, first_primitive, pieces.primitives, data, get_output_primitive(pHullStage), behind_ptr
     );
-  else
+  else if (group_limit) {
+    dxbc.DomainGenerateGroup(workload_index, group_end, data, get_output_primitive(pHullStage), behind_ptr, thread_index);
+    // a group may have more primitives than vertices, and only as many have their patch's number from the vertices'
+    // threads: every primitive the mesh may have gets it here
+    for (uint32_t p = 0; p < mesh_primitives; p += 32) {
+      auto primitive = builder.CreateAdd(thread_index, builder.getInt32(p));
+      if (p + 32 > mesh_primitives) {
+        auto set = llvm::BasicBlock::Create(context, "group_primitive_id", function, real_return);
+        auto done = llvm::BasicBlock::Create(context, "group_primitive_ids", function, real_return);
+        builder.CreateCondBr(builder.CreateICmpULT(primitive, builder.getInt32(mesh_primitives)), set, done);
+        builder.SetInsertPoint(set);
+        air.CreateSetMeshPrimitiveID(primitive, resource_map.patch_id);
+        builder.CreateBr(done);
+        builder.SetInsertPoint(done);
+      } else {
+        air.CreateSetMeshPrimitiveID(primitive, resource_map.patch_id);
+      }
+    }
+  } else
     dxbc.DomainGeneratePrimitives(workload_index, data, get_output_primitive(pHullStage), behind_ptr);
 
   builder.CreateBr(real_return);

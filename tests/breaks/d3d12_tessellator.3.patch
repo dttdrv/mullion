@@ -1,0 +1,14 @@
+# the mesh stage looks each group up in the first patch's room, whichever patch it is of
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index 2978746..c91f297 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -1220,7 +1220,7 @@ convert_dxbc_tesselator_domain_shader(
+       patch = builder.CreateSelect(at_or_after, builder.getInt32(i), patch);
+       first_group = builder.CreateSelect(at_or_after, groups_before, first_group);
+     }
+-    auto base = builder.CreateMul(patch, builder.getInt32(room));
++    auto base = builder.CreateMul(builder.getInt32(0), builder.getInt32(room));
+     auto entry = builder.CreateLoad(
+         types._int, builder.CreateGEP(
+                         payload_struct_type, payload,

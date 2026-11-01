@@ -1,0 +1,28 @@
+# a group's primitives past its vertices' count keep no patch number
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index 2978746..411b7a9 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -1486,22 +1486,6 @@ convert_dxbc_tesselator_domain_shader(
+     );
+   else if (group_limit) {
+     dxbc.DomainGenerateGroup(workload_index, group_end, data, get_output_primitive(pHullStage), behind_ptr, thread_index);
+-    // a group may have more primitives than vertices, and only as many have their patch's number from the vertices'
+-    // threads: every primitive the mesh may have gets it here
+-    for (uint32_t p = 0; p < mesh_primitives; p += 32) {
+-      auto primitive = builder.CreateAdd(thread_index, builder.getInt32(p));
+-      if (p + 32 > mesh_primitives) {
+-        auto set = llvm::BasicBlock::Create(context, "group_primitive_id", function, real_return);
+-        auto done = llvm::BasicBlock::Create(context, "group_primitive_ids", function, real_return);
+-        builder.CreateCondBr(builder.CreateICmpULT(primitive, builder.getInt32(mesh_primitives)), set, done);
+-        builder.SetInsertPoint(set);
+-        air.CreateSetMeshPrimitiveID(primitive, resource_map.patch_id);
+-        builder.CreateBr(done);
+-        builder.SetInsertPoint(done);
+-      } else {
+-        air.CreateSetMeshPrimitiveID(primitive, resource_map.patch_id);
+-      }
+-    }
+   } else
+     dxbc.DomainGeneratePrimitives(workload_index, data, get_output_primitive(pHullStage), behind_ptr);
+ 

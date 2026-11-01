@@ -1,0 +1,14 @@
+# a workload of a group takes the points of an edge it shares with the one before from that one's other shared edge
+diff --git a/src/airconv/shaders/air_tessellation.metal b/src/airconv/shaders/air_tessellation.metal
+index 479b730..ceb1e63 100644
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -726,7 +726,7 @@ place_edges(object_data tess_workload *workloads, int first, int w, thread int *
+   int shared = w > first ? shared_edges(workloads[w - 1], workloads[w]) : 0, outer = base[0], inner = base[3];
+   for (int e = 0; e < 4; e++) {
+     if (shared >> e & 1) {
+-      base[e] = e == 1 ? outer : inner;
++      base[e] = e == 1 ? inner : outer;
+       continue;
+     }
+     base[e] = vertices;

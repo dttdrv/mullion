@@ -1,0 +1,14 @@
+# a hull shader's payload counts groups of workloads whether its pipelines have them or not
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index 62e059c..852ef90 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -94,7 +94,7 @@ estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t pat
+   // workload and instance, and the groups of workloads (tessellation_payload_type)
+   return cp_size_per_group + pc_size_per_group + sizeof(uint32_t) +
+          max_workload_count * patch_per_group * size_workload_info + 2 * sizeof(uint32_t) +
+-         (groups ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
++         (groups || tessellation_groups() ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
+ };
+ 
+ std::pair<uint32_t, uint32_t>

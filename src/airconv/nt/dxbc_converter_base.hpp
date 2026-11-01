@@ -706,11 +706,23 @@ public:
   llvm::Value *ClampArrayIndex(llvm::Value *ShaderValue, llvm::Value *Metadata);
 
 
-  // `Domain`: quad, triangle or isoline. `Capacity`: the workloads `DataPtr` has room for. `TessFactors`: the
-  // inside's, then the edges'; an isoline's density, then its detail
+  // `Domain`: quad, triangle or isoline. `Capacity`: the workloads `DataPtr` has room for. `GroupsPtr`: where
+  // groups of workloads of at most `GroupLimit` vertices begin (null and 0: no groups). `TessFactors`: the inside's,
+  // then the edges'; an isoline's density, then its detail
   void HullGenerateWorkload(
       const char *Domain, llvm::Value *PatchIndex, llvm::Value *CountPtr, llvm::Value *DataPtr, uint32_t Capacity,
-      TessellatorPartitioning Partitioning, llvm::ArrayRef<llvm::Value *> TessFactors
+      llvm::Value *GroupsPtr, uint32_t GroupLimit, TessellatorPartitioning Partitioning,
+      llvm::ArrayRef<llvm::Value *> TessFactors
+  );
+
+  // a mesh threadgroup's group of workloads, `First` to `End`: its vertex `ThreadIndex`'s domain location, whether
+  // the group has it, and whether every thread of the SIMD group has one; and its primitives, which all its threads
+  // make together, `Lane` being each one's
+  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
+  DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *DataPtr);
+  void DomainGenerateGroup(
+      llvm::Value *First, llvm::Value *End, llvm::Value *DataPtr, TessellatorOutputPrimitive Primitive,
+      llvm::Value *Behind, llvm::Value *Lane
   );
 
   llvm::Value *DomainGetPatchIndex(llvm::Value *WorkloadIndex, llvm::Value *DataPtr);

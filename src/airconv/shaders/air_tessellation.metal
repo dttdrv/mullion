@@ -179,42 +179,112 @@ constexpr constant tess_frame no_frame = {no_edge, no_edge};
 
 // where a patch writes its workloads: the payload's room for its threadgroup's, and the place of the patch's next
 // one, which counts them. the patches' workloads follow each other in the patches' order, so a patch starts where
-// those before it end: it is counted first, with no room, and written once every patch of the threadgroup is counted
+// those before it end: it is counted first, with no room, and written once every patch of the threadgroup is counted.
+//
+// or a mesh threadgroup takes a group of the patch's workloads, one after another, as many as have together no more
+// vertices than `group_limit`'s lower 16 bits and no more primitives than its upper 16 bits (0: each takes its own
+// threadgroup, and there are no groups); a workload has no more primitives than vertices of its own. the patch then
+// writes its workloads in a room of its own, at once, and each group as the place of its first workload and, in the
+// upper 16 bits, the end of its last
 struct tess_output {
   object_data tess_workload *workloads;
+  // the place of the patch's next workload; with groups, then the next group's, the vertices of the group being
+  // filled (0 before the patch's first), the group's first workload, and the most primitives the group has
   thread int *next;
   int capacity;
   int patch_index;
+  object_data int *groups;
+  int group_limit;
 };
+
+// a frame's vertices: its edges' points
+int
+vertices(tess_frame frame) {
+  return frame.inner.segments + 1 + frame.outer.segments + 1;
+}
+
+// whether two edges have the same points: an edge's points are a function of these (point)
+bool
+same_points(tess_edge a, tess_edge b) {
+  uchar placing = edge_kind_mask | edge_odd | edge_reverse;
+  return a.segments >= 0 && a.factor == b.factor && a.kept == b.kept && a.first == b.first &&
+         a.segments == b.segments && (a.kind & placing) == (b.kind & placing);
+}
+
+// the edges of a workload that are an edge of the one before it, as a group lays a side's workloads out: its first
+// frame's outer edge, ring i + 1's, is the inner edge of the one before's first; its second frame's inner edge, ring
+// j's, the outer edge of the one before's second. a bit each, for edges 1 and 2
+int
+shared_edges(tess_workload before, tess_workload workload) {
+  return (same_points(before.edge[0], workload.edge[1]) ? 2 : 0) | (same_points(before.edge[3], workload.edge[2]) ? 4 : 0);
+}
+
+int
+shared_vertices(tess_workload before, tess_workload workload) {
+  int shared = shared_edges(before, workload);
+  return (shared & 2 ? workload.edge[1].segments + 1 : 0) + (shared & 4 ? workload.edge[2].segments + 1 : 0);
+}
 
 // the payload has room for the most workloads its patches can have (get_max_potential_workload_count): one past it
 // is not written
 void
 emit(tess_output out, tess_frame a, tess_frame b) {
-  int index = (*out.next)++;
+  int index = out.next[0]++;
+  tess_workload workload = {{a.inner, a.outer, b.inner, b.outer}, out.patch_index};
   if (index < out.capacity)
-    out.workloads[index] = {{a.inner, a.outer, b.inner, b.outer}, out.patch_index};
+    out.workloads[index] = workload;
+  if (!out.group_limit)
+    return;
+  int added = vertices(a) + vertices(b);
+  // a workload after another of its group takes the points it shares with it from it (place_edges)
+  int shared = 0;
+  if (out.next[2] && index - 1 < out.capacity) {
+    tess_workload before = out.workloads[index - 1];
+    shared = shared_vertices(before, workload);
+  }
+  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff) &&
+      out.next[4] + added <= out.group_limit >> 16) {
+    out.next[2] += added - shared;
+    out.next[4] += added;
+  } else {
+    out.next[1]++;
+    out.next[2] = added;
+    out.next[3] = index;
+    out.next[4] = added;
+  }
+  if (index < out.capacity)
+    out.groups[out.next[1] - 1] = out.next[3] | (index + 1) << 16;
 }
 
 // a workload is one frame, or two that are small together: ring i's and ring (rings - 1 - i)'s, counting the rings
 // of the patch's longer axis, which keeps a workload's points near twice the longest edge's. the frame inside the last
-// ring, if the patch has one, takes a free place among the middle ring's workloads, or its own
+// ring, if the patch has one, takes a free place among the middle ring's workloads, or its own.
+//
+// with groups, one side's workloads come one after another, ring by ring, then the next side's: a workload then
+// shares two edges with the one before it (shared_vertices). a patch's primitives may come in any order (D3D11.3
+// 11.7.9)
 template <typename Patch>
 void
 emit_workloads(Patch patch, tess_output out) {
   bool last = patch.has_last();
-  for (int i = 0, j = patch.long_rings() - 1; i < patch.rings() && i <= j; i++, j--) {
-    if (i < j) {
+  int rings = patch.rings(), long_rings = patch.long_rings();
+  if (out.group_limit) {
+    for (int t = 0; t < Patch::sides; t++)
+      for (int i = 0, j = long_rings - 1; i < rings && i < j; i++, j--)
+        emit(out, patch.frame(i, t), j < rings ? patch.frame(j, t) : no_frame);
+  } else {
+    for (int i = 0, j = long_rings - 1; i < rings && i < j; i++, j--)
       for (int t = 0; t < Patch::sides; t++)
-        emit(out, patch.frame(i, t), j < patch.rings() ? patch.frame(j, t) : no_frame);
-      continue;
-    }
+        emit(out, patch.frame(i, t), j < rings ? patch.frame(j, t) : no_frame);
+  }
+  // the middle ring, where the rings of the longer axis meet
+  int i = (long_rings - 1) / 2;
+  if ((long_rings & 1) && i < rings)
     for (int t = 0; t < Patch::sides; t += 2) {
       bool free = t + 1 == Patch::sides;
       emit(out, patch.frame(i, t), !free ? patch.frame(i, t + 1) : last ? patch.last_frame() : no_frame);
       last = last && !free;
     }
-  }
   if (last)
     emit(out, patch.last_frame(), no_frame);
 }
@@ -301,18 +371,20 @@ struct tri_patch {
 };
 
 void generate_workload_quad(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float in0, float in1, float out0, float out1, float out2, float out3
 ) asm("mullion.generate_workload.quad");
 
 void
 generate_workload_quad(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float in0, float in1, float out0, float out1, float out2, float out3
 ) {
   if (culls(out0) || culls(out1) || culls(out2) || culls(out3))
     return;
-  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index};
+  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
   partitioning p = partitioning(partition);
   float lower = lowest(p);
   quad_patch patch;
@@ -344,18 +416,20 @@ generate_workload_quad(
 }
 
 void generate_workload_triangle(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float in, float out0, float out1, float out2
 ) asm("mullion.generate_workload.triangle");
 
 void
 generate_workload_triangle(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float in, float out0, float out1, float out2
 ) {
   if (culls(out0) || culls(out1) || culls(out2))
     return;
-  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index};
+  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
   partitioning p = partitioning(partition);
   float lower = lowest(p);
   tri_patch patch;
@@ -381,18 +455,20 @@ generate_workload_triangle(
 }
 
 void generate_workload_isoline(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float density, float detail
 ) asm("mullion.generate_workload.isoline");
 
 void
 generate_workload_isoline(
-    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, int partition,
+    int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
+    int group_limit, int partition,
     float density, float detail
 ) {
   if (culls(density) || culls(detail))
     return;
-  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index};
+  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
   partitioning p = partitioning(partition);
   // the lines' count is whole whatever the partitioning, and no line is at v = 1 (D3D11.3 11.6)
   tess_factor across = take(density, partitioning::integer, 1);
@@ -637,6 +713,192 @@ generatePrimitivePoint(int workload_index, object_data int *data, Mesh mesh, thr
     base += workload.edge[e].segments + 1;
   }
   mesh.set_primitive_count(primitives);
+}
+
+// a group of workloads, `first` to `end`, which one mesh threadgroup makes: their vertices are their edges' points, one
+// workload's after another, but for an edge that is one of the workload's before (shared_edges), whose points it
+// takes from it. so are their primitives
+
+// where a workload's edges' points start among the group's vertices, from where those of the workload before start;
+// `vertices` counts the group's
+void
+place_edges(object_data tess_workload *workloads, int first, int w, thread int *base, thread int &vertices) {
+  int shared = w > first ? shared_edges(workloads[w - 1], workloads[w]) : 0, outer = base[0], inner = base[3];
+  for (int e = 0; e < 4; e++) {
+    if (shared >> e & 1) {
+      base[e] = e == 1 ? outer : inner;
+      continue;
+    }
+    base[e] = vertices;
+    vertices += workloads[w].edge[e].segments + 1;
+  }
+}
+
+// the group's vertex `index`
+domain_location
+get_group_location(int first, int end, int thread_index, object_data int *data) asm("mullion.get_group_location");
+
+domain_location
+get_group_location(int first, int end, int thread_index, object_data int *data) {
+  simdgroup_barrier(mem_flags::mem_none);
+
+  object_data tess_workload *workloads = (object_data tess_workload *)data;
+  domain_location ret{float2(0), false, false};
+  int base[4] = {0, 0, 0, 0}, vertices = 0;
+  for (int w = first; w < end && !ret.active; w++) {
+    int start = vertices;
+    place_edges(workloads, first, w, base, vertices);
+    if (thread_index < start || thread_index >= vertices)
+      continue;
+    // an edge of its own: the one whose points the vertex is among
+    tess_edge edge = no_edge;
+    int at = 0;
+    for (int e = 0; e < 4; e++)
+      if (base[e] >= start && thread_index >= base[e] && thread_index <= base[e] + workloads[w].edge[e].segments) {
+        edge = workloads[w].edge[e];
+        at = thread_index - base[e];
+      }
+    ret.active = true;
+    ret.uv = point(edge, at);
+  }
+
+  simdgroup_barrier(mem_flags::mem_none);
+  ret.iterate = simd_all(ret.active);
+  return ret;
+}
+
+// the primitives are made by every thread of the mesh threadgroup, which is one SIMD group of 32: thread `lane`
+// makes the primitives numbered lane, lane + 32 and so on, or for triangles those of a frame's zip slots lane,
+// lane + 32 and so on. a zip slot's triangle is numbered by the steps taken before it: of the edges' segments, the
+// inner steps before it, as far as the inner edge's segments, and the outer steps before it likewise
+// (tess_zip::next takes a step while its edge has a segment left), so it is the triangle one thread would make
+
+// which of 32 of a zip's slots, from `chunk` on, are inner steps (x) and outer steps (y), a bit each
+uint2
+zip_kinds(tess_zip zip, int slots, int chunk, int lane) {
+#if defined(__METAL_VERSION__)
+  int at = chunk + lane, kind = at < slots ? zip.step(at) : 0;
+  return uint2(uint(simd_vote::vote_t(simd_ballot(kind == 1))), uint(simd_vote::vote_t(simd_ballot(kind == 2))));
+#else
+  // the host has one thread, which looks at every slot
+  uint2 kinds(0, 0);
+  for (int k = 0; k < 32 && chunk + k < slots; k++) {
+    int kind = zip.step(chunk + k);
+    kinds.x |= uint(kind == 1) << k;
+    kinds.y |= uint(kind == 2) << k;
+  }
+  return kinds;
+#endif
+}
+
+// a workload's triangles, from primitive `primitives` of the mesh on, its edges' points starting at `base`; returns
+// where they end
+int
+group_triangles(
+    object_data tess_workload &workload, thread int *base, int primitives, Mesh mesh, threadgroup uint *behind,
+    short ccw_xor, int lane
+) {
+  uint below = (1u << lane) - 1;
+  for (int frame = 0; frame < 4 && workload.edge[frame].segments >= 0; frame += 2) {
+    tess_zip zip = {workload.edge[frame], workload.edge[frame + 1], 0, 0, 0};
+    int inner = zip.inner.segments, outer = zip.outer.segments, slots = zip.slots();
+    int base_inner = base[frame], base_outer = base[frame + 1];
+    // the inner and outer steps of the slots before the chunk
+    int inner_steps = 0, outer_steps = 0;
+    for (int chunk = 0; chunk < slots; chunk += 32) {
+      uint2 kinds = zip_kinds(zip, slots, chunk, lane);
+      int i = inner_steps + popcount(kinds.x & below), o = outer_steps + popcount(kinds.y & below);
+      int taken_i = min(i, inner), taken_o = min(o, outer);
+      bool step_inner = (kinds.x >> lane & 1) && i < inner, step_outer = (kinds.y >> lane & 1) && o < outer;
+      if (step_inner || step_outer) {
+        short3 triangle = step_inner ? short3(base_inner + i, base_outer + taken_o, base_inner + i + 1)
+                                     : short3(base_outer + o, base_outer + o + 1, base_inner + taken_i);
+        int n = primitives + taken_i + taken_o;
+        mesh.set_index(n * 3, triangle[0]);
+        mesh.set_index(n * 3 + (1 ^ ccw_xor), triangle[1]);
+        mesh.set_index(n * 3 + (2 ^ ccw_xor), triangle[2]);
+        cull(mesh, behind, n, triangle[0], triangle[1], triangle[2]);
+      }
+      inner_steps += popcount(kinds.x);
+      outer_steps += popcount(kinds.y);
+    }
+    primitives += min(inner_steps, inner) + min(outer_steps, outer);
+  }
+  return primitives;
+}
+
+// lines and points: a primitive's edge is the one its number falls in, counting each edge's segments or the points
+// that are the workload's own
+int
+group_runs(
+    object_data tess_workload &workload, thread int *base, int primitives, Mesh mesh, threadgroup uint *behind,
+    int vertices, int lane
+) {
+  for (int e = 0; e < 4; e++) {
+    int segments = workload.edge[e].segments, count = vertices == 2 ? segments : workload.edge[e].owned;
+    for (int i = lane; i < count; i += 32) {
+      int n = primitives + i, at = base[e] + i;
+      mesh.set_index(n * vertices, at);
+      if (vertices == 2)
+        mesh.set_index(n * 2 + 1, at + 1);
+      cull(mesh, behind, n, at, at + vertices - 1, at);
+    }
+    primitives += max(count, 0);
+  }
+  return primitives;
+}
+
+// `vertices`: 3 for clockwise triangles, -3 for counter-clockwise ones
+void
+generate_group(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int vertices, int lane
+) {
+  object_data tess_workload *workloads = (object_data tess_workload *)data;
+  int primitives = 0, base[4] = {0, 0, 0, 0}, placed = 0;
+  for (int w = first; w < end; w++) {
+    place_edges(workloads, first, w, base, placed);
+    primitives = vertices == 3 || vertices == -3
+                     ? group_triangles(workloads[w], base, primitives, mesh, behind, vertices == 3 ? 0 : 3, lane)
+                     : group_runs(workloads[w], base, primitives, mesh, behind, vertices, lane);
+  }
+  if (lane == 0)
+    mesh.set_primitive_count(primitives);
+}
+
+void generateGroupTriangle(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+) asm("mullion.domain_generate_group.triangle");
+
+void
+generateGroupTriangle(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
+  generate_group(first, end, data, mesh, behind, 3, lane);
+}
+
+void generateGroupTriangleCCW(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+) asm("mullion.domain_generate_group.triangle_ccw");
+
+void
+generateGroupTriangleCCW(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
+  generate_group(first, end, data, mesh, behind, -3, lane);
+}
+
+void generateGroupLine(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+) asm("mullion.domain_generate_group.line");
+
+void
+generateGroupLine(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
+  generate_group(first, end, data, mesh, behind, 2, lane);
+}
+
+void generateGroupPoint(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+) asm("mullion.domain_generate_group.point");
+
+void
+generateGroupPoint(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
+  generate_group(first, end, data, mesh, behind, 1, lane);
 }
 
 // a geometry shader takes the workload's primitives one at a time, each numbered as above

@@ -9,7 +9,9 @@
 //   clockwise or counter-clockwise as the hull shader says, where u goes right and v down (11.5): drawn adding 1
 //   to a pixel, with back faces culled, clockwise triangles leave 1 over the patch and counter-clockwise ones 0.
 //   the two patches whose insides make the most workloads and the most vertices a threadgroup has are also drawn as
-//   many at once, which fills every threadgroup, and leave their count. the triangles join the points as the
+//   many at once, which fills every threadgroup, and leave their count. each triangle carries its patch's
+//   SV_PrimitiveID (11.7.9.1), which the pixel shader adds 64 times over, so the patches over a pixel leave the sum
+//   of their numbers. the triangles join the points as the
 //   reference's do (11.7.6): a vertex carries the product of its location's coordinates, which a triangle
 //   interpolates between its corners, so a pixel shows which triangle is over it.
 // - lines: an isoline patch's lines are at v = line / lines, none at 1 (11.6), each cut where the reference puts
@@ -186,7 +188,10 @@ float4 ps_log(PSI i PATCH_INPUT) : SV_Target {
   }
   return WEIGHT(i);
 }
-float4 ps_cover(PSI i) : SV_Target { return float4(WEIGHT(i), WEIGHT(i) == 1 ? i.value : 0, 0, 0); }
+// a triangle of the first instance adds its patch's SV_PrimitiveID 64 times over to its 1
+float4 ps_cover(PSI i PATCH_INPUT) : SV_Target {
+  return float4(WEIGHT(i) + (TRIANGLES && WEIGHT(i) == 1 ? 64 * PATCH(i) : 0), WEIGHT(i) == 1 ? i.value : 0, 0, 0);
+}
 )hlsl";
 
 using reference::Domain;

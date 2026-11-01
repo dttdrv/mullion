@@ -707,7 +707,8 @@ std::vector<std::unique_ptr<BasicBlock>> read_control_flow(
 
 uint32_t next_pow2(uint32_t x);
 
-size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group);
+// the payload a hull shader's object threadgroup leaves: with `groups`, with the groups of workloads too
+size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group, bool groups = false);
 
 
 // the tessellation factor a pipeline's stages are built for, and the most segments it cuts an edge into
@@ -722,8 +723,15 @@ TessellatorOutputPrimitive get_output_primitive(SM50ShaderInternal *pHullStage);
 std::pair<uint32_t, uint32_t>
 mesh_threadgroups_per_workload(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int);
 
+// the most vertices and primitives of a group of workloads that one mesh threadgroup takes (tessellation_group_size),
+// or 0 where each workload takes its own (air_tessellation.metal's tess_output)
+uint32_t tessellation_group_limit(
+    SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int
+);
+
 llvm::StructType *tessellation_payload_type(
-    SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context
+    SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context,
+    uint32_t group_limit = 0
 );
 
 llvm::Value *setup_domain_stage(
