@@ -1,0 +1,16 @@
+# an occlusion query begun in a pass keeps the depth bounds variant its pipeline had, which runs the tests before the pixel shader's discard.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 2e16f99..5847185 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3427,10 +3427,6 @@ public:
+     }
+     active_queries_.push_back({static_cast<MTLD3D12QueryHeap *>(pHeap), Index, (uint32_t)visibility_slots_.size()});
+     CountVisibility();
+-    // a pipeline that emulates the depth bounds test has a variant for draws an occlusion query counts
+-    // (MTLD3D12GraphicsPipelineState::RenderTargets)
+-    if (pso_graphics_ && pso_graphics_->depth_bounds_emulated)
+-      dirty_state_.set(DirtyState::GraphicsPipelineState);
+   };
+ 
+   void STDMETHODCALLTYPE

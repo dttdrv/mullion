@@ -8,7 +8,9 @@
 // reach zero while a library keeps the pipeline and its private data alive (vkd3d-proton test_pipeline_library).
 // "cache compiled PSOs to disk and avoid costly shader compilation during subsequent runs" (Microsoft Learn,
 // D3D12 pipeline state cache sample). "The pipeline stream description is matched against the library database"
-// (ID3D12PipelineLibrary1::LoadPipeline). the converter import counts conversion with the disk cache disabled;
+// (ID3D12PipelineLibrary1::LoadPipeline). a blob of another driver gives D3D12_ERROR_DRIVER_VERSION_MISMATCH,
+// "if the provided data came from an old driver or runtime" (CreatePipelineLibrary, Return value), as vkd3d-proton
+// answers, so that a game replaces its cache file. the converter import counts conversion with the disk cache disabled;
 // named stream loads must preserve identity, reject AS/MS/depth bounds changes, and draw the same generated values.
 // a mesh shader's payload comes from DispatchMesh: "This parameter provides the same input values for the entire
 // Mesh shader thread group." (D3D12 mesh shader specification, Mesh Payload). its output arrays are another matter:
@@ -265,6 +267,13 @@ main(int argc, char **argv) {
   empty_copy.Reset();
   hr = device->CreatePipelineLibrary(nullptr, empty.size(), __uuidof(ID3D12PipelineLibrary), nullptr);
   expect(hr == E_INVALIDARG, "a null nonempty blob was accepted: %08lx", hr);
+  // another driver's blob, short or long, is a version mismatch, which games answer by building a new library
+  const char other_driver[] = "another driver's pipeline library, which is not this one's";
+  for (SIZE_T length : {SIZE_T(4), sizeof(other_driver)}) {
+    hr = device->CreatePipelineLibrary(other_driver, length, __uuidof(ID3D12PipelineLibrary), nullptr);
+    expect(hr == D3D12_ERROR_DRIVER_VERSION_MISMATCH, "a foreign blob of %llu bytes: %08lx, want %08lx",
+           (UINT64)length, hr, D3D12_ERROR_DRIVER_VERSION_MISMATCH);
+  }
   ComPtr<ID3D12Fence> unsupported;
   hr = device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&unsupported));
   expect(hr == E_NOINTERFACE && !unsupported, "an unsupported library interface was returned: %08lx", hr);
@@ -610,25 +619,28 @@ main(int argc, char **argv) {
          "a truncated stream subobject was accepted");
   stream_desc.SizeInBytes = saved_size;
 
-  step("seed %u: null arguments and another device", seed);
+  step("seed %u: null arguments and the device made again", seed);
   ComPtr<ID3D12PipelineState> pipeline;
   expect(library->LoadComputePipeline(nullptr, &computes[0], IID_PPV_ARGS(&pipeline)) == E_INVALIDARG,
          "a null name was accepted");
   expect(library->LoadGraphicsPipeline(names[0].c_str(), nullptr, IID_PPV_ARGS(&pipeline)) == E_INVALIDARG,
          "a null descriptor was accepted");
-  ComPtr<ID3D12Device> other_device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&other_device)));
-  auto other_root = root_signature(other_device.Get(), {2, params, 0, nullptr, root_flags});
-  if (!expect(other_root, "the other device's root signature was not made"))
+  // a device is a singleton per adapter (D3D12CreateDevice, Remarks): made again, it is this one, whose pipelines the
+  // library stores
+  ComPtr<ID3D12Device2> made_again;
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&made_again)));
+  expect(made_again.Get() == device.Get(), "the device made again is another device");
+  auto made_again_root = root_signature(made_again.Get(), {2, params, 0, nullptr, root_flags});
+  if (!expect(made_again_root, "the root signature of the device made again was not made"))
     return verdict();
-  auto foreign = computes[0];
-  foreign.pRootSignature = other_root.Get();
-  CHECK(other_device->CreateComputePipelineState(&foreign, IID_PPV_ARGS(&pipeline)));
-  expect(library->StorePipeline(L"foreign", pipeline.Get()) == E_INVALIDARG,
-         "a pipeline from another device was stored");
+  auto same = computes[0];
+  same.pRootSignature = made_again_root.Get();
+  CHECK(made_again->CreateComputePipelineState(&same, IID_PPV_ARGS(&pipeline)));
+  expect(library->StorePipeline(L"again", pipeline.Get()) == S_OK,
+         "a pipeline of the device made again was not stored");
   pipeline.Reset();
-  other_root.Reset();
-  other_device.Reset();
+  made_again_root.Reset();
+  made_again.Reset();
   step("seed %u: concurrent stores", seed);
   CHECK(device->CreateComputePipelineState(&computes[0], IID_PPV_ARGS(&pipeline)));
   std::array<HRESULT, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> answers;

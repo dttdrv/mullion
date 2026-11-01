@@ -1357,6 +1357,34 @@ convert_dxil(
           inlined = true;
         }
     }
+  // LLVM's integer division and remainder by zero are undefined, as is INT_MIN / -1, and Apple's GPUs give the dividend
+  // for a remainder by zero; D3D's give all ones (DXIL.rst, UDiv), as DXBC's udiv does here. a divisor that may be zero
+  // (or -1, signed) divides as one when it is, and a quotient or remainder by zero is all ones
+  if (start)
+    for (auto &I : make_early_inc_range(instructions(*start))) {
+      auto op = I.getOpcode();
+      bool is_signed = op == llvm::Instruction::SDiv || op == llvm::Instruction::SRem;
+      if (!is_signed && op != llvm::Instruction::UDiv && op != llvm::Instruction::URem)
+        continue;
+      auto dividend = I.getOperand(0), divisor = I.getOperand(1);
+      if (auto known = dyn_cast<ConstantInt>(divisor); known && !known->isZero() && !(is_signed && known->isMinusOne()))
+        continue;
+      auto type = I.getType();
+      IRBuilder<> ir(&I);
+      auto zero = ir.CreateICmpEQ(divisor, Constant::getNullValue(type));
+      Value *one = zero;
+      if (is_signed)
+        one = ir.CreateOr(
+            zero, ir.CreateAnd(
+                      ir.CreateICmpEQ(dividend, ConstantInt::get(type, APInt::getSignedMinValue(type->getScalarSizeInBits()))),
+                      ir.CreateICmpEQ(divisor, Constant::getAllOnesValue(type))
+                  )
+        );
+      I.setOperand(1, ir.CreateSelect(one, ConstantInt::get(type, 1), divisor));
+      ir.SetInsertPoint(I.getNextNode());
+      auto result = ir.CreateSelect(zero, Constant::getAllOnesValue(type), &I);
+      I.replaceUsesWithIf(result, [&](Use &use) { return use.getUser() != result; });
+    }
   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
   // linked in on its own: only this one keeps its body, under a name no other takes, and module variables stay private
   // to it
@@ -1471,6 +1499,20 @@ convert_dxil(
     return b.CreateLoad(
         ty->getArrayElementType(), b.CreateInBoundsGEP(ty, ray_field(field), {b.getInt32(0), element})
     );
+  };
+  // the device's lock table, which the 64-bit atomics' locks and the header of the structure of nothing are in: the
+  // global root arguments', or for a ray tracing shader with no global root signature its dispatch's. null where
+  // neither has one (airconv's command line, with no root signature)
+  auto atomic_locks = [&]() -> Value * {
+    if (auto locks = ctx.binding.GetAtomicLocks(air); locks || !ray)
+      return locks;
+    auto &b = ctx.builder;
+    auto i64 = b.getInt64Ty();
+    auto address = b.CreateLoad(
+        i64, b.CreateGEP(i64, b.CreateBitCast(ray_value(RayDispatch), i64->getPointerTo(2)),
+                         b.getInt32(offsetof(SM50_RAY_DISPATCH, atomic_locks) / sizeof(uint64_t)))
+    );
+    return b.CreateIntToPtr(address, b.getInt32Ty()->getPointerTo(1));
   };
   auto ray_call = [&](uint32_t slot, Value *first, Value *second) {
     auto &b = ctx.builder;
@@ -2756,25 +2798,22 @@ convert_dxil(
     }
     case CBufferLoad: {
       // DXIL.rst CBufferLoad aligns the offset; DXR shader records can put root constants after one DWORD. past the
-      // bound size it reads 0 (D3D11.3 7.5): from the start instead, its value dropped, as LoadConstantBuffer does
+      // bound size it reads 0 (D3D11.3 7.5): from a row of zeros instead, as LoadConstantBuffer does
       auto &buffer = *handles[a(1)].cbuffer;
       auto offset = ir.CreateZExt(a(2), ir.getInt64Ty());
-      Value *inside = nullptr;
-      if (buffer.Metadata) {
-        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
-        inside = ir.CreateICmpULE(end, buffer.Metadata);
-        offset = ir.CreateSelect(inside, offset, ir.getInt64(0));
-      }
       auto space = buffer.Pointer->getType()->getPointerAddressSpace();
-      auto pointer = ir.CreateGEP(
+      Value *pointer = ir.CreateGEP(
           ir.getInt8Ty(), ir.CreatePointerCast(buffer.Pointer, ir.getInt8Ty()->getPointerTo(space)), offset
       );
+      if (buffer.Metadata) {
+        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+        auto zero = ir.CreatePointerCast(dxbc.ZeroRow(), ir.getInt8Ty()->getPointerTo(space));
+        pointer = ir.CreateSelect(ir.CreateICmpULE(end, buffer.Metadata), pointer, zero);
+      }
       ret = ir.CreateAlignedLoad(
           ty, ir.CreatePointerCast(pointer, ty->getPointerTo(space)),
           std::min(Align(constant(a(3))), getKnownAlignment(buffer.Pointer, ctx.module.getDataLayout()))
       );
-      if (inside)
-        ret = ir.CreateSelect(inside, ret, Constant::getNullValue(ty));
       break;
     }
     case CBufferLoadLegacy: {
@@ -3295,7 +3334,14 @@ convert_dxil(
         ret = UndefValue::get(ty);
         break;
       }
-      auto locks = ty->isIntegerTy(64) ? ctx.binding.GetAtomicLocks(air) : nullptr;
+      // Metal has texture atomics on integer textures only: a float exchange on a typed resource (an R32_FLOAT
+      // RWTexture or RWBuffer, HLSL SM 6.6, which DXIL gives as an exchange of its bits) runs under a lock as a
+      // 64-bit atomic does, its bits the word's low half
+      bool float_texel =
+          !h.buffer && !ty->isIntegerTy(64) && h.texture->Texture.sample_type == Texture::sample_float;
+      auto locks = ty->isIntegerTy(64) || float_texel ? atomic_locks() : nullptr;
+      if (float_texel && !locks)
+        return make_error<UnsupportedFeature>("float atomic on a typed resource without the atomic lock table");
       if (locks) {
         // aliases key the backing allocation and its coordinates, rather than the Metal view and relative slice
         auto texel = [&]() -> Word64 {
@@ -3319,14 +3365,22 @@ convert_dxil(
                                ir.CreateLShr(origin, ir.getInt32Ty()->getBitWidth()));
           }
           return {key, llvm::air::MemFlags::Texture,
-                  [=, &ir, &air, &t] {
+                  [=, &ir, &air, &t]() -> Value * {
                     auto v = air.CreateRead(t.Texture, t.Handle, address, array, nullptr, ir.getInt32(0), true).first;
+                    if (float_texel)
+                      return ir.CreateZExt(ir.CreateBitCast(ir.CreateExtractElement(v, (uint64_t)0), ir.getInt32Ty()), i64);
                     return ir.CreateOr(
                         ir.CreateZExt(ir.CreateExtractElement(v, (uint64_t)0), i64),
                         ir.CreateShl(ir.CreateZExt(ir.CreateExtractElement(v, 1), i64), 32)
                     );
                   },
                   [=, &ir, &air, &t](Value *v) {
+                    if (float_texel) {
+                      auto bits = ir.CreateBitCast(ir.CreateTrunc(v, ir.getInt32Ty()), ir.getFloatTy());
+                      air.CreateWrite(t.Texture, t.Handle, address, array, nullptr, ir.getInt32(0),
+                                      ir.CreateVectorSplat(4, bits), true);
+                      return;
+                    }
                     Value *halves = Constant::getNullValue(FixedVectorType::get(ir.getInt32Ty(), 4));
                     halves = ir.CreateInsertElement(halves, ir.CreateTrunc(v, ir.getInt32Ty()), (uint64_t)0);
                     halves = ir.CreateInsertElement(halves, ir.CreateTrunc(ir.CreateLShr(v, 32), ir.getInt32Ty()), 1);
@@ -3338,10 +3392,16 @@ convert_dxil(
                                    *h.buffer, ir.getInt64Ty(), ir.CreateLShr(byte_address(h, a(first), a(first + 1)), 3)
                                ))
                              : texel();
+        // a float's operands are its bits, so a compare is of bits (-0.0 is not 0.0)
+        auto operand = [&](unsigned i) {
+          return float_texel ? ir.CreateZExt(ir.CreateBitCast(a(i), ir.getInt32Ty()), ir.getInt64Ty()) : a(i);
+        };
         ret = locked(word, locks, [&](Value *old) {
-          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, a(5)), a(6), old)
-                          : buildAtomicRMWValue(atomic_op(code), ir, old, a(6));
+          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
+                          : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
         });
+        if (float_texel)
+          ret = ir.CreateBitCast(ir.CreateTrunc(ret, ir.getInt32Ty()), ty);
         break;
       }
       if (ty->isIntegerTy(64))
@@ -3838,9 +3898,10 @@ convert_dxil(
       auto i64 = ir.getInt64Ty();
       auto structure_ty = opaque("struct._instance_acceleration_structure_t")->getPointerTo(1);
       auto address = ir.CreatePtrToInt(handles[a(2)].buffer->Pointer, i64);
-      auto nothing = ir.CreateSub(
-          ir.CreatePtrToInt(ctx.binding.GetAtomicLocks(air), i64), ir.getInt64(SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE)
-      );
+      auto locks = atomic_locks();
+      if (!locks)
+        return make_error<UnsupportedFeature>("TraceRayInline without a lock table");
+      auto nothing = ir.CreateSub(ir.CreatePtrToInt(locks, i64), ir.getInt64(SM50_NULL_ACCELERATION_STRUCTURE_HEADER_SIZE));
       auto header = ir.CreateIntToPtr(
           ir.CreateSelect(ir.CreateICmpEQ(address, ir.getInt64(0)), nothing, address), i64->getPointerTo(1)
       );
@@ -3988,7 +4049,6 @@ convert_dxil(
           clip[k] = ir.CreateInsertElement(clip[k], real(word(conservative_vertices, corner[k], position_at + c)), c);
       }
       Value *viewport = primitive_outputs[2] ? (Value *)word(conservative_primitives, p, cm->registers[1].size() + 2) : ir.getInt32(0);
-      viewport = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport, ir.getInt32(15), false);
       auto triangle = conservative_triangle(ir, air, ctx.types, clip, cm->viewports, viewport);
       auto blend = [&](const ConservativeTriangle::Weights &parts, uint32_t u, uint32_t column) {
         Value *sum = nullptr;
@@ -4120,7 +4180,7 @@ convert_dxil(
         wide.push_back(cx);
   for (auto I : wide) {
     ir.SetInsertPoint(I);
-    auto locks = ctx.binding.GetAtomicLocks(air);
+    auto locks = atomic_locks();
     if (!locks)
       return make_error<UnsupportedFeature>("64-bit groupshared atomic without a lock table");
     Value *ret;

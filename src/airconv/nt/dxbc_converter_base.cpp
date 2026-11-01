@@ -19,8 +19,9 @@
 #include "dxbc_converter_base.hpp"
 #include "../dxbc_converter.hpp"
 #include "air_builder.hpp"
-#include "../transforms/merge_minmax_branches.hpp"
+#include "../transforms/merge_sample_branches.hpp"
 #include <cstring>
+#include "../transforms/merge_minmax_branches.hpp"
 #include <format>
 #include <limits>
 #include "llvm/IR/Constants.h"
@@ -87,21 +88,43 @@ Converter::LoadOperand(const SrcOperandConstantBuffer &SrcOp, mask_t Mask) {
 llvm::Value *
 Converter::LoadConstantBuffer(const ConstantBufferDescriptor &Buffer, llvm::Value *Row, int Component, mask_t Dwords) {
   auto TyIntVec4 = air.getIntTy(4);
-  llvm::Value *InBounds = nullptr;
-  // rows past the bound buffer's size read 0 (D3D11.3 7.5); root CBVs carry no size
-  if (Buffer.Metadata) {
-    InBounds = ir.CreateICmpULT(Row, ir.CreateTrunc(ir.CreateLShr(Buffer.Metadata, 4), air.getIntTy()));
-    Row = ir.CreateSelect(InBounds, Row, ir.getInt32(0));
+  auto RowPointer = ir.CreateGEP(TyIntVec4, Buffer.Pointer, Row);
+  // rows past the bound buffer's size read 0 (D3D11.3 7.5); root CBVs carry no size. such a row's address is a row of
+  // zeros in the shader's own constant memory: Apple's compiler keeps a constant row's load a uniform load when only
+  // its address is chosen, where choosing the value it loaded (or the row) made each load the threads' own, about 25
+  // times the GPU time of a shader that reads hundreds of constant rows (tests/perf cbv_rows, dttdrv/mullion#32).
+  // MULLION_AIRCONV_SKIP=cbuffer-bounds leaves the check out, to measure what it costs (it is in the shader cache's key)
+  static const bool skip = [] {
+    auto names = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return names && strstr(names, "cbuffer-bounds");
+  }();
+  if (Buffer.Metadata && !skip) {
+    auto InBounds = ir.CreateICmpULT(Row, ir.CreateTrunc(ir.CreateLShr(Buffer.Metadata, 4), air.getIntTy()));
+    RowPointer = ir.CreateSelect(InBounds, RowPointer, ZeroRow());
   }
   auto Load = [&](unsigned Dword) -> llvm::Value * {
-    return ir.CreateLoad(air.getIntTy(), ir.CreateGEP(TyIntVec4, Buffer.Pointer, {Row, ir.getInt32(Dword)}));
+    return ir.CreateLoad(air.getIntTy(), ir.CreateGEP(TyIntVec4, RowPointer, {ir.getInt32(0), ir.getInt32(Dword)}));
   };
   // a row's dwords load one by one, only those read: a vector load reads all four, and costs the shader more
   llvm::Value *Value = Component >= 0 ? Load(Component) : llvm::PoisonValue::get(TyIntVec4);
   for (unsigned i = 0; Component < 0 && i < 4; i++)
     if (Dwords & (1 << i))
       Value = ir.CreateInsertElement(Value, Load(i), i);
-  return InBounds ? ir.CreateSelect(InBounds, Value, llvm::Constant::getNullValue(Value->getType())) : Value;
+  return Value;
+}
+
+llvm::GlobalVariable *
+Converter::ZeroRow() {
+  auto &M = *ir.GetInsertBlock()->getModule();
+  if (auto Zero = M.getGlobalVariable("mullion.zero_row", true))
+    return Zero;
+  auto TyIntVec4 = air.getIntTy(4);
+  auto Zero = new llvm::GlobalVariable(
+      M, TyIntVec4, true, llvm::GlobalValue::InternalLinkage, llvm::Constant::getNullValue(TyIntVec4),
+      "mullion.zero_row", nullptr, llvm::GlobalValue::NotThreadLocal, 2
+  );
+  Zero->setAlignment(llvm::Align(16));
+  return Zero;
 }
 
 llvm::Value *
@@ -2057,6 +2080,16 @@ Converter::operator()(const InstSampleCompare &sample) {
   llvm::Value *ArrayIndex = nullptr;
 
   switch (Tex->Logical) {
+  case Texture::texture1d:
+    Coord = LoadOperand(sample.src_address, kMaskComponentX);
+    Coord = ir.CreateInsertElement(llvm::ConstantFP::getNullValue(air.getFloatTy(2)), Coord, 0ull);
+    break;
+  case Texture::texture1d_array:
+    Coord = LoadOperand(sample.src_address, kMaskComponentX);
+    Coord = ir.CreateInsertElement(llvm::ConstantFP::getNullValue(air.getFloatTy(2)), Coord, 0ull);
+    ArrayIndex = LoadOperand(sample.src_address, kMaskComponentY);
+    ArrayIndex = ClampArrayIndex(ArrayIndex, Tex->Metadata);
+    break;
   case Texture::depth2d:
     Coord = LoadOperand(sample.src_address, kMaskVecXY);
     break;
@@ -2350,8 +2383,7 @@ Converter::SampleImplicit(
     return Biased();
   // a static sampler is known when the pipeline is made: one that is not anisotropic, or a sample whose only bias is
   // the sampler's own and that is none, reads Metal's own LOD. Metal's gradient sample below costs about twice its
-  // implicit one (the probe's sample scenes on an M4), and a sampler of a descriptor keeps it: what it is is known only
-  // when the shader runs
+  // implicit one (the probe's sample scenes on an M4)
   if (auto Known = KnownSamplers.find(SamplerMetadata); Known != KnownSamplers.end()) {
     auto Own = SamplerBiases.find(Bias);
     if (!Known->second.Anisotropic ||
@@ -2360,11 +2392,58 @@ Converter::SampleImplicit(
   }
   auto Anisotropy = ir.CreateAnd(ir.CreateLShr(SamplerMetadata, SM50_SAMPLER_METADATA_ANISOTROPY),
                                  (1 << SM50_SAMPLER_METADATA_ANISOTROPY_BITS) - 1);
-  if (auto Known = dyn_cast<ConstantInt>(ir.CreateICmpUGT(Anisotropy, ir.getInt64(1))); Known && Known->isZero())
+  auto Isotropic = ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
+  if (auto Known = dyn_cast<ConstantInt>(Isotropic); Known && Known->isOne())
     return Biased();
-  auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
-  return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
-                              BiasGradient(DDY, Bias), MinLOD, Offset, Reference);
+  auto Gradients = [&] {
+    auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
+    return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
+                                BiasGradient(DDY, Bias), MinLOD, Offset, Reference);
+  };
+  // MULLION_AIRCONV_SKIP=table-sampler-implicit: a sampler not known here always takes the gradients
+  static const bool Selects = [] {
+    auto Skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return !Skip || !strstr(Skip, "table-sampler-implicit");
+  }();
+  if (!Selects || isa<Constant>(Isotropic))
+    return Gradients();
+  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic
+  // reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29 ms on an M1 Max). the
+  // whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a lane's sampler need not
+  // be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the branches of a sampler's samples
+  // that follow each other
+  auto &Context = air.getContext();
+  auto QuadAll = air.getModule()->getOrInsertFunction(
+      "air.quad_all", FunctionType::get(ir.getInt1Ty(), {ir.getInt1Ty()}, false),
+      AttributeList::get(Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::Convergent)},
+                                   {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                                   {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}})
+  );
+  auto Whole = ir.CreateCall(QuadAll, {Isotropic});
+  Whole->addFnAttr(Attribute::ReadNone);
+  auto Head = ir.GetInsertBlock();
+  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
+  if (auto Branch = Head->getTerminator())
+    Branch->eraseFromParent();
+  auto Own = llvm::BasicBlock::Create(ctx.llvm, "sample_implicit", Head->getParent(), Tail);
+  auto Scaled = llvm::BasicBlock::Create(ctx.llvm, "sample_gradients", Head->getParent(), Tail);
+  ir.SetInsertPoint(Head);
+  ir.CreateCondBr(Whole, Own, Scaled)->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
+  ir.SetInsertPoint(Own);
+  auto Implicit = Biased();
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Scaled);
+  auto Gradient = Gradients();
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Tail, Tail->begin());
+  auto Value = ir.CreatePHI(Implicit.first->getType(), 2);
+  auto Residency = ir.CreatePHI(Implicit.second->getType(), 2);
+  for (auto [Block, Read] : {std::pair{Own, Implicit}, std::pair{Scaled, Gradient}}) {
+    Value->addIncoming(Read.first, Block);
+    Residency->addIncoming(Read.second, Block);
+  }
+  return {Value, Residency};
 }
 
 std::pair<llvm::Value *, llvm::Value *>

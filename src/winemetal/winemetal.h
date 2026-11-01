@@ -2077,8 +2077,11 @@ WINEMETAL_API void MTLCommandBuffer_encodeWaitForEvent(obj_handle_t cmdbuf, obj_
 
 WINEMETAL_API void MTLSharedEvent_signalValue(obj_handle_t event, uint64_t value);
 
+// sets the NT event once `event` has `at_value`. with `reference`, the event object the handle names now, through a
+// handle of the notification's own: the caller may close its handle before then. without, the handle itself, which
+// stays open until the notification has come
 WINEMETAL_API void MTLSharedEvent_setWin32EventAtValue(
-    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value
+    obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value, bool reference
 );
 
 WINEMETAL_API obj_handle_t MTLDevice_newFence(obj_handle_t device);
@@ -2121,9 +2124,16 @@ WINEMETAL_API bool WMTSetMetalShaderCachePath(const char *path);
 
 WINEMETAL_API obj_handle_t MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info);
 
-WINEMETAL_API bool WMTBootstrapRegister(const char *name, mach_port_t mach_port);
+// registers `mach_port`, the port of `object` (an MTLSharedEvent or MTLTexture), under `name` for other processes to
+// look up; the name lasts while object, or an object WMTBootstrapKeep gave it, does (winemetal_unix.c, shared_name)
+WINEMETAL_API bool WMTBootstrapRegister(const char *name, obj_handle_t object, mach_port_t mach_port);
 
+// a send right to the port registered under `name`; each success is followed by WMTBootstrapKeep
 WINEMETAL_API bool WMTBootstrapLookUp(const char *name, mach_port_t *mach_port);
+
+// `object`, made from the port WMTBootstrapLookUp gave, keeps the name too when this process registered it; 0 when no
+// object was made. WMT::SharedNameHold (Metal.hpp) makes the call
+WINEMETAL_API void WMTBootstrapKeep(const char *name, obj_handle_t object);
 
 WINEMETAL_API mach_port_t MTLSharedEvent_createMachPort(obj_handle_t event);
 
@@ -2492,8 +2502,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferPopDebugGroup, WMTUnixFlightWrite, WMTUnixMetal4NewBuffer, WMTUnixMetal4Encoder,
        WMTUnixMetal4Commands, WMTUnixMetal4EndEncoder, WMTUnixMetal4Commit, WMTUnixMetal4Feedback, WMTUnixMetal4Wait,
        WMTUnixMetal4CounterHeap, WMTUnixMetal4Frequency, WMTUnixMetal4Present, WMTUnixMetal4WaitEvent,
-       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases,
-       WMTUnixDeviceSupportsSamplerReduction, WMTUnixCallCount };
+       WMTUnixDeviceSupportsShaderBarycentrics, WMTUnixTraceWrite, WMTUnixMetal4OrderAliases, WMTUnixMetal4WaitGPU,
+       WMTUnixBootstrapKeep, WMTUnixDeviceSupportsSamplerReduction, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
@@ -2570,13 +2580,18 @@ WINEMETAL_API void MTL4CommandEncoder_endEncoding(obj_handle_t encoder, bool seg
 WINEMETAL_API void MTL4CommandBuffer_commit(obj_handle_t buffer);
 WINEMETAL_API struct WMTMetal4Feedback MTL4CommandBuffer_feedback(obj_handle_t buffer);
 WINEMETAL_API void MTL4CommandBuffer_waitUntilCompleted(obj_handle_t buffer);
+// the GPU is done with the buffer's work, or the buffer failed: what it wrote is there. its feedback (status(), the
+// error, its GPU times) may come later, which waitUntilCompleted waits for too
+WINEMETAL_API void MTL4CommandBuffer_waitForGPU(obj_handle_t buffer);
 WINEMETAL_API obj_handle_t MTL4CounterHeap_new(obj_handle_t device, uint64_t count);
 WINEMETAL_API uint64_t MTLDevice_queryTimestampFrequency(obj_handle_t device);
 WINEMETAL_API void MTL4CommandBuffer_present(obj_handle_t buffer, obj_handle_t drawable, double after);
 
 WINEMETAL_API void MTL4CommandBuffer_waitForEvent(obj_handle_t buffer, obj_handle_t event, uint64_t value);
 // the buffer's next encoder begins with a barrier, against all the queue's work before it, that makes memory reached
-// through aliased addresses consistent: a reserved buffer's tiles and a placed resource over the same heap memory
-WINEMETAL_API void MTL4CommandBuffer_orderAliases(obj_handle_t buffer);
+// through aliased addresses consistent: a reserved buffer's tiles and a placed resource over the same heap memory.
+// `inside`: when the next is a compute encoder's and the open one holds all the queue's work since the last such
+// barrier, a barrier of the same visibility inside the open one, against its own work, instead
+WINEMETAL_API void MTL4CommandBuffer_orderAliases(obj_handle_t buffer, bool inside);
 
 #endif

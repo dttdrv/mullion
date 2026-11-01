@@ -1,12 +1,12 @@
 # every scalar is read at byte offset zero
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2544,7 +2544,7 @@
+@@ -2758,7 +2758,7 @@
        // DXIL.rst CBufferLoad aligns the offset; DXR shader records can put root constants after one DWORD. past the
-       // bound size it reads 0 (D3D11.3 7.5): from the start instead, its value dropped, as LoadConstantBuffer does
+       // bound size it reads 0 (D3D11.3 7.5): from a row of zeros instead, as LoadConstantBuffer does
        auto &buffer = *handles[a(1)].cbuffer;
 -      auto offset = ir.CreateZExt(a(2), ir.getInt64Ty());
 +      Value *offset = ir.getInt64(0);
-       Value *inside = nullptr;
-       if (buffer.Metadata) {
-         auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+       auto space = buffer.Pointer->getType()->getPointerAddressSpace();
+       Value *pointer = ir.CreateGEP(
+           ir.getInt8Ty(), ir.CreatePointerCast(buffer.Pointer, ir.getInt8Ty()->getPointerTo(space)), offset

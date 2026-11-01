@@ -221,6 +221,9 @@ _CacheReader_get(void *obj) {
   const char *skip = (getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP"));
   if (skip)
     [key appendBytes:skip length:strlen(skip)];
+  const char *hoist = getenv("MULLION_AIRCONV_HOIST_LOADS");
+  if (hoist)
+    [key appendBytes:hoist length:strlen(hoist)];
   CacheReader *reader = (CacheReader *)params->cache;
   params->ret_data = (obj_handle_t)[reader get:key];
   [key release];
@@ -245,6 +248,9 @@ _CacheWriter_set(void *obj) {
   const char *skip = (getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP"));
   if (skip)
     [key appendBytes:skip length:strlen(skip)];
+  const char *hoist = getenv("MULLION_AIRCONV_HOIST_LOADS");
+  if (hoist)
+    [key appendBytes:hoist length:strlen(hoist)];
   CacheWriter *writer = (CacheWriter *)params->cache;
   [writer set:key value:(dispatch_data_t)params->value_data];
   [key release];

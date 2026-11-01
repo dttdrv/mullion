@@ -1,0 +1,14 @@
+# the name's port never answers a request
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 3bfe156..01b1b9d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3403,7 +3403,7 @@ _WMTBootstrapRegister(void *obj) {
+   }
+   entry->objects = 1;
+   entry->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, entry->receive, 0, shared_name_queue());
+-  dispatch_source_set_event_handler(entry->source, ^{ shared_name_answer(entry); });
++  dispatch_source_set_event_handler(entry->source, ^{});
+   dispatch_source_set_cancel_handler(entry->source, ^{
+     mach_port_mod_refs(mach_task_self(), entry->receive, MACH_PORT_RIGHT_RECEIVE, -1);
+     mach_port_deallocate(mach_task_self(), entry->port);

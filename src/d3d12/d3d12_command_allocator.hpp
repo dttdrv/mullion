@@ -191,16 +191,9 @@ private:
   std::deque<EncoderData> encoder_lists_;
 
   // ExecuteIndirect's indirect command buffers: those the lists use, then, once the allocator is reset, a pool to take
-  // them from again. a game can run thousands each frame, and Metal makes each slowly (AcquireICB)
-  struct PooledICB {
-    WMT::Reference<WMT::IndirectCommandBuffer> icb;
-    uint64_t gpu_resource_id;
-    uint64_t key;
-    // what it was made with: the kind (with no padding and no resource ID), its size and its storage
-    WMTIndirectCommandBufferInfo kind;
-    uint64_t capacity;
-    WMTResourceOptions options;
-  };
+  // them from again. a game can run thousands each frame, and Metal makes each slowly (AcquireICB). what the pool
+  // still holds at the next reset, and both when the allocator is destroyed, go to the device's
+  using PooledICB = MTLD3D12Device::IndirectCommandBuffers::Pooled;
   small_vector<PooledICB, 4> icb_;
   std::unordered_multimap<uint64_t, PooledICB> icb_pool_;
   WMT::IndirectCommandBuffer AcquireICB(WMTIndirectCommandBufferInfo &info, uint64_t count, WMTResourceOptions options);

@@ -1,0 +1,14 @@
+# airconv: a geometry shader's mesh has maxvertexcount vertices, past Metal's 256
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index ae61a4a..7735bff 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -503,7 +503,7 @@ convert_dxbc_geometry_shader(
+   // position, its output being 1024 scalars at most (D3D11.3 13.3), as one that only streams out: stream output takes
+   // all its vertices, the rasterizer the first 256
+   constexpr uint32_t mesh_vertex_limit = 256;
+-  uint32_t mesh_vertices = std::min<uint32_t>(max_vertex_out, mesh_vertex_limit);
++  uint32_t mesh_vertices = max_vertex_out;
+   // it's intended to declare a bit more max primitive count
+   auto mesh_idx = func_signature.DefineInput(air::InputMesh{
+       conservative ? 3 * triangles : mesh_vertices, conservative ? triangles : mesh_vertices, topology

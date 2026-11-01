@@ -795,7 +795,7 @@ public:
         ((PresentFlags & DXGI_PRESENT_STEREO_PREFER_RIGHT) && !desc_.Stereo) ||
         (PresentFlags & (DXGI_PRESENT_STEREO_TEMPORARY_MONO | DXGI_PRESENT_RESTRICT_TO_OUTPUT)))
       return DXGI_ERROR_INVALID_CALL;
-    if (FAILED(device_->GetDeviceRemovedReason()))
+    if (FAILED(device_->RemovedReason()))
       return FAIL(DXGI_ERROR_DEVICE_REMOVED);
     HRESULT hr = S_OK;
     follower_.follow(hWnd, native_view_);

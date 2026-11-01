@@ -741,6 +741,10 @@ public:
     shading_rate_combiners_[0] = shading_rate_combiners_[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
     shading_rate_image_ = nullptr;
     shading_rate_pass_ = nullptr;
+    // the samples in the bounds were found for another recording's depth and range, in a pass the allocator may give
+    // again
+    depth_bounds_pass_ = nullptr;
+    depth_bounds_stale_ = true;
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
@@ -749,6 +753,7 @@ public:
     memset(rootarg_compute_staging_, 0, sizeof(rootarg_compute_staging_));
 
     memset(vertex_buffers_.data(), 0, sizeof(vertex_buffers_));
+    std::fill(std::begin(so_views_), std::end(so_views_), D3D12_STREAM_OUTPUT_BUFFER_VIEW{});
 
     index_buffer_address = 0;
     index_buffer = {};
@@ -771,6 +776,7 @@ public:
     ResetState(pInitialPipelineState);
     bundle_.clear();
     clears_.clear();
+    markers_.clear();
     plain_pass_ = nullptr;
     overlap_targets_.clear();
     named_.clear();
@@ -831,6 +837,7 @@ public:
   Close() {
     if (encoder_count < std::numeric_limits<size_t>::max())
       return FAIL(E_FAIL);
+    WriteMarkers();
     SumOcclusion();
     SumStatistics();
     EndPredication();
@@ -1580,7 +1587,8 @@ public:
       if (pass->colors[i].attachment)
         mask |= 1u << i;
     return pso_graphics_->RenderTargets(
-        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading()
+        Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading(),
+        dsv.Texture ? dsv.Texture->pixelFormat(dsv.View) : WMTPixelFormatInvalid
     );
   }
 
@@ -2702,7 +2710,8 @@ public:
       dirty_state_.set(DirtyState::VertexBuffer);
     if (!pso_graphics_ || pso_graphics_->forced_sample_count != graphics_pso->forced_sample_count ||
         ((pso_graphics_->rtv_mask ^ graphics_pso->rtv_mask) & ((1u << num_rtvs) - 1)) ||
-        (dsv.Texture && pso_graphics_->dsv_mask != graphics_pso->dsv_mask))
+        (dsv.Texture && ((pso_graphics_->dsv_mask ^ graphics_pso->dsv_mask) &
+                         DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)))))
       allocator_->InvalidateCurrentPass();
     if (graphics_pso->shader_blend)
       dirty_state_.set(DirtyState::BlendFactor);
@@ -2738,7 +2747,7 @@ public:
   // a pass, where draws and dispatches run unordered. one that orders writes a draw made (UAV, render target, depth,
   // stream output) or aliases memory ends the render pass, and the next draw opens one that loads what this one
   // stored. a dispatch writes through UAVs alone and keeps its pass: `dispatched` is a barrier on one, before or after.
-  // true when no later barrier of the call can matter
+  // true when no later barrier of the call can order more; their resources still count (BarrierLeaves, BarrierNames)
   bool
   Order(bool drew, bool dispatched) {
     auto type = allocator_->encoder_current ? allocator_->encoder_current->type : EncoderType::Null;
@@ -2752,6 +2761,7 @@ public:
   }
 
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+    WriteMarkers();
     OrderingPoint();
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |
                        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
@@ -2769,6 +2779,7 @@ public:
       return;
     }
     barrier_serial_++;
+    bool ordered = false;
     for (auto &barrier : std::span(barriers, Count)) {
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
         clear_joinable_ = false, va_found_ = nullptr;
@@ -2783,19 +2794,19 @@ public:
         BarrierNames(barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ? barrier.Transition.pResource
                      : barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV      ? barrier.UAV.pResource
                                                                             : nullptr);
+      if (ordered)
+        continue;
       // a UAV barrier orders UAV accesses alone: a render pass whose draws used none keeps going, as a dispatch's would
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV && allocator_->encoder_current &&
           allocator_->encoder_current->type == EncoderType::Render &&
           allocator_->encoder_current != uav_draw_pass_) {
-        if (Order(false, true))
-          return;
+        ordered = Order(false, true);
         continue;
       }
       bool other = barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       auto &states = barrier.Transition;
-      if (Order(other || ((states.StateBefore & draw_writes) && PassWrote(states.pResource)),
-                other || ((states.StateBefore | states.StateAfter) & uav)))
-        return;
+      ordered = Order(other || ((states.StateBefore & draw_writes) && PassWrote(states.pResource)),
+                      other || ((states.StateBefore | states.StateAfter) & uav));
     }
   };
 
@@ -2981,6 +2992,9 @@ public:
 
   void STDMETHODCALLTYPE
   IASetVertexBuffers(UINT StartSlot, UINT Count, const D3D12_VERTEX_BUFFER_VIEW *Views) {
+    // a range past the last slot is invalid, and changes no slot, as in vkd3d-proton
+    if (StartSlot >= vertex_buffers_.size() || Count > vertex_buffers_.size() - StartSlot)
+      return;
     if (Bundled() && Record([=, v = Views ? std::vector(Views, Views + Count) : std::vector<D3D12_VERTEX_BUFFER_VIEW>()](auto *l) { l->IASetVertexBuffers(StartSlot, Count, Views ? v.data() : nullptr); }))
       return;
     if (!Views)
@@ -3047,7 +3061,8 @@ public:
       if (AttachmentDesc.DepthFormat == DXGI_FORMAT_D16_UNORM)
         Depth = std::nextafter(Depth, 1.0f);
     }
-    if (Rects) {
+    // no rectangles clear the whole view, whatever the array is, as vkd3d-proton does
+    if (Rects && RectCount) {
       UsedTexture(AttachmentDesc.Texture);
       allocator_->clear_rtv_.begin(AttachmentDesc.Texture, AttachmentDesc.View, 0, CheckedFlags);
       for (unsigned i = 0; i < RectCount; i++) {
@@ -3098,7 +3113,8 @@ public:
       return;
     auto stored = RenderTargetColor(AttachmentDesc.Format, Color);
     Color = stored.data();
-    if (Rects) {
+    // no rectangles clear the whole view, whatever the array is, as vkd3d-proton does
+    if (Rects && RectCount) {
       UsedTexture(AttachmentDesc.Texture);
       allocator_->clear_rtv_.begin(AttachmentDesc.Texture, AttachmentDesc.View, AttachmentDesc.DepthPlane);
       for (unsigned i = 0; i < RectCount; i++) {
@@ -3423,6 +3439,10 @@ public:
     }
     active_queries_.push_back({static_cast<MTLD3D12QueryHeap *>(pHeap), Index, (uint32_t)visibility_slots_.size()});
     CountVisibility();
+    // a pipeline that emulates the depth bounds test has a variant for draws an occlusion query counts
+    // (MTLD3D12GraphicsPipelineState::RenderTargets)
+    if (pso_graphics_ && pso_graphics_->depth_bounds_emulated)
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
   };
 
   void STDMETHODCALLTYPE
@@ -3494,6 +3514,8 @@ public:
     occlusion_sums_.push_back({heap, {Index, query->first, count, Type == D3D12_QUERY_TYPE_BINARY_OCCLUSION}});
     active_queries_.erase(query);
     CountVisibility();
+    if (pso_graphics_ && pso_graphics_->depth_bounds_emulated)
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
   };
 
   void STDMETHODCALLTYPE
@@ -3738,8 +3760,12 @@ public:
         allocator_->InvalidateCurrentPass();
       } else if (rays) {
         // each command is a dispatch of the kernel, of the threadgroups the resolver counts for it
-        auto [_, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(IndirectRays), alignof(IndirectRays));
+        auto [records, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(IndirectRays), alignof(IndirectRays));
         cmd->rays = allocator_->gpu_heap_buffer_address_ + at;
+        // the resolver writes the rest of each command's dispatch
+        for (UINT i = 0; i < MaxCommandCount; i++)
+          if (records)
+            static_cast<IndirectRays *>(records)[i].dispatch.atomic_locks = device_->GetAtomicLocks();
         cmd->ray_flags = ray_flags;
         cmd->tgsize_x = device_->GetSIMDWidth();
         for (UINT i = 0; i < MaxCommandCount; i++, at += sizeof(IndirectRays)) {
@@ -4188,9 +4214,34 @@ public:
           recording_error_ = E_INVALIDARG;
           return;
         }
-    // each value is written in order with the list's other work, whatever the marker mode
-    for (auto &param : std::span(pParams, Count))
+    // a DEFAULT value is written in order with the list's other work. a marker (MARKER_IN, MARKER_OUT: written once
+    // the work before has begun, or has completed) waits for the next barrier, DEFAULT write or Close, which write
+    // the markers waiting together: a title writes thousands a frame (dttdrv/mullion#32: Starfield about 5,000), and
+    // a write of its own ends the pass around it. nothing else reads or writes a marker's buffer before then, as that
+    // needs a barrier out of COPY_DEST, which writing one promotes the buffer to
+    for (UINT i = 0; i < Count; i++) {
+      auto &param = pParams[i];
+      if (pModes && pModes[i] != D3D12_WRITEBUFFERIMMEDIATE_MODE_DEFAULT) {
+        markers_.push_back({param.Dest, param.Value});
+        continue;
+      }
+      WriteMarkers();
       WriteImmediate(param.Dest, &param.Value, sizeof(param.Value));
+    }
+  }
+
+  // WriteBufferImmediate's markers that wait, in the order they were given
+  struct Marker {
+    D3D12_GPU_VIRTUAL_ADDRESS address;
+    UINT value;
+  };
+  std::vector<Marker> markers_;
+
+  void
+  WriteMarkers() {
+    for (auto &marker : markers_)
+      WriteImmediate(marker.address, &marker.value, sizeof(marker.value));
+    markers_.clear();
   }
 
   // the buffer and offset a GPU address is in
@@ -4756,6 +4807,7 @@ public:
     };
     if (!BeginRays(dispatch.pipeline_flags))
       return;
+    dispatch.atomic_locks = device_->GetAtomicLocks();
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(dispatch), alignof(SM50_RAY_DISPATCH));
     if (allocator_->records_)
       allocator_->RecordGPUHeap(mapped, sizeof(dispatch), "ray dispatch");
@@ -4847,14 +4899,42 @@ public:
   // enhanced barriers order work as ResourceBarrier does
   void STDMETHODCALLTYPE
   Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) {
+    WriteMarkers();
     barrier_serial_++;
     OrderingPoint();
+    // an access to or from NO_ACCESS hands memory from one resource to another that aliases it (Enhanced Barriers,
+    // Resource Aliasing), after which another may take the addresses. once a reserved buffer exists, an access from
+    // NO_ACCESS, which makes a resource the one that uses the memory, is ordered as ResourceBarrier orders an ALIASING
+    // barrier; the access to NO_ACCESS before it needs nothing of its own, as that orders all the work before it
+    bool aliasing = false, activates = false;
+    for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
+      for (UINT32 i = 0; i < group.NumBarriers; i++) {
+        auto [before, after] =
+            group.Type == D3D12_BARRIER_TYPE_GLOBAL
+                ? std::pair{group.pGlobalBarriers[i].AccessBefore, group.pGlobalBarriers[i].AccessAfter}
+                : group.Type == D3D12_BARRIER_TYPE_TEXTURE
+                      ? std::pair{group.pTextureBarriers[i].AccessBefore, group.pTextureBarriers[i].AccessAfter}
+                      : std::pair{group.pBufferBarriers[i].AccessBefore, group.pBufferBarriers[i].AccessAfter};
+        aliasing |= before == D3D12_BARRIER_ACCESS_NO_ACCESS || after == D3D12_BARRIER_ACCESS_NO_ACCESS;
+        activates |= before == D3D12_BARRIER_ACCESS_NO_ACCESS;
+      }
+    if (aliasing)
+      va_found_ = nullptr;
+    if (activates && device_->HasSparseBuffers()) {
+      clears_.clear();
+      named_.clear();
+      allocator_->InvalidateCurrentPass();
+      allocator_->AllocatePass<EncoderData>()->type = EncoderType::Settle;
+      allocator_->InvalidateCurrentPass();
+      return;
+    }
     constexpr auto uav = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, draw_writes = uav | D3D12_BARRIER_ACCESS_RENDER_TARGET |
                        D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE | D3D12_BARRIER_ACCESS_STREAM_OUTPUT;
     // common access is any access, writes included
     auto any = [](D3D12_BARRIER_ACCESS access, D3D12_BARRIER_ACCESS of) {
       return access == D3D12_BARRIER_ACCESS_COMMON || (access != D3D12_BARRIER_ACCESS_NO_ACCESS && (access & of));
     };
+    bool ordered = false;
     for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
       for (UINT32 i = 0; i < group.NumBarriers; i++) {
         auto [before, after] =
@@ -4869,8 +4949,8 @@ public:
         if (!clears_.empty())
           BarrierNames(resource);
         BarrierLeaves(resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATES(0));
-        if (Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav)))
-          return;
+        if (!ordered)
+          ordered = Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav));
       }
   }
 };

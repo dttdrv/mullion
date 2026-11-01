@@ -1,0 +1,14 @@
+# Barrier orders nothing more for an access from NO_ACCESS once a reserved buffer exists.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index c6da044..eec5f80 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4867,7 +4867,7 @@ public:
+       }
+     if (aliasing)
+       va_found_ = nullptr;
+-    if (activates && device_->HasSparseBuffers()) {
++    if (false && activates && device_->HasSparseBuffers()) {
+       clears_.clear();
+       named_.clear();
+       allocator_->InvalidateCurrentPass();

@@ -1,0 +1,14 @@
+# only the first level of a Texture1D takes its row from the format; the others keep the pitches given
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+index ac9dacf..84a3e11 100644
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -459,7 +459,7 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
+         auto data = pInitialData[sub.SubresourceId];
+         // a Texture1D's pitches have no meaning (D3D11_SUBRESOURCE_DATA) and may be anything, 0 among them; its Metal
+         // texture is a 2D one, one row high, whose row is as wide as the level
+-        if constexpr (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
++        if (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D && !sub.MipLevel) {
+           uint32_t row, image, length;
+           if (FAILED(GetLinearTextureLayout(pDevice, finalDesc, sub.MipLevel, row, image, length, false)))
+             return E_FAIL;

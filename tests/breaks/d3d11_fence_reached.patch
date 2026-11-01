@@ -1,0 +1,12 @@
+# a fence waits for a notification of a value its event already has, as it did before
+diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
+index a3a772f..4033cf3 100644
+--- a/src/d3d11/d3d11_fence.cpp
++++ b/src/d3d11/d3d11_fence.cpp
+@@ -65,6 +65,2 @@ public:
+     // back from Metal's listener. a value reached after this is notified, as Metal notifies at once of one it has
+-    if (Value <= event.signaledValue()) {
+-      SetEvent(Event);
+-      return S_OK;
+-    }
+     auto shared_event_listener = this->m_parent->GetMullionDevice().queue().GetSharedEventListener();

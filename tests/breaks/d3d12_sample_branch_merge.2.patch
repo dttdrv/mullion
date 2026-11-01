@@ -1,0 +1,17 @@
+# a sample that reads the one before it joins its branch: its coordinate is computed after it
+--- a/src/airconv/transforms/merge_sample_branches.cpp
++++ b/src/airconv/transforms/merge_sample_branches.cpp
+@@ -95,13 +95,6 @@ Join(Diamond &First, const Diamond &Second) {
+   }
+   // the second sample does not read the first. its branch's condition is the first's value (Equal), which nothing
+   // after the first sample computes
+-  for (auto Block : {Second.Own, Second.Scaled})
+-    for (auto &I : *Block)
+-      if (Feeds(I))
+-        return false;
+-  for (auto &Phi : Second.Join->phis())
+-    if (Feeds(Phi))
+-      return false;
+ 
+   for (auto I : Before)
+     I->moveBefore(First.Branch);

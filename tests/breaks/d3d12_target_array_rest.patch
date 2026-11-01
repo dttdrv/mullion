@@ -1,0 +1,14 @@
+# a 1D array render target view of -1 slices takes the whole array length from its first slice
+diff --git a/src/d3d12/d3d12_texture.cpp b/src/d3d12/d3d12_texture.cpp
+index aac062a..ed62850 100644
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -906,7 +906,7 @@ public:
+       view_descriptor.miplevelCount = 1;
+       view_descriptor.firstArraySlice = ViewDesc.Texture1DArray.FirstArraySlice;
+       view_descriptor.arraySize = ViewDesc.Texture1DArray.ArraySize == ~0u
+-                                      ? texture->arrayLength() - ViewDesc.Texture1DArray.FirstArraySlice
++                                      ? texture->arrayLength()
+                                       : ViewDesc.Texture1DArray.ArraySize;
+       if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+         return FAIL(E_INVALIDARG);

@@ -1,0 +1,14 @@
+# the pixel shader makes the coverage only for an integer target 0, so a target 0 it blends has none
+diff --git a/src/d3d11/d3d11_shader.hpp b/src/d3d11/d3d11_shader.hpp
+index b732159..41c7a4e 100644
+--- a/src/d3d11/d3d11_shader.hpp
++++ b/src/d3d11/d3d11_shader.hpp
+@@ -234,7 +234,7 @@ public:
+     variant.blend = blend->SetupMetalPipelineDescriptor(&targets, formats.size(), reflection().PSValidRenderTargets);
+     // the pixel shader makes the coverage where Metal does not (IMTLD3D11BlendState::SetupMetalPipelineDescriptor)
+     variant.alpha_to_coverage &= !reflection().PixelShader.HasCoverageOutput && !formats.empty() &&
+-                                 (IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(formats[0]))) || variant.blend[0].blend);
++                                 (IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(formats[0]))));
+     return get_shader(variant);
+   }
+   virtual const Sha1Digest& sha1() = 0;

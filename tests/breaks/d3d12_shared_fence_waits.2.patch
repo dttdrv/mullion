@@ -1,0 +1,15 @@
+# every wait on a shared fence makes a watcher of its own, with its event and threadpool wait, which stay
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 1e4c762..704aa21 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -36,8 +36,7 @@ public:
+ 
+   static Watcher &
+   Get() {
+-    static Watcher *watcher = new Watcher;
+-    return *watcher;
++    return *new Watcher;
+   }
+ 
+   void

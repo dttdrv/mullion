@@ -52,6 +52,8 @@ def main(argv=None):
     run.arguments(parser)
     parser.add_argument("faults", nargs="+", help="tests, whose patches all run, or patch files")
     args = parser.parse_args(argv)
+    # the runs it starts install into the copy, never into the Wine itself
+    run.cloned(args)
     library = args.build[0].resolve()
     source, faulted = library.with_name(library.name + "-fault-src"), library.with_name(library.name + "-fault")
     declared = {t["name"] for build in args.build for path in [build / "meson-info" / "intro-tests.json"] if path.exists()

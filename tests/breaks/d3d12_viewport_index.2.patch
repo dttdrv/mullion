@@ -1,0 +1,16 @@
+# airconv: conservative rasterization grows a triangle through viewport 15 for an SV_ViewportArrayIndex of 16 or more
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index e1ae3ec..5368562 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -159,9 +159,7 @@ conservative_triangle(
+   auto max = [&](pvalue a, pvalue b) { return air.CreateFPBinOp(AIRBuilder::fmax, a, b, false); };
+   auto abs = [&](pvalue a) { return air.CreateFPUnOp(AIRBuilder::fabs, a, false); };
+   // an index past the last viewport selects the first (D3D11.3 15.8.1)
+-  viewport_index = builder.CreateSelect(
+-      builder.CreateICmpULT(viewport_index, builder.getInt32(SM50_VIEWPORTS)), viewport_index, builder.getInt32(0)
+-  );
++  viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
+   auto viewport = builder.CreateLoad(types._float4, builder.CreateGEP(types._float4, viewports, {viewport_index}));
+   auto state = builder.CreateLoad(
+       types._float4,

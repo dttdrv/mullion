@@ -1,0 +1,14 @@
+# the pixel shader's alpha-to-coverage reads o0.a after the shader has blended target 0.
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+index d385985..1dff31b 100644
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -1094,7 +1094,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     coarse->Leave(builder, air, resource_map);
+   // alpha-to-coverage takes o0.a from before the output merger blends (D3D11.3 17.18), and the shader's own blend of
+   // target 0 writes over o0
+-  if (pso_alpha_to_coverage && held[0] != ~0u)
++  if (false)
+     resource_map.coverage_alpha = builder.CreateExtractElement(
+       builder.CreateLoad(
+         types._float4, builder.CreateConstInBoundsGEP2_32(
