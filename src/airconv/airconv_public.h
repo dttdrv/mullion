@@ -42,7 +42,8 @@ enum SM50_BINDING_INDEX: uint32_t {
   SM50_BINDING_INDEX_DEPTH_RANGES = SM50_BINDING_INDEX_PIPELINE_STATISTICS + 1,
   /* what the stage before the rasterizer multiplies a position's x and y by (float), the inverse of the factor
      Metal's viewports are larger by than the application's; then the width and height of each of the
-     SM50_VIEWPORTS viewports, as the application gave them */
+     SM50_VIEWPORTS viewports, as the application gave them; then, at SM50_RASTER_SCALE_MESH_ORIGIN, the first group
+     (uint3) of a D3D12 mesh shader without an amplification shader, not zero where DispatchMesh runs in parts */
   SM50_BINDING_INDEX_RASTER_SCALE = SM50_BINDING_INDEX_DEPTH_RANGES + 1,
   /* the depth bounds test of a GPU without one, a pixel shader's (SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds):
      whether the draw has it and the row pitch of the samples that pass it, two uints, then those samples, a byte for
@@ -62,6 +63,9 @@ enum SM50_BINDING_INDEX: uint32_t {
 
 /* the viewports a primitive may choose from (D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE) */
 #define SM50_VIEWPORTS 16
+/* the word of SM50_BINDING_INDEX_RASTER_SCALE's buffer the mesh group origin starts at, and the buffer's words */
+#define SM50_RASTER_SCALE_MESH_ORIGIN (1 + 2 * SM50_VIEWPORTS)
+#define SM50_RASTER_SCALE_WORDS (SM50_RASTER_SCALE_MESH_ORIGIN + 3)
 
 /* the bytes before the lock table of 64-bit atomics, which every root signature's arguments name, are the header of
  * an acceleration structure of nothing: what a null structure is to a ray query */
@@ -520,6 +524,9 @@ enum SM50_SHADER_FLAG {
      even when nothing in it discards (MULLION_D3D12_COARSE_HSR=0), as before version 93: a shader that may discard is
      not hidden-surface removed */
   SM50_SHADER_FLAG_COARSE_DISCARD_ALWAYS = 1 << 7,
+  /* an amplification shader builds its payload in groupshared memory and DispatchMesh copies it to Metal's payload, as
+     before the payload was built in place (MULLION_D3D12_FAST_MESH=0, for A/B runs) */
+  SM50_SHADER_FLAG_STAGED_PAYLOAD = 1 << 8,
 };
 
 struct SM50_SHADER_COMMON_DATA {

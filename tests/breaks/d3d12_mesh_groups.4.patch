@@ -1,0 +1,24 @@
+# an amplification shader builds its payload in place though it adds to it atomically
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index a541fba..e0a90a8 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -530,6 +530,9 @@ retarget(Value *from, Value *to) {
+         );
+     } else if (auto set = dyn_cast<MemSetInst>(inst)) {
+       ir.CreateMemSet(to, set->getValue(), set->getLength(), set->getDestAlign(), set->isVolatile());
++    } else if (auto rmw = dyn_cast<AtomicRMWInst>(inst)) {
++      rmw->setOperand(rmw->getPointerOperandIndex(), to);
++      continue;
+     } else if (auto intrinsic = dyn_cast<IntrinsicInst>(inst); intrinsic && intrinsic->isLifetimeStartOrEnd()) {
+       // the variable lives as long as the function
+     } else {
+@@ -1524,7 +1527,7 @@ convert_dxil(
+           if (!(intrinsic && (isa<MemTransferInst>(intrinsic) || isa<MemSetInst>(intrinsic) || intrinsic->isLifetimeStartOrEnd())) &&
+               !std::count(dispatches.begin(), dispatches.end(), call))
+             return false;
+-        } else if (!isa<LoadInst>(user))
++        } else if (!isa<LoadInst>(user) && !isa<AtomicRMWInst>(user) && !isa<AtomicCmpXchgInst>(user))
+           return false;
+       }
+       return true;

@@ -1,0 +1,14 @@
+# the mesh grid limit is the 2^20 Metal reports, a grid of which runs none of its threadgroups
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index d734421..5ccd1e4 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3672,7 +3672,7 @@ _MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid(void *obj) {
+   // holds for the GPU's own family and later ones too
+   static const uint64_t limits[] = {[7] = 1024, [8] = 1024, [9] = 1048575};
+   unsigned family = emulated_family();
+-  uint64_t limit = family && family < sizeof(limits) / sizeof(*limits) && limits[family] ? limits[family] : 1048575;
++  uint64_t limit = family && family < sizeof(limits) / sizeof(*limits) && limits[family] ? limits[family] : 0;
+   // or a limit to test with, which no family has: MULLION_MESH_GRID_LIMIT
+   const char *given = (getenv("MULLION_MESH_GRID_LIMIT") ?: getenv("DXMT_MESH_GRID_LIMIT"));
+   if (given)

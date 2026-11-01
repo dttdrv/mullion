@@ -1,0 +1,16 @@
+# SetMeshOutputCounts takes each thread's own counts, as before, not the first active thread's
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index a541fba..d53b7c0 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2709,8 +2709,8 @@ convert_dxil(
+     case SetMeshOutputCounts: {
+       // the first SIMD-group sets the group's counts as its first active thread has them (mesh_counts). Metal counts
+       // the vertices itself; a conservative mesh's are its triangles', set at the end
+-      Value *counts[2] = {move("simd_broadcast_first", a(1), {}), move("simd_broadcast_first", a(2), {})};
+-      ir.SetInsertPoint(SplitBlockAndInsertIfThen(first_simd(), call, false));
++      Value *counts[2] = {a(1), a(2)};
++      ir.SetInsertPoint(SplitBlockAndInsertIfThen(ir.getTrue(), call, false));
+       if (!cm)
+         air.CreateSetMeshPrimitiveCount(counts[1]);
+       if (mesh_counts[0])
