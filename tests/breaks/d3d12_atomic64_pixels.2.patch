@@ -1,0 +1,13 @@
+# the first lane still waiting after a round does not spin for its lock
+# family 7
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2286,7 +2286,7 @@ convert_dxil(
+     // that lock (one of its word left it to the first, the others released theirs), and it holds none itself
+     ir.CreateCondBr(still, chosen, round_end);
+     ir.SetInsertPoint(chosen);
+-    ir.CreateCondBr(simd("simd_is_first", ir.getInt1Ty(), {}), spin, round_end);
++    ir.CreateCondBr(ir.getFalse(), spin, round_end);
+     ir.SetInsertPoint(spin);
+     auto spin_spins = ir.CreatePHI(ir.getInt32Ty(), 2), spin_last = ir.CreatePHI(ir.getInt32Ty(), 2);
+     spin_spins->addIncoming(spins_next, chosen);
