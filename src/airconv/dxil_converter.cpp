@@ -329,6 +329,17 @@ is_dx_op(const Value *value) {
   return call && call->getCalledFunction() && call->getCalledFunction()->getName().startswith("dx.op.");
 }
 
+// MULLION_AIRCONV_SKIP=feedback-merge: every lane writes each texel of its sample's footprint to a sampler feedback
+// map itself (WriteSamplerFeedback), as before lanes put their writes together. it is in the shader cache's key
+bool
+feedback_merge_skipped() {
+  static const bool skipped = [] {
+    auto names = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return names && strstr(names, "feedback-merge");
+  }();
+  return skipped;
+}
+
 // SM 6.6 annotates every handle with its resource's properties, which the handle's range says already: what uses the
 // annotation uses the handle
 void
@@ -1143,7 +1154,9 @@ read_dxil(
   if (shader->shader_type != D3D10_SB_VERTEX_SHADER &&
       (used({WaveIsFirstLane, WaveGetLaneIndex, WaveGetLaneCount, WavePrefixOp, WaveMultiPrefixOp,
              WaveMultiPrefixBitCount}) ||
-       (compute && used({DerivFineX, DerivFineY})))) {
+       (compute && used({DerivFineX, DerivFineY})) ||
+       (!feedback_merge_skipped() &&
+        used({WriteSamplerFeedback, WriteSamplerFeedbackBias, WriteSamplerFeedbackLevel, WriteSamplerFeedbackGrad})))) {
     shader->func_signature.DefineInput(air::InputThreadIndexInSIMDGroup{});
     shader->func_signature.DefineInput(air::InputThreadsPerSIMDGroup{});
   }
@@ -3214,6 +3227,95 @@ convert_dxil(
            ir.getTrue()},
           {air.CreateConvertToUnsigned(fp_unary(AIRBuilder::ceil, lod)), mip_linear},
       };
+      // most of a sample's writes are another's already: the two mips are one at a whole LOD, the two texels of an
+      // axis are mostly in one region, and the lanes of a SIMD group mostly sample close together. one atomic per
+      // texel of every footprint contends on the map's few texels (tests/perf sampler_feedback: 8 atomics a thread
+      // into a 32 by 32 map, 17 times the GPU time of the same pass sampling). so a sample leaves out the writes its
+      // other writes make, and a SIMD group's lanes put together their writes to one texel of the map, which one lane
+      // makes. the map's texels get the same bits. MULLION_AIRCONV_SKIP=feedback-merge leaves this out
+      bool merge_skipped = feedback_merge_skipped();
+      if (!merge_skipped)
+        levels[1].second = ir.CreateAnd(mip_linear, ir.CreateICmpNE(levels[1].first, levels[0].first));
+      // lanes put their writes together only where they write one map: its handle is the same in every lane unless
+      // it was made with a NonUniformResourceIndex. compute and pixel shaders have their lane's index. a pixel shader's
+      // helper lanes write nothing ("Helper lanes" in the spec; Metal drops their atomics), so they take no part
+      auto made = dyn_cast<CallInst>(a(1));
+      auto non_uniform = made && is_dx_op(made) && opcode(made) == CreateHandle
+                             ? dyn_cast<ConstantInt>(made->getArgOperand(4))
+                             : nullptr;
+      bool merge = !merge_skipped && non_uniform && non_uniform->isZero() &&
+                   (ctx.shader_type == D3D11_SB_COMPUTE_SHADER || ctx.shader_type == D3D10_SB_PIXEL_SHADER) &&
+                   simd_inputs;
+      Value *writes = merge && ctx.shader_type == D3D10_SB_PIXEL_SHADER
+                          ? ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {}))
+                          : (Value *)ir.getTrue();
+      auto ctz = ctx.module.getOrInsertFunction(
+          "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
+      );
+      // ORs `bits` into the map's texel x, y of `slice`
+      auto record = [&](Value *x, Value *y, Value *slice, Value *bits) {
+        auto write = [&](Value *x, Value *y, Value *slice, Value *bits) {
+          Value *pos = UndefValue::get(air.getIntTy(2));
+          pos = ir.CreateInsertElement(ir.CreateInsertElement(pos, x, (uint64_t)0), y, 1);
+          air.CreateAtomicRMW(map.Texture, map.Handle, AtomicRMWInst::Or, pos, ir.CreateVectorSplat(4, bits), slice);
+        };
+        if (merge_skipped)
+          return write(x, y, slice, bits);
+        auto wanted = ir.CreateICmpNE(bits, ir.getInt32(0));
+        auto key = ir.CreateOr(x, ir.CreateShl(y, 16));
+        auto first = ir.CreateAnd(wanted, writes);
+        // the rest of the shader goes on in a block of its own
+        auto head = ir.GetInsertBlock();
+        llvm::BasicBlock *rest;
+        if (ir.GetInsertPoint() == head->end()) {
+          rest = llvm::BasicBlock::Create(ctx.llvm, "feedback_written", ctx.function, head->getNextNode());
+          ir.CreateBr(rest);
+        } else
+          rest = SplitBlock(head, &*ir.GetInsertPoint());
+        auto block = [&](const char *name) { return llvm::BasicBlock::Create(ctx.llvm, name, ctx.function, rest); };
+        // a block made here is empty, one split off holds the rest
+        auto go_on = [&] { rest->empty() ? ir.SetInsertPoint(rest) : ir.SetInsertPoint(&*rest->getFirstInsertionPt()); };
+        if (!merge) {
+          // a write of no bits is left out
+          auto one = block("feedback_write");
+          head->getTerminator()->eraseFromParent();
+          ir.SetInsertPoint(head);
+          ir.CreateCondBr(wanted, one, rest);
+          ir.SetInsertPoint(one);
+          write(x, y, slice, bits);
+          ir.CreateBr(rest);
+          return go_on();
+        }
+        // in turn, the first lane still to write takes the bits of every lane writing its texel, and writes them. the
+        // loop is the SIMD group's: each turn writes at least one lane's texel
+        auto loop = block("feedback_merge"), turn = block("feedback_turn"), lead = block("feedback_lead"),
+             next = block("feedback_next");
+        head->getTerminator()->setSuccessor(0, loop);
+        ir.SetInsertPoint(loop);
+        auto pending = ir.CreatePHI(ir.getInt1Ty(), 2);
+        pending->addIncoming(first, head);
+        auto lanes = simd("simd_ballot", ir.getInt64Ty(), {pending}, ir.getInt64Ty());
+        ir.CreateCondBr(ir.CreateICmpNE(lanes, ir.getInt64(0)), turn, rest);
+        ir.SetInsertPoint(turn);
+        auto leader = ir.CreateTrunc(ir.CreateCall(ctz, {lanes, ir.getFalse()}), ir.getInt32Ty());
+        auto leader_key = move("simd_shuffle", key, {i16(leader)});
+        auto leader_slice = move("simd_shuffle", slice, {i16(leader)});
+        auto same = ir.CreateAnd(
+            pending, ir.CreateAnd(ir.CreateICmpEQ(key, leader_key), ir.CreateICmpEQ(slice, leader_slice))
+        );
+        auto merged =
+            simd("simd_or", ir.getInt32Ty(), {ir.CreateSelect(same, bits, ir.getInt32(0))}, ir.getInt32Ty());
+        ir.CreateCondBr(ir.CreateICmpEQ(lane_index(), leader), lead, next);
+        ir.SetInsertPoint(lead);
+        write(
+            ir.CreateAnd(leader_key, ir.getInt32(0xffff)), ir.CreateLShr(leader_key, 16), leader_slice, merged
+        );
+        ir.CreateBr(next);
+        ir.SetInsertPoint(next);
+        pending->addIncoming(ir.CreateAnd(pending, ir.CreateNot(same)), next);
+        ir.CreateBr(loop);
+        go_on();
+      };
       auto modes = field(SM50_SAMPLER_METADATA_ADDRESS, 5);
       auto axis_modes = ir.getInt32(SM50_SAMPLER_ADDRESS_COUNT);
       // an anisotropic filter's taps: as many as its ratio, evenly along its line, which the sample is the middle of.
@@ -3281,21 +3383,22 @@ convert_dxil(
               auto region = min(
                   air.CreateConvertToSigned(ir.CreateFMul(center, to_float(coarse))), ir.CreateSub(coarse, ir.getInt32(1))
               );
-              regions[axis][k] = {ir.CreateShl(region, mip), kept};
+              region = ir.CreateShl(region, mip);
+              // the second texel in the first's region adds nothing to it
+              if (k && !merge_skipped)
+                kept = ir.CreateAnd(
+                    kept, ir.CreateNot(ir.CreateAnd(regions[axis][0].second, ir.CreateICmpEQ(region, regions[axis][0].first)))
+                );
+              regions[axis][k] = {region, kept};
             }
           }
           auto bit = ir.CreateShl(ir.getInt32(1), mip);
+          auto slice = array ? ir.CreateAdd(array, first_slice) : first_slice;
           for (unsigned corner = 0; corner < 4; corner++) {
             auto &[x, keep_x] = regions[0][corner & 1];
             auto &[y, keep_y] = regions[1][corner >> 1];
-            Value *pos = UndefValue::get(air.getIntTy(2));
-            pos = ir.CreateInsertElement(ir.CreateInsertElement(pos, x, (uint64_t)0), y, 1);
             auto kept = ir.CreateAnd(mip_kept, ir.CreateAnd(keep_x, keep_y));
-            air.CreateAtomicRMW(
-                map.Texture, map.Handle, AtomicRMWInst::Or, pos,
-                ir.CreateVectorSplat(4, ir.CreateSelect(kept, bit, ir.getInt32(0))),
-                array ? ir.CreateAdd(array, first_slice) : first_slice
-            );
+            record(x, y, slice, ir.CreateSelect(kept, bit, ir.getInt32(0)));
           }
         }
       });
