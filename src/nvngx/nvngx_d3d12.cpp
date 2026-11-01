@@ -211,7 +211,10 @@ ReadCommon(const ParametersImpl *params, const DLSSFeature &dlss, float &mv_x, f
   mv_y = GetOr(params, NVNGX_Parameter_MV_Scale_Y, 1.0f);
   jitter_x = GetOr(params, NVNGX_Parameter_Jitter_Offset_X, 0.0f);
   jitter_y = GetOr(params, NVNGX_Parameter_Jitter_Offset_Y, 0.0f);
+  // DLSS takes 0 (or none) for no pre-exposure, which MetalFX, dividing by it, takes as 1
   pre_exposure = GetOr(params, NVNGX_Parameter_DLSS_Pre_Exposure, 0.0f);
+  if (pre_exposure <= 0.0f)
+    pre_exposure = 1.0f;
   reset = GetOr(params, NVNGX_Parameter_Reset, 0) != 0;
 }
 

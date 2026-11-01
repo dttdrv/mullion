@@ -4,6 +4,8 @@
 #include "log/log.hpp"
 #include "nvapi_lite_common.h"
 #include "util_string.hpp"
+#include "config/config.hpp"
+#include <algorithm>
 #include "winemetal.h"
 #include "wsi_monitor.hpp"
 #include <string>
@@ -914,3 +916,17 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
 }
 
 }; // namespace mullion
+
+// NVAPI answers only programs Mullion shows an NVIDIA GPU to (dxgi.customVendorId = 10de): any other, Steam's GPU
+// queries among them, finds no NVAPI, as it would on another vendor's GPU
+extern "C" BOOL WINAPI
+DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  if (reason != DLL_PROCESS_ATTACH)
+    return TRUE;
+  auto vendor = mullion::Config::getInstance().getOption<std::string>("dxgi.customVendorId");
+  std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) { return std::tolower(c); });
+  if (vendor != "10de" && vendor != "0x10de")
+    return FALSE;
+  DisableThreadLibraryCalls(instance);
+  return TRUE;
+}

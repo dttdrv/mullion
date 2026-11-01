@@ -138,8 +138,9 @@ NVSDK_NGX_D3D11_EvaluateFeature(
       desc.MotionVectorScaleX = 1.0;
     if (NVNGX_FAILED(parameters->Get(NVNGX_Parameter_MV_Scale_Y, &desc.MotionVectorScaleY)))
       desc.MotionVectorScaleY = 1.0;
-    if (NVNGX_FAILED(parameters->Get(NVNGX_Parameter_DLSS_Pre_Exposure, &desc.PreExposure)))
-      desc.PreExposure = 0;
+    // DLSS takes 0 (or none) for no pre-exposure, which MetalFX, dividing by it, takes as 1
+    if (NVNGX_FAILED(parameters->Get(NVNGX_Parameter_DLSS_Pre_Exposure, &desc.PreExposure)) || desc.PreExposure <= 0)
+      desc.PreExposure = 1;
 
     pCtxExt->TemporalUpscale(&desc);
 
