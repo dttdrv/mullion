@@ -28,7 +28,8 @@ using namespace llvm;
 
 namespace mullion::dxbc {
 
-CoarseShading::CoarseShading(air::FunctionSignatureBuilder &signature, uint32_t varying) {
+CoarseShading::CoarseShading(air::FunctionSignatureBuilder &signature, uint32_t varying, bool elide_discard)
+    : elide_discard_(elide_discard) {
   // the inputs are where the coarse pixel's center is, whatever the shader's interpolation: a centroid is a center
   signature.CenterCentroids();
   auto &all = signature.Inputs();
@@ -128,9 +129,11 @@ CoarseShading::Enter(Function *function, IRBuilder<> &ir, llvm::air::AIRBuilder 
     IRBuilder<> entry(&function->getEntryBlock(), function->getEntryBlock().begin());
     discarded_ = entry.CreateAlloca(ir.getInt1Ty(), nullptr, "coarse_discarded");
     pixel_discarded_ = entry.CreateAlloca(ir.getInt1Ty(), nullptr, "pixel_discarded");
+    // before what the function had when entered, whose discards (the depth bounds test's, of a shader whose tests come
+    // first) are the pixel's own
+    entry.CreateStore(entry.getFalse(), discarded_);
+    entry.CreateStore(entry.getFalse(), pixel_discarded_);
   }
-  ir.CreateStore(ir.getFalse(), discarded_);
-  ir.CreateStore(ir.getFalse(), pixel_discarded_);
 
   auto position = function->getArg(position_);
   auto px = ir.CreateExtractElement(position, uint64_t(0)), py = ir.CreateExtractElement(position, uint64_t(1));
@@ -174,7 +177,8 @@ CoarseShading::Enter(Function *function, IRBuilder<> &ir, llvm::air::AIRBuilder 
   auto coarse = ir.CreateOr(wide_, high_);
   resource.shading_rate = ir.CreateOr(ir.CreateShl(ir.CreateZExt(wide_, i32), 2), ir.CreateZExt(high_, i32));
 
-  // the lanes of the coarse pixel, and its leader: the first that is not a helper, whose writes Metal keeps
+  // the lanes of the coarse pixel, and its leader: the first that is live (not a helper, nor a pixel the tests before
+  // the shader dropped), whose writes Metal keeps
   auto &context = ir.getContext();
   auto helper = ir.CreateCall(function->getParent()->getOrInsertFunction(
       "air.simd_is_helper_thread", FunctionType::get(ir.getInt1Ty(), false),
@@ -184,7 +188,8 @@ CoarseShading::Enter(Function *function, IRBuilder<> &ir, llvm::air::AIRBuilder 
                     {~0U, Attribute::get(context, Attribute::WillReturn)}}
       )
   ));
-  auto live = ir.CreateNot(helper);
+  // a pixel the tests before the shader dropped is not live either: a coarse pixel they dropped whole has no leader
+  auto live = ir.CreateAnd(ir.CreateNot(helper), ir.CreateNot(ir.CreateLoad(ir.getInt1Ty(), pixel_discarded_)));
   Value *members[4];
   Value *leader = lane_;
   for (int j = 3; j >= 0; j--) {
@@ -196,7 +201,7 @@ CoarseShading::Enter(Function *function, IRBuilder<> &ir, llvm::air::AIRBuilder 
     leader = ir.CreateSelect(ir.CreateAnd(members[j], lane_live), ir.getInt32(j), leader);
   }
   leader_ = leader;
-  leads_ = ir.CreateICmpEQ(leader, lane_);
+  leads_ = ir.CreateAnd(ir.CreateICmpEQ(leader, lane_), live);
 
   // where each lane's inputs are: the leader's at the coarse pixel's center, the others a coarse pixel away from it on
   // each axis the coarse pixel spans, so that a derivative (across the quad) is the coarse pixels'
@@ -290,7 +295,7 @@ CoarseShading::Leave(IRBuilder<> &ir, llvm::air::AIRBuilder &air, io_binding_map
   );
   auto discard = llvm::BasicBlock::Create(ir.getContext(), "coarse_discard", function_);
   auto kept = llvm::BasicBlock::Create(ir.getContext(), "coarse_kept", function_);
-  ir.CreateCondBr(discarded, discard, kept);
+  discard_branch_ = ir.CreateCondBr(discarded, discard, kept);
   ir.SetInsertPoint(discard);
   discard_ = air.CreateDiscard();
   ir.CreateBr(kept);
@@ -347,6 +352,33 @@ CoarseShading::Finish() {
       if (device)
         writes.push_back(&instruction);
     }
+
+  // a shader that never discards keeps no discard: one that might (even after a test of a constant the compiler does
+  // not see through, as the quad's shuffles are) is not hidden-surface removed, and shades every fragment of a pass's
+  // opaque draws instead of the visible ones
+  if (discards.empty() && elide_discard_) {
+    auto branch = discard_branch_;
+    auto kept = branch->getSuccessor(1);
+    auto block = discard_->getParent();
+    std::vector<llvm::Instruction *> dead{cast<llvm::Instruction>(branch->getCondition())};
+    BranchInst::Create(kept, branch);
+    branch->eraseFromParent();
+    block->eraseFromParent();
+    discard_ = nullptr;
+    // the leader's discard, and the lane's: shuffles of the stores of false, which nothing reads now
+    llvm::SmallPtrSet<llvm::Instruction *, 16> erased;
+    while (!dead.empty()) {
+      auto instruction = dead.back();
+      dead.pop_back();
+      if (erased.contains(instruction) || !instruction->use_empty() || isa<AllocaInst>(instruction))
+        continue;
+      for (auto &operand : instruction->operands())
+        if (auto used = dyn_cast<llvm::Instruction>(operand.get()))
+          dead.push_back(used);
+      erased.insert(instruction);
+      instruction->eraseFromParent();
+    }
+  }
 
   auto i1 = Type::getInt1Ty(function_->getContext());
   for (auto discard : discards) {

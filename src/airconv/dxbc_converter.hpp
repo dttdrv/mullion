@@ -637,8 +637,9 @@ void declare_dispatch_origin(SM50ShaderInternal *sm50_shader);
 // is (so a derivative spans coarse pixels) and take the outputs of one, the leader, which alone discards and writes
 class CoarseShading {
 public:
-  // its inputs, defined before the function is made: `varying` is the primitive's rate, or 0
-  CoarseShading(air::FunctionSignatureBuilder &signature, uint32_t varying);
+  // its inputs, defined before the function is made: `varying` is the primitive's rate, or 0. `elide_discard` leaves
+  // the coarse pixel's discard out of a shader that has none (SM50_SHADER_FLAG_COARSE_DISCARD_ALWAYS)
+  CoarseShading(air::FunctionSignatureBuilder &signature, uint32_t varying, bool elide_discard);
   // in the entry block, before anything reads the inputs: the coarse pixel, its leader, and its inputs' values
   void
   Enter(llvm::Function *function, llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, io_binding_map &resource);
@@ -662,6 +663,8 @@ private:
   llvm::Value *lane_ = nullptr, *leader_ = nullptr, *leads_ = nullptr, *wide_ = nullptr, *high_ = nullptr;
   llvm::AllocaInst *discarded_ = nullptr, *pixel_discarded_ = nullptr;
   llvm::Instruction *discard_ = nullptr;
+  llvm::BranchInst *discard_branch_ = nullptr;
+  bool elide_discard_ = true;
   llvm::IRBuilder<> *builder_ = nullptr;
   llvm::Value *fine_index(llvm::Value *x, llvm::Value *y);
 };
