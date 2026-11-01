@@ -3207,12 +3207,18 @@ Converter::HullGenerateWorkload(
   using namespace llvm;
 
   auto &Context = air.getContext();
-  auto Attrs = AttributeList::get(
-      Context, {{3U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
-                {5U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
-  );
+  // with groups the workloads are read back too (a workload's edges shared with the one before it)
+  auto Attrs = GroupLimit ? AttributeList::get(
+                                Context, {{5U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+                            )
+                          : AttributeList::get(
+                                Context, {{3U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {5U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+                            );
 
   SmallVector<Value *> Ops{
       PatchIndex,

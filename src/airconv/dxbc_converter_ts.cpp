@@ -78,7 +78,7 @@ tessellation_groups() {
 }
 
 size_t
-estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group) {
+estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group, bool groups) {
   auto max_hs_output_register = pHullStage->max_output_register;
   auto cp_size_per_point = sizeof(uint32_t) * 4 * max_hs_output_register;
   auto cp_size_per_patch = cp_size_per_point * pHullStage->output_control_point_count;
@@ -94,7 +94,7 @@ estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t pat
   // workload and instance, and the groups of workloads (tessellation_payload_type)
   return cp_size_per_group + pc_size_per_group + sizeof(uint32_t) +
          max_workload_count * patch_per_group * size_workload_info + 2 * sizeof(uint32_t) +
-         (tessellation_groups() ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
+         (groups ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
 };
 
 std::pair<uint32_t, uint32_t>
@@ -145,6 +145,11 @@ tessellation_group_limit(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION
           pso_tess->mesh_vertex_size, pso_tess->conservative
       )
           .primitives)
+    return 0;
+  // the hull shader's patches per object threadgroup and its largest factor were chosen for a payload without groups
+  // (SM50Initialize), and groups do not change them: a payload they would take past its limit has none
+  uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
+  if (estimate_payload_size(pHullStage, float(factor_int), patch_per_group, true) > 16384)
     return 0;
   return tessellation_group_size(
       factor_int, pHullStage->tessellation_domain, pHullStage->tessellator_output_primitive, pso_tess->mesh_vertex_size

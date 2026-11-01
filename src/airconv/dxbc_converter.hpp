@@ -707,7 +707,8 @@ std::vector<std::unique_ptr<BasicBlock>> read_control_flow(
 
 uint32_t next_pow2(uint32_t x);
 
-size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group);
+// the payload a hull shader's object threadgroup leaves: with `groups`, with the groups of workloads too
+size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group, bool groups = false);
 
 
 // the tessellation factor a pipeline's stages are built for, and the most segments it cuts an edge into
