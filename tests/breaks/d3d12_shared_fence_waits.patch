@@ -1,0 +1,14 @@
+# each notification of a shared fence sets an event of its own, which nothing closes
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 1e4c762..4c44090 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -93,7 +93,7 @@ struct Completion : Reached, std::enable_shared_from_this<Completion> {
+     auto &watcher = Watcher::Get();
+     if (!std::exchange(watched, true))
+       watcher.Watch(weak_from_this());
+-    listener->setEventOnValue(event, watcher.reached, expected);
++    listener->setEventOnValue(event, CreateEventW(nullptr, FALSE, FALSE, nullptr), expected);
+   }
+ };
+ 

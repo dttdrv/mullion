@@ -1,0 +1,10 @@
+# a fence object takes its shared event to have a value only once the event is past it
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 2534615..6d873b2 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -35,3 +35,3 @@ struct Completion : Reached, std::enable_shared_from_this<Completion> {
+   Has(uint64_t expected) override {
+-    return event && expected <= event.signaledValue();
++    return event && expected < event.signaledValue();
+   }

@@ -1,0 +1,14 @@
+# a heap Metal does not make is reported as made
+diff --git a/src/d3d12/d3d12_heap.cpp b/src/d3d12/d3d12_heap.cpp
+index c3aa650..4ce5fdd 100644
+--- a/src/d3d12/d3d12_heap.cpp
++++ b/src/d3d12/d3d12_heap.cpp
+@@ -107,7 +107,7 @@ public:
+ 
+     heap = device_->GetMTLDevice().newHeap(info);
+     // Metal makes no heap of a size it cannot give
+-    if (!heap)
++    if (false)
+       return FAIL(E_OUTOFMEMORY);
+ 
+     device_->RegisterResidency(heap);

@@ -1,0 +1,14 @@
+# a refused shader resource view leaves the slot's earlier view
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 6559436..0aada65 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1196,7 +1196,7 @@ public:
+       return;
+     }
+     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
+-    if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
++    if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor)) && false) {
+       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+       auto null_desc = RefusedViewDesc(pResource, pDesc);
+       Heap->AddShaderResourceView(Index, &null_desc);

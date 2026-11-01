@@ -1,0 +1,14 @@
+# a placed buffer keeps no reference on its heap
+diff --git a/src/d3d12/d3d12_buffer.cpp b/src/d3d12/d3d12_buffer.cpp
+index f90c865..3e21335 100644
+--- a/src/d3d12/d3d12_buffer.cpp
++++ b/src/d3d12/d3d12_buffer.cpp
+@@ -48,7 +48,7 @@ public:
+     reserved_ = Reserved;
+     heap_props_ = *pHeapProps;
+     heap_flags_ = HeapFlags;
+-    heap_ = pHeap;
++    heap_ = nullptr;
+ 
+     if (desc_.Alignment) {
+       if (desc_.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)

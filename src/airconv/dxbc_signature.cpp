@@ -604,6 +604,7 @@ void handle_signature_ps(
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
     case D3D11_SB_OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL: {
       sm50_shader->ps_fine_shading = true;
+      sm50_shader->ps_depth_output = true;
       signature_handlers.push_back([=](SignatureContext &ctx) {
         ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
           assert(
@@ -640,8 +641,13 @@ void handle_signature_ps(
         ctx.epilogue >> [=](pvalue v) {
           return make_irvalue([=](struct context ctx) {
             auto &ir = ctx.builder;
+            // an index past the last viewport selects the first ("Values outside [0..n-1] are treated as 0 for
+            // indexing viewports", 15.8.1); the shader's own SV_ViewportArrayIndex input stays as written
+            auto written = ctx.function->getArg(viewport);
+            auto selected =
+              ir.CreateSelect(ir.CreateICmpULT(written, ir.getInt32(SM50_VIEWPORTS)), written, ir.getInt32(0));
             auto range = [&](unsigned end) {
-              auto index = ir.CreateAdd(ir.CreateShl(ctx.function->getArg(viewport), 1), ir.getInt32(end));
+              auto index = ir.CreateAdd(ir.CreateShl(selected, 1), ir.getInt32(end));
               return ir.CreateLoad(ctx.types._float, ir.CreateGEP(ctx.types._float, ctx.function->getArg(ranges), index));
             };
             llvm::Value *depth = ir.CreateLoad(

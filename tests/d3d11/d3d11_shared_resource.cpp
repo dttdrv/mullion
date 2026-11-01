@@ -151,6 +151,15 @@ main() {
               continue;
             if (!nt)
               handle = legacy;
+            if (level == D3D_FEATURE_LEVEL_11_0 && shared && !keyed && !nt &&
+                format == DXGI_FORMAT_R8G8B8A8_UNORM && legacy) {
+              HANDLE truncated = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(static_cast<uint32_t>(
+                  reinterpret_cast<uintptr_t>(legacy))));
+              ComPtr<ID3D11Texture2D> from32;
+              hr = other->OpenSharedResource(truncated, IID_PPV_ARGS(&from32));
+              expect(SUCCEEDED(hr) && from32,
+                     "a 32-bit truncation of the legacy handle did not open the same share, hr %#lx", hr);
+            }
             HANDLE duplicate = nullptr;
             BOOL duplicated = DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &duplicate, 0, FALSE,
                                               DUPLICATE_SAME_ACCESS);

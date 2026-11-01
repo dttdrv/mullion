@@ -1264,7 +1264,6 @@ convert_dxbc_tesselator_domain_shader(
       pvalue viewport_index = builder.getInt32(0);
       if (viewport_reg != ~0u)
         viewport_index = builder.CreateExtractElement(corner_at(p, 0, viewport_reg), uint64_t(viewport_component));
-      viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
       auto triangle = conservative_triangle(builder, air, types, clip, function->getArg(viewports_idx), viewport_index);
       auto vertex_base = builder.CreateMul(p, builder.getInt32(3));
       for (uint32_t u = 0; u < 3; u++) {

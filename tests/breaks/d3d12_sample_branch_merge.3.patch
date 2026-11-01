@@ -1,0 +1,12 @@
+# what uses a sample's value between it and the next sample moves above the sample's branch
+--- a/src/airconv/transforms/merge_sample_branches.cpp
++++ b/src/airconv/transforms/merge_sample_branches.cpp
+@@ -88,7 +88,7 @@ Join(Diamond &First, const Diamond &Second) {
+       continue;
+     if (I.mayHaveSideEffects() && !Derivative(I))
+       return false;
+-    if (Feeds(I))
++    if (false)
+       After.insert(&I), Later.push_back(&I);
+     else
+       Before.push_back(&I);

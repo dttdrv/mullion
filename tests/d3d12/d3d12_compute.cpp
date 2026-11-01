@@ -1,7 +1,7 @@
 // contract: a compute shader bound through root SRV and UAV descriptors and a CBV table reads a raw buffer,
 // exchanges values through group shared memory across a group barrier, and writes a structured buffer; every
 // element equals the same expression evaluated on the CPU from the same input. the CBV views only the first part of
-// its buffer, and rows past the view read 0 (D3D11.3 7.5). the table is the last descriptor of a heap of 2,000,000,
+// its buffer, and rows past the view read 0 (D3D11.3 7.5), whether the shader indexes them or names them. the table is the last descriptor of a heap of 2,000,000,
 // the heap Unreal Engine 5 makes. grids with no groups along one side, dispatched after it, write nothing.
 #include "d3d12_test.hpp"
 #include <algorithm>
@@ -17,7 +17,8 @@ void cs(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex, uint3 gid : SV
   uint a = src.Load(tid.x * 4);
   shared_[gi] = a;
   GroupMemoryBarrierWithGroupSync();
-  dst[tid.x] = uint4(a * 3 + gid.x, max(a, rows[gi % ROWS].x), asuint(float(a) * 0.5f), shared_[(gi + 1) % GROUP]);
+  dst[tid.x] = uint4(a * 3 + gid.x + rows[1].x + rows[ROWS - 1].x, max(a, rows[gi % ROWS].x), asuint(float(a) * 0.5f),
+                     shared_[(gi + 1) % GROUP]);
 }
 )hlsl";
 
@@ -59,6 +60,8 @@ main(int argc, char **argv) {
     input[i] = i * i + 5;
   for (UINT r = 0; r < rows; r++)
     thresholds[r][0] = 100 + r * 97;
+  // and above every input in the first row, so that a row past the view that read the first instead of 0 shows
+  thresholds[0][0] = 1u << 30;
 
   auto src = buffer(
       device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(input) + sizeof(thresholds), D3D12_RESOURCE_STATE_GENERIC_READ
@@ -116,9 +119,9 @@ main(int argc, char **argv) {
   unsigned mismatches = 0;
   for (UINT i = 0; i < n; i++) {
     UINT a = input[i], g = i / group, r = i % group % rows;
-    UINT threshold = r < rows_in_view ? thresholds[r][0] : 0;
+    UINT threshold = r < rows_in_view ? thresholds[r][0] : 0, last = rows - 1 < rows_in_view ? thresholds[rows - 1][0] : 0;
     UINT want[4] = {
-        a * 3 + g, std::max(a, threshold), std::bit_cast<UINT>(float(a) * 0.5f),
+        a * 3 + g + thresholds[1][0] + last, std::max(a, threshold), std::bit_cast<UINT>(float(a) * 0.5f),
         input[g * group + (i % group + 1) % group]
     };
     for (int c = 0; c < 4; c++)

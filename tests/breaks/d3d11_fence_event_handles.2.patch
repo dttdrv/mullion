@@ -1,0 +1,14 @@
+# the copies of the app's handles that no notification set stay open when the listener stops
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index b929414..116b6b5 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3128,8 +3128,6 @@ _SharedEventListener_start(void *obj) {
+     if (!stopped)
+       CFRunLoopRun();
+     pthread_mutex_lock(&q->mutex);
+-    for (uint32_t i = 0; i < q->referenced_count; i++)
+-      NtClose(q->referenced[i]);
+     free(q->referenced);
+     q->referenced = NULL;
+     q->referenced_count = q->referenced_capacity = 0;

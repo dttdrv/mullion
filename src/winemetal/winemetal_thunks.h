@@ -350,6 +350,7 @@ struct unixcall_mtlsharedevent_setevent {
   obj_handle_t event_handle;
   obj_handle_t shared_event_listener;
   uint64_t value;
+  uint64_t reference;
 };
 
 struct unixcall_mtlsharedevent_createmachport {
@@ -408,6 +409,7 @@ struct unixcall_setmetalcachepath {
 };
 
 struct unixcall_bootstrap {
+  obj_handle_t object;
   char name[128];
   uint32_t mach_port;
   uint32_t reserved;

@@ -1,0 +1,15 @@
+# Metal 4: an aliasing barrier that ends a part of a submission's parallel encoding is not carried to the next part
+# family native
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 0fefc83..d184d50 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1990,7 +1990,7 @@ public:
+       if constexpr (Metal4) {
+         buffers[k] = NewCommandBuffer(inflight_cmdbuf_seq_.load(std::memory_order_relaxed) + k);
+         // each part's encoders run apart from the first part's, so each orders aliased memory itself
+-        if ((order_aliases_ || carried[k]) && buffers[k])
++        if (order_aliases_ && buffers[k])
+           buffers[k].orderAliases();
+       } else {
+         buffers[k] = queue_.commandBuffer();

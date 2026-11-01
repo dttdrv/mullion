@@ -1,12 +1,14 @@
 #pragma once
 #include "d3d11_device.hpp"
-#include "util_d3dkmt.h"
 
 namespace mullion {
 
 struct MTLD3D11Fence : public ID3D11Fence {
   WMT::Reference<WMT::SharedEvent> event;
-  D3DKMT_HANDLE local_kmt = 0;
+  // a fence made with D3D11_FENCE_FLAG_SHARED carries the bootstrap name of its mach port, so every shared handle
+  // made from it can reopen the same fence on another device or in another process
+  bool shared = false;
+  char mach_port_name[54] = {};
 };
 
 HRESULT
