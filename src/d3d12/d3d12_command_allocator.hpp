@@ -116,9 +116,10 @@ struct IndirectRenderCommandData {
   uint64_t omitted;
   // the commands' IndirectMeshDraws, where the resolver writes those instead of commands; zero otherwise
   uint64_t draws;
-  // indexed commands of ordinary pipelines are kIndexedCommands commands each: the indices the view has, then, for the
-  // indices past it, as many of these zero indices of 16 bits (D3D11.3 8.19.2: "the return is 0"), `zero_count` at
-  // most; and the same again where the byte address wraps back to the view's start (8.19.1)
+  // an indexed command of an ordinary pipeline draws the indices the view has, then, in up to kIndexedCommands - 1
+  // extra commands (extras_claimed), for the indices past it, as many of these zero indices of 16 bits (D3D11.3 8.19.2:
+  // "the return is 0"), `zero_count` at most; and the same again where the byte address wraps back to the view's
+  // start (8.19.1)
   uint64_t zeros;
   uint32_t zero_count;
   uint64_t pixel_statistics;
@@ -134,6 +135,9 @@ struct IndirectRenderCommandData {
   uint64_t so_lacked;
   uint32_t statistics_first, statistics_step, statistics_cut, statistics_cuts;
   WMTIndirectCommandBufferExecutionRange execution_range;
+  // the extra commands indexed draws have claimed so far, past the draws: indices past the view or after the address
+  // wraps; and the resolver's threads that have finished
+  uint32_t extras_claimed, extras_done;
 };
 
 constexpr unsigned kIndexedCommands = 4;
