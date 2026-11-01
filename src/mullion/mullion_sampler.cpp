@@ -89,8 +89,10 @@ Sampler::createSampler(
   capped.lod_max_clamp = step(capped.lod_max_clamp);
   capped.max_anisotroy = std::bit_ceil(std::max(capped.max_anisotroy, 1u));
   // a minimum or maximum filter is Metal's own where the device honours it, otherwise the shader's
-  // (SM50_SAMPLER_REDUCTION)
-  bool native = reduction != SM50_SAMPLER_REDUCTION_NONE && info.min_filter == WMTSamplerMinMagFilterLinear &&
+  // (SM50_SAMPLER_REDUCTION). a custom border is two Metal samples mixed by the border's weight, which only an
+  // average has: the shader reduces with that border itself
+  bool native = reduction != SM50_SAMPLER_REDUCTION_NONE && !border_color &&
+                info.min_filter == WMTSamplerMinMagFilterLinear &&
                 info.mag_filter == WMTSamplerMinMagFilterLinear && info.mip_filter == WMTSamplerMipFilterLinear &&
                 NativeReduction(device);
   capped.reduction_mode = !native                                    ? WMTSamplerReductionModeWeightedAverage
