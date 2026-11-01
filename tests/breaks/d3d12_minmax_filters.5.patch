@@ -1,0 +1,15 @@
+# a static sampler that reduces is taken for one that does not, so it averages
+# family native,native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index c420b8e..dd2766d 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2385,7 +2385,7 @@ Converter::MinMaxFilter(
+     return Filtered;
+   // a static sampler is known when the pipeline is made. one that reduces still asks its metadata, which says whether
+   // Metal's sampler reduces for it (mullion::Sampler)
+-  if (auto Known = KnownReductions.find(SamplerMetadata); Known != KnownReductions.end() && !Known->second)
++  if (auto Known = KnownReductions.find(SamplerMetadata); Known != KnownReductions.end())
+     return Filtered;
+   auto Field = [&](unsigned Shift, unsigned Bits) {
+     return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(SamplerMetadata, Shift), ir.getInt32Ty()), (1u << Bits) - 1);

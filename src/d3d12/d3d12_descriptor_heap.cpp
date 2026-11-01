@@ -669,8 +669,10 @@ public:
     bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
     if (custom)
       device_->custom_borders = true;
-    auto sampler =
-        Sampler::createSampler(device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr);
+    auto sampler = Sampler::createSampler(
+        device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
+        SamplerReduction(pDesc->Filter)
+    );
 
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
