@@ -8,7 +8,7 @@ values name) only if the file's Authenticode signature chains to a trusted root.
 
 So Mullion's `nvngx.dll` is signed with Mullion's own key, and DXGI trusts its certificate:
 
-- `mullion-ngx.pem` is the certificate: self-issued, "MetalSharp Mullion NGX", code signing only. It names Mullion,
+- `mullion-ngx.pem` is the certificate: self-issued, "Mullion NGX", code signing only. It names Mullion,
   not NVIDIA; NGX asks only for a trusted chain.
 - `src/dxgi/dxgi_ngx_certificate.h` is the same certificate in DER. With `MULLION_ENABLE_NVEXT=1`, DXGI adds it to the
   prefix's `Root` store, and sets `NGXCore\FullPath` and `nvlddmkm\NGXCore\NGXPath` to its own folder (System32 for a
