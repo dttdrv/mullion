@@ -3,7 +3,7 @@
 # family native-metal3
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -3308,7 +3308,7 @@
+@@ -3314,7 +3314,7 @@
          ir.CreateCondBr(ir.CreateICmpEQ(lane_index(), leader), lead, next);
          ir.SetInsertPoint(lead);
          write(

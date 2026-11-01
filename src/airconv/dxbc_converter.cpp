@@ -1121,6 +1121,7 @@ llvm::Error convert_dxbc_pixel_shader(
   }
   if (coarse)
     coarse->Finish();
+  FinishFeedbackLanes(module);
   // the shader reads the conservative rasterizer's inputs, and divides what it evaluates of one over w by 1/w's there
   for (auto [input, value] : conservative_inputs)
     input->replaceUsesWithIf(value, [&](llvm::Use &use) {

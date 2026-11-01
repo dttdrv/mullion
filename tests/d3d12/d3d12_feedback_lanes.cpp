@@ -10,7 +10,10 @@
 //    map, so each map holds what its own lanes wanted;
 //  - a pixel shader writes WriteSamplerFeedback in a quad of which one pixel is covered. its other lanes are helper
 //    lanes, which write nothing ("Helper lanes" in the spec: they take part in derivatives only), though they sample
-//    in the same regions.
+//    in the same regions;
+//  - a pixel shader shaded in 2x2 coarse pixels (variable rate shading) writes a coarse pixel's sample once: its
+//    other lanes run only for derivatives, a coarse pixel away, where the coarse pixels beside it sample;
+//  - in quads whose first pixel discards before it samples, the other three still write.
 #include "d3d12_feedback.hpp"
 #include <cfloat>
 
@@ -67,6 +70,21 @@ float4 ps_dots(float4 pos : SV_Position) : SV_Target {
   drawn.WriteSamplerFeedback(flat, s, pos.xy / TARGET * DOT_SCALE);
   return 0;
 }
+
+// over the whole target, shaded in 2x2 coarse pixels or with the first pixel of each quad discarded: each coarse pixel
+// or quad samples at its center, at a LOD of its own
+float4 vs_full(uint id : SV_VertexID) : SV_Position { return float4(float2(id & 1, id >> 1) * 4 - 1, 0, 1); }
+float quad_lod(float4 pos) { uint2 q = uint2(pos.xy) / 2; return (q.x + q.y) % 2; }
+float4 ps_coarse(float4 pos : SV_Position) : SV_Target {
+  pair[0].WriteSamplerFeedbackLevel(flat, s, pos.xy / TARGET * QUAD_SCALE, quad_lod(pos));
+  return 0;
+}
+float4 ps_discard(float4 pos : SV_Position) : SV_Target {
+  if (all((uint2(pos.xy) & 1) == 0))
+    discard;
+  pair[0].WriteSamplerFeedbackLevel(flat, s, (floor(pos.xy / 2) * 2 + 1) / TARGET * QUAD_SCALE, quad_lod(pos));
+  return 0;
+}
 )hlsl";
 
 int
@@ -79,19 +97,25 @@ main(int argc, char **argv) {
   // the array's regions are 8 texels, so a lane's texels at the first mip are a few lanes apart
   const Paired array{64, 64, 2, 7, 8, 8}, flat{32, 32, 1, 6, 4, 4};
   const UINT grid_x = 32, grid_y = 16, quads = 8, target_size = 2 * quads;
-  const float span = 1.3529f, origin = -0.1983f, hop = 0.0531f, dot_scale = 0.93f, edge = 0.0047f;
+  const float span = 1.3529f, origin = -0.1983f, hop = 0.0531f, dot_scale = 0.93f, edge = 0.0047f,
+              quad_scale = 0.43f;
   std::vector<std::string> defines = {
       "GRID_X=" + std::to_string(grid_x), "GRID_Y=" + std::to_string(grid_y), "SPAN=" + std::to_string(span),
       "ORIGIN=" + std::to_string(origin), "HOP=" + std::to_string(hop),       "SLICES=" + std::to_string(array.slices),
       "QUADS=" + std::to_string(quads),   "TARGET=" + std::to_string(target_size),
       "DOT_SCALE=" + std::to_string(dot_scale), "EDGE=" + std::to_string(edge),
+      "QUAD_SCALE=" + std::to_string(quad_scale),
   };
   auto cs_dense = compiler.compile(hlsl, "cs_dense", "cs_6_5", defines),
        cs_pair = compiler.compile(hlsl, "cs_pair", "cs_6_5", defines),
        cs_edge = compiler.compile(hlsl, "cs_edge", "cs_6_5", defines),
        vs_dots = compiler.compile(hlsl, "vs_dots", "vs_6_5", defines),
-       ps_dots = compiler.compile(hlsl, "ps_dots", "ps_6_5", defines);
-  if (cs_dense.empty() || cs_pair.empty() || cs_edge.empty() || vs_dots.empty() || ps_dots.empty()) {
+       ps_dots = compiler.compile(hlsl, "ps_dots", "ps_6_5", defines),
+       vs_full = compiler.compile(hlsl, "vs_full", "vs_6_5", defines),
+       ps_coarse = compiler.compile(hlsl, "ps_coarse", "ps_6_5", defines),
+       ps_discard = compiler.compile(hlsl, "ps_discard", "ps_6_5", defines);
+  if (cs_dense.empty() || cs_pair.empty() || cs_edge.empty() || vs_dots.empty() || ps_dots.empty() || vs_full.empty() ||
+      ps_coarse.empty() || ps_discard.empty()) {
     printf(compiler.dxc ? "failed: HLSL did not compile\n" : "skipped: sampler feedback is shader model 6.5\n");
     return compiler.dxc ? 1 : 77;
   }
@@ -101,6 +125,12 @@ main(int argc, char **argv) {
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options, sizeof(options)));
   if (options.SamplerFeedbackTier != D3D12_SAMPLER_FEEDBACK_TIER_1_0) {
     printf("failed: sampler feedback tier %d\n", options.SamplerFeedbackTier);
+    return 1;
+  }
+  D3D12_FEATURE_DATA_D3D12_OPTIONS6 options6{};
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &options6, sizeof(options6)));
+  if (options6.VariableShadingRateTier == D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED) {
+    printf("failed: no variable rate shading\n");
     return 1;
   }
 
@@ -202,7 +232,7 @@ main(int argc, char **argv) {
     printf("failed: root signature\n");
     return 1;
   }
-  ComPtr<ID3D12PipelineState> dense_pso, pair_pso, edge_pso, dots_pso;
+  ComPtr<ID3D12PipelineState> dense_pso, pair_pso, edge_pso, dots_pso, coarse_pso, discard_pso;
   D3D12_COMPUTE_PIPELINE_STATE_DESC compute{rs.Get(), bytecode(cs_dense)};
   CHECK(device->CreateComputePipelineState(&compute, IID_PPV_ARGS(&dense_pso)));
   compute.CS = bytecode(cs_pair);
@@ -217,10 +247,15 @@ main(int argc, char **argv) {
   graphics.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
   graphics.SampleDesc.Count = 1;
   CHECK(device->CreateGraphicsPipelineState(&graphics, IID_PPV_ARGS(&dots_pso)));
+  graphics.VS = bytecode(vs_full);
+  graphics.PS = bytecode(ps_coarse);
+  CHECK(device->CreateGraphicsPipelineState(&graphics, IID_PPV_ARGS(&coarse_pso)));
+  graphics.PS = bytecode(ps_discard);
+  CHECK(device->CreateGraphicsPipelineState(&graphics, IID_PPV_ARGS(&discard_pso)));
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
-  ComPtr<ID3D12GraphicsCommandList1> list;
+  ComPtr<ID3D12GraphicsCommandList5> list;
   D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
   CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
@@ -390,6 +425,31 @@ main(int argc, char **argv) {
           f.lod, runs[0], &f, &margin, true
       );
   compare("covered pixels", DRAWN, 0, dots);
+
+  // coarse pixels: a coarse pixel's leader alone writes, and its other lanes sample where the coarse pixels beside it
+  // do. then quads whose first pixel discards before it samples. both want, of each quad, its center
+  Wanted quads_wanted = empty(flat);
+  for (UINT qy = 0; qy < quads; qy++)
+    for (UINT qx = 0; qx < quads; qx++)
+      sample(
+          quads_wanted, flat, flat_view, (2 * qx + 1.0f) / target_size * quad_scale,
+          (2 * qy + 1.0f) / target_size * quad_scale, 0, float((qx + qy) % 2), runs[0], nullptr, &margin, false
+      );
+  for (bool coarse : {true, false}) {
+    clear(PAIR_0);
+    bind(true, 0);
+    list->SetPipelineState(coarse ? coarse_pso.Get() : discard_pso.Get());
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->RSSetShadingRate(coarse ? D3D12_SHADING_RATE_2X2 : D3D12_SHADING_RATE_1X1, nullptr);
+    list->DrawInstanced(3, 1, 0, 0);
+    list->RSSetShadingRate(D3D12_SHADING_RATE_1X1, nullptr);
+    decode({PAIR_0});
+    CHECK(run());
+    compare(coarse ? "coarse pixels" : "discarding quads", PAIR_0, 0, quads_wanted);
+  }
 
   // the expectations hold only while no sample sits where rounding decides its texels or mips: 64 units in the last
   // place of the largest texel coordinate away

@@ -3,7 +3,7 @@
 # family native-metal3
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -3300,9 +3300,7 @@
+@@ -3306,9 +3306,7 @@
          auto leader = ir.CreateTrunc(ir.CreateCall(ctz, {lanes, ir.getFalse()}), ir.getInt32Ty());
          auto leader_key = move("simd_shuffle", key, {i16(leader)});
          auto leader_slice = move("simd_shuffle", slice, {i16(leader)});

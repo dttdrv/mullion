@@ -3,7 +3,7 @@
 # family native-metal3
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -3387,7 +3387,7 @@
+@@ -3393,7 +3393,7 @@
                // the second texel in the first's region adds nothing to it
                if (k && !merge_skipped)
                  kept = ir.CreateAnd(

@@ -3246,9 +3246,15 @@ convert_dxil(
       bool merge = !merge_skipped && non_uniform && non_uniform->isZero() &&
                    (ctx.shader_type == D3D11_SB_COMPUTE_SHADER || ctx.shader_type == D3D10_SB_PIXEL_SHADER) &&
                    simd_inputs;
-      Value *writes = merge && ctx.shader_type == D3D10_SB_PIXEL_SHADER
-                          ? ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {}))
-                          : (Value *)ir.getTrue();
+      // a pixel shader's lane takes part only where it would write itself: not a helper, and where Mullion keeps the
+      // write, which a coarse pixel's other lanes and a lane that discarded under coarse shading do not
+      // (CoarseShading::Finish gives kFeedbackLaneWrites its value)
+      Value *writes = ir.getTrue();
+      if (merge && ctx.shader_type == D3D10_SB_PIXEL_SHADER)
+        writes = ir.CreateAnd(
+            ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {})),
+            ir.CreateCall(ctx.module.getOrInsertFunction(kFeedbackLaneWrites, FunctionType::get(ir.getInt1Ty(), false)))
+        );
       auto ctz = ctx.module.getOrInsertFunction(
           "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
       );

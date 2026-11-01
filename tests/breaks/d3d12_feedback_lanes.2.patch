@@ -11,4 +11,4 @@
 +      bool merge = !merge_skipped && non_uniform &&
                     (ctx.shader_type == D3D11_SB_COMPUTE_SHADER || ctx.shader_type == D3D10_SB_PIXEL_SHADER) &&
                     simd_inputs;
-       Value *writes = merge && ctx.shader_type == D3D10_SB_PIXEL_SHADER
+       // a pixel shader's lane takes part only where it would write itself: not a helper, and where Mullion keeps the

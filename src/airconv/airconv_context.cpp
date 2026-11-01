@@ -40,6 +40,11 @@
 #include "transforms/simdgroup_implicit_membarrier.hpp"
 #include "transforms/hoist_loads.hpp"
 
+// dxbc_converter.hpp
+namespace mullion::dxbc {
+void FinishFeedbackLanes(llvm::Module &module);
+}
+
 using namespace llvm;
 
 namespace mullion {
@@ -73,6 +78,8 @@ static std::once_flag llvm_overwrite;
 
 bool
 runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
+  // a pixel shader that was not shaded coarsely keeps every lane's writes
+  mullion::dxbc::FinishFeedbackLanes(M);
   // Metal says of ill-formed IR only "Failed to materializeAll"
   if (verifyModule(M, &Error))
     return false;
