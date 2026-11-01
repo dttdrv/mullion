@@ -314,7 +314,9 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_PIXEL_SHADER)
       return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
-    if (!managed_shader) {
+    // SV_InnerCoverage needs conservative rasterization tier 3, which D3D11 here does not report
+    // (ConservativeRasterizationTier): a shader the device cannot run is refused
+    if (!managed_shader || managed_shader->reflection().PixelShader.InnerCoverage) {
       return E_INVALIDARG;
     }
     if (!ppShader)
