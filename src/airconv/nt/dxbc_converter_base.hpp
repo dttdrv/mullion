@@ -577,6 +577,8 @@ public:
   llvm::Value *ConvertToHalfTowardZero(llvm::Value *Value);
 
   llvm::Value *FirstBit(IntegerUnaryOp Op, llvm::Value *Value);
+  // frc and DXIL's Frc: the value less its floor (D3D11.3 22.10.7), NaN for an infinity or a NaN
+  llvm::Value *Fraction(llvm::Value *Value);
   llvm::Value *SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value);
   // `Used`: the components the caller takes of the texel
   std::pair<llvm::Value *, llvm::Value *> ReadTexel(

@@ -952,19 +952,9 @@ Converter::operator()(const InstFloatUnaryOp &unary) {
   case FloatUnaryOp::Sqrt:
     Value = air.CreateFPUnOp(AIRBuilder::sqrt, Value);
     break;
-  // D3D11.3 22.10.7 requires NaN for infinities and NaNs; integer selection survives fast math's cancellation
-  case FloatUnaryOp::Fraction: {
-    auto Scalar = Value->getType()->getScalarType();
-    auto Bits = ir.CreateBitCast(Value, Value->getType()->getWithNewType(ir.getIntNTy(Scalar->getScalarSizeInBits())));
-    auto Inf = llvm::APFloat::getInf(Scalar->getFltSemantics()).bitcastToAPInt();
-    auto NonFinite = ir.CreateICmpEQ(ir.CreateAnd(Bits, Inf), llvm::ConstantInt::get(Bits->getType(), Inf));
-    auto Fraction = ir.CreateBitCast(air.CreateFPUnOp(AIRBuilder::fract, Value), Bits->getType());
-    auto NaN = llvm::APFloat::getQNaN(Scalar->getFltSemantics()).bitcastToAPInt();
-    Value = ir.CreateBitCast(
-        ir.CreateSelect(NonFinite, llvm::ConstantInt::get(Bits->getType(), NaN), Fraction), Value->getType()
-    );
+  case FloatUnaryOp::Fraction:
+    Value = Fraction(Value);
     break;
-  }
   case FloatUnaryOp::RoundNearestEven:
     Value = air.CreateFPUnOp(AIRBuilder::rint, Value);
     break;
@@ -1071,6 +1061,35 @@ Converter::FirstBit(IntegerUnaryOp Op, llvm::Value *Value) {
   // a count of the operand's whole width, or more, says no bit was found
   auto Bits = Value->getType()->getScalarSizeInBits();
   return MaxIfInMask(llvm::maskTrailingOnes<uint64_t>(Bits) - (Bits - 1), Value);
+}
+
+llvm::Value *
+Converter::Fraction(llvm::Value *Value) {
+  // D3D's own definition, "dest = src0 - round_ni(src0)" (D3D11.3 22.10.7), as a subtraction that may not assume a
+  // finite operand: an infinity less itself, and a NaN, are NaN, as TableFrc asks. On an Apple M4 it gives, bit for bit,
+  // what Metal's fast fract with a NaN selected for a non-finite operand gives, for every 32-bit and 16-bit input,
+  // without the bit test and the select (4-7% of the perf probe's math shaders). MULLION_AIRCONV_SKIP=frac-floor (in
+  // the shader cache's key) takes the select instead
+  using llvm::air::AIRBuilder;
+  static const bool Select = [] {
+    auto Skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return Skip && strstr(Skip, "frac-floor");
+  }();
+  auto Type = Value->getType();
+  if (!Select) {
+    auto Floor = air.CreateFPUnOp(AIRBuilder::floor, Value, false);
+    llvm::IRBuilder<>::FastMathFlagGuard Strict(ir);
+    ir.clearFastMathFlags();
+    return ir.CreateFSub(Value, Floor);
+  }
+  // integer selection survives fast math's cancellation
+  auto Scalar = Type->getScalarType();
+  auto Bits = ir.CreateBitCast(Value, Type->getWithNewType(ir.getIntNTy(Scalar->getScalarSizeInBits())));
+  auto Inf = llvm::APFloat::getInf(Scalar->getFltSemantics()).bitcastToAPInt();
+  auto NonFinite = ir.CreateICmpEQ(ir.CreateAnd(Bits, Inf), llvm::ConstantInt::get(Bits->getType(), Inf));
+  auto Fraction = ir.CreateBitCast(air.CreateFPUnOp(AIRBuilder::fract, Value), Bits->getType());
+  auto NaN = llvm::APFloat::getQNaN(Scalar->getFltSemantics()).bitcastToAPInt();
+  return ir.CreateBitCast(ir.CreateSelect(NonFinite, llvm::ConstantInt::get(Bits->getType(), NaN), Fraction), Type);
 }
 
 llvm::Value *

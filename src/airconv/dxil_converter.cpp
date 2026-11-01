@@ -3556,16 +3556,9 @@ convert_dxil(
     case Log:
       ret = fp_unary(llvm::air::AIRBuilder::log2, a(1));
       break;
-    // D3D11.3 22.10.7 requires NaN for infinities and NaNs; integer selection survives fast math's cancellation
-    case Frc: {
-      auto bits = ir.CreateBitCast(a(1), ty->getWithNewType(ir.getIntNTy(ty->getScalarSizeInBits())));
-      auto inf = APFloat::getInf(ty->getScalarType()->getFltSemantics()).bitcastToAPInt();
-      auto non_finite = ir.CreateICmpEQ(ir.CreateAnd(bits, inf), ConstantInt::get(bits->getType(), inf));
-      auto fraction = ir.CreateBitCast(fp_unary(llvm::air::AIRBuilder::fract, a(1)), bits->getType());
-      auto nan = APFloat::getQNaN(ty->getScalarType()->getFltSemantics()).bitcastToAPInt();
-      ret = ir.CreateBitCast(ir.CreateSelect(non_finite, ConstantInt::get(bits->getType(), nan), fraction), ty);
+    case Frc:
+      ret = dxbc.Fraction(a(1));
       break;
-    }
     case Sqrt:
       ret = fp_unary(llvm::air::AIRBuilder::sqrt, a(1));
       break;
