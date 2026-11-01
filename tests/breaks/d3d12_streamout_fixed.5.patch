@@ -1,0 +1,13 @@
+# a draw that rasterizes stays in the pixel-sized pass a stream output draw began
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1098,8 +1098,7 @@ public:
+     if (auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+         allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render &&
+         ((dirty_state_.test(DirtyState::ScissorRect) && pass->scissors + count > WMT::kPassRectangles) ||
+-         (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles) ||
+-         (pass->rasterless && !pso_graphics_->rasterless)))
++         (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles)))
+       allocator_->InvalidateCurrentPass();
+     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
+ 

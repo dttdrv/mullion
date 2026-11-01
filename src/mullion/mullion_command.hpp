@@ -193,6 +193,9 @@ public:
   WMT::RenderPipelineState PipelineStatistics(bool scan = false);
   // zeroes a stream output draw's scratch inside its render pass (zero_words)
   WMT::RenderPipelineState ZeroWords();
+  // copies a one-pass stream output draw's filled sizes to its scratch inside its render pass, a slot a vertex
+  // (stream_output_snapshot, SM50StreamOutputSinglePass)
+  WMT::RenderPipelineState StreamOutputSnapshot();
   // the kernel `name` as a compute pipeline, made once for the device
   WMT::Reference<WMT::ComputePipelineState> ComputePipeline(const std::string &name);
 
@@ -214,7 +217,7 @@ private:
   WMT::Reference<WMT::Library> library_;
   WMT::Device device_;
   mullion::mutex pipelines_mutex_;
-  WMT::Reference<WMT::RenderPipelineState> pipeline_statistics_draw_[2], zero_words_;
+  WMT::Reference<WMT::RenderPipelineState> pipeline_statistics_draw_[2], zero_words_, stream_output_snapshot_;
   std::unordered_map<std::string, WMT::Reference<WMT::ComputePipelineState>> compute_pipelines_;
   struct Unbound {
     WMT::Reference<WMT::Texture> texture;

@@ -519,6 +519,11 @@ public:
   // SM50_STREAM_OUTPUT_TARGETS)
   bool stream_output = false;
   WMT::Reference<WMT::RenderPipelineState> so_count, so_count_strip;
+  // whether `pso` and `pso_strip` stream out in one pass, without their counting pass, after their filled sizes are
+  // copied (SM50StreamOutputSinglePass); and whether the pipeline's draws rasterize nothing, stream output to no
+  // rasterized stream (D3D11.3 14.1), so that a pass without attachments they begin covers no pixels.
+  // MULLION_D3D12_FAST_STREAM_OUTPUT=0 turns both off
+  bool so_single = false, so_single_strip = false, rasterless = false;
   // the geometry shader's instances, 1 without one
   uint32_t gs_instances = 1;
   // the mesh threadgroups an object threadgroup starts for each primitive: the geometry shader's instances, 1 when

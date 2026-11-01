@@ -1,0 +1,12 @@
+# a fixed geometry shader's invocations in one pass leave their geometry instance out of their place
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1212,7 +1212,7 @@ convert_dxbc_geometry_shader(
+         auto whole = air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, valid_primitive_mask);
+         auto invocation = builder.CreateSelect(
+             builder.CreateICmpULT(primitive_id_in_warp, whole),
+-            builder.CreateAdd(builder.CreateMul(primitive_id_in_warp, instances), resource_map.gs_instance_id),
++            builder.CreateMul(primitive_id_in_warp, instances),
+             builder.CreateMul(whole, instances)
+         );
+         so_base[s] = builder.CreateAdd(before, builder.CreateMul(i64(invocation), builder.getInt64((*fixed)[s])));

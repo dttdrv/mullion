@@ -1105,7 +1105,8 @@ public:
     if (auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
         allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render &&
         ((dirty_state_.test(DirtyState::ScissorRect) && pass->scissors + count > WMT::kPassRectangles) ||
-         (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles)))
+         (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles) ||
+         (pass->rasterless && !pso_graphics_->rasterless)))
       allocator_->InvalidateCurrentPass();
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
@@ -1171,6 +1172,10 @@ public:
         render_target_height = std::min(render_target_height, AttachmentDesc.Height);
         render_target_array_length = std::max(render_target_array_length, AttachmentDesc.RenderTargetArrayLength);
       }
+      if (!effective_rtvs && pso_graphics_->rasterless) {
+        render->rasterless = true;
+        render_target_width = render_target_height = 1;
+      }
       render->render_target_width = render_target_width;
       render->render_target_height = render_target_height;
       render->render_target_array_length = render_target_array_length;
@@ -1204,7 +1209,7 @@ public:
     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
       // a pipeline for a topology with adjacency is made here, and may fail
       auto pipeline = Pipeline();
-      if (!pipeline || (pso_graphics_->stream_output && !Pipeline(true)))
+      if (!pipeline || (pso_graphics_->stream_output && !SinglePass() && !Pipeline(true)))
         return DrawCallStatus::Invalid;
       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
       cmd_setpso.type = WMTRenderCommandSetPSO;
@@ -1648,8 +1653,11 @@ public:
       return draw();
     auto targets = StreamOutputTargets();
     uint64_t groups = uint64_t(warps) * Args.InstanceCount;
-    auto [Scratch, ScratchOffset] =
-        allocator_->AllocateGPUHeap(SM50StreamOutputScratch(groups, vertex_per_warp * pso_graphics_->gs_instances), 16);
+    // one pass keeps only the filled sizes
+    bool single = SinglePass();
+    auto [Scratch, ScratchOffset] = allocator_->AllocateGPUHeap(
+        single ? SM50StreamOutputZeroed(0) : SM50StreamOutputScratch(groups, vertex_per_warp * pso_graphics_->gs_instances), 16
+    );
     // a draw whose scratch no heap has room for: the list fails when it is closed
     if (!Scratch)
       return;
@@ -1666,7 +1674,15 @@ public:
       cmd.primitive_type = WMTPrimitiveTypePoint;
       cmd.vertex_count = SM50StreamOutputZeroed(groups) / sizeof(uint32_t);
       cmd.instance_count = 1;
-    });
+    }, single);
+  }
+
+  // whether the draw's stream output runs in one pass (SM50StreamOutputSinglePass): the pipeline's variant for the
+  // topology was made so
+  bool
+  SinglePass() {
+    return !PassesAdjacency() && !pso_graphics_->patches &&
+           (Strip(topology_) ? pso_graphics_->so_single_strip : pso_graphics_->so_single);
   }
 
   // the stream output targets bound, with no scratch area yet
@@ -1686,13 +1702,14 @@ public:
   // invocation's primitives, and after a barrier again, writing them and drawing. its scratch area holds the filled
   // sizes, a total per stream and object threadgroup, and a count per stream and invocation (at most a primitive per
   // vertex). the passes add to all but the counts, which `zero` zeroes first (zero_words), on every execution of the
-  // list, replays included
+  // list, replays included. in one pass (`single`, SM50StreamOutputSinglePass) the draw runs once, after its filled
+  // sizes are copied to its scratch (stream_output_snapshot), which is all the scratch holds
   template <typename Draw, typename Zero>
   void
-  StreamOut(uint64_t TargetsOffset, uint64_t ScratchOffset, Draw draw, Zero zero) {
+  StreamOut(uint64_t TargetsOffset, uint64_t ScratchOffset, Draw draw, Zero zero, bool single = false) {
     EncodeBuffer(WMTRenderCommandSetObjectBuffer, TargetsOffset, SM50_BINDING_INDEX_STREAM_OUTPUT0);
     EncodeBuffer(WMTRenderCommandSetMeshBuffer, TargetsOffset, SM50_BINDING_INDEX_STREAM_OUTPUT0);
-    EncodeBuffer(WMTRenderCommandSetVertexBuffer, ScratchOffset, kCustomBufferArgumentIndex0);
+    EncodeBuffer(WMTRenderCommandSetVertexBuffer, single ? TargetsOffset : ScratchOffset, kCustomBufferArgumentIndex0);
     auto set_pso = [&](WMT::RenderPipelineState pso) {
       auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
@@ -1705,6 +1722,19 @@ public:
       cmd.stages_after = after;
       cmd.stages_before = before;
     };
+    if (single) {
+      set_pso(device_->GetLib().StreamOutputSnapshot());
+      auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
+      cmd = {WMTRenderCommandDraw};
+      cmd.primitive_type = WMTPrimitiveTypePoint;
+      cmd.vertex_count = std::size(so_views_);
+      cmd.instance_count = 1;
+      barrier(WMTRenderStageVertex, WMTRenderStagePreRaster);
+      set_pso(Pipeline());
+      draw();
+      barrier(WMTRenderStagePreRaster, WMTRenderStages(WMTRenderStagePreRaster | WMTRenderStageFragment));
+      return;
+    }
     set_pso(device_->GetLib().ZeroWords());
     zero();
     barrier(WMTRenderStageVertex, WMTRenderStagePreRaster);
@@ -3962,7 +3992,7 @@ public:
         zero.primitive_type = WMTPrimitiveTypePoint;
         zero.indirect_args_buffer = allocator_->gpu_heap_buffer_;
         zero.indirect_args_offset = at + offsetof(IndirectMeshDraw, zero);
-      });
+      }, SinglePass());
     }
   };
 

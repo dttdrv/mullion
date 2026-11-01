@@ -459,8 +459,8 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_STREAM_OUTPUT: {
-      auto &[next, type, count, elements, strides, rasterized, counting] = *(SM50_SHADER_STREAM_OUTPUT_DATA *)arg;
-      hash(count, strides, rasterized, counting);
+      auto &[next, type, count, elements, strides, rasterized, counting, single_pass] = *(SM50_SHADER_STREAM_OUTPUT_DATA *)arg;
+      hash(count, strides, rasterized, counting, single_pass);
       // offsets count preceding elements of each slot, including gaps (D3D11.3 14.3)
       for (uint32_t i = 0; i < count; i++)
         hash(elements[i].reg_id, elements[i].component, elements[i].stream, elements[i].output_slot);
@@ -670,7 +670,7 @@ protected:
   static SM50_SHADER_PSO_GEOMETRY_SHADER_DATA
   GeometryArguments(
       GeometryInputs &in, SM50_SHADER_STREAM_OUTPUT_DATA &so, bool strip, bool counting, uint32_t primitive,
-      bool pass_through, bool statistics
+      bool pass_through, bool statistics, bool single = false
   ) {
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA pso_gs{};
     pso_gs.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
@@ -688,6 +688,7 @@ protected:
     pso_gs.noperspective_inputs = in.noperspective_inputs;
     so = in.so;
     so.counting = counting;
+    so.single_pass = single && !counting;
     so.elements = in.so_elements.data();
     so.next = &in.common;
     pso_gs.next = in.stream_output ? (void *)&so : (void *)&in.common;
@@ -715,7 +716,8 @@ protected:
   WMT::Reference<WMT::RenderPipelineState>
   GeometryVariant(
       const std::shared_ptr<GeometryInputs> &inputs, sm50_shader_t shader_vs, sm50_shader_t shader_gs,
-      D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status
+      D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status,
+      bool single = false
   ) {
     status = E_FAIL;
     auto &in = *inputs;
@@ -723,7 +725,7 @@ protected:
     WMT::Reference<WMT::Error> err;
     D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
     SM50_SHADER_STREAM_OUTPUT_DATA so;
-    auto pso_gs = GeometryArguments(in, so, strip, counting, primitive, pass_through, false);
+    auto pso_gs = GeometryArguments(in, so, strip, counting, primitive, pass_through, false, single);
     in.ia_layout.elements = in.elements.data();
     in.ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
     in.ia_layout.next = &pso_gs;
@@ -746,7 +748,7 @@ protected:
     std::function<WMT::Reference<WMT::Function>()> statistics;
     if (shader_gs && !counting) {
       statistics_geometry_ = true;
-      statistics = [this, inputs, strip, primitive, pass_through] {
+      statistics = [this, inputs, strip, primitive, pass_through, single] {
         auto &in = *inputs;
         D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()}, GS{in.gs.data(), in.gs.size()};
         SM50Shader shader_vs, shader_gs;
@@ -755,7 +757,7 @@ protected:
             FAILED(InitializeShader(device_, GS, &shader_gs, &reflection)))
           return WMT::Reference<WMT::Function>{};
         SM50_SHADER_STREAM_OUTPUT_DATA so;
-        auto pso_gs = GeometryArguments(in, so, strip, false, primitive, pass_through, true);
+        auto pso_gs = GeometryArguments(in, so, strip, false, primitive, pass_through, true, single);
         HRESULT status;
         return GeometryFunction(in, shader_vs, shader_gs, GS, pso_gs, status);
       };
@@ -766,7 +768,9 @@ protected:
     bool rasterized = (shader_gs || pass_through) && !counting && (!in.stream_output || so.rasterized_stream != ~0u);
     info.fragment_function = rasterized ? in.ps.handle : obj_handle_t{};
     info.rasterization_enabled = rasterized;
-    info.payload_memory_length = SM50_GEOMETRY_PAYLOAD_SIZE;
+    info.payload_memory_length = !counting && SM50StreamOutputDirect(single, !!shader_gs, pass_through)
+                                     ? SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE
+                                     : SM50_GEOMETRY_PAYLOAD_SIZE;
     if (!(variant = CreatePipeline(info, err, std::move(statistics)))) {
       ERR("Failed to create geometry PSO of shaders ", name, ": ", err.description().getUTF8String());
       DumpShaders({VS, GS});
@@ -1524,17 +1528,29 @@ public:
       if (!inputs)
         return FAIL(E_FAIL);
       // D3D12_PRIMITIVE_TOPOLOGY_TYPE's point, line and triangle are D3D10_SB_PRIMITIVE's
+      // stream output in one pass where each object threadgroup's primitives follow from its place: no index cuts
+      // a strip, and a geometry shader, if any, emits the same each time
+      static const bool one_pass = env::getEnvVar("MULLION_D3D12_FAST_STREAM_OUTPUT") != "0";
+      rasterless = one_pass && stream_output && so_data.rasterized_stream == ~0u;
+      auto input = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive : uint32_t(pDesc->PrimitiveTopologyType);
+      bool fixed = one_pass && stream_output && !patches && (!sm50_shader_t(shader_gs) || ref_gs.GeometryShader.FixedEmits);
+      so_single = SM50StreamOutputSinglePass(input, false, false, fixed);
+      so_single_strip =
+          SM50StreamOutputSinglePass(input, true, pDesc->IBStripCutValue != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, fixed);
       auto variant = [&](bool strip, bool counting = false) {
         return GeometryVariant(
-            inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr
+            inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr,
+            strip ? so_single_strip : so_single
         );
       };
       bool strips = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
                               : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
       if (!patches && (!(pso = variant(false)) || (strips && !(pso_strip = variant(true)))))
         return hr;
+      // a one-pass variant has no counting pass
       if (!patches && stream_output &&
-          (!(so_count = variant(false, true)) || (strips && !(so_count_strip = variant(true, true)))))
+          ((!so_single && !(so_count = variant(false, true))) ||
+           (strips && !so_single_strip && !(so_count_strip = variant(true, true)))))
         return hr;
       if (adjacency || patches)
         topology_inputs_ = inputs;

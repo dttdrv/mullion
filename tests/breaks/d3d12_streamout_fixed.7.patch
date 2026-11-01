@@ -1,0 +1,12 @@
+# one-pass stream output writes a strip's odd triangles in the even ones' order
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2123,7 +2123,7 @@ stream_out_vertex(
+     for (uint32_t j = 0; j < per_primitive; j++)
+       for (uint32_t odd = 0; odd < (per_primitive == 3 && j ? 2u : 1u); odd++) {
+         // the vertex's place in the primitive: (n, n + 1 + odd, n + 2 - odd)
+-        uint32_t at = per_primitive == 3 && j ? (j == 1 ? 1 + odd : 2 - odd) : j;
++        uint32_t at = j;
+         auto t = builder.CreateSub(position, builder.getInt32(at));
+         pvalue mine = builder.CreateAnd(
+             builder.CreateAnd(builder.CreateICmpUGE(position, builder.getInt32(at)), builder.CreateICmpUGE(t, first)),

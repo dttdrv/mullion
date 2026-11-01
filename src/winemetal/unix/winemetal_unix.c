@@ -2361,6 +2361,7 @@ struct SM50_SHADER_STREAM_OUTPUT_DATA32 {
   uint32_t strides[4];
   uint32_t rasterized_stream;
   bool counting;
+  bool single_pass;
 };
 
 struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
@@ -2513,6 +2514,7 @@ sm50_compilation_argument32_convert(
       memcpy(data->strides, src->strides, sizeof(data->strides));
       data->rasterized_stream = src->rasterized_stream;
       data->counting = src->counting;
+      data->single_pass = src->single_pass;
       break;
     }
     case SM50_SHADER_PSO_TESSELLATOR: {

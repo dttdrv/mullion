@@ -1,0 +1,16 @@
+# one-pass stream output leaves the filled sizes out of its scratch
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1715,12 +1715,6 @@ public:
+       cmd.stages_before = before;
+     };
+     if (single) {
+-      set_pso(device_->GetLib().StreamOutputSnapshot());
+-      auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
+-      cmd = {WMTRenderCommandDraw};
+-      cmd.primitive_type = WMTPrimitiveTypePoint;
+-      cmd.vertex_count = std::size(so_views_);
+-      cmd.instance_count = 1;
+       barrier(WMTRenderStageVertex, WMTRenderStagePreRaster);
+       set_pso(Pipeline());
+       draw();

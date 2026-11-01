@@ -79,6 +79,10 @@ WMT::RenderPipelineState InternalCommandLibrary::ZeroWords() {
   return VertexPipeline(zero_words_, "zero_words");
 }
 
+WMT::RenderPipelineState InternalCommandLibrary::StreamOutputSnapshot() {
+  return VertexPipeline(stream_output_snapshot_, "stream_output_snapshot");
+}
+
 WMT::RenderPipelineState
 InternalCommandLibrary::VertexPipeline(WMT::Reference<WMT::RenderPipelineState> &pipeline, const char *name) {
   std::lock_guard lock(pipelines_mutex_);

@@ -623,6 +623,14 @@ struct MullionStreamOutputTargets {
   ulong statistics[4];
 };
 
+// a one-pass stream output draw's filled sizes as it starts, which its scratch begins with (SM50StreamOutputSinglePass):
+// a filled size is 32 bits, and an unbound one none
+[[vertex]] void stream_output_snapshot(constant MullionStreamOutputTargets &targets [[buffer(kCustomBufferArgumentIndex0)]],
+                                       uint slot [[vertex_id]]) {
+  auto filled = targets.filled[slot];
+  reinterpret_cast<device ulong *>(targets.scratch)[slot] = filled ? *reinterpret_cast<device const uint *>(filled) : 0;
+}
+
 struct MullionGSDispatchMarshal {
   constant uint2& draw_arguments; // (vertex|index_count, instance_count)
   // one per part the draw is encoded as (parts), each with the first object threadgroup and instance of its part

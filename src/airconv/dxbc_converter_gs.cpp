@@ -52,6 +52,54 @@ get_vertex_primitive_count_in_warp(D3D10_SB_PRIMITIVE primitive, bool strip, uin
   return {warp.vertices, warp.primitives, per_primitive};
 }
 
+std::optional<std::array<uint32_t, 4>>
+fixed_stream_primitives(const SM50ShaderInternal *pShaderInternal) {
+  uint32_t per_primitive = pShaderInternal->gs_output_topology == D3D10_SB_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP ? 3
+                           : pShaderInternal->gs_output_topology == D3D10_SB_PRIMITIVE_TOPOLOGY_LINESTRIP   ? 2
+                                                                                                         : 1;
+  // per stream, the primitives completed and the vertices of the strip so far, as the shader's emits count them; and
+  // the vertices emitted, which past the declared most leave what becomes of the rest to the converter
+  std::array<uint32_t, 4> primitives{}, strip{};
+  uint32_t emitted = 0;
+  bool fixed = true;
+  std::vector<const BasicBlock *> seen;
+  for (auto block = pShaderInternal->entry(); block;) {
+    // a block reached again loops
+    if (std::ranges::find(seen, block) != seen.end())
+      return {};
+    seen.push_back(block);
+    block->instructions.for_each(patterns{
+        [&](const InstEmit &emit) {
+          emitted++;
+          if (emit.stream >= 4)
+            return;
+          if (++strip[emit.stream] >= per_primitive)
+            primitives[emit.stream]++;
+        },
+        [&](const InstCut &cut) {
+          if (cut.stream < 4)
+            strip[cut.stream] = 0;
+        },
+        [](const auto &) {},
+    });
+    const BasicBlock *next = nullptr;
+    std::visit(
+        patterns{
+            [&](const BasicBlockUnconditionalBranch &branch) { next = branch.target; },
+            [](const BasicBlockReturn &) {},
+            [&](const auto &) { fixed = false; },
+        },
+        block->target
+    );
+    if (!fixed)
+      return {};
+    block = const_cast<BasicBlock *>(next);
+  }
+  if (emitted > pShaderInternal->gs_max_vertex_output)
+    return {};
+  return primitives;
+}
+
 // SM50_STREAM_OUTPUT_TARGETS, and where a draw's scratch area keeps what (airconv_public.h)
 static llvm::StructType *
 stream_output_targets_type(llvm::LLVMContext &context, air::AirType &types) {
@@ -1177,16 +1225,31 @@ convert_dxbc_geometry_shader(
       }
       // its first primitive: those of the object threadgroups before (the object stage summed them) and of this
       // group's invocations before this one
-      auto from = builder.CreateMul(so_warp, builder.getInt32(warp_primitive_count * pShaderInternal->gs_instance_count));
-      auto head = builder.GetInsertBlock();
-      auto loop = llvm::BasicBlock::Create(context, "so_prefix", function, active_);
-      auto done = llvm::BasicBlock::Create(context, "so_prefixed", function, active_);
       auto before = builder.CreateLoad(
           types._long, builder.CreateBitCast(
                            builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadStreamOutputBase + 2 * s),
                            types._long->getPointerTo(payload->getType()->getPointerAddressSpace())
                        )
       );
+      // in one pass every invocation of the group's whole primitives, the first ones, completes the same
+      if (so->single_pass) {
+        auto fixed = fixed_stream_primitives(pShaderInternal);
+        if (!fixed)
+          return llvm::make_error<UnsupportedFeature>("one-pass stream output of a geometry shader whose emits vary");
+        auto instances = builder.getInt32(pShaderInternal->gs_instance_count);
+        auto whole = air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, valid_primitive_mask);
+        auto invocation = builder.CreateSelect(
+            builder.CreateICmpULT(primitive_id_in_warp, whole),
+            builder.CreateAdd(builder.CreateMul(primitive_id_in_warp, instances), resource_map.gs_instance_id),
+            builder.CreateMul(whole, instances)
+        );
+        so_base[s] = builder.CreateAdd(before, builder.CreateMul(i64(invocation), builder.getInt64((*fixed)[s])));
+        continue;
+      }
+      auto from = builder.CreateMul(so_warp, builder.getInt32(warp_primitive_count * pShaderInternal->gs_instance_count));
+      auto head = builder.GetInsertBlock();
+      auto loop = llvm::BasicBlock::Create(context, "so_prefix", function, active_);
+      auto done = llvm::BasicBlock::Create(context, "so_prefixed", function, active_);
       builder.CreateCondBr(builder.CreateICmpULT(from, so_invocation), loop, done);
       builder.SetInsertPoint(loop);
       auto j = builder.CreatePHI(types._int, 2), sum = builder.CreatePHI(types._int, 2);
@@ -1518,11 +1581,14 @@ convert_dxbc_geometry_shader(
   return llvm::Error::success();
 }
 
-// the mesh stage of a pipeline with stream output and no geometry shader, which gets no threadgroups
+// the mesh stage of a pipeline with stream output and no geometry shader, which gets no threadgroups: its payload is
+// the object stage's (SM50StreamOutputDirect)
 llvm::Error
-convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module) {
+convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module, bool direct) {
   air::FunctionSignatureBuilder func_signature;
-  func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
+  func_signature.DefineInput(
+      air::InputPayload{.size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE) : uint32_t(SM50_GEOMETRY_PAYLOAD_SIZE)}
+  );
   func_signature.DefineInput(air::InputMesh{1, 1, air::MeshOutputTopology::Point});
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
   llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", function));
@@ -1997,6 +2063,123 @@ stream_out_primitives(
   return llvm::Error::success();
 }
 
+// one-pass stream output without a geometry shader or a rasterizer (SM50StreamOutputDirect), by the thread that ran
+// the vertex at `position` of its instance, its output registers in `outputs`: it writes the vertex wherever it is one
+// of a whole primitive's, the `whole` of the instance's, at `before` (those of the instances before) plus the
+// primitive's place. a strip's vertex is in up to as many primitives as a primitive has vertices, those of its object
+// threadgroup (from `first`, `primitives` of them), odd triangles as (n, n + 2, n + 1). with `last` (one thread of the
+// draw) it moves the filled sizes on by what the draw wrote, `total` the draw's primitives
+static llvm::Error
+stream_out_vertex(
+    llvm::IRBuilder<> &builder, air::AirType &types, SM50_SHADER_STREAM_OUTPUT_DATA *so, pvalue targets,
+    D3D10_SB_PRIMITIVE primitive, bool strip, pvalue outputs, uint32_t registers, pvalue position, pvalue before,
+    pvalue first, uint32_t primitives, pvalue whole, pvalue last, pvalue total
+) {
+  auto &context = builder.getContext();
+  auto own = own_vertices(primitive);
+  uint32_t per_primitive = own.count;
+  if (!per_primitive || own.first || per_primitive != vertices_per_primitive(primitive))
+    return llvm::make_error<UnsupportedFeature>("direct stream output of a primitive with adjacency or of a patch");
+  auto function = builder.GetInsertBlock()->getParent();
+  auto targets_type = stream_output_targets_type(context, types);
+  auto field = [&](uint32_t f, int32_t i = -1) {
+    auto ptr = builder.CreateStructGEP(targets_type, targets, f);
+    if (i >= 0)
+      ptr = builder.CreateConstInBoundsGEP2_32(targets_type->getElementType(f), ptr, 0, i);
+    return builder.CreateLoad(i < 0 ? targets_type->getElementType(f) : types._long, ptr);
+  };
+  auto device = [&](llvm::Type *ty, pvalue address) {
+    return builder.CreateIntToPtr(address, ty->getPointerTo((uint32_t)air::AddressSpace::device));
+  };
+  auto when = [&](pvalue cond, auto then) {
+    auto yes = llvm::BasicBlock::Create(context, "so_yes", function), no = llvm::BasicBlock::Create(context, "so_no", function);
+    builder.CreateCondBr(cond, yes, no);
+    builder.SetInsertPoint(yes);
+    then();
+    builder.CreateBr(no);
+    builder.SetInsertPoint(no);
+  };
+  uint32_t slots = 0;
+  for (uint32_t i = 0; i < so->num_elements; i++)
+    slots |= 1u << so->elements[i].output_slot;
+  // the filled sizes as the draw started (stream_output_snapshot), and the primitives that fit in every buffer
+  auto snapshots = device(types._long, field(3));
+  pvalue snapshot[4], limit = builder.getInt64(~0ull);
+  for (uint32_t b = 0; b < 4; b++) {
+    snapshot[b] = builder.CreateLoad(types._long, builder.CreateConstInBoundsGEP1_32(types._long, snapshots, b));
+    if (!(slots & (1u << b)))
+      continue;
+    auto size = field(1, b);
+    auto room = builder.CreateSub(size, builder.CreateSelect(builder.CreateICmpULT(snapshot[b], size), snapshot[b], size));
+    auto fit = builder.CreateUDiv(room, builder.getInt64(uint64_t(per_primitive) * so->strides[b]));
+    fit = builder.CreateSelect(builder.CreateICmpEQ(field(0, b), builder.getInt64(0)), builder.getInt64(0), fit);
+    limit = builder.CreateSelect(builder.CreateICmpULT(fit, limit), fit, limit);
+  }
+  auto i64 = [&](pvalue v) { return builder.CreateZExt(v, types._long); };
+  // vertex `j` of the instance's primitive `t`
+  auto write = [&](pvalue t, uint32_t j) {
+    auto g = builder.CreateAdd(before, i64(t));
+    when(builder.CreateICmpULT(g, limit), [&] {
+      auto vertex = builder.CreateAdd(builder.CreateMul(g, builder.getInt64(per_primitive)), builder.getInt64(j));
+      for (uint32_t i = 0; i < so->num_elements; i++) {
+        auto &e = so->elements[i];
+        if (e.reg_id == ~0u || e.stream)
+          continue;
+        auto value = builder.CreateLoad(
+            types._int, builder.CreateGEP(
+                            llvm::ArrayType::get(types._int4, registers), outputs,
+                            {builder.getInt32(0), builder.getInt32(e.reg_id), builder.getInt32(e.component)}
+                        )
+        );
+        builder.CreateStore(value, device(types._int, builder.CreateAdd(
+                                                         builder.CreateAdd(field(0, e.output_slot), snapshot[e.output_slot]),
+                                                         builder.CreateAdd(builder.CreateMul(vertex, builder.getInt64(so->strides[e.output_slot])), builder.getInt64(e.offset))
+                                                     )));
+      }
+    });
+  };
+  auto one = builder.getInt32(1);
+  if (!strip) {
+    auto t = builder.CreateUDiv(position, builder.getInt32(per_primitive));
+    auto j = builder.CreateURem(position, builder.getInt32(per_primitive));
+    when(builder.CreateICmpULT(i64(t), whole), [&] {
+      for (uint32_t k = 0; k < per_primitive; k++)
+        when(builder.CreateICmpEQ(j, builder.getInt32(k)), [&] { write(t, k); });
+    });
+  } else {
+    auto end = builder.CreateAdd(first, builder.getInt32(primitives));
+    for (uint32_t j = 0; j < per_primitive; j++)
+      for (uint32_t odd = 0; odd < (per_primitive == 3 && j ? 2u : 1u); odd++) {
+        // the vertex's place in the primitive: (n, n + 1 + odd, n + 2 - odd)
+        uint32_t at = per_primitive == 3 && j ? (j == 1 ? 1 + odd : 2 - odd) : j;
+        auto t = builder.CreateSub(position, builder.getInt32(at));
+        pvalue mine = builder.CreateAnd(
+            builder.CreateAnd(builder.CreateICmpUGE(position, builder.getInt32(at)), builder.CreateICmpUGE(t, first)),
+            builder.CreateAnd(builder.CreateICmpULT(t, end), builder.CreateICmpULT(i64(t), whole))
+        );
+        if (per_primitive == 3 && j)
+          mine = builder.CreateAnd(mine, builder.CreateICmpEQ(builder.CreateAnd(t, one), builder.getInt32(odd)));
+        when(mine, [&] { write(t, j); });
+      }
+  }
+  when(last, [&] {
+    auto written = builder.CreateSelect(builder.CreateICmpULT(total, limit), total, limit);
+    add_stream_output_statistics(builder, types, field(6, 0), written, total);
+    for (uint32_t b = 0; b < 4; b++)
+      if (slots & (1u << b))
+        when(builder.CreateICmpNE(field(2, b), builder.getInt64(0)), [&] {
+          builder.CreateStore(
+              builder.CreateTrunc(
+                  builder.CreateAdd(snapshot[b], builder.CreateMul(written, builder.getInt64(uint64_t(per_primitive) * so->strides[b]))),
+                  types._int
+              ),
+              device(types._int, field(2, b))
+          );
+        });
+  });
+  return llvm::Error::success();
+}
+
 llvm::Error
 convert_dxbc_vertex_for_geometry_shader(
     const SM50ShaderInternal *pShaderInternal, const char *name, const SM50ShaderInternal *pGeometryStage,
@@ -2036,6 +2219,9 @@ convert_dxbc_vertex_for_geometry_shader(
   SM50_SHADER_STREAM_OUTPUT_DATA *so = nullptr;
   args_get_data<SM50_SHADER_STREAM_OUTPUT, SM50_SHADER_STREAM_OUTPUT_DATA>(pArgs, &so);
   bool so_base = so && !so->counting;
+  // in one pass without a geometry shader or a rasterizer each thread streams its own vertex out, kept to itself:
+  // nothing goes to the payload (SM50StreamOutputDirect)
+  bool direct = so_base && SM50StreamOutputDirect(so->single_pass, pGeometryStage != nullptr, pass_through);
   bool is_indexed_draw = ia_layout && ia_layout->index_buffer_format > 0;
   // with an index buffer view (D3D12), whether the draw has indices is known only at run time
   bool index_view = ia_layout && ia_layout->index_buffer_format == SM50_INDEX_BUFFER_FORMAT_VIEW;
@@ -2069,7 +2255,9 @@ convert_dxbc_vertex_for_geometry_shader(
   if (!binding_map)
     return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
-  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
+  uint32_t payload_idx = func_signature.DefineInput(
+      air::InputPayload{.size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE) : uint32_t(SM50_GEOMETRY_PAYLOAD_SIZE)}
+  );
   // (warp_size, 1, 1)
   uint32_t thread_id_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
   // (warp_count, instance_count, 1)
@@ -2193,22 +2381,33 @@ convert_dxbc_vertex_for_geometry_shader(
       types._int, payload, 4
   );
 
-  resource_map.output.ptr_int4 = builder.CreateBitCast(
-      payload_output_ptr,
-      llvm::ArrayType::get(types._int4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::object_data)
-  );
-  resource_map.output.ptr_int4 = builder.CreateGEP(
-      resource_map.output.ptr_int4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_int4,
-      {warp_vertex_id}
-  );
-  resource_map.output.ptr_float4 = builder.CreateBitCast(
-      payload_output_ptr,
-      llvm::ArrayType::get(types._float4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::object_data)
-  );
-  resource_map.output.ptr_float4 = builder.CreateGEP(
-      resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_float4,
-      {warp_vertex_id}
-  );
+  pvalue direct_outputs = nullptr;
+  if (direct) {
+    // as a vertex shader's (convert_dxbc_vertex_shader)
+    direct_outputs = builder.CreateAlloca(llvm::ArrayType::get(types._int4, max_output_register));
+    builder.CreateStore(llvm::ConstantAggregateZero::get(llvm::ArrayType::get(types._int4, max_output_register)), direct_outputs);
+    resource_map.output.ptr_int4 = direct_outputs;
+    resource_map.output.ptr_float4 = builder.CreateBitCast(
+        direct_outputs, llvm::ArrayType::get(types._float4, max_output_register)->getPointerTo()
+    );
+  } else {
+    resource_map.output.ptr_int4 = builder.CreateBitCast(
+        payload_output_ptr,
+        llvm::ArrayType::get(types._int4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::object_data)
+    );
+    resource_map.output.ptr_int4 = builder.CreateGEP(
+        resource_map.output.ptr_int4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_int4,
+        {warp_vertex_id}
+    );
+    resource_map.output.ptr_float4 = builder.CreateBitCast(
+        payload_output_ptr,
+        llvm::ArrayType::get(types._float4, max_output_register)->getPointerTo((uint32_t)air::AddressSpace::object_data)
+    );
+    resource_map.output.ptr_float4 = builder.CreateGEP(
+        resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_float4,
+        {warp_vertex_id}
+    );
+  }
 
   resource_map.output_element_count = max_output_register;
 
@@ -2330,8 +2529,23 @@ convert_dxbc_vertex_for_geometry_shader(
     strip_offset = builder.CreateSub(group_start, simd("air.simd_max.u.i32", cut_ends));
   }
 
+  // in one pass, an instance's whole primitives without cuts: those of every `vertex_per_primitive` vertices of a
+  // list, and of each vertex of a strip from its last's on; the group's come after those of the instances before
+  // it, and of its instance's groups before it
+  pvalue single_whole = nullptr, single_before = nullptr;
+  if (so_base && so->single_pass) {
+    if (cuts || assembled)
+      return llvm::make_error<UnsupportedFeature>("one-pass stream output of strips that may be cut, or are assembled");
+    auto count = builder.CreateZExt(vertex_count, types._long);
+    auto reach = builder.getInt64(vertex_per_primitive - 1);
+    single_whole = strip ? builder.CreateSelect(builder.CreateICmpUGT(count, reach), builder.CreateSub(count, reach), builder.getInt64(0))
+                         : builder.CreateUDiv(count, builder.getInt64(vertex_per_primitive));
+    single_before = builder.CreateMul(builder.CreateZExt(instance_id, types._long), single_whole);
+  }
+
   // explicit initialization
-  air.CreateAtomicRMW(llvm::AtomicRMWInst::BinOp::And, valid_vertex_mask, builder.getInt32(0));
+  if (!direct)
+    air.CreateAtomicRMW(llvm::AtomicRMWInst::BinOp::And, valid_vertex_mask, builder.getInt32(0));
 
   if (assembled) {
     // a triangle strip with adjacency (D3D11.3 functional spec, 8.15): triangle n of a strip leads at its index 2n and
@@ -2397,9 +2611,10 @@ convert_dxbc_vertex_for_geometry_shader(
 
   builder.SetInsertPoint(active);
 
-  air.CreateAtomicRMW(
-      llvm::AtomicRMWInst::BinOp::Or, valid_vertex_mask, builder.CreateShl(builder.getInt32(1), warp_vertex_id)
-  );
+  if (!direct)
+    air.CreateAtomicRMW(
+        llvm::AtomicRMWInst::BinOp::Or, valid_vertex_mask, builder.CreateShl(builder.getInt32(1), warp_vertex_id)
+    );
 
   resource_map.base_vertex_id = is_indexed_draw ? shifted(3) : builder.CreateExtractValue(draw_arguments, 2);
   resource_map.instance_id = instance_id;
@@ -2426,16 +2641,69 @@ convert_dxbc_vertex_for_geometry_shader(
     return err;
   }
 
+  if (direct) {
+    // the thread streams its vertex out, and the draw's last group's first thread, which every draw's last group
+    // runs, moves the filled sizes on
+    auto targets_type = stream_output_targets_type(context, types);
+    auto targets = function->getArg(so_idx);
+    auto field = [&](uint32_t f) {
+      return builder.CreateLoad(targets_type->getElementType(f), builder.CreateStructGEP(targets_type, targets, f));
+    };
+    auto warps = field(4), instances = field(5);
+    auto group = builder.CreateAdd(builder.CreateMul(instance_id, warps), warp_id);
+    auto last = builder.CreateAnd(
+        builder.CreateICmpEQ(warp_vertex_id, builder.getInt32(0)),
+        builder.CreateICmpEQ(builder.CreateAdd(group, builder.getInt32(1)), builder.CreateMul(warps, instances))
+    );
+    if (auto err = stream_out_vertex(
+            builder, types, so, targets, input_primitive, strip, direct_outputs, max_output_register,
+            builder.CreateAdd(group_start, warp_vertex_id), single_before,
+            builder.CreateMul(warp_id, builder.getInt32(warp_primitive_count)), warp_primitive_count, single_whole, last,
+            builder.CreateMul(builder.CreateZExt(instances, types._long), single_whole)
+        ))
+      return err;
+  }
+
   builder.CreateBr(will_dispatch);
 
   builder.SetInsertPoint(will_dispatch);
+
+  // the group starts no mesh threadgroups, and passes nothing on
+  if (direct) {
+    builder.CreateCondBr(builder.CreateICmpEQ(warp_vertex_id, builder.getInt32(0)), dispatch, return_);
+    builder.SetInsertPoint(dispatch);
+    air.CreateSetMeshProperties(air.getInt3(0, 0, 1));
+    builder.CreateBr(return_);
+    builder.SetInsertPoint(return_);
+    builder.CreateRetVoid();
+    module.getOrInsertNamedMetadata("air.object")->addOperand(function_metadata);
+    return llvm::Error::success();
+  }
 
   air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
 
   // the primitives each stream had before this object threadgroup: the group's threads sum the totals of the blocks
   // before its block, then of its block's groups before it, in turn, then over the SIMD group
   pvalue so_before[4] = {};
-  if (so_base) {
+  if (so_base && so->single_pass) {
+    // in one pass, the group's place gives them (single_before). each of the geometry shader's invocations completes
+    // the same on a stream, and without one each primitive is one
+    std::array<uint32_t, 4> per_invocation = {1, 0, 0, 0};
+    if (pGeometryStage) {
+      auto fixed = fixed_stream_primitives(pGeometryStage);
+      if (!fixed)
+        return llvm::make_error<UnsupportedFeature>("one-pass stream output of a geometry shader whose emits vary");
+      per_invocation = *fixed;
+    }
+    // a predicated draw's count is zeroed after its groups were counted
+    auto from = builder.CreateMul(builder.CreateZExt(warp_id, types._long), builder.getInt64(warp_primitive_count));
+    auto primitives = builder.CreateAdd(
+        single_before, builder.CreateSelect(builder.CreateICmpULT(from, single_whole), from, single_whole)
+    );
+    auto invocations = builder.CreateMul(primitives, builder.getInt64(pGeometryStage ? pGeometryStage->gs_instance_count : 1));
+    for (uint32_t s = 0; s < 4; s++)
+      so_before[s] = builder.CreateMul(invocations, builder.getInt64(per_invocation[s]));
+  } else if (so_base) {
     auto targets_type = stream_output_targets_type(context, types);
     auto targets = function->getArg(so_idx);
     auto field = [&](uint32_t f) {

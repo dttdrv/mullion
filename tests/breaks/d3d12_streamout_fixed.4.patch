@@ -1,0 +1,13 @@
+# a geometry shader's fixed emits are counted as if it never cut a strip
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -77,8 +77,7 @@ fixed_stream_primitives(const SM50ShaderInternal *pShaderInternal) {
+             primitives[emit.stream]++;
+         },
+         [&](const InstCut &cut) {
+-          if (cut.stream < 4)
+-            strip[cut.stream] = 0;
++          (void)cut;
+         },
+         [](const auto &) {},
+     });
