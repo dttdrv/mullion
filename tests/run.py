@@ -295,8 +295,10 @@ def finish(command, env, seconds, log):
                     ADMITTED.lone -= peak is None
                     out = open(log, "wb")
                     end = time.monotonic() + seconds
+                    # the test runs on this lock: one that runs tests itself must not wait for it
                     process = subprocess.Popen(
-                        command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+                        command, env={k: v for k, v in env.items() if k != "MULLION_TEST_LOCK"}, stdin=subprocess.DEVNULL,
+                        stdout=out, stderr=subprocess.STDOUT, start_new_session=True
                     )
                     ADMITTED.reserved[process.pid] = peak
             if start:

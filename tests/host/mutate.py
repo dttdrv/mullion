@@ -473,6 +473,22 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
             args.benchmark = True
             self.assertEqual([t["cmd"] for t in run.chosen(args)], [[str(exe), "bench"]])
 
+    def test_runner_lock_not_inherited(self):
+        # a test runs while its run holds the GPU lock for it: one that runs tests itself (these, through run.own)
+        # would wait for that lock until its timeout
+        import run
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = "import os; print('failed: has the lock' if 'MULLION_TEST_LOCK' in os.environ else 'passed: ok')"
+            tests = [{"name": "nested", "cmd": [sys.executable, "-c", script], "env": {}, "timeout": 30,
+                      "is_parallel": True}]
+            args = Namespace(late=None, family="native", benchmark=False, repeat=1, jobs=1)
+            run.KNOWN = root / "known.txt"
+            with patch.dict(os.environ, MULLION_TEST_LOCK=str(root / "gpu.lock")), redirect_stdout(StringIO()) as out:
+                failed = run.own(args, tests, [root], None, dict(os.environ))
+            self.assertEqual(failed, 0, out.getvalue())
+
     def test_runner_schedule(self):
         # --jobs runs tests side by side, one meson declares not parallel after them by itself, and a test that failed
         # beside others again alone, which a test already run alone is not
