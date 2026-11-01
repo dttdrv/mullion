@@ -1,0 +1,14 @@
+# a pixel shader that culls by cull distance in a pipeline that clamps depth leaves its depth to Metal, which clamps it wrongly
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1479,7 +1479,7 @@ public:
+       data_ps.single_raster_sample = attached && pDesc->RasterizerState.ForcedSampleCount == 1;
+       data_ps.clip_distances = clips;
+       data_ps.cull_distances = culls;
+-      data_ps.cull_depth = culls && !pDesc->RasterizerState.DepthClipEnable;
++      data_ps.cull_depth = false;
+       std::copy(std::begin(blend), std::end(blend), data_ps.blend);
+       data_ps.centered_samples =
+           data_ps.single_raster_sample || pDesc->SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;

@@ -1,0 +1,14 @@
+# the pixel shader tests the first cull distance alone
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -730,7 +730,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     input_coverage = func_signature.DefineInput(air::InputInputCoverage{});
+   // the cull distances' varyings, linear in the window (SM50_CULL_VARYING)
+   std::vector<uint32_t> culls;
+-  for (uint32_t i = 0; pso_data && i < pso_data->cull_distances; i++)
++  for (uint32_t i = 0; pso_data && i < std::min(pso_data->cull_distances, 1u); i++)
+     culls.push_back(func_signature.DefineInput(air::InputFragmentStageIn{
+         .user = cull_varying_name(i), .type = air::msl_float, .interpolation = air::Interpolation::center_no_perspective,
+         .pull_mode = false

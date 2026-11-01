@@ -1,0 +1,20 @@
+# the pixel shader culls where a cull varying is 0, not also its derivatives: pixels on the edge across from the one vertex in front go
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -892,13 +892,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     llvm::Value *culled = builder.getFalse();
+     for (auto index : culls) {
+       auto in_front = function->getArg(index);
+-      auto behind = builder.CreateAnd(
+-          builder.CreateFCmpOEQ(in_front, zero),
+-          builder.CreateAnd(
+-              builder.CreateFCmpOEQ(air.CreateDerivative(in_front, false), zero),
+-              builder.CreateFCmpOEQ(air.CreateDerivative(in_front, true), zero)
+-          )
+-      );
++      auto behind = builder.CreateFCmpOEQ(in_front, zero);
+       culled = builder.CreateOr(culled, behind);
+     }
+     auto discard = llvm::BasicBlock::Create(context, "cull_discard", function, epilogue_bb);

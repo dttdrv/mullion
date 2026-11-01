@@ -1,0 +1,14 @@
+# the vertex shader takes a cull distance of 0 or -0 as behind it
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -1514,7 +1514,7 @@ llvm::Error convert_dxbc_vertex_shader(
+                           {builder.getInt32(0), builder.getInt32(scalar.reg), builder.getInt32(scalar.component)}
+                       )
+     );
+-    auto in_front = builder.CreateFCmpOGE(distance, llvm::ConstantFP::get(types._float, 0.0));
++    auto in_front = builder.CreateFCmpOGT(distance, llvm::ConstantFP::get(types._float, 0.0));
+     value = builder.CreateInsertValue(
+         value,
+         builder.CreateSelect(in_front, llvm::ConstantFP::get(types._float, 1.0), llvm::ConstantFP::get(types._float, 0.0)),

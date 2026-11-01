@@ -139,6 +139,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data_gs_passthrough.DataEncoded = variant.gs_passthrough;
     data_gs_passthrough.RasterizationDisabled = variant.rasterization_disabled;
     data_gs_passthrough.ClipDistanceVaryings = variant.clip_distance_varyings;
+    data_gs_passthrough.CullDistanceVaryings = false;
     data_gs_passthrough.next = common;
     if (variant.input_layout_handle) {
       data_gs_passthrough.next = &data_ia_layout;
@@ -200,6 +201,8 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.centered_samples = variant.centered_samples;
     data.single_raster_sample = variant.single_raster_sample;
     data.clip_distances = variant.clip_distances;
+    data.cull_distances = 0;
+    data.cull_depth = false;
     std::copy(variant.blend.begin(), variant.blend.end(), data.blend);
     data.depth_bounds = false;
     data.late_tests = false;

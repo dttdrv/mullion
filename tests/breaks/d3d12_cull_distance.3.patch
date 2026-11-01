@@ -1,0 +1,14 @@
+# the mesh stage that passes adjacency draws on gives the pixel shader every vertex as behind each cull distance
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1826,7 +1826,7 @@ convert_pass_through_geometry_shader(
+       auto &d = pVertexStage->cull_distance_scalars[i];
+       auto in_front = builder.CreateFCmpOGE(real(component(corner, d.reg, d.component)), air.getFloat(0));
+       air.CreateSetMeshVertexData(
+-          vertex, builder.getInt32(culls_at + i), builder.CreateSelect(in_front, air.getFloat(1), air.getFloat(0))
++          vertex, builder.getInt32(culls_at + i), builder.CreateSelect(in_front, air.getFloat(0), air.getFloat(0))
+       );
+     }
+     if (own.count == 1)
