@@ -118,6 +118,8 @@ public:
   // the input registers a pixel shader also reads at each vertex of the primitive (DXIL's AttributeAtVertex)
   uint32_t vertex_value_reg_mask = 0;
   bool use_barycentrics = false;
+  // a pixel shader that may discard
+  bool discards = false;
 };
 
 Instruction readInstruction(
@@ -408,6 +410,11 @@ varying_name(uint32_t reg, uint32_t component) {
 inline std::string
 clip_varying_name(uint32_t index) {
   return "clip" + std::to_string(index);
+}
+// a cull distance a pipeline's pixel shader tests (SM50_CULL_VARYING)
+inline std::string
+cull_varying_name(uint32_t index) {
+  return SM50_CULL_VARYING + std::to_string(index);
 }
 constexpr air::MSLScalerOrVectorType
 varying_type(RegisterComponentType type) {

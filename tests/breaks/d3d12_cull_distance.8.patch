@@ -1,0 +1,15 @@
+# the fragment function of a pipeline without a pixel shader that culls by cull distance leaves its depth to Metal
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1543,8 +1543,7 @@ public:
+       sample_mask = ~0u;
+     if ((conservative || depth_bounds_emulated || sample_mask != ~0u || culls) && !ps_func &&
+         !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask, culls,
+-                                 culls && !pDesc->RasterizerState.DepthClipEnable &&
+-                                     pDesc->DSVFormat != DXGI_FORMAT_UNKNOWN)))
++                                 false)))
+       return E_FAIL;
+ 
+     auto geometry_inputs = [&] {

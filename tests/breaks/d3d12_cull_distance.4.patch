@@ -1,0 +1,14 @@
+# the fragment function of a pipeline without a pixel shader culls nothing
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -850,7 +850,7 @@ struct Group {
+     source += outputs ? ") {\n  Out out;\n" : ") {\n";
+     for (uint32_t i = 0; i < culls; i++) {
+       auto v = "in.cull" + std::to_string(i);
+-      source += "  if (" + v + " == 0 && dfdx(" + v + ") == 0 && dfdy(" + v + ") == 0) {\n    discard_fragment();\n  " + ret + "  }\n";
++      source += "  if (false && " + v + " == 0 && dfdx(" + v + ") == 0 && dfdy(" + v + ") == 0) {\n    discard_fragment();\n  " + ret + "  }\n";
+     }
+     if (conservative) {
+       source += "  float2 v[] = {";
