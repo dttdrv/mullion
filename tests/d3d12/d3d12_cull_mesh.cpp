@@ -27,10 +27,12 @@ struct V {
   float2 cull : SV_CullDistance;
 #endif
 };
+ByteAddressBuffer culled : register(t0);
 V vs(In i, uint instance : SV_InstanceID) {
   V v;
   v.pos = float4((i.pos + i.offset) / float2(WIDTH, HEIGHT) * float2(2, -2) + float2(-1, 1), 0.5, 1);
-  v.id = i.id;
+  // the root arguments reach the vertex shader too: the table's last word, 1000
+  v.id = i.id + culled.Load(2 * PRIMITIVES * 4) - 1000;
   v.instance = instance;
 #if CULL
   v.cull = float2(i.cull.x * i.flip, i.cull.y);
@@ -42,7 +44,6 @@ V vs(In i, uint instance : SV_InstanceID) {
   for (uint k = 0; k < 3; k++)
     s.Append(i[k]);
 }
-ByteAddressBuffer culled : register(t0);
 uint4 ps(V v, uint primitive : SV_PrimitiveID) : SV_Target {
 #if !CULL
   if (culled.Load((v.instance * PRIMITIVES + primitive) * 4))
@@ -325,7 +326,7 @@ main(int argc, char **argv) {
   // the root signature: the reference's table of culled triangles
   D3D12_ROOT_PARAMETER srv{D3D12_ROOT_PARAMETER_TYPE_SRV};
   srv.Descriptor = {0, 0};
-  srv.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  srv.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   auto rs = root_signature(device.Get(), {1, &srv, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT});
   if (!rs) {
     printf("failed: no root signature\n");
@@ -434,7 +435,8 @@ main(int argc, char **argv) {
       for (uint32_t n = 0; n + 2 < c.indices.size(); n += 3)
         triangles.push_back({at(n), at(n + 1), at(n + 2)});
     // what the reference leaves out, by instance and primitive
-    std::vector<uint32_t> table(2 * kTriangles);
+    std::vector<uint32_t> table(2 * kTriangles + 1);
+    table.back() = 1000;
     for (UINT instance = 0; instance < c.count; instance++)
       for (size_t t = 0; t < triangles.size() && t < kTriangles; t++) {
         bool gone = false;
