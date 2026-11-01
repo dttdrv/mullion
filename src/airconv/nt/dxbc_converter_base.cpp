@@ -1077,7 +1077,7 @@ Converter::Fraction(llvm::Value *Value) {
   }();
   auto Type = Value->getType();
   if (!Select) {
-    auto Floor = air.CreateFPUnOp(AIRBuilder::floor, Value);
+    auto Floor = air.CreateFPUnOp(AIRBuilder::floor, Value, false);
     llvm::IRBuilder<>::FastMathFlagGuard Strict(ir);
     ir.clearFastMathFlags();
     return ir.CreateFSub(Value, Floor);
