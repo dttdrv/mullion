@@ -708,6 +708,14 @@ parent() {
                nobody, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, IID_PPV_ARGS(&nothing)
            )),
            "a name nothing published opened a texture");
+    // Windows opens a shared name in any case, though the documentation says it compares them as they are: Wine's
+    // win32u d3dkmt test, run on Windows, opens one by its lower-case name (D3DKMTOpenNtHandleFromName)
+    WCHAR lower[64];
+    wcscpy(lower, published_name);
+    CharLowerW(lower);
+    ComPtr<ID3D11Texture2D> lowered;
+    expect(SUCCEEDED(other.device1->OpenSharedResourceByName(lower, DXGI_SHARED_RESOURCE_READ, IID_PPV_ARGS(&lowered))),
+           "the published name in lower case did not open");
   }
   {
     std::string command = "\"" + std::string(executable) + "\" --named " +

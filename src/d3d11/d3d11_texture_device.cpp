@@ -1022,8 +1022,8 @@ ImportSharedTextureByName(
   // "opens a shared resource using a name of a shared resource that was created with the NT handle sharing flag"
   // (Microsoft Learn, IDXGIResource1::OpenSharedResourceByName): the name a CreateSharedHandle published resolves
   // to the share's identity, which names the carrier that holds the share's keyed mutex state
-  HANDLE mapping = OpenFileMappingW(MappingAccess(dwDesiredAccess), FALSE, lpName);
-  if (!mapping) {
+  HANDLE mapping = nullptr;
+  if (FAILED(openHandleByName(lpName, MappingAccess(dwDesiredAccess), &mapping))) {
     WARN("ImportSharedTextureByName: Failed to open shared texture by name");
     return E_INVALIDARG;
   }
