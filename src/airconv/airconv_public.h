@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 92
+#define AIRCONV_VERSION 93
 
 #ifdef __cplusplus
 #include <string>
@@ -462,6 +462,10 @@ enum SM50_SHADER_FLAG {
   SM50_SHADER_FLAG_COHERENT_GROUP_SYNC = 1 << 5,
   /* no sampler has a border color Metal lacks (SM50_SAMPLER_BORDER): samples leave out the custom border's emulation */
   SM50_SHADER_FLAG_NO_CUSTOM_BORDER = 1 << 6,
+  /* a coarse shading pixel shader (SM50_SHADER_PSO_PIXEL_SHADER_DATA's coarse_shading) keeps the coarse pixel's discard
+     even when nothing in it discards (MULLION_D3D12_COARSE_HSR=0), as before version 93: a shader that may discard is
+     not hidden-surface removed */
+  SM50_SHADER_FLAG_COARSE_DISCARD_ALWAYS = 1 << 7,
 };
 
 struct SM50_SHADER_COMMON_DATA {
