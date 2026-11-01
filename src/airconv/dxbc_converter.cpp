@@ -831,7 +831,9 @@ llvm::Error convert_dxbc_pixel_shader(
 
   std::optional<CoarseShading> coarse;
   if (coarse_shading)
-    coarse.emplace(func_signature, pso_data->shading_rate_varying);
+    coarse.emplace(
+      func_signature, pso_data->shading_rate_varying, !(shader_flags & SM50_SHADER_FLAG_COARSE_DISCARD_ALWAYS)
+    );
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_PIXEL_SHADER, rootsig->bytecode,

@@ -1,0 +1,18 @@
+# a shader without a discard always discards
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -358,12 +358,12 @@
+   // opaque draws instead of the visible ones
+   if (discards.empty() && elide_discard_) {
+     auto branch = discard_branch_;
+-    auto kept = branch->getSuccessor(1);
++    auto kept = branch->getSuccessor(0);
+     auto block = discard_->getParent();
+     std::vector<llvm::Instruction *> dead{cast<llvm::Instruction>(branch->getCondition())};
+     BranchInst::Create(kept, branch);
+     branch->eraseFromParent();
+-    block->eraseFromParent();
++    (void)block;
+     discard_ = nullptr;
+     // the leader's discard, and the lane's: shuffles of the stores of false, which nothing reads now
+     llvm::SmallPtrSet<llvm::Instruction *, 16> erased;

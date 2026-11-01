@@ -1,0 +1,15 @@
+# the discards are cleared after the tests before the shader, as before this PR
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -131,9 +131,9 @@
+     pixel_discarded_ = entry.CreateAlloca(ir.getInt1Ty(), nullptr, "pixel_discarded");
+     // before what the function had when entered, whose discards (the depth bounds test's, of a shader whose tests come
+     // first) are the pixel's own
+-    entry.CreateStore(entry.getFalse(), discarded_);
+-    entry.CreateStore(entry.getFalse(), pixel_discarded_);
+   }
++  ir.CreateStore(ir.getFalse(), discarded_);
++  ir.CreateStore(ir.getFalse(), pixel_discarded_);
+ 
+   auto position = function->getArg(position_);
+   auto px = ir.CreateExtractElement(position, uint64_t(0)), py = ir.CreateExtractElement(position, uint64_t(1));

@@ -1,0 +1,12 @@
+# the coarse pixel's discard is left out even of shaders that discard
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -356,7 +356,7 @@
+   // a shader that never discards keeps no discard: one that might (even after a test of a constant the compiler does
+   // not see through, as the quad's shuffles are) is not hidden-surface removed, and shades every fragment of a pass's
+   // opaque draws instead of the visible ones
+-  if (discards.empty() && elide_discard_) {
++  if (elide_discard_) {
+     auto branch = discard_branch_;
+     auto kept = branch->getSuccessor(1);
+     auto block = discard_->getParent();
