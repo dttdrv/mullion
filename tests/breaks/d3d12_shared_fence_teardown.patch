@@ -1,0 +1,14 @@
+# the listener is freed when its thread ends, while Metal still holds notifications for it, as it was before
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index dafb6db..b95536a 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3109,7 +3109,7 @@ _SharedEventListener_start(void *obj) {
+       CFRunLoopRun();
+     CFRunLoopRemoveSource(runloop, source, kCFRunLoopCommonModes);
+     CFRelease(source);
+-    shared_event_listener_release(q);
++    free(q);
+   }
+   return STATUS_SUCCESS;
+ }

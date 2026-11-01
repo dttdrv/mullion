@@ -1,0 +1,21 @@
+# Reset unbinds the stream output targets, but ClearState keeps them.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 3cc8e81..77d9ed3 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -749,7 +749,6 @@ public:
+     memset(rootarg_compute_staging_, 0, sizeof(rootarg_compute_staging_));
+ 
+     memset(vertex_buffers_.data(), 0, sizeof(vertex_buffers_));
+-    std::fill(std::begin(so_views_), std::end(so_views_), D3D12_STREAM_OUTPUT_BUFFER_VIEW{});
+ 
+     index_buffer_address = 0;
+     index_buffer = {};
+@@ -770,6 +769,7 @@ public:
+       allocator_ = allocator;
+ 
+     ResetState(pInitialPipelineState);
++    std::fill(std::begin(so_views_), std::end(so_views_), D3D12_STREAM_OUTPUT_BUFFER_VIEW{});
+     bundle_.clear();
+     clears_.clear();
+     plain_pass_ = nullptr;

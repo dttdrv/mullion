@@ -41,6 +41,9 @@ struct SM50_RAY_DISPATCH {
   sm50_ray_qword callable_stride;
   sm50_ray_dword dimensions[3];
   sm50_ray_dword pipeline_flags; /* ray flags every TraceRay of the pipeline has (D3D12_RAYTRACING_PIPELINE_FLAGS) */
+  /* the device's lock table, after the header of the structure of nothing, for shaders with no global root
+     signature, whose root arguments have none */
+  sm50_ray_qword atomic_locks;
 };
 
 /* TraceRay's arguments but the payload, in the order DXIL has them */

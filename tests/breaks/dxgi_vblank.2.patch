@@ -1,0 +1,12 @@
+# the wait is until the refresh before now, not the next one
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -315,7 +315,7 @@ public:
+     const std::chrono::duration<double> period(1.0 / hz);
+     auto now = std::chrono::steady_clock::now().time_since_epoch();
+     auto next = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+-        (std::floor(now / period) + 1) * period
++        std::floor(now / period) * period
+     ));
+     std::this_thread::sleep_until(next);
+     return S_OK;

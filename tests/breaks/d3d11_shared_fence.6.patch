@@ -5,5 +5,5 @@ index b481320..33d8970 100644
 +++ b/src/d3d11/d3d11_fence.cpp
 @@ -87,3 +87,2 @@ public:
      auto shared_event_listener = this->m_parent->GetMullionDevice().queue().GetSharedEventListener();
--    MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value);
+-    MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value, true);
      return S_OK;

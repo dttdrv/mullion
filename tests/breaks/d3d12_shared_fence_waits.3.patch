@@ -1,0 +1,16 @@
+# a fence that is gone leaves the watcher's list only when a notification comes, which may be never
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 5d57acb..c8f4ff7 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -45,10 +45,6 @@ public:
+     std::lock_guard<mullion::mutex> lock(mutex_);
+     // a fence that is gone leaves the list here too, as no notification may ever come for it, and its entry keeps the
+     // storage of its completion. a sweep each time the list has doubled since the last one costs O(1) a fence
+-    if (watched_.size() >= 2 * swept_) {
+-      std::erase_if(watched_, [](auto &watched) { return watched.expired(); });
+-      swept_ = std::max<size_t>(watched_.size(), 16);
+-    }
+     watched_.push_back(std::move(completion));
+   }
+ 

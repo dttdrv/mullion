@@ -1,0 +1,16 @@
+# IASetVertexBuffers takes the in-range slots of a range past the last one and drops the rest.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index c0ac4ce..56dd853 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -2982,8 +2982,9 @@ public:
+   void STDMETHODCALLTYPE
+   IASetVertexBuffers(UINT StartSlot, UINT Count, const D3D12_VERTEX_BUFFER_VIEW *Views) {
+     // a range past the last slot is invalid, and changes no slot, as in vkd3d-proton
+-    if (StartSlot >= vertex_buffers_.size() || Count > vertex_buffers_.size() - StartSlot)
++    if (StartSlot >= vertex_buffers_.size())
+       return;
++    Count = std::min<UINT>(Count, vertex_buffers_.size() - StartSlot);
+     if (Bundled() && Record([=, v = Views ? std::vector(Views, Views + Count) : std::vector<D3D12_VERTEX_BUFFER_VIEW>()](auto *l) { l->IASetVertexBuffers(StartSlot, Count, Views ? v.data() : nullptr); }))
+       return;
+     if (!Views)

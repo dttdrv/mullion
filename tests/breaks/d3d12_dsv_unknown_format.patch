@@ -1,0 +1,14 @@
+# a pipeline that tests depth or stencil with DSVFormat UNKNOWN has no depth stencil planes, so its pass leaves the view out.
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index e58c45b..811a4c1 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -982,8 +982,6 @@ public:
+       // DSV_UNKNOWN, but still insists on using a depth buffer", libs/vkd3d/state.c). a test of ALWAYS that writes
+       // nothing, with no stencil test, is off, as there. a forced sample count rasterizes with no view and no depth
+       // test (D3D11.3 3.5.6.2), so such a pipeline keeps the view out as before
+-      dsv_mask = 3;
+-      dsv_any_format = true;
+     }
+ 
+     if constexpr (std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo>) {

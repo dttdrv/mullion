@@ -1,0 +1,15 @@
+# airconv: only the rasterized stream's emits count towards a geometry shader's maxvertexcount
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 9c1ad57..fa4648c 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1043,7 +1043,8 @@ convert_dxbc_geometry_shader(
+   // so it is in neither stream output, the statistics nor the mesh
+   resource_map.call_emit = [&](uint32_t stream) -> IREffect {
+     auto emitted = builder.CreateLoad(types._int, emits);
+-    builder.CreateStore(builder.CreateAdd(emitted, one_const), emits);
++    if (stream == rasterized_stream)
++      builder.CreateStore(builder.CreateAdd(emitted, one_const), emits);
+     auto after_emit = guard(builder.CreateICmpULT(emitted, builder.getInt32(max_vertex_out)));
+     if (statistics && stream < 4) {
+       auto length = builder.CreateAdd(builder.CreateLoad(types._int, strip_length[stream]), one_const);

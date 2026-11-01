@@ -49,6 +49,19 @@ DLL overrides, and every addition is recorded: the Mullion build, the shader com
 installed into the Wine installation as well as the prefix, so a fresh prefix alone is not a clean environment: {suite:
 clean Wine and prefix setup}.
 
+An arm64 Wine runs Windows programs on macOS only with the 4KB-page entitlement, which a Wine built and signed ad hoc
+cannot have: macOS ends such a Wine's processes. The tests then run in a signed Wine of another product, such as
+CrossOver's or MetalSharp's, without changing its files: `tests/run.py --clone` copies the Wine once, with the whole app
+bundle it is in (macOS honours the entitlement only in the bundle whose provisioning profile grants it) and each of its
+binaries' signatures, and installs the build into the copy (in `tests-wine` of the first build, or the directory
+`--clone` names). A Wine that keeps its Direct3D libraries apart from `lib/wine` (MetalSharp's
+`lib/mullion`, CrossOver's `lib/dxmt`) has the build installed there too, since it loads them from there.
+
+What needs no such Wine still runs without one. An x86_64 Wine runs under Rosetta with no entitlement, and runs an
+x86_64 build's tests (`build-win64.txt`). A test program of an architecture the Wine does not run (an arm64 build's in
+an x86_64 Wine, x86_64 programs in an arm64 Wine without FEX) is not run, and the tests of the host's own still run when
+macOS ends the Wine: the run lists each test it did not run, with why, apart from its results.
+
 A run records what it actually loaded, so a result can be traced to the source that produced it: {suite: loaded artifact
 manifest}. The record covers the source revision and any local changes, the build options, the Wine version, and for
 each test executable, library and shader compiler loaded, its resolved path, its content hash and the build that
@@ -61,6 +74,13 @@ Tests compile HLSL with Microsoft's compilers: the DXBC compiler, available thro
 [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler). A compiler counts as present when it
 matches the architecture of the test process, loads, and compiles every profile the tests use: {suite: compiler packages
 by architecture, setup and verification}. A missing compiler is missing coverage, never a pass.
+
+`tests/compilers.py <build>/tests-compilers` downloads both, once, from Microsoft's releases (DXC's release and the
+Windows SDK's `Redist\D3D`, at the versions and SHA-256 hashes it pins), for arm64, x64 and x86. `run.py` puts those of
+the machines the Wine runs into the prefix: from `--compilers <directory>` when given, which replaces the prefix's,
+or else from the first build's `tests-compilers` and a Wine's own `share/wine/shadercompilers`, for what the prefix
+lacks. A test whose compiler the prefix lacks for its architecture is listed as not run, with the compiler it needs;
+Wine's own `d3dcompiler_47` does not count, as it compiles fewer of the tests' shaders.
 
 The LLVM IR Mullion generates passes the LLVM verifier before it is optimized or compiled for Metal ([CODE.md
 4.1](CODE.md#4-shaders)): {suite: verification, unoptimized conversion included}. A failure that follows unverified

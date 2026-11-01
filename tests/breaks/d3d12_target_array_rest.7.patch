@@ -1,0 +1,14 @@
+# a render target or depth stencil view past the end of its resource is made, and Metal is asked for its slices
+diff --git a/src/d3d12/d3d12_texture.cpp b/src/d3d12/d3d12_texture.cpp
+index aac062a..1844dd5 100644
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -270,7 +270,7 @@ EncodeComponentMapping(UINT Shader4ComponentMapping, WMTPixelFormat Format) {
+ // that runs past the end is refused, as Metal makes no view and no render pass of slices that are not there
+ static bool
+ WithinSlices(UINT first, UINT count, UINT length) {
+-  return first < length && count <= length - first;
++  return true;
+ }
+ 
+ class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {

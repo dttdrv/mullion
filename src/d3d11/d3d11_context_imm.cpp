@@ -606,7 +606,7 @@ public:
     if (hEvent) {
       auto shared_event_listener = cmd_queue.GetSharedEventListener();
       MTLSharedEvent_setWin32EventAtValue(
-          cmd_queue.event, shared_event_listener, hEvent, cmd_queue.GetCurrentEventSeqId()
+          cmd_queue.event, shared_event_listener, hEvent, cmd_queue.GetCurrentEventSeqId(), true
       );
     }
   }

@@ -1,0 +1,23 @@
+# the object's own port is registered under the name again, as before, and looked up directly
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 3bfe156..08b3293 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3389,7 +3389,7 @@ _WMTBootstrapRegister(void *obj) {
+   if (kr == KERN_SUCCESS) {
+     kr = mach_port_insert_right(mach_task_self(), entry->receive, entry->receive, MACH_MSG_TYPE_MAKE_SEND);
+     if (kr == KERN_SUCCESS) {
+-      kr = bootstrap_register2(bp, entry->name, entry->receive, 0);
++      kr = bootstrap_register2(bp, entry->name, params->mach_port, 0);
+       mach_port_deallocate(mach_task_self(), entry->receive);
+     }
+     if (kr != KERN_SUCCESS)
+@@ -3444,6 +3444,8 @@ _WMTBootstrapLookUp(void *obj) {
+   mach_port_deallocate(mach_task_self(), bp);
+   if (kr != KERN_SUCCESS)
+     return STATUS_UNSUCCESSFUL;
++  params->mach_port = name_port;
++  return STATUS_SUCCESS;
+   if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &reply_port) != KERN_SUCCESS) {
+     mach_port_deallocate(mach_task_self(), name_port);
+     return STATUS_UNSUCCESSFUL;

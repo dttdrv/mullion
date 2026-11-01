@@ -16,6 +16,7 @@
 // - the adapter has the GPU's name and, for applications that leave unless they know the vendor, AMD's vendor ID;
 //   the configuration names another (dxgi.customVendorId), Apple's own included, and changes nothing else. the
 //   environment's (MULLION_CONFIG) overrides the file's, also after the file opens another executable's section.
+//   dxgi.maxDeviceMemory caps the memory the adapter reports and the local budget, in MB, as DXVK's option does.
 // - a gamma ramp is an output's, a monitor's (IDXGIOutput::SetGammaControl, GetGammaControl): set through one object
 //   of the output, it is what another one gets.
 //   gamma capabilities are "only supported while in full-screen mode" (IDXGIOutput::GetGammaControlCapabilities).
@@ -33,13 +34,18 @@ int
 main(int argc, char **argv) {
   // a second argument sets the vendor through the configuration before anything reads it
   UINT vendor = 0x1002;
+  // a fourth caps the memory the adapter reports, in MB (dxgi.maxDeviceMemory)
+  const UINT64 memory_cap = argc > 4 ? strtoull(argv[4], nullptr, 10) << 20 : 0;
   if (argc > 2) {
     vendor = strtoul(argv[2], nullptr, 16);
-    SetEnvironmentVariableA("MULLION_CONFIG", (std::string("dxgi.customVendorId=") + argv[2]).c_str());
+    std::string line = std::string("dxgi.customVendorId=") + argv[2];
+    if (memory_cap)
+      line += std::string("; dxgi.maxDeviceMemory=") + argv[4];
+    SetEnvironmentVariableA("MULLION_CONFIG", line.c_str());
   }
-  // a third names a file that sets NVIDIA's vendor and ends in another executable's section
+  // a third, when it is "-", names a file that sets NVIDIA's vendor and ends in another executable's section
   char file[MAX_PATH] = {};
-  if (argc > 3) {
+  if (argc > 3 && !strcmp(argv[3], "-")) {
     char dir[MAX_PATH];
     FILE *conf = GetTempPathA(MAX_PATH, dir) && GetTempFileNameA(dir, "mul", 0, file) ? fopen(file, "w") : nullptr;
     if (!conf || fputs("dxgi.customVendorId=10de\n[another.exe]\n", conf) < 0 || fclose(conf))
@@ -228,6 +234,14 @@ main(int argc, char **argv) {
   CHECK(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local));
   expect(local.Budget && local.AvailableForReservation && local.AvailableForReservation <= local.Budget && !local.CurrentReservation,
          "the local group's budget and reservation");
+  // the configuration's cap is the adapter's memory and the local budget, where the GPU has more; usage stays what it is
+  if (memory_cap) {
+    DXGI_ADAPTER_DESC1 capped;
+    CHECK(adapter->GetDesc1(&capped));
+    expect(capped.DedicatedVideoMemory == memory_cap && capped.SharedSystemMemory == memory_cap,
+           "the adapter's memory is not the configured cap");
+    expect(local.Budget == memory_cap, "the local budget is not the configured cap");
+  }
   D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)));
   if (architecture.UMA)

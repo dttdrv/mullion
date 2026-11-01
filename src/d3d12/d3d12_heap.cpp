@@ -106,6 +106,9 @@ public:
     info.type = WMTHeapTypePlacement;
 
     heap = device_->GetMTLDevice().newHeap(info);
+    // Metal makes no heap of a size it cannot give
+    if (!heap)
+      return FAIL(E_OUTOFMEMORY);
 
     device_->RegisterResidency(heap);
 

@@ -1,0 +1,14 @@
+# a texture that is not reserved is described as one that is
+diff --git a/src/d3d12/d3d12_texture.cpp b/src/d3d12/d3d12_texture.cpp
+index 8326e7f..9db663b 100644
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -1085,7 +1085,7 @@ public:
+       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
+       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
+   ) {
+-    if (!reserved_)
++    if (false)
+       return NoTiling(TotalTileCount, PackedMipInfo, StandardTileShape, SubresourceTilingCount);
+     UINT mips = desc_.MipLevels, slices = desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc_.DepthOrArraySize;
+     D3D12_TILE_SHAPE shape{};

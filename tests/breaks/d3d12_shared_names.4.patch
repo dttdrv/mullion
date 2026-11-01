@@ -1,0 +1,16 @@
+# an object opened in the registering process does not keep the name
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 3bfe156..8f10f26 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3489,9 +3489,7 @@ _WMTBootstrapKeep(void *obj) {
+   pthread_mutex_lock(&shared_names_lock);
+   struct shared_name *entry = shared_name_find(params->name);
+   pthread_mutex_unlock(&shared_names_lock);
+-  if (entry && params->object)
+-    shared_name_keep(entry, (id)params->object);
+-  else if (entry)
++  if (entry)
+     shared_name_release(entry);
+   return STATUS_SUCCESS;
+ }

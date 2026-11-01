@@ -1,0 +1,15 @@
+# a division by zero divides by one instead, and gives the dividend, not all ones
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index 9c41559..52f8c68 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1382,8 +1382,7 @@ convert_dxil(
+         );
+       I.setOperand(1, ir.CreateSelect(one, ConstantInt::get(type, 1), divisor));
+       ir.SetInsertPoint(I.getNextNode());
+-      auto result = ir.CreateSelect(zero, Constant::getAllOnesValue(type), &I);
+-      I.replaceUsesWithIf(result, [&](Use &use) { return use.getUser() != result; });
++
+     }
+   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
+   // linked in on its own: only this one keeps its body, under a name no other takes, and module variables stay private

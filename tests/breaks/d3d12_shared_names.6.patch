@@ -1,0 +1,13 @@
+# a planar texture's second plane, opened in the registering process, does not keep its name
+diff --git a/src/d3d11/d3d11_texture_device.cpp b/src/d3d11/d3d11_texture_device.cpp
+index 858e5ef..3c56359 100644
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -624,7 +624,6 @@ ImportSharedTextureInternal(
+     auto chroma = texture->chroma->import(chroma_port);
+     if (!chroma)
+       return E_FAIL;
+-    chroma_hold.keep(chroma->texture().handle);
+     texture->chroma->rename(std::move(chroma));
+   }
+ 

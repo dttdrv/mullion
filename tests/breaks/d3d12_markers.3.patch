@@ -1,0 +1,11 @@
+# markers left at the end of a list are never written
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -832,7 +832,6 @@
+   Close() {
+     if (encoder_count < std::numeric_limits<size_t>::max())
+       return FAIL(E_FAIL);
+-    WriteMarkers();
+     SumOcclusion();
+     SumStatistics();
+     EndPredication();

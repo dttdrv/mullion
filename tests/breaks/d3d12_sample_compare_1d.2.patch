@@ -1,0 +1,13 @@
+# airconv: a compared 1D view bound through a root signature is a texture_2d_array, not a depth texture
+diff --git a/src/airconv/air_signature.hpp b/src/airconv/air_signature.hpp
+index 513ae03..86bcdfc 100644
+--- a/src/airconv/air_signature.hpp
++++ b/src/airconv/air_signature.hpp
+@@ -94,7 +94,6 @@ inline TextureKind lowering_texture_to_array(TextureKind kind, bool compared = f
+   switch (kind) {
+   case TextureKind::texture_1d:
+   case TextureKind::texture_1d_array:
+-    return compared ? TextureKind::depth_2d_array : TextureKind::texture_2d_array;
+   case TextureKind::texture_2d:
+     return TextureKind::texture_2d_array;
+   case TextureKind::depth_2d:

@@ -1,0 +1,14 @@
+# loads move above stores, atomics and barriers
+diff --git a/src/airconv/transforms/hoist_loads.cpp b/src/airconv/transforms/hoist_loads.cpp
+index 2c50ee8..d38c25e 100644
+--- a/src/airconv/transforms/hoist_loads.cpp
++++ b/src/airconv/transforms/hoist_loads.cpp
+@@ -61,7 +61,7 @@ HoistLoadsPass::run(Function &F, FunctionAnalysisManager &) {
+     auto Later = [](Instruction *A, Instruction *B) { return !A ? B : !B ? A : A->comesBefore(B) ? B : A; };
+     for (auto &I : make_early_inc_range(BB)) {
+       if (!Movable(I)) {
+-        if (I.mayWriteToMemory() || I.mayHaveSideEffects() || isa<PHINode>(I) || (I.mayReadFromMemory() && !Pure(I)))
++        if (isa<PHINode>(I))
+           Fence = Later(Fence, &I);
+         continue;
+       }

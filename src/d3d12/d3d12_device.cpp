@@ -234,6 +234,13 @@ TraceResource(HRESULT hr, const char *how, const D3D12_RESOURCE_DESC *desc, void
   return hr;
 }
 
+class MTLD3D12DeviceImpl;
+// D3D12 devices are singletons per adapter, adapters the same when their LUIDs are (Microsoft Learn,
+// D3D12CreateDevice, Remarks): the device of each LUID, while the application holds it. the list holds no reference;
+// a device leaves it as it is destroyed
+static mullion::mutex device_singletons_lock;
+static std::vector<std::pair<LUID, MTLD3D12DeviceImpl *>> device_singletons;
+
 class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DDestructionNotifier, ID3D12DeviceConfiguration1>> {
   bool experimental_shader_models_ = ExperimentalShaderModelsEnabled();
   uint32_t simd_width_ = 0, total_lanes_ = 0;
@@ -278,22 +285,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
-  std::once_flag sharing_;
-  D3DKMT_HANDLE local_kmt_ = 0;
+  std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
-
-  void
-  Share() {
-    std::call_once(sharing_, [this] {
-      D3DKMT_CREATEDEVICE create = {};
-      create.hAdapter = adapter_->GetLocalD3DKMT();
-      if (create.hAdapter && !D3DKMTCreateDevice(&create))
-        local_kmt_ = create.hDevice;
-      else
-        WARN("Failed to create D3DKMT device");
-      event_listener_ = std::make_unique<EventListener>();
-    });
-  }
 
 public:
   MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
@@ -301,22 +294,24 @@ public:
   }
 
   ~MTLD3D12DeviceImpl() {
-    if (local_kmt_) {
-      D3DKMT_DESTROYDEVICE destroy = {};
-      destroy.hDevice = local_kmt_;
-      D3DKMTDestroyDevice(&destroy);
-    }
+    std::lock_guard lock(device_singletons_lock);
+    std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
   }
 
-  D3DKMT_HANDLE
-  GetLocalD3DKMT() override {
-    Share();
-    return local_kmt_;
+  // a reference for D3D12CreateDevice, unless the application has released its last one: a device whose count reached
+  // zero is on its way out, even while internal references keep it a little longer
+  bool
+  AddRefIfReferenced() {
+    uint32_t count = m_refCount.load();
+    while (count)
+      if (m_refCount.compare_exchange_weak(count, count + 1))
+        return true;
+    return false;
   }
 
   EventListener &
   GetEventListener() override {
-    Share();
+    std::call_once(listening_, [this] { event_listener_ = std::make_unique<EventListener>(); });
     return *event_listener_;
   }
 
@@ -1158,6 +1153,34 @@ public:
       Heap->AddConstantBufferView(Index, 0, 0);
   };
 
+  // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
+  // before, whose resource may be gone. Direct3D leaves what such a slot holds undefined; the null view is of the
+  // dimension and format asked for, or of the resource's when no description was given. without one, a multisampled
+  // resource's null shader resource view is multisampled, which a shader reads as a type of its own (TextureType);
+  // 1D, 2D and their arrays all read as one, and an unordered access view is never multisampled
+  template <typename ViewDesc>
+  static ViewDesc
+  RefusedViewDesc(ID3D12Resource *pResource, const ViewDesc *pDesc) {
+    static_assert(UINT(D3D12_UAV_DIMENSION_BUFFER) == D3D12_SRV_DIMENSION_BUFFER &&
+                  UINT(D3D12_UAV_DIMENSION_TEXTURE2D) == D3D12_SRV_DIMENSION_TEXTURE2D &&
+                  UINT(D3D12_UAV_DIMENSION_TEXTURE3D) == D3D12_SRV_DIMENSION_TEXTURE3D);
+    ViewDesc desc{};
+    auto resource = pResource->GetDesc();
+    if (pDesc) {
+      desc = *pDesc;
+    } else {
+      auto dimension = resource.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER    ? D3D12_SRV_DIMENSION_BUFFER
+                       : resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? D3D12_SRV_DIMENSION_TEXTURE3D
+                                                                                  : D3D12_SRV_DIMENSION_TEXTURE2D;
+      if (std::is_same_v<ViewDesc, D3D12_SHADER_RESOURCE_VIEW_DESC> && resource.SampleDesc.Count > 1)
+        dimension = resource.DepthOrArraySize > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY : D3D12_SRV_DIMENSION_TEXTURE2DMS;
+      desc.ViewDimension = decltype(desc.ViewDimension)(dimension);
+    }
+    if (desc.Format == DXGI_FORMAT_UNKNOWN)
+      desc.Format = resource.Format;
+    return desc;
+  }
+
   void STDMETHODCALLTYPE
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
@@ -1171,7 +1194,11 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateShaderResourceView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+      auto null_desc = RefusedViewDesc(pResource, pDesc);
+      Heap->AddShaderResourceView(Index, &null_desc);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1185,7 +1212,11 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor))) {
+      auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+      auto null_desc = RefusedViewDesc(pResource, pDesc);
+      Heap->AddUnorderedAccessView(Index, &null_desc);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1198,7 +1229,10 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateRenderTargetView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+      Heap->AddRenderTarget(Index, nullptr);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1211,7 +1245,10 @@ public:
       return;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
-    d3d12res->CreateDepthStencilView(pDesc, Descriptor);
+    if (FAILED(d3d12res->CreateDepthStencilView(pDesc, Descriptor))) {
+      auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+      Heap->AddRenderTarget(Index, nullptr);
+    }
   };
 
   void STDMETHODCALLTYPE
@@ -1459,18 +1496,17 @@ public:
     if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence))))
       return E_NOTIMPL;
     // a fence made with D3D12_FENCE_FLAG_SHARED, whose Access "is GENERIC_ALL" (ID3D12Device::CreateSharedHandle)
-    auto allocation = static_cast<MTLD3D12Fence *>(fence.ptr())->SharedAllocation();
-    if (!allocation || access != GENERIC_ALL)
+    if (access != GENERIC_ALL)
       return E_INVALIDARG;
-    return shareHandle(allocation, attributes, access, name, handle);
+    return static_cast<MTLD3D12Fence *>(fence.ptr())->CreateSharedHandle(attributes, name, handle);
   };
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
     InitReturnPtr(object);
-    D3DKMT_HANDLE allocation;
-    auto event = openSharedEvent(GetMTLDevice(), GetLocalD3DKMT(), handle, allocation);
-    return OpenFence(this, std::move(event), allocation, riid, object);
+    char mach_port_name[54];
+    auto event = openSharedEvent(GetMTLDevice(), handle, mach_port_name);
+    return OpenFence(this, std::move(event), mach_port_name, riid, object);
   };
 
   HRESULT STDMETHODCALLTYPE
@@ -1498,8 +1534,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetDeviceRemovedReason() {
+    SettleCommandQueueFeedback(this);
     return removed_;
   };
+
+  HRESULT
+  RemovedReason() final {
+    return removed_;
+  }
 
   void
   LoseDevice(HRESULT Reason) {
@@ -1692,12 +1734,15 @@ public:
   ) {
     if (!FenceCount || (Flags != D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL && Flags != D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY))
       return FAIL(E_INVALIDARG);
+    auto object = hEvent ? EventObject(hEvent) : nullptr;
+    if (hEvent && !object)
+      return FAIL(E_INVALIDARG);
     auto set = std::make_shared<std::atomic<bool>>();
     auto done = [=, began = diag::profile ? diag::Now() : 0, thread = GetCurrentThreadId()] {
       if (began)
         diag::Waited("fence", began, thread);
-      if (hEvent)
-        SetEvent(hEvent);
+      if (object)
+        SetEvent(object.get());
       *set = true;
       set->notify_all();
     };
@@ -2711,10 +2756,29 @@ AccelerationStructure::~AccelerationStructure() {
 
 HRESULT
 CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
-  auto device = Com(new MTLD3D12DeviceImpl(adapter));
-  HRESULT hr = device->Initialize();
+  DXGI_ADAPTER_DESC desc;
+  HRESULT hr = adapter->GetDesc(&desc);
   if (FAILED(hr))
     return hr;
+  // under the lock, so that two calls at once make one device
+  std::lock_guard lock(device_singletons_lock);
+  Com<MTLD3D12DeviceImpl> device;
+  for (auto &[luid, existing] : device_singletons)
+    if (luid.LowPart == desc.AdapterLuid.LowPart && luid.HighPart == desc.AdapterLuid.HighPart &&
+        existing->AddRefIfReferenced())
+      device = Com<MTLD3D12DeviceImpl>::transfer(existing);
+  if (device) {
+    if (FAILED(hr = device->GetDeviceRemovedReason()))
+      return hr;
+    return device->QueryInterface(riid, ppDevice);
+  }
+  device = Com(new MTLD3D12DeviceImpl(adapter));
+  if (FAILED(hr = device->Initialize()))
+    return hr;
+  std::erase_if(device_singletons, [&](auto &entry) {
+    return entry.first.LowPart == desc.AdapterLuid.LowPart && entry.first.HighPart == desc.AdapterLuid.HighPart;
+  });
+  device_singletons.emplace_back(desc.AdapterLuid, device.ptr());
   return device->QueryInterface(riid, ppDevice);
 };
 

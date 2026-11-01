@@ -20,90 +20,156 @@
 #include "d3d12_device_child.hpp"
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
+#include <set>
 
 namespace mullion {
+
+struct Completion;
+
+// the shared fences something has waited on. a notification of any of their events raises one event, which makes
+// each fence that is still there take its event's value. the event and its wait last as long as the process: a
+// notification Metal keeps for a value a fence never gets, or for a fence that is gone, costs no handle or wait, and
+// sets nothing else
+class Watcher {
+public:
+  HANDLE reached = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+  static Watcher &
+  Get() {
+    static Watcher *watcher = new Watcher;
+    return *watcher;
+  }
+
+  void
+  Watch(std::weak_ptr<Completion> completion) {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    // a fence that is gone leaves the list here too, as no notification may ever come for it, and its entry keeps the
+    // storage of its completion. a sweep each time the list has doubled since the last one costs O(1) a fence
+    if (watched_.size() >= 2 * swept_) {
+      std::erase_if(watched_, [](auto &watched) { return watched.expired(); });
+      swept_ = std::max<size_t>(watched_.size(), 16);
+    }
+    watched_.push_back(std::move(completion));
+  }
+
+private:
+  mullion::mutex mutex_;
+  std::vector<std::weak_ptr<Completion>> watched_;
+  size_t swept_ = 16;
+
+  Watcher() {
+    auto wait = CreateThreadpoolWait(
+        [](PTP_CALLBACK_INSTANCE, void *context, PTP_WAIT wait, TP_WAIT_RESULT) {
+          static_cast<Watcher *>(context)->Look(wait);
+        },
+        this, nullptr
+    );
+    SetThreadpoolWait(wait, reached, nullptr);
+  }
+
+  void Look(PTP_WAIT wait);
+};
 
 // a shared fence's value is its event's, which the devices it is shared with signal too. Metal's events only rise, so
 // a shared fence is not set back
 struct Completion : Reached, std::enable_shared_from_this<Completion> {
   WMT::Reference<WMT::SharedEvent> event;
   EventListener *listener;
+  // the values Metal notifies the watcher of, of those the event did not have when last asked; under Reached's lock,
+  // which Waiting runs under
+  std::set<uint64_t> notified;
+  bool watched = false;
 
-  // the listener sets `reached` once the event has `expected`, which gives the completion, if it still lives, the
-  // event's value. a watch the event never reaches stays, without the completion
+  // the event's value, once it is past this object's
+  void
+  Look() {
+    uint64_t signaled = event.signaledValue();
+    if (signaled > value)
+      Reach(signaled);
+  }
+
+  // the devices it is shared with, and a fence object it was opened as, raise the event without this completion: a
+  // value the event has is reached at once, as Windows does, not when a notification of it comes back
+  bool
+  Has(uint64_t expected) override {
+    return event && expected <= event.signaledValue();
+  }
+
+  // one notification for each value something waits for, which raises the watcher's event once the event has it
   void
   Waiting(uint64_t expected) override {
     if (!event)
       return;
-    struct Watch {
-      std::weak_ptr<Completion> completion;
-      HANDLE reached;
-    };
-    auto watch = new Watch{weak_from_this(), CreateEventW(nullptr, FALSE, FALSE, nullptr)};
-    auto wait = CreateThreadpoolWait(
-        [](PTP_CALLBACK_INSTANCE, void *context, PTP_WAIT wait, TP_WAIT_RESULT) {
-          auto watch = static_cast<Watch *>(context);
-          if (auto completion = watch->completion.lock())
-            completion->Reach(completion->event.signaledValue());
-          CloseThreadpoolWait(wait);
-          CloseHandle(watch->reached);
-          delete watch;
-        },
-        watch, nullptr
-    );
-    SetThreadpoolWait(wait, watch->reached, nullptr);
-    listener->setEventOnValue(event, watch->reached, expected);
+    uint64_t signaled = event.signaledValue();
+    std::erase_if(notified, [&](uint64_t notifying) { return notifying <= signaled; });
+    if (!notified.insert(expected).second)
+      return;
+    auto &watcher = Watcher::Get();
+    if (!std::exchange(watched, true))
+      watcher.Watch(weak_from_this());
+    listener->setEventOnValue(event, watcher.reached, expected);
   }
 };
+
+void
+Watcher::Look(PTP_WAIT wait) {
+  // set again first: a notification that comes while the fences are looked at has them looked at again
+  SetThreadpoolWait(wait, reached, nullptr);
+  std::vector<std::shared_ptr<Completion>> live;
+  {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    // a fence that is gone leaves the list
+    std::erase_if(watched_, [&](auto &watched) {
+      if (auto completion = watched.lock()) {
+        live.push_back(std::move(completion));
+        return false;
+      }
+      return true;
+    });
+  }
+  for (auto &completion : live)
+    completion->Look();
+}
 
 class MTLD3D12FenceImpl : public MTLD3D12DeviceChild<MTLD3D12Fence> {
   D3D12_FENCE_FLAGS flags_;
   std::shared_ptr<Completion> completion_ = std::make_shared<Completion>();
-  D3DKMT_HANDLE allocation_ = 0;
+  // the registered name of a shared fence's mach port, which its handles carry; empty for a fence that is not shared
+  char mach_port_name_[54] = {};
 
 public:
   MTLD3D12FenceImpl(
       MTLD3D12Device *pDevice, D3D12_FENCE_FLAGS flags, WMT::Reference<WMT::SharedEvent> &&event = {},
-      D3DKMT_HANDLE allocation = 0
+      const char (&mach_port_name)[54] = {}
   ) :
       MTLD3D12DeviceChild<MTLD3D12Fence>(pDevice),
-      flags_(flags),
-      allocation_(allocation) {
+      flags_(flags) {
+    memcpy(mach_port_name_, mach_port_name, sizeof(mach_port_name_));
     completion = completion_;
     completion_->event = std::move(event);
     completion_->listener = &device_->GetEventListener();
   }
 
   ~MTLD3D12FenceImpl() {
-    {
-      std::lock_guard lock(device_->fences.mutex);
-      device_->fences.values.erase(completion);
-    }
-    if (allocation_) {
-      D3DKMT_DESTROYALLOCATION destroy = {};
-      destroy.hDevice = device_->GetLocalD3DKMT();
-      destroy.hResource = allocation_;
-      D3DKMTDestroyAllocation(&destroy);
-    }
+    std::lock_guard lock(device_->fences.mutex);
+    device_->fences.values.erase(completion);
   }
 
   // a removed device has reached every fence it has (LoseDevice)
   HRESULT
   Initialize(UINT64 InitialValue) {
     auto &event = completion_->event;
-    if (event)
-      completion_->value = event.signaledValue();
-    else if (flags_ & (D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER)) {
+    if (!event && (flags_ & (D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER))) {
       if (!(event = device_->GetMTLDevice().newSharedEvent()))
         return E_OUTOFMEMORY;
       event.signalValue(InitialValue);
-      if (!(allocation_ = shareEvent(device_->GetLocalD3DKMT(), event)))
+      if (!shareEvent(event, mach_port_name_))
         return E_FAIL;
     }
-    if (!event)
-      completion_->value = InitialValue;
+    // an opened fence has the value of the fence it opens, a created one its initial value
+    completion_->value = event ? event.signaledValue() : InitialValue;
     std::lock_guard lock(device_->fences.mutex);
-    if (FAILED(device_->GetDeviceRemovedReason()))
+    if (FAILED(device_->RemovedReason()))
       return DXGI_ERROR_DEVICE_REMOVED;
     device_->fences.values.insert(completion);
     return S_OK;
@@ -116,9 +182,9 @@ public:
       completion_->event.signalValue(Value);
   }
 
-  D3DKMT_HANDLE
-  SharedAllocation() override {
-    return allocation_;
+  HRESULT
+  CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) override {
+    return mach_port_name_[0] ? shareHandle(mach_port_name_, attributes, name, handle) : E_INVALIDARG;
   }
 
   ULONG STDMETHODCALLTYPE
@@ -157,7 +223,7 @@ public:
   GetCompletedValue() {
     // "if the device has been removed, the return value will be UINT64_MAX" (ID3D12Fence::GetCompletedValue)
     auto &event = completion_->event;
-    return FAILED(device_->GetDeviceRemovedReason()) ? UINT64_MAX : event ? event.signaledValue() : completion->value.load();
+    return FAILED(device_->RemovedReason()) ? UINT64_MAX : event ? event.signaledValue() : completion->value.load();
   }
 
   HRESULT STDMETHODCALLTYPE
@@ -170,12 +236,15 @@ public:
       if (began)
         diag::Waited("fence", began, thread);
     };
-    if (Event)
-      completion->Expect(Value, [Event, waited] {
+    if (Event) {
+      auto object = EventObject(Event);
+      if (!object)
+        return FAIL(E_INVALIDARG);
+      completion->Expect(Value, [object, waited] {
         waited();
-        SetEvent(Event);
+        SetEvent(object.get());
       });
-    else {
+    } else {
       completion->Expect(Value)->wait(false);
       waited();
     }
@@ -210,12 +279,12 @@ CreateFence(MTLD3D12Device *pDevice, UINT64 InitialValue, D3D12_FENCE_FLAGS Flag
 
 HRESULT
 OpenFence(
-    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, D3DKMT_HANDLE Allocation, REFIID riid,
+    MTLD3D12Device *pDevice, WMT::Reference<WMT::SharedEvent> &&Event, const char (&MachPortName)[54], REFIID riid,
     void **ppFence
 ) {
   if (!Event)
     return E_INVALIDARG;
-  auto fence = Com(new MTLD3D12FenceImpl(pDevice, D3D12_FENCE_FLAG_SHARED, std::move(Event), Allocation));
+  auto fence = Com(new MTLD3D12FenceImpl(pDevice, D3D12_FENCE_FLAG_SHARED, std::move(Event), MachPortName));
   if (HRESULT hr = fence->Initialize(0); FAILED(hr))
     return hr;
   if (!ppFence)

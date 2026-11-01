@@ -1,12 +1,12 @@
 # an out-of-bounds scalar returns all ones instead of zero
---- a/src/airconv/dxil_converter.cpp
-+++ b/src/airconv/dxil_converter.cpp
-@@ -2560,7 +2560,7 @@
-           std::min(Align(constant(a(3))), getKnownAlignment(buffer.Pointer, ctx.module.getDataLayout()))
-       );
-       if (inside)
--        ret = ir.CreateSelect(inside, ret, Constant::getNullValue(ty));
-+        ret = ir.CreateSelect(inside, ret, Constant::getAllOnesValue(ty));
-       break;
-     }
-     case CBufferLoadLegacy: {
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -115,7 +115,7 @@
+     return Zero;
+   auto TyIntVec4 = air.getIntTy(4);
+   auto Zero = new llvm::GlobalVariable(
+-      M, TyIntVec4, true, llvm::GlobalValue::InternalLinkage, llvm::Constant::getNullValue(TyIntVec4),
++      M, TyIntVec4, true, llvm::GlobalValue::InternalLinkage, llvm::Constant::getAllOnesValue(TyIntVec4),
+       "mullion.zero_row", nullptr, llvm::GlobalValue::NotThreadLocal, 2
+   );
+   Zero->setAlignment(llvm::Align(16));
