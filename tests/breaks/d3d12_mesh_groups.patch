@@ -1,0 +1,14 @@
+# DispatchMesh sends a grid past Metal's mesh grid limit whole, as one Metal draw
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 272d3f0..88bd80f 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4907,7 +4907,7 @@ public:
+     // (SM50_RASTER_SCALE_MESH_ORIGIN). an amplification shader's grid is an object grid, which has no such limit
+     uint64_t limit = pso_graphics_->mesh_grid_limit, x = ThreadGroupCountX, y = ThreadGroupCountY,
+              z = ThreadGroupCountZ;
+-    if (pso_graphics_->object_stage || !limit || x * y * z <= limit || !raster_scale_) {
++    if (pso_graphics_->object_stage || !limit || x * y * z <= limit || !raster_scale_ || true) {
+       draw(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+       return;
+     }

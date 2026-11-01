@@ -3667,10 +3667,12 @@ static NTSTATUS
 _MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = [(id<MTLRenderPipelineState>)params->handle maxTotalThreadgroupsPerMeshGrid];
-  // Metal feature set tables, "Maximum threadgroups per mesh shader grid", of the families that have less than later ones
+  // Metal feature set tables, "Maximum threadgroups per mesh shader grid", of an emulated family: 1024 before Apple9,
+  // 1048575 from it. an M4 reports 2^20, yet a grid of 2^20 threadgroups runs none of them, so the tables' 1048575
+  // holds for the GPU's own family and later ones too
   static const uint64_t limits[] = {[7] = 1024, [8] = 1024, [9] = 1048575};
   unsigned family = emulated_family();
-  uint64_t limit = family < sizeof(limits) / sizeof(*limits) ? limits[family] : 0;
+  uint64_t limit = family && family < sizeof(limits) / sizeof(*limits) && limits[family] ? limits[family] : 1048575;
   // or a limit to test with, which no family has: MULLION_MESH_GRID_LIMIT
   const char *given = (getenv("MULLION_MESH_GRID_LIMIT") ?: getenv("DXMT_MESH_GRID_LIMIT"));
   if (given)

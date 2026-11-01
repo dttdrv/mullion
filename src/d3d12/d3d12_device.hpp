@@ -532,6 +532,10 @@ public:
   // a mesh shader pipeline: its amplification shader's threadgroup size (ones without one) and its mesh shader's
   bool mesh_shader = false;
   uint32_t object_threads[3] = {1, 1, 1}, mesh_threads[3] = {1, 1, 1};
+  // whether it has an object stage (an amplification shader, or conservative rasterization's), so DispatchMesh's grid
+  // is an object grid, and the most threadgroups a Metal mesh grid of it may have (0: not known)
+  bool object_stage = false;
+  uint64_t mesh_grid_limit = 0;
   // whether it has a pixel shader, which PSInvocations count
   bool pixel_shader = false;
   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip_cut = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;

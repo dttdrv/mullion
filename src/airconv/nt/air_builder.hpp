@@ -96,7 +96,7 @@ enum class MemFlags {
   Device = 1,
   Threadgroup = 2,
   Texture = 4,
-  ObjectData = 4,
+  ObjectData = 16, // MSL mem_flags::mem_object_data
 };
 
 enum class ThreadScope {
