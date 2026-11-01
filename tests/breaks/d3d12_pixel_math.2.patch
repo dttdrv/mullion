@@ -1,0 +1,16 @@
+# sine and cosine of an infinity or a NaN are Metal's fast ones of the clamped angle, not NaN
+# family native
+# family native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index 388b8f8..aa5f34c 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -1136,7 +1136,7 @@ Converter::SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value) {
+     auto NonFinite = ir.CreateICmpEQ(ir.CreateAnd(Bits, Inf), llvm::ConstantInt::get(Bits->getType(), Inf));
+     auto NaN = llvm::APFloat::getQNaN(Scalar->getFltSemantics()).bitcastToAPInt();
+     Result = ir.CreateBitCast(
+-        ir.CreateSelect(NonFinite, llvm::ConstantInt::get(Bits->getType(), NaN), ir.CreateBitCast(compute(true), Bits->getType())),
++        ir.CreateSelect(ir.getFalse(), llvm::ConstantInt::get(Bits->getType(), NaN), ir.CreateBitCast(compute(true), Bits->getType())),
+         Type
+     );
+   }

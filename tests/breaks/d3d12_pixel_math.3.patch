@@ -1,0 +1,16 @@
+# cosine of a zero or a 32-bit denormal is that zero, as the sine's is, not 1
+# family native
+# family native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index 388b8f8..c659b48 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -1140,8 +1140,6 @@ Converter::SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value) {
+         Type
+     );
+   }
+-  if (Op == AIRBuilder::cos)
+-    return Result;
+   // a 32-bit denormal has no exponent bits; 16-bit denormals are kept (D3D11.3 3.1.5), so there only a zero counts
+   auto Counted = Scalar->isFloatTy() ? Inf : ~Sign;
+   auto Zero = ir.CreateICmpEQ(ir.CreateAnd(Bits, Counted), llvm::ConstantInt::get(Bits->getType(), 0));

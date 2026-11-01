@@ -1,0 +1,15 @@
+# frac is Metal's precise fract, which is 0 for an infinity
+# family native
+# family native-metal3
+diff --git a/src/airconv/nt/dxbc_converter_base.cpp b/src/airconv/nt/dxbc_converter_base.cpp
+index 388b8f8..b1244b3 100644
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -1077,6 +1077,7 @@ Converter::Fraction(llvm::Value *Value) {
+   }();
+   auto Type = Value->getType();
+   if (!Select) {
++    return air.CreateFPUnOp(AIRBuilder::fract, Value, false);
+     auto Floor = air.CreateFPUnOp(AIRBuilder::floor, Value);
+     llvm::IRBuilder<>::FastMathFlagGuard Strict(ir);
+     ir.clearFastMathFlags();
