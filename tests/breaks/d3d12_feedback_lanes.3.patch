@@ -1,0 +1,14 @@
+# a pixel shader's helper lanes take part in putting writes together, and may make the write
+# family native
+# family native-metal3
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3252,7 +3252,7 @@
+       Value *writes = ir.getTrue();
+       if (merge && ctx.shader_type == D3D10_SB_PIXEL_SHADER)
+         writes = ir.CreateAnd(
+-            ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {})),
++            ir.getTrue(),
+             ir.CreateCall(ctx.module.getOrInsertFunction(kFeedbackLaneWrites, FunctionType::get(ir.getInt1Ty(), false)))
+         );
+       auto ctz = ctx.module.getOrInsertFunction(

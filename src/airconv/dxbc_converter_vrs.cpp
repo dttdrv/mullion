@@ -312,7 +312,28 @@ skipped(IRBuilder<> &ir, llvm::Instruction *write) {
 }
 
 void
+FinishFeedbackLanes(llvm::Module &module) {
+  auto marker = module.getFunction(kFeedbackLaneWrites);
+  if (!marker)
+    return;
+  for (auto user : make_early_inc_range(marker->users())) {
+    auto call = cast<CallInst>(user);
+    call->replaceAllUsesWith(ConstantInt::getTrue(call->getContext()));
+    call->eraseFromParent();
+  }
+  marker->eraseFromParent();
+}
+
+void
 CoarseShading::Finish() {
+  // the lanes whose writes are kept: the leader, until it discards
+  if (auto marker = function_->getParent()->getFunction(kFeedbackLaneWrites))
+    for (auto user : make_early_inc_range(marker->users()))
+      if (auto call = dyn_cast<CallInst>(user); call && call->getFunction() == function_) {
+        IRBuilder<> ir(call);
+        call->replaceAllUsesWith(ir.CreateAnd(leads_, ir.CreateNot(ir.CreateLoad(ir.getInt1Ty(), discarded_))));
+        call->eraseFromParent();
+      }
   for (auto [argument, value] : centered_)
     argument->replaceUsesWithIf(value, [&](Use &use) {
       auto user = dyn_cast<llvm::Instruction>(use.getUser());

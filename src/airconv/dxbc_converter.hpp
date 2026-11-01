@@ -632,6 +632,13 @@ public:
 
 void declare_dispatch_origin(SM50ShaderInternal *sm50_shader);
 
+// stands, in a pixel shader, for whether Mullion keeps the lane's writes: the leader of a coarse pixel that has not
+// discarded under coarse shading (CoarseShading::Finish), and every lane otherwise (FinishFeedbackLanes). sampler
+// feedback's lanes put their writes together only among such lanes
+constexpr const char *kFeedbackLaneWrites = "mullion.feedback_lane_writes";
+// gives what kFeedbackLaneWrites stands for that CoarseShading did not the value true, and removes it
+void FinishFeedbackLanes(llvm::Module &module);
+
 // a pixel shader of coarse pixels, two wide or high at most (SM50_SHADER_PSO_PIXEL_SHADER_DATA's coarse_shading). a
 // coarse pixel is in one quad, whose lanes it covers run the shader with their inputs where the coarse pixel's center
 // is (so a derivative spans coarse pixels) and take the outputs of one, the leader, which alone discards and writes

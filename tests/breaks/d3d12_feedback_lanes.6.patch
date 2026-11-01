@@ -1,0 +1,14 @@
+# under coarse shading, every lane takes part in putting sampler feedback writes together: a coarse pixel's other lanes, and a leader that discarded, may make the write
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_vrs.cpp
++++ b/src/airconv/dxbc_converter_vrs.cpp
+@@ -331,7 +331,7 @@
+     for (auto user : make_early_inc_range(marker->users()))
+       if (auto call = dyn_cast<CallInst>(user); call && call->getFunction() == function_) {
+         IRBuilder<> ir(call);
+-        call->replaceAllUsesWith(ir.CreateAnd(leads_, ir.CreateNot(ir.CreateLoad(ir.getInt1Ty(), discarded_))));
++        call->replaceAllUsesWith(ir.getTrue());
+         call->eraseFromParent();
+       }
+   for (auto [argument, value] : centered_)
