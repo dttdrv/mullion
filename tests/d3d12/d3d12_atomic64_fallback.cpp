@@ -385,6 +385,10 @@ main(int argc, char **argv) {
     return verdict();
   original_buffer = reinterpret_cast<decltype(original_buffer)>(*import);
   *import = reinterpret_cast<ULONG_PTR>(observe_buffer);
+  // an adapter has one device at a time (D3D12CreateDevice returns the one there is): the first goes, with the root
+  // signature that holds it, so that the next is made, and its lock table with it
+  root.Reset();
+  device.Reset();
   ComPtr<ID3D12Device> failed;
   const auto created = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&failed));
   *import = reinterpret_cast<ULONG_PTR>(original_buffer);
@@ -402,7 +406,12 @@ main(int argc, char **argv) {
   InterlockedExchange(given_up, 1);
   expect(submit(failed.Get(), queue.Get(), list.Get()) == DXGI_ERROR_DEVICE_HUNG, "give-up submission removed device");
   expect(failed->GetDeviceRemovedReason() == DXGI_ERROR_DEVICE_HUNG, "give-up reports DXGI_ERROR_DEVICE_HUNG");
-  expect(failed->GetDeviceRemovedReason() == DXGI_ERROR_DEVICE_HUNG && device->GetDeviceRemovedReason() == S_OK,
-         "removal persists on the failed device alone");
+  // the removal stays with the removed device: once it is released, the adapter makes a working one again
+  list.Reset();
+  allocator.Reset();
+  queue.Reset();
+  failed.Reset();
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  expect(device->GetDeviceRemovedReason() == S_OK, "removal persists on the failed device alone");
   return verdict();
 }
