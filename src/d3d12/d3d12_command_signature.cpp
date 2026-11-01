@@ -130,6 +130,7 @@ struct mullion_render_command_data {
   device uint *so_lacked;
   uint statistics_first, statistics_step, statistics_cut, statistics_cuts;
   packed_uint2 execution_range;
+  uint extras_claimed, extras_done;
 };
 
 )";
@@ -381,18 +382,20 @@ public:
     CommandType = side_effect;
     UpdateIndexBuffer = ib_index != ~0u;
 
-    source << "[[kernel]] void resolve_indirect_commands([[thread_position_in_grid]] uint x, device "
-           << (is_compute ? "mullion_compute_command_data" : "mullion_render_command_data")
-           << " &command_data [[buffer(30)]]) {\n";
+    // an indexed signature's resolver is this, then what it does once all its threads have (below)
+    if (indexed)
+      source << "static void resolve_command(uint x, device mullion_render_command_data &command_data) {\n";
+    else
+      source << "[[kernel]] void resolve_indirect_commands([[thread_position_in_grid]] uint x, device "
+             << (is_compute ? "mullion_compute_command_data" : "mullion_render_command_data")
+             << " &command_data [[buffer(30)]]) {\n";
     // each thread resolves one command
     source << "ulong i = x;\n";
     source << "uint count = command_data.max_count_buffer ? "
               "command_data.max_count_buffer[0] : command_data.max_count;\n";
-    if (!rays) {
+    if (!rays && !indexed) {
       source << "if (i == 0) command_data.execution_range = uint2(0, "
                 "min(count, uint(command_data.max_count))";
-      if (indexed)
-        source << " * (command_data.zeros ? " << kIndexedCommands << "u : 1u)";
       source << ");\n";
     }
     source << "if (i >= command_data.max_count) return;\n";
@@ -419,20 +422,13 @@ public:
       source << "if (command_data.dispatches) command_data.dispatches[i] = uint3(0);\n"
                 "else { compute_command cmd(command_data.cmd_buf, i); cmd.reset(); }\n";
     } else {
-      // an indexed draw's indices past their view are a second command, `rest`, which draws zeros (command_data.zeros);
-      // where the byte address wraps, `wrapped` and `wrapped_rest` do the same from the view's start
-      source << "render_command cmd(command_data.cmd_buf, "
-             << (indexed ? "command_data.zeros ? " + std::to_string(kIndexedCommands) + " * i : i" : "i") << ");\n";
-      if (indexed)
-        for (auto [name, k] : {std::pair{"rest", 1}, {"wrapped", 2}, {"wrapped_rest", 3}})
-          source << "render_command " << name << "(command_data.cmd_buf, " << kIndexedCommands << " * i + " << k << ");\n";
+      // each command's draw is command i of the indirect command buffer (an indexed one's extras are past them, below)
+      source << "render_command cmd(command_data.cmd_buf, i);\n";
       // no command to write where each command's draw is left in an IndirectMeshDraw, with no threadgroups so far
       source << "if (command_data.draws) command_data.draws[i].threadgroups = uint3(0), command_data.draws[i].zero[0] = 0;\n"
                 "else cmd.reset();\n";
       source << "if (command_data.omitted) command_data.omitted[i] = 0;\n";
       source << "if (command_data.so_lacked) command_data.so_lacked[i] = 0;\n";
-      if (indexed)
-        source << "if (command_data.zeros) { rest.reset(); wrapped.reset(); wrapped_rest.reset(); }\n";
     }
     source << "if (i >= count) return;\n";
     source << "device ulong * rootsig_qwords = command_data.rootsig_qwords + "
@@ -445,14 +441,9 @@ public:
     // the caller binds what an IndirectMeshDraw's stages read; a command of the indirect command buffer binds its own
     if (!is_compute)
       source << "if (!command_data.draws) {\n";
-    if (UpdateRootArguments || UpdateVertexBuffers || UpdateIndexBuffer) {
-      if (!is_compute) {
-        for (auto command : {"cmd", "rest", "wrapped", "wrapped_rest"}) {
-          if (command == std::string_view("rest")) {
-            if (!indexed)
-              break;
-            source << "if (command_data.zeros) {\n";
-          }
+    // a command of the indirect command buffer binds what the command's arguments change; with none, it inherits them
+    auto bind = [&](const char *command) {
+      if (UpdateRootArguments || UpdateVertexBuffers || UpdateIndexBuffer) {
           source << command << ".set_vertex_buffer(vertex_buffer," << SM50_BINDING_INDEX_VERTEX_BUFFER << ");\n";
           source << command << ".set_vertex_buffer(rootsig_qwords," << SM50_BINDING_INDEX_ROOT_ARGUMENTS << ");\n";
           source << command << ".set_vertex_buffer(command_data.static_samplers," << SM50_BINDING_INDEX_STATIC_SAMPLERS
@@ -467,11 +458,10 @@ public:
                  << ");\n";
           source << command << ".set_vertex_buffer(command_data.raster_scale," << SM50_BINDING_INDEX_RASTER_SCALE
                  << ");\n";
-        }
-        if (indexed)
-          source << "}\n";
       }
-    }
+    };
+    if (!is_compute)
+      bind("cmd");
     if (!is_compute)
       source << "}\n";
 
@@ -532,14 +522,38 @@ public:
         source << "uint inside = start < ib_there ? min(before, ib_there - start) : 0, wrapped_inside = min(after, ib_there);\n";
         source << "if (ib32bit) {\n";
         draw("cmd", "inside", "reinterpret_cast<device uint *>(ib) + start");
-        draw("wrapped", "wrapped_inside", "reinterpret_cast<device uint *>(ib)");
         source << "} else {\n";
         draw("cmd", "inside", "reinterpret_cast<device ushort *>(ib) + start");
-        draw("wrapped", "wrapped_inside", "reinterpret_cast<device ushort *>(ib)");
         source << "}\n";
-        source << "if (command_data.zeros) {\n";
-        draw("rest", "min(before - inside, command_data.zero_count)", "command_data.zeros");
-        draw("wrapped_rest", "min(after - wrapped_inside, command_data.zero_count)", "command_data.zeros");
+        // the rest are extra commands, past the draws in the order the draws claim them (command_data.extras_claimed):
+        // the indices past the view, which draw zeros (command_data.zeros), and where the byte address wraps, the
+        // view's from its start, then zeros again. a draw rarely has any, so the commands run are the draws and as many
+        // extras as there are, not kIndexedCommands for every draw
+        source << "uint rest = command_data.zeros ? min(before - inside, command_data.zero_count) : 0;\n";
+        source << "uint wrapped_rest = command_data.zeros ? min(after - wrapped_inside, command_data.zero_count) : 0;\n";
+        source << "uint extras = command_data.zeros ? uint(rest != 0) + uint(wrapped_inside != 0) + uint(wrapped_rest != 0) : 0;\n";
+        source << "if (extras) {\n";
+        // past the draws run: the command count, which `count` here is not (the draw's index count is)
+        source << "uint at = min(command_data.max_count_buffer ? command_data.max_count_buffer[0] : "
+                  "uint(command_data.max_count), uint(command_data.max_count)) + atomic_fetch_add_explicit(reinterpret_cast<device atomic_uint *>("
+                  "&command_data.extras_claimed), extras, memory_order_relaxed);\n";
+        auto extra = [&](const char *count, auto indices) {
+          source << "if (" << count << ") {\n";
+          source << "render_command extra(command_data.cmd_buf, at++);\n";
+          source << "extra.reset();\n";
+          bind("extra");
+          indices();
+          source << "}\n";
+        };
+        extra("rest", [&] { draw("extra", "rest", "command_data.zeros"); });
+        extra("wrapped_inside", [&] {
+          source << "if (ib32bit) {\n";
+          draw("extra", "wrapped_inside", "reinterpret_cast<device uint *>(ib)");
+          source << "} else {\n";
+          draw("extra", "wrapped_inside", "reinterpret_cast<device ushort *>(ib)");
+          source << "}\n";
+        });
+        extra("wrapped_rest", [&] { draw("extra", "wrapped_rest", "command_data.zeros"); });
         source << "}\n";
         source << "}\n";
         break;
@@ -639,6 +653,24 @@ public:
     source << "}\n"
               "};\n";
 
+    // an indexed signature's resolver sets the commands to run once all its threads have claimed their extras: the
+    // draws and the extras after them. the last thread to finish reads the claims, and leaves both counts at zero for
+    // the next execution. a device fence orders each thread's claim before its finishing, and the claims before the
+    // last thread's reading of them. the threads past the count write no command, so none races an extra
+    if (indexed)
+      source << "[[kernel]] void resolve_indirect_commands([[thread_position_in_grid]] uint x, "
+                "[[threads_per_grid]] uint threads, device mullion_render_command_data &command_data [[buffer(30)]]) {\n"
+                "resolve_command(x, command_data);\n"
+                "atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);\n"
+                "if (atomic_fetch_add_explicit(reinterpret_cast<device atomic_uint *>(&command_data.extras_done), 1, "
+                "memory_order_relaxed) != threads - 1) return;\n"
+                "atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);\n"
+                "uint claimed = atomic_exchange_explicit(reinterpret_cast<device atomic_uint *>(&command_data.extras_claimed), "
+                "0, memory_order_relaxed);\n"
+                "atomic_store_explicit(reinterpret_cast<device atomic_uint *>(&command_data.extras_done), 0, "
+                "memory_order_relaxed);\n"
+                "uint count = command_data.max_count_buffer ? command_data.max_count_buffer[0] : command_data.max_count;\n"
+                "command_data.execution_range = uint2(0, min(count, uint(command_data.max_count)) + claimed);\n}\n";
     if (indexed) {
       source << "[[kernel]] void count_indirect_strips(device mullion_render_command_data &data [[buffer(30)]],\n"
                 "uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],\n"

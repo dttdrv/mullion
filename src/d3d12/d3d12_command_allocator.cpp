@@ -504,7 +504,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
 
-  // an indexed command of an ordinary pipeline is kIndexedCommands (IndirectRenderCommandData::zeros)
+  // room for kIndexedCommands commands per indexed command of an ordinary pipeline: its draw, and past all the draws,
+  // its extra commands, should it have any (IndirectRenderCommandData::zeros, extras_claimed)
   size_t each = !tessellation && pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? kIndexedCommands : 1;
   WMT::IndirectCommandBuffer icb;
   if (!draws)
@@ -550,6 +551,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   auto &zeros = *device_->recording.zeros;
   data->zeros = each > 1 ? gpu_heap_buffer_address_ + zeros.offset : 0;
   data->zero_count = zeros.length / sizeof(uint16_t);
+  // the resolver's last thread runs the extras an execution claims, and leaves the counts at zero for the next
+  data->extras_claimed = data->extras_done = 0;
   data->draws = 0;
   data->so_targets = data->so_scratch_size = data->so_invocations = data->so_lacked = 0;
   if (draws) {
