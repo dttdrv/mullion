@@ -14,7 +14,7 @@ namespace mullion {
 // Metal holds maxArgumentBufferSamplerCount distinct samplers ("unique argument buffer samplers per app") and the
 // ones past it sample wrong with no error (measured on an M1 Pro). an id Metal gives again is the slot it reuses, so
 // the ids seen count the slots taken. past them a sampler is the held one of its filters, address modes, border and
-// comparison whose LOD clamps are nearest, then its anisotropy: a clamp picks the mip read, anisotropy only its taps
+// comparison and reduction whose LOD clamps are nearest, then its anisotropy: a clamp picks the mip read, anisotropy only its taps
 static WMT::Reference<WMT::SamplerState>
 NewState(WMT::Device device, WMTSamplerInfo &info) {
   static mullion::mutex mutex;
@@ -36,6 +36,7 @@ NewState(WMT::Device device, WMTSamplerInfo &info) {
         other.r_address_mode == info.r_address_mode && other.s_address_mode == info.s_address_mode &&
         other.t_address_mode == info.t_address_mode && other.border_color == info.border_color &&
         other.compare_function == info.compare_function && other.normalized_coords == info.normalized_coords &&
+        other.reduction_mode == info.reduction_mode &&
         other.lod_average == info.lod_average && other.support_argument_buffers == info.support_argument_buffers &&
         (!nearest || apart(other) < apart(*nearest)))
       nearest = &other;
