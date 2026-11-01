@@ -1808,6 +1808,40 @@ _MTLCommandBuffer_encodeSpatialScale(void *obj) {
 }
 
 static NTSTATUS
+CREATES(_MTLDevice_newSpatialScaler4)(void *obj) {
+  struct unixcall_mtldevice_newfxspatialscaler *params = obj;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (@available(macOS 26.0, *)) {
+    id<MTLDevice> device = (id<MTLDevice>)params->device;
+    const struct WMTFXSpatialScalerInfo *info = params->info.ptr;
+    MTL4CompilerDescriptor *compiler_desc;
+    id<MTL4Compiler> compiler;
+    MTLFXSpatialScalerDescriptor *desc;
+
+    if (![MTLFXSpatialScalerDescriptor supportsMetal4FX:device])
+      return STATUS_SUCCESS;
+    compiler_desc = [[MTL4CompilerDescriptor alloc] init];
+    compiler = [device newCompilerWithDescriptor:compiler_desc error:nil];
+    [compiler_desc release];
+    if (!compiler)
+      return STATUS_SUCCESS;
+    desc = [[MTLFXSpatialScalerDescriptor alloc] init];
+    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
+    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
+    desc.inputWidth = info->input_width;
+    desc.inputHeight = info->input_height;
+    desc.outputWidth = info->output_width;
+    desc.outputHeight = info->output_height;
+    params->ret = (obj_handle_t)[desc newSpatialScalerWithDevice:device compiler:compiler];
+    [desc release];
+    [compiler release];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS _MTL4CommandBuffer_encodeSpatialScale(void *obj);
+
+static NTSTATUS
 _NSString_string(void *obj) {
   struct unixcall_nsstring_string *params = obj;
   NSString *str = [NSString stringWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
@@ -5405,6 +5439,26 @@ _MTL4CommandBuffer_present(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* the scaler encodes its own passes: the buffer's compute encoder ends first (updating the buffer's fence), and the
+ * textures are made resident in the buffer's residency set */
+static NTSTATUS
+_MTL4CommandBuffer_encodeSpatialScale(void *obj) {
+  struct unixcall_mtlcommandbuffer_spatial_scale *params = obj;
+  if (@available(macOS 26.0, *)) {
+    MullionMetal4Buffer *state = (MullionMetal4Buffer *)params->cmdbuf;
+    id<MTL4FXSpatialScaler> scaler = (id<MTL4FXSpatialScaler>)params->scaler;
+
+    [state closeCompute];
+    metal4_resident(state, (id<MTLTexture>)params->color);
+    metal4_resident(state, (id<MTLTexture>)params->output);
+    scaler.colorTexture = (id<MTLTexture>)params->color;
+    scaler.outputTexture = (id<MTLTexture>)params->output;
+    scaler.fence = (id<MTLFence>)params->fence;
+    [scaler encodeToCommandBuffer:state->buffer];
+  }
+  return STATUS_SUCCESS;
+}
+
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
     MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max
@@ -6459,6 +6513,8 @@ const void *__wine_unix_call_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLDevice_newSpatialScaler4,
+    &_MTL4CommandBuffer_encodeSpatialScale,
 };
 
 #ifndef MULLION_NATIVE
@@ -6660,6 +6716,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLDevice_newSpatialScaler4,
+    &_MTL4CommandBuffer_encodeSpatialScale,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

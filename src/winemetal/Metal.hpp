@@ -1074,6 +1074,10 @@ public:
   presentDrawableAfterMinimumDuration(MetalDrawable drawable, double after) {
     MTL4CommandBuffer_present(handle, drawable, after);
   }
+  void
+  encodeSpatialScale(FXSpatialScaler scaler, Texture color, Texture output, Fence fence) {
+    MTL4CommandBuffer_encodeSpatialScale(handle, scaler, color, output, fence);
+  }
 };
 
 // maps tiles of placement sparse resources to tiles of placement heaps (Metal 4)
@@ -1414,6 +1418,12 @@ public:
   Reference<FXSpatialScaler>
   newSpatialScaler(const WMTFXSpatialScalerInfo &info) {
     return Reference<FXSpatialScaler>(MTLDevice_newSpatialScaler(handle, &info));
+  }
+
+  // a scaler Metal 4 command buffers encode (MTL4FXSpatialScaler); empty where the device has none
+  Reference<FXSpatialScaler>
+  newSpatialScaler4(const WMTFXSpatialScalerInfo &info) {
+    return Reference<FXSpatialScaler>(MTLDevice_newSpatialScaler4(handle, &info));
   }
 
   Reference<BinaryArchive>

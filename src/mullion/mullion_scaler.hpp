@@ -10,7 +10,8 @@ public:
   void incRef();
   void decRef();
 
-  SpatialScaler(WMT::Device device, const WMTFXSpatialScalerInfo &info);
+  // metal4: a scaler for Metal 4 command buffers (MTL4FXSpatialScaler)
+  SpatialScaler(WMT::Device device, const WMTFXSpatialScalerInfo &info, bool metal4 = false);
 
   WMT::FXSpatialScaler scaler() {
     return scaler_;

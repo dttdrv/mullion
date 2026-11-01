@@ -1993,6 +1993,29 @@ MTL4CommandBuffer_orderAliases(obj_handle_t buffer, bool inside) {
   UNIX_CALL(WMTUnixMetal4OrderAliases, &p);
 }
 
+WINEMETAL_API obj_handle_t
+MTLDevice_newSpatialScaler4(obj_handle_t device, const struct WMTFXSpatialScalerInfo *info) {
+  struct unixcall_mtldevice_newfxspatialscaler params;
+  params.device = device;
+  WMT_MEMPTR_SET(params.info, info);
+  params.ret = NULL_OBJECT_HANDLE;
+  UNIX_CALL(WMTUnixDeviceNewSpatialScaler4, &params);
+  return params.ret;
+}
+
+WINEMETAL_API void
+MTL4CommandBuffer_encodeSpatialScale(
+    obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t fence
+) {
+  struct unixcall_mtlcommandbuffer_spatial_scale params;
+  params.cmdbuf = cmdbuf;
+  params.scaler = scaler;
+  params.color = color;
+  params.output = output;
+  params.fence = fence;
+  UNIX_CALL(WMTUnixMetal4SpatialScale, &params);
+}
+
 WINEMETAL_API void
 WMTBootstrapKeep(const char *name, obj_handle_t object) {
   struct unixcall_bootstrap params = {.object = object};

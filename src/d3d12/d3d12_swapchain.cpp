@@ -23,6 +23,7 @@
 #include "dxgi_output.hpp"
 #include "mullion_hud_state.hpp"
 #include "mullion_presenter.hpp"
+#include "mullion_scaler.hpp"
 #include "mullion_format.hpp"
 #include "dxgi_swapchain_settings.hpp"
 #include "mullion_info.hpp"
@@ -33,6 +34,7 @@
 #include "util_cpu_fence.hpp"
 #include "util_hotpatch.h"
 #include "config/config.hpp"
+#include "util_env.hpp"
 #include <bit>
 #include <cfloat>
 #include <limits>
@@ -138,6 +140,11 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IMTLDXGISwapChain, MTLD3
   uint32_t frame_latency;
   DXGI_COLOR_SPACE_TYPE colorspace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
   float scale_factor = 1.0;
+  // MetalFX spatial upscaling (d3d12.metalSpatialUpscale, or d3d11's when d3d12 has none): the shown buffer goes
+  // through `metalfx_scaler_` into `upscaled_`, scale_factor times its size
+  bool metalfx_ = false;
+  Rc<SpatialScaler> metalfx_scaler_;
+  WMT::Reference<WMT::Texture> upscaled_;
   HUDState hud;
   double init_refresh_rate_ = DBL_MAX;
   int preferred_max_frame_rate = 0;
@@ -192,6 +199,23 @@ public:
 
     if (!native_view_) {
       WARN("No Metal view for this window; presenting through GDI (slower).");
+    }
+
+    // MetalSharp sets the d3d11 options, which then apply here too
+    auto &config = Config::getInstance();
+    if (env::getEnvVar("MULLION_METALFX_SPATIAL_SWAPCHAIN") == "1" ||
+        config.getOption<bool>("d3d12.metalSpatialUpscale", config.getOption<bool>("d3d11.metalSpatialUpscale", false))) {
+      if (pDevice->GetMTLDevice().supportsFXSpatialScaler()) {
+        metalfx_ = true;
+        scale_factor = std::max(
+            config.getOption<float>(
+                "d3d12.metalSpatialUpscaleFactor", config.getOption<float>("d3d11.metalSpatialUpscaleFactor", 2)
+            ),
+            1.0f
+        );
+      } else {
+        WARN("MetalFX spatial scaler is not supported on this device");
+      }
     }
 
     presenter =
@@ -598,10 +622,46 @@ public:
       presentation_queue_ = static_cast<MTLD3D12CommandQueue *>(queue.ptr());
       present_finished_ = std::move(finished);
     }
+    Rc<SpatialScaler> scaler;
+    WMT::Reference<WMT::Texture> upscaled;
+    if (metalfx_) {
+      auto &color = backbuffers[0]->texture;
+      WMTTextureInfo info{};
+      info.pixel_format = color->pixelFormat();
+      info.width = uint32_t(backbuffer_desc.Width * scale_factor);
+      info.height = uint32_t(backbuffer_desc.Height * scale_factor);
+      info.depth = 1;
+      info.array_length = 1;
+      info.type = WMTTextureType2D;
+      info.mipmap_level_count = 1;
+      info.sample_count = 1;
+      info.usage = WMTTextureUsage(WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite | WMTTextureUsageRenderTarget);
+      info.options = WMTResourceOptions(WMTResourceStorageModePrivate | WMTResourceHazardTrackingModeUntracked);
+      upscaled = device_->GetMTLDevice().newTexture(info);
+      WMTFXSpatialScalerInfo scaler_info{
+          .color_format = color->pixelFormat(),
+          .output_format = color->pixelFormat(),
+          .input_width = uint32_t(backbuffer_desc.Width),
+          .input_height = backbuffer_desc.Height,
+          .output_width = info.width,
+          .output_height = info.height,
+      };
+      if (upscaled)
+        scaler = new SpatialScaler(device_->GetMTLDevice(), scaler_info, device_->UsesMetal4());
+      if (!upscaled || !scaler->scaler()) {
+        WARN("MetalFX: no spatial scaler for ", backbuffer_desc.Width, "x", backbuffer_desc.Height, " to ", info.width,
+             "x", info.height, "; presenting without it");
+        scaler = nullptr;
+        upscaled = {};
+      }
+    }
+
     desc_ = desc;
     backbuffer_desc_ = backbuffer_desc;
     backbuffers_ = std::move(backbuffers);
     present_queues_ = std::move(present_queues);
+    metalfx_scaler_ = std::move(scaler);
+    upscaled_ = std::move(upscaled);
     // the first of the new buffers is the next to be presented
     current_buffer_ = 0;
     settings_.Resized();
@@ -829,7 +889,7 @@ public:
     if (present_queues_.empty()) {
       hr = queue_->Present(
           this, this->presenter.ptr(), backbuffer.ptr(), eye, present_semaphore_, vsync_duration, dump_id_,
-          presentation_count_, previous.ptr(), std::move(copies)
+          presentation_count_, previous.ptr(), std::move(copies), metalfx_scaler_.ptr(), upscaled_
       );
     } else {
       // one presentation order, bracketed by the assigned queue's work (IDXGISwapChain3::ResizeBuffers1).
@@ -840,7 +900,7 @@ public:
           FAILED(
               hr = presentation_queue_->Present(
                   this, presenter.ptr(), backbuffer.ptr(), eye, present_semaphore_, vsync_duration, dump_id_,
-                  presentation_count_, previous.ptr(), std::move(copies)
+                  presentation_count_, previous.ptr(), std::move(copies), metalfx_scaler_.ptr(), upscaled_
               )
           ) ||
           FAILED(hr = presentation_queue_->Signal(present_finished_.ptr(), sequence)) ||

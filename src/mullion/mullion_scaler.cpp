@@ -13,8 +13,8 @@ SpatialScaler::decRef() {
     delete this;
 }
 
-SpatialScaler::SpatialScaler(WMT::Device device, const WMTFXSpatialScalerInfo &info) {
-  scaler_ = device.newSpatialScaler(info);
+SpatialScaler::SpatialScaler(WMT::Device device, const WMTFXSpatialScalerInfo &info, bool metal4) {
+  scaler_ = metal4 ? device.newSpatialScaler4(info) : device.newSpatialScaler(info);
   fence_ = device.newFence();
 };
 
