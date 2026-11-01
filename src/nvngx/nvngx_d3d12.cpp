@@ -66,6 +66,7 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_Init(
     unsigned long long id, const wchar_t *path, ID3D12Device *device, const void *feature_info, unsigned int sdk_version
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Init");
   return NVNGX_RESULT_OK;
 }
 
@@ -73,6 +74,7 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_Init_Ext(
     unsigned long long id, const wchar_t *path, ID3D12Device *device, unsigned int sdk_version, const void *parameters
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Init_Ext");
   return NVNGX_RESULT_OK;
 }
 
@@ -81,6 +83,7 @@ NVSDK_NGX_D3D12_Init_ProjectID(
     const char *project, unsigned int engine_type, const char *engine_version, const wchar_t *path,
     ID3D12Device *device, unsigned int sdk_version, const void *feature_info
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Init_ProjectID");
   return NVNGX_RESULT_OK;
 }
 
@@ -89,21 +92,25 @@ NVSDK_NGX_D3D12_Init_with_ProjectID(
     const char *project, unsigned int engine_type, const char *engine_version, const wchar_t *path,
     ID3D12Device *device, const void *feature_info, unsigned int sdk_version
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Init_with_ProjectID");
   return NVNGX_RESULT_OK;
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_Shutdown() {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Shutdown");
   return NVNGX_RESULT_OK;
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_Shutdown1(ID3D12Device *device) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_Shutdown1");
   return NVNGX_RESULT_OK;
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_GetScratchBufferSize(unsigned int feature, const NVNGXParameter *params, size_t *out_size) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_GetScratchBufferSize");
   if (out_size)
     *out_size = 0;
   return NVNGX_RESULT_OK;
@@ -111,12 +118,14 @@ NVSDK_NGX_D3D12_GetScratchBufferSize(unsigned int feature, const NVNGXParameter 
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_AllocateParameters(NVNGXParameter **out_params) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_AllocateParameters");
   *out_params = new ParametersImpl();
   return NVNGX_RESULT_OK;
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_DestroyParameters(NVNGXParameter *params) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_DestroyParameters");
   delete static_cast<ParametersImpl *>(params);
   return NVNGX_RESULT_OK;
 }
@@ -124,6 +133,7 @@ NVSDK_NGX_D3D12_DestroyParameters(NVNGXParameter *params) {
 // D3D11's, with Ray Reconstruction
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_GetCapabilityParameters(NVNGXParameter **out_params) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_GetCapabilityParameters");
   NVNGX_RESULT result = NVSDK_NGX_D3D11_GetCapabilityParameters(out_params);
   if (NVNGX_FAILED(result))
     return result;
@@ -143,6 +153,7 @@ NVSDK_NGX_D3D12_GetCapabilityParameters(NVNGXParameter **out_params) {
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_GetParameters(NVNGXParameter **out_params) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_GetParameters");
   return NVSDK_NGX_D3D12_GetCapabilityParameters(out_params);
 }
 
@@ -150,6 +161,7 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_GetFeatureRequirements(
     IDXGIAdapter *adapter, const NVNGX_FeatureDiscoveryInfo *discovery_info, NVNGX_FeatureRequirement *requirement
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_GetFeatureRequirements");
   if (!requirement || !discovery_info)
     return NVNGX_RESULT_INVALID_PARAMETER;
   if (discovery_info->FeatureID == NVNGX_FEATURE_SUPERSAMPLING ||
@@ -168,6 +180,7 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_CreateFeature(
     ID3D12GraphicsCommandList *list, unsigned int feature, NVNGXParameter *params, unsigned int **out_handle
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_CreateFeature");
   auto parameters = static_cast<ParametersImpl *>(params);
   auto ext = GetExt(list);
   if (!ext || !out_handle)
@@ -222,10 +235,13 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_EvaluateFeature(
     ID3D12GraphicsCommandList *list, const unsigned int *handle, NVNGXParameter *params, void *callback
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_EvaluateFeature");
   auto parameters = static_cast<ParametersImpl *>(params);
   auto ext = GetExt(list);
-  if (!ext || !handle)
+  if (!ext || !handle) {
+    ERR("NVSDK_NGX_D3D12_EvaluateFeature: ", !ext ? "a command list without Mullion's extension" : "no feature");
     return NVNGX_RESULT_INVALID_PARAMETER;
+  }
   auto common = static_cast<CommonFeature *>((void *)handle);
   switch (common->feature) {
   case NVNGX_FEATURE_SUPERSAMPLING: {
@@ -236,8 +252,11 @@ NVSDK_NGX_D3D12_EvaluateFeature(
     desc.Depth = GetResource(parameters, NVNGX_Parameter_Depth);
     desc.MotionVector = GetResource(parameters, NVNGX_Parameter_MotionVectors);
     desc.ExposureTexture = GetResource(parameters, NVNGX_Parameter_ExposureTexture);
-    if (!desc.Color || !desc.Output || !desc.Depth || !desc.MotionVector)
+    if (!desc.Color || !desc.Output || !desc.Depth || !desc.MotionVector) {
+      ERR("NVSDK_NGX_D3D12_EvaluateFeature: DLSS without ", !desc.Color ? "color " : "", !desc.Output ? "output " : "",
+          !desc.Depth ? "depth " : "", !desc.MotionVector ? "motion vectors" : "");
       return NVNGX_RESULT_INVALID_PARAMETER;
+    }
     desc.InputContentWidth = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 0u);
     desc.InputContentHeight = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, 0u);
     desc.DepthReversed = bool(dlss->flag & NVNGX_DLSS_FLAG_DEPTH_INVERTED);
@@ -295,11 +314,13 @@ NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_EvaluateFeature_C(
     ID3D12GraphicsCommandList *list, const unsigned int *handle, NVNGXParameter *params, void *callback
 ) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_EvaluateFeature_C");
   return NVSDK_NGX_D3D12_EvaluateFeature(list, handle, params, callback);
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D12_ReleaseFeature(unsigned int *handle) {
+  Logger::debug("NGX: NVSDK_NGX_D3D12_ReleaseFeature");
   if (!handle)
     return NVNGX_RESULT_INVALID_PARAMETER;
   auto common = static_cast<CommonFeature *>((void *)handle);
