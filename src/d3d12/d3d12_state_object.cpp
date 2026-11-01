@@ -4,6 +4,7 @@
 #include "d3d12_device_child.hpp"
 #include "d3d12_pipeline.hpp"
 #include "airconv_ray.h"
+#include "mullion_command_constants.hpp"
 #include "com/com_pointer.hpp"
 #include "util_md5.hpp"
 #include "sha1/sha1_util.hpp"
@@ -18,7 +19,8 @@
 
 // DXR state objects (DXR spec, "State objects"). a ray tracing shader is a visible function of Metal at a table slot
 // the device gave it, and a shader identifier holds its shaders' slots (airconv_ray.h): a pipeline is the kernel
-// that dispatches rays, linked with the functions of every export, and a function table with each at its slot
+// that dispatches rays, linked with the functions of every export, and a function table with each at its slot. the
+// pipeline's runtime calls its shaders directly where it can, through dispatchers the pipeline makes (RayDispatchers)
 
 namespace mullion {
 
@@ -172,6 +174,7 @@ struct RayFunction {
   uint32_t slot;
   ID3D12RootSignature *global, *local;
   WMT::Reference<WMT::Function> function;
+  uint32_t calls = 0; // SM50_RAY_SHADER_CALLS
 
   ~RayFunction() {
     device->FreeRayFunction(slot);
@@ -185,6 +188,69 @@ struct RayExport {
   std::shared_ptr<RayFunction> functions[3];
   uint32_t kinds[3]{}; // SM50_RAY_SHADER_KIND
 };
+
+// MULLION_D3D12_SPECIALIZED_RAYS=0: pipelines call every shader through the function table, and their traces do not
+// know which kinds of shaders the pipeline has
+bool
+SpecializedRays() {
+  static const bool enabled = env::getEnvVar("MULLION_D3D12_SPECIALIZED_RAYS") != "0";
+  return enabled;
+}
+
+// the most shaders of one kind a dispatcher calls directly; it calls any more through the table
+constexpr size_t kMaxDirectRayCalls = 256;
+
+// the Metal source of a pipeline's dispatchers (mullion_command.metal, kRayFCIndex_DirectCalls), one for each kind
+// of shader the runtime calls: a switch of direct calls of the shaders of that kind, by their slots. a closest hit or
+// miss shader that may trace, and a callable shader that may trace or call one, is called through the table: a
+// direct call would make the dispatcher reach itself. a dispatcher of no such shader calls nothing for another slot,
+// which names none of the pipeline's shaders of its kind
+std::string
+RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shaders) {
+  static const char *const roles[] = {"generation", "closest", "any_hit", "intersection", "callable"};
+  std::string declarations, bodies;
+  std::vector<uint32_t> declared;
+  for (unsigned role = 0; role < std::size(roles); role++) {
+    std::string cases;
+    std::vector<uint32_t> direct;
+    bool table = false;
+    for (auto [kind, function] : shaders) {
+      unsigned of = kind == SM50_RAY_SHADER_RAY_GENERATION                              ? 0
+                    : kind == SM50_RAY_SHADER_CLOSEST_HIT || kind == SM50_RAY_SHADER_MISS ? 1
+                    : kind == SM50_RAY_SHADER_ANY_HIT                                    ? 2
+                    : kind == SM50_RAY_SHADER_INTERSECTION                               ? 3
+                                                                                         : 4;
+      if (of != role || std::find(direct.begin(), direct.end(), function->slot) != direct.end())
+        continue;
+      uint32_t reaching = of == 1   ? SM50_RAY_SHADER_CALLS_TRACE
+                          : of == 4 ? SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE
+                                    : 0;
+      if ((function->calls & reaching) || direct.size() >= kMaxDirectRayCalls) {
+        table = true;
+        continue;
+      }
+      direct.push_back(function->slot);
+      auto name = "mullion_ray_shader_" + std::to_string(function->slot);
+      if (std::find(declared.begin(), declared.end(), function->slot) == declared.end()) {
+        declared.push_back(function->slot);
+        declarations += "[[visible]] void " + name + "(thread MullionRayContext &, thread void *, thread void *);\n";
+      }
+      cases += "  case " + std::to_string(function->slot) + ": return " + name + "(c, first, second);\n";
+    }
+    bodies += std::string("[[visible]] void mullion_ray_") + roles[role] +
+              "_shader(uint function, thread MullionRayContext &c, thread void *first, thread void *second) {\n"
+              "  switch (function) {\n" +
+              cases + "  default: " +
+              (table ? "return ((thread MullionRayTable *)&c)->shaders[function](c, first, second);\n" : "return;\n") +
+              "  }\n}\n";
+  }
+  // the context starts with the table (MullionRayContext)
+  return "#include <metal_stdlib>\n"
+         "struct MullionRayContext;\n"
+         "typedef void MullionRayShader(thread MullionRayContext &, thread void *, thread void *);\n"
+         "struct MullionRayTable { metal::visible_function_table<MullionRayShader> shaders; };\n" +
+         declarations + bodies;
+}
 
 // stack sizes are counted in calls: a shader runs under the runtime function that calls it, but the ray generation
 // shader, which the kernel calls. the pipeline stack size an application sums from them is then the call depth
@@ -323,6 +389,7 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
       return data;
     };
     auto function = std::make_shared<RayFunction>(device_, device_->AllocateRayFunction(), pGlobal, pLocal);
+    function->calls = shader.info.calls;
     auto name = "mullion_ray_shader_" + std::to_string(function->slot);
 
     SM50_SHADER_LIBRARIES_DATA linkable{nullptr, SM50_SHADER_LIBRARIES, libraries.data(), (uint32_t)libraries.size()};
@@ -884,37 +951,70 @@ public:
     if (!made.pipeline) {
       auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
       auto library = device_->GetLib().getLibrary();
-      WMT::Reference<WMT::Function> runtime[] = {
-          library.newFunction("mullion_ray_trace"), library.newFunction("mullion_ray_report_hit"),
-          library.newFunction("mullion_ray_call")
-      };
       // the table has each function at its slot; the pipeline links them all
       std::vector<obj_handle_t> slots(SM50_RAY_FUNCTION_FIRST_SHADER), linked;
-      slots[SM50_RAY_FUNCTION_TRACE] = runtime[0];
-      slots[SM50_RAY_FUNCTION_REPORT_HIT] = runtime[1];
-      slots[SM50_RAY_FUNCTION_CALL] = runtime[2];
+      std::vector<std::pair<uint32_t, const RayFunction *>> shaders;
       for (auto &[_, e] : exports_)
-        for (auto &function : e.functions)
-          if (function) {
+        for (unsigned i = 0; i < std::size(e.functions); i++)
+          if (auto &function = e.functions[i]) {
             slots.resize(std::max<size_t>(slots.size(), function->slot + 1));
             slots[function->slot] = function->function;
+            shaders.push_back({e.kinds[i], function.get()});
           }
-      for (auto function : slots)
-        if (function)
-          linked.push_back(function);
-      auto kernel = library.newFunction("dispatch_rays");
-      WMTLinkedComputePipelineInfo info{};
-      info.compute_function = kernel;
-      info.functions.set(linked.data());
-      info.function_count = linked.size();
-      info.max_call_stack_depth = depth;
-      WMT::Reference<WMT::Error> err;
-      made.pipeline = device_->GetMTLDevice().newLinkedComputePipelineState(info, err);
-      if (!made.pipeline) {
-        ERR("Failed to create a ray tracing pipeline: ", err ? err.description().getUTF8String() : "");
-        return false;
+      // the kinds of shaders the pipeline has, for its traces
+      bool any_hit = false, intersection = false;
+      for (auto [kind, _] : shaders) {
+        any_hit |= kind == SM50_RAY_SHADER_ANY_HIT;
+        intersection |= kind == SM50_RAY_SHADER_INTERSECTION;
       }
-      made.table = made.pipeline.newVisibleFunctionTable(slots.data(), slots.size());
+      // with the dispatchers, or without them where Metal cannot make the pipeline
+      for (unsigned attempt = SpecializedRays() ? 0 : 1; attempt < 2; attempt++) {
+        bool direct = !attempt;
+        WMT::Reference<WMT::Error> err;
+        WMT::Reference<WMT::Library> dispatchers;
+        if (direct && !(dispatchers = device_->GetMTLDevice().newLibraryWithSource(RayDispatchers(shaders), err))) {
+          ERR("Failed to compile a ray tracing pipeline's dispatchers: ", err ? err.description().getUTF8String() : "");
+          continue;
+        }
+        WMTFunctionConstant constants[] = {
+            {{&direct}, WMTDataTypeBool, kRayFCIndex_DirectCalls},
+            {{&any_hit}, WMTDataTypeBool, kRayFCIndex_AnyHitShaders},
+            {{&intersection}, WMTDataTypeBool, kRayFCIndex_IntersectionShaders},
+        };
+        auto function = [&](const char *name) {
+          return library.newFunctionWithConstants(name, constants, SpecializedRays() ? std::size(constants) : 1, err);
+        };
+        WMT::Reference<WMT::Function> runtime[] = {
+            function("mullion_ray_trace"), function("mullion_ray_report_hit"), function("mullion_ray_call")
+        };
+        slots[SM50_RAY_FUNCTION_TRACE] = runtime[0];
+        slots[SM50_RAY_FUNCTION_REPORT_HIT] = runtime[1];
+        slots[SM50_RAY_FUNCTION_CALL] = runtime[2];
+        linked.clear();
+        for (auto function : slots)
+          if (function)
+            linked.push_back(function);
+        std::vector<WMT::Reference<WMT::Function>> dispatching;
+        if (direct)
+          for (auto name : {"mullion_ray_generation_shader", "mullion_ray_closest_shader", "mullion_ray_any_hit_shader",
+                            "mullion_ray_intersection_shader", "mullion_ray_callable_shader"})
+            linked.push_back(dispatching.emplace_back(dispatchers.newFunction(name)));
+        auto kernel = function("dispatch_rays");
+        WMTLinkedComputePipelineInfo info{};
+        info.compute_function = kernel;
+        info.functions.set(linked.data());
+        info.function_count = linked.size();
+        info.max_call_stack_depth = depth;
+        made.pipeline = device_->GetMTLDevice().newLinkedComputePipelineState(info, err);
+        if (made.pipeline) {
+          made.table = made.pipeline.newVisibleFunctionTable(slots.data(), slots.size());
+          break;
+        }
+        ERR("Failed to create a ray tracing pipeline", direct ? " that calls its shaders directly" : "", ": ",
+            err ? err.description().getUTF8String() : "");
+      }
+      if (!made.pipeline)
+        return false;
       if (device_->NamesPasses())
         device_->PipelineMade(name, "ray", start);
     }

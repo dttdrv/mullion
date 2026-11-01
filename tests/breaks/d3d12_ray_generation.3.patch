@@ -1,0 +1,12 @@
+# a ray that hits nothing runs its miss shader
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -216,7 +216,7 @@ RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shad
+     bool table = false;
+     for (auto [kind, function] : shaders) {
+       unsigned of = kind == SM50_RAY_SHADER_RAY_GENERATION                              ? 0
+-                    : kind == SM50_RAY_SHADER_CLOSEST_HIT || kind == SM50_RAY_SHADER_MISS ? 1
++                    : kind == SM50_RAY_SHADER_CLOSEST_HIT ? 1
+                     : kind == SM50_RAY_SHADER_ANY_HIT                                    ? 2
+                     : kind == SM50_RAY_SHADER_INTERSECTION                               ? 3
+                                                                                          : 4;

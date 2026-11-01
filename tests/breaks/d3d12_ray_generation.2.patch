@@ -1,0 +1,12 @@
+# a miss shader that traces runs, called through the table beside the miss shaders called directly
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -241,7 +241,7 @@ RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shad
+               "_shader(uint function, thread MullionRayContext &c, thread void *first, thread void *second) {\n"
+               "  switch (function) {\n" +
+               cases + "  default: " +
+-              (table ? "return ((thread MullionRayTable *)&c)->shaders[function](c, first, second);\n" : "return;\n") +
++              "return;\n" +
+               "  }\n}\n";
+   }
+   // the context starts with the table (MullionRayContext)

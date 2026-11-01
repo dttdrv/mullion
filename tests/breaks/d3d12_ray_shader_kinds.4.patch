@@ -1,0 +1,11 @@
+# a procedural primitive runs its group's intersection shader in a pipeline without any hit shaders
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -965,7 +965,6 @@ public:
+       bool any_hit = false, intersection = false;
+       for (auto [kind, _] : shaders) {
+         any_hit |= kind == SM50_RAY_SHADER_ANY_HIT;
+-        intersection |= kind == SM50_RAY_SHADER_INTERSECTION;
+       }
+       // with the dispatchers, or without them where Metal cannot make the pipeline
+       for (unsigned attempt = SpecializedRays() ? 0 : 1; attempt < 2; attempt++) {

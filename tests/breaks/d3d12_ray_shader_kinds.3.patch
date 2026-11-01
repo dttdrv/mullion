@@ -1,0 +1,11 @@
+# a triangle that is not opaque runs its group's any hit shader in a pipeline without intersection shaders
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -964,7 +964,6 @@ public:
+       // the kinds of shaders the pipeline has, for its traces
+       bool any_hit = false, intersection = false;
+       for (auto [kind, _] : shaders) {
+-        any_hit |= kind == SM50_RAY_SHADER_ANY_HIT;
+         intersection |= kind == SM50_RAY_SHADER_INTERSECTION;
+       }
+       // with the dispatchers, or without them where Metal cannot make the pipeline

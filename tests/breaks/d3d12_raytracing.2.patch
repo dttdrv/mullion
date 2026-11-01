@@ -1,0 +1,12 @@
+# a procedural primitive's report runs the any hit shader of geometry that is not opaque
+--- a/src/mullion/mullion_command.metal
++++ b/src/mullion/mullion_command.metal
+@@ -1495,7 +1495,7 @@ static void ray_trace(thread MullionRayContext &parent, thread SM50_RAY_TRACE &t
+   c.hit_kind = c.reported_kind;
+   if (c.any_hit) {
+     c.verdict = SM50_RAY_VERDICT_ACCEPT;
+-    ray_call(c, kRayAnyHit, c.any_hit, c.payload, attributes);
++    ray_call(c, kRayIntersection, c.any_hit, c.payload, attributes);
+     if (c.verdict == SM50_RAY_VERDICT_IGNORE) {
+       c.tcurrent = closest;
+       c.hit_kind = kind;

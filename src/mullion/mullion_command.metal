@@ -1219,9 +1219,9 @@ struct MetalInstance {
 
 // DXR pipelines. every shader of a state object is a visible function of one signature, called by its slot in the
 // pipeline's function table: the kernel calls the ray generation shader, and shaders call what follows (TraceRay,
-// ReportHit and CallShader are calls of the first slots). a trace is an intersection query that runs the hit groups'
-// any hit and intersection shaders as it meets their geometry, then a closest hit or a miss shader (DXR spec,
-// "TraceRay control flow"). a shader reads its system values and finds its resources through its context
+// ReportHit and CallShader call these functions by name). a trace is an intersection query that runs the hit
+// groups' any hit and intersection shaders as it meets their geometry, then a closest hit or a miss shader (DXR
+// spec, "TraceRay control flow"). a shader reads its system values and finds its resources through its context
 using namespace metal::raytracing;
 
 struct MullionRayContext;
@@ -1279,11 +1279,60 @@ static device const SM50_RAY_SHADER_IDENTIFIER *ray_record(ulong table, ulong st
   return (device const SM50_RAY_SHADER_IDENTIFIER *)(table + stride * index);
 }
 
-static void ray_shader(thread MullionRayContext &c, device const SM50_RAY_SHADER_IDENTIFIER *record, uint function,
-                       thread void *first, thread void *second) {
-  c.local_arguments = (ulong)record + sizeof(SM50_RAY_SHADER_IDENTIFIER);
-  c.shaders[function](c, first, second);
+// with direct calls (kRayFCIndex_DirectCalls), a call of a shader by its slot is a call of the dispatcher for its kind
+// of shader, which the pipeline makes (d3d12_state_object.cpp): a switch of direct calls of the pipeline's shaders of
+// that kind, which takes the table for the slots it does not have. Metal can then compile the whole into the kernel:
+// on an Apple M4 an intersection query in a function the kernel reaches through the table takes about four times as
+// long as in the kernel, and a kernel that can call through a table is slower even where it never does. no
+// dispatcher reaches itself, as Metal compiles no recursion of direct calls: a shader that may trace or call a
+// callable shader (SM50_RAY_SHADER_CALLS) is called through the table, but for ray generation shaders, which only
+// the kernel calls
+constant bool direct_calls_value [[function_constant(kRayFCIndex_DirectCalls)]];
+constant bool direct_calls = is_function_constant_defined(direct_calls_value) && direct_calls_value;
+
+enum MullionRayRole { kRayGeneration, kRayClosest, kRayAnyHit, kRayIntersection, kRayCallable };
+[[visible]] void mullion_ray_generation_shader(uint function, thread MullionRayContext &, thread void *, thread void *);
+[[visible]] void mullion_ray_closest_shader(uint function, thread MullionRayContext &, thread void *, thread void *);
+[[visible]] void mullion_ray_any_hit_shader(uint function, thread MullionRayContext &, thread void *, thread void *);
+[[visible]] void mullion_ray_intersection_shader(uint function, thread MullionRayContext &, thread void *, thread void *);
+[[visible]] void mullion_ray_callable_shader(uint function, thread MullionRayContext &, thread void *, thread void *);
+
+// a shader of the kind (closest for closest hit and miss shaders)
+static void ray_call(thread MullionRayContext &c, MullionRayRole role, uint function, thread void *first,
+                     thread void *second) {
+  if (!direct_calls) {
+    c.shaders[function](c, first, second);
+    return;
+  }
+  switch (role) {
+  case kRayGeneration:
+    return mullion_ray_generation_shader(function, c, first, second);
+  case kRayClosest:
+    return mullion_ray_closest_shader(function, c, first, second);
+  case kRayAnyHit:
+    return mullion_ray_any_hit_shader(function, c, first, second);
+  case kRayIntersection:
+    return mullion_ray_intersection_shader(function, c, first, second);
+  case kRayCallable:
+    return mullion_ray_callable_shader(function, c, first, second);
+  }
 }
+
+static void ray_shader(thread MullionRayContext &c, MullionRayRole role, device const SM50_RAY_SHADER_IDENTIFIER *record,
+                       uint function, thread void *first, thread void *second) {
+  c.local_arguments = (ulong)record + sizeof(SM50_RAY_SHADER_IDENTIFIER);
+  ray_call(c, role, function, first, second);
+}
+
+// the kinds of shaders the pipeline has. without any hit shaders, a triangle that is not opaque is a hit, as an opaque
+// one is, unless the ray culls by opacity; without intersection shaders, a procedural primitive is never a hit, as a
+// culled one is not, unless the ray skips triangles (Metal has no mode that culls both). a query that can then return
+// no candidates runs about a third faster (Apple M4, probe rt_dispatch_rays)
+constant bool any_hit_shaders_value [[function_constant(kRayFCIndex_AnyHitShaders)]];
+constant bool any_hit_shaders = !is_function_constant_defined(any_hit_shaders_value) || any_hit_shaders_value;
+constant bool intersection_shaders_value [[function_constant(kRayFCIndex_IntersectionShaders)]];
+constant bool intersection_shaders =
+    !is_function_constant_defined(intersection_shaders_value) || intersection_shaders_value;
 
 static void ray_matrix(thread float *out, float4x3 m) {
   for (uint row = 0; row < 3; row++)
@@ -1294,13 +1343,19 @@ static void ray_matrix(thread float *out, float4x3 m) {
 enum {
   kRayFlagAcceptFirstHit = 0x4,
   kRayFlagSkipClosestHit = 0x8,
+  kRayFlagCullOpaque = 0x40,
+  kRayFlagCullNonOpaque = 0x80,
+  kRayFlagSkipTriangles = 0x100,
   // D3D12_HIT_KIND_TRIANGLE_FRONT_FACE and _BACK_FACE
   kHitKindFront = 0xfe,
   kHitKindBack = 0xff,
 };
 
-[[visible]] void mullion_ray_trace(thread MullionRayContext &parent, thread void *arguments, thread void *payload) {
-  thread SM50_RAY_TRACE &trace = *(thread SM50_RAY_TRACE *)arguments;
+// a trace; `kSimple` where the pipeline has no any hit and no intersection shaders and the ray culls neither by
+// opacity nor triangles (any_hit_shaders): every triangle is then opaque and every procedural primitive culled, which
+// Metal compiles into a query that returns no candidates only where the modes are constant
+template <bool kSimple>
+static void ray_trace(thread MullionRayContext &parent, thread SM50_RAY_TRACE &trace, thread void *payload) {
   // the shaders of this ray have their own context: the caller's system values are its own ray's
   MullionRayContext c = parent;
   constant SM50_RAY_DISPATCH &dispatch = *c.dispatch;
@@ -1324,10 +1379,10 @@ enum {
     intersection_params params;
     uint flags = trace.flags | dispatch.pipeline_flags;
     uint cull = flags >> 4 & 3;
-    params.force_opacity((forced_opacity)(flags & 3));
+    params.force_opacity(kSimple ? forced_opacity::opaque : (forced_opacity)(flags & 3));
     params.set_triangle_cull_mode((triangle_cull_mode)(cull >> 1 | (cull << 1 & 2)));
     params.set_opacity_cull_mode((opacity_cull_mode)(flags >> 6 & 3));
-    params.set_geometry_cull_mode((geometry_cull_mode)(flags >> 8 & 3));
+    params.set_geometry_cull_mode(kSimple ? geometry_cull_mode::bounding_box : (geometry_cull_mode)(flags >> 8 & 3));
     params.accept_any_intersection(flags & kRayFlagAcceptFirstHit);
     intersection_query<instancing, triangle_data> query;
     query.reset(
@@ -1370,7 +1425,7 @@ enum {
           c.tcurrent = query.get_candidate_triangle_distance();
           c.hit_kind = query.is_candidate_triangle_front_facing() ? kHitKindFront : kHitKindBack;
           c.verdict = SM50_RAY_VERDICT_ACCEPT;
-          ray_shader(c, record, record->function[1], payload, &candidate);
+          ray_shader(c, kRayAnyHit, record, record->function[1], payload, &candidate);
           if (c.verdict == SM50_RAY_VERDICT_IGNORE)
             continue;
           ended = c.verdict == SM50_RAY_VERDICT_END_SEARCH;
@@ -1381,7 +1436,7 @@ enum {
         // a procedural primitive: its intersection shader reports hits (mullion_ray_report_hit)
         c.any_hit = query.is_candidate_non_opaque_bounding_box() ? record->function[1] : 0;
         c.ended = c.committed = 0;
-        ray_shader(c, record, record->function[2], payload, nullptr);
+        ray_shader(c, kRayIntersection, record, record->function[2], payload, nullptr);
         if (c.committed) {
           query.commit_bounding_box_intersection(c.tcurrent);
           procedural_kind = c.hit_kind;
@@ -1412,7 +1467,7 @@ enum {
         c.hit_kind = query.is_committed_triangle_front_facing() ? kHitKindFront : kHitKindBack;
       }
       if (!(trace.flags & kRayFlagSkipClosestHit) && record->function[0])
-        ray_shader(c, record, record->function[0], payload, attributes);
+        ray_shader(c, kRayClosest, record, record->function[0], payload, attributes);
       return;
     }
   }
@@ -1420,7 +1475,17 @@ enum {
   c.tcurrent = trace.tmax;
   auto record = ray_record(dispatch.miss_table, dispatch.miss_stride, trace.miss_index);
   if (dispatch.miss_table && record->function[0])
-    ray_shader(c, record, record->function[0], payload, nullptr);
+    ray_shader(c, kRayClosest, record, record->function[0], payload, nullptr);
+}
+
+[[visible]] void mullion_ray_trace(thread MullionRayContext &parent, thread void *arguments, thread void *payload) {
+  thread SM50_RAY_TRACE &trace = *(thread SM50_RAY_TRACE *)arguments;
+  uint flags = trace.flags | parent.dispatch->pipeline_flags;
+  if (!any_hit_shaders && !intersection_shaders &&
+      !(flags & (kRayFlagCullOpaque | kRayFlagCullNonOpaque | kRayFlagSkipTriangles)))
+    ray_trace<true>(parent, trace, payload);
+  else
+    ray_trace<false>(parent, trace, payload);
 }
 
 // an intersection shader's ReportHit: the hit is accepted if it is within the ray's extent, which for a procedural
@@ -1438,7 +1503,7 @@ enum {
   c.hit_kind = c.reported_kind;
   if (c.any_hit) {
     c.verdict = SM50_RAY_VERDICT_ACCEPT;
-    c.shaders[c.any_hit](c, c.payload, attributes);
+    ray_call(c, kRayAnyHit, c.any_hit, c.payload, attributes);
     if (c.verdict == SM50_RAY_VERDICT_IGNORE) {
       c.tcurrent = closest;
       c.hit_kind = kind;
@@ -1458,7 +1523,7 @@ enum {
   if (!dispatch.callable_table || !record->function[0])
     return;
   MullionRayContext c = parent;
-  ray_shader(c, record, record->function[0], parameter, nullptr);
+  ray_shader(c, kRayCallable, record, record->function[0], parameter, nullptr);
 }
 
 [[kernel]] void dispatch_rays(
@@ -1481,7 +1546,7 @@ enum {
   c.sparse_buffers = sparse_buffers;
   for (uint i = 0; i < 3; i++)
     c.index[i] = index[i];
-  ray_shader(c, record, record->function[0], nullptr, nullptr);
+  ray_shader(c, kRayGeneration, record, record->function[0], nullptr, nullptr);
 }
 
 [[kernel]] void cs_expand_rgb32(

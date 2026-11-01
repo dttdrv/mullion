@@ -52,4 +52,11 @@ constexpr CONSTANT auto kPresentFCIndex_BackbufferIsMS = 0x104;
 constexpr CONSTANT auto kPresentFCIndex_GammaEnabled = 0x105;
 constexpr CONSTANT auto kPresentFCIndex_BackbufferIsXRBias = kPresentFCIndex_GammaEnabled + 1;
 
+// a ray tracing pipeline's runtime calls its shaders through the dispatchers the pipeline links
+// (mullion_command.metal), not through its function table; and whether the pipeline has any hit shaders, and
+// intersection shaders (true where not given)
+constexpr CONSTANT auto kRayFCIndex_DirectCalls = 0x200;
+constexpr CONSTANT auto kRayFCIndex_AnyHitShaders = 0x201;
+constexpr CONSTANT auto kRayFCIndex_IntersectionShaders = 0x202;
+
 } // namespace mullion

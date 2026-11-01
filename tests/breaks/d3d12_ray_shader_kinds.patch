@@ -1,0 +1,12 @@
+# a ray that culls by opacity culls the triangles that are opaque, or are not, in a pipeline without any hit shaders
+--- a/src/mullion/mullion_command.metal
++++ b/src/mullion/mullion_command.metal
+@@ -1474,7 +1474,7 @@ static void ray_trace(thread MullionRayContext &parent, thread SM50_RAY_TRACE &t
+   thread SM50_RAY_TRACE &trace = *(thread SM50_RAY_TRACE *)arguments;
+   uint flags = trace.flags | parent.dispatch->pipeline_flags;
+   if (!any_hit_shaders && !intersection_shaders &&
+-      !(flags & (kRayFlagCullOpaque | kRayFlagCullNonOpaque | kRayFlagSkipTriangles)))
++      !(flags & kRayFlagSkipTriangles))
+     ray_trace<true>(parent, trace, payload);
+   else
+     ray_trace<false>(parent, trace, payload);

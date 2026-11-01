@@ -344,10 +344,18 @@ enum SM50_RAY_SHADER_KIND {
   SM50_RAY_SHADER_CALLABLE = 12,
 };
 
+/* what a ray tracing shader, or a function it calls, may call: TraceRay, CallShader. a call of a function the library
+   does not define may call either */
+enum SM50_RAY_SHADER_CALLS {
+  SM50_RAY_SHADER_CALLS_TRACE = 1,
+  SM50_RAY_SHADER_CALLS_CALLABLE = 2,
+};
+
 struct SM50_RAY_SHADER_INFO {
   uint32_t kind;
   uint32_t payload_size;   /* of its payload, or a callable shader's parameter */
   uint32_t attribute_size; /* of a hit's attributes */
+  uint32_t calls;          /* SM50_RAY_SHADER_CALLS */
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA {
