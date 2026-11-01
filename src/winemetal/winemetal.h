@@ -1944,6 +1944,9 @@ struct WMTLayerProps {
   bool display_sync_enabled;
   bool framebuffer_only;
   enum WMTPixelFormat pixel_format;
+  // the layer's size on screen, in its points (MetalLayer_getProps only; setProps leaves it)
+  double bounds_width;
+  double bounds_height;
 };
 
 WINEMETAL_API void MetalLayer_setProps(obj_handle_t layer, const struct WMTLayerProps *props);

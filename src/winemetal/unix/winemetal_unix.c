@@ -2063,6 +2063,8 @@ _MetalLayer_getProps(void *obj) {
   props->drawable_height = layer.drawableSize.height;
   props->drawable_width = layer.drawableSize.width;
   props->pixel_format = layer.pixelFormat;
+  props->bounds_width = layer.bounds.size.width;
+  props->bounds_height = layer.bounds.size.height;
   return STATUS_SUCCESS;
 }
 

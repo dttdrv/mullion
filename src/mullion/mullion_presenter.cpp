@@ -17,11 +17,28 @@ Presenter::Presenter(WMT::Device device, WMT::MetalLayer layer, InternalCommandL
     sample_count_(sample_count),
     window_(window) {
   layer_.getProps(layer_props_);
+  native_contents_scale_ = layer_props_.contents_scale;
   layer_props_.device = device;
   layer_props_.opaque = true;
   layer_props_.display_sync_enabled = false;
   layer_props_.framebuffer_only = false; // how strangely setting it true results in worse performance
   layer_props_.contents_scale = layer_props_.contents_scale * scale_factor;
+}
+
+bool
+Presenter::upscaleOutputSize(uint32_t input_width, uint32_t input_height, uint32_t &width, uint32_t &height) {
+  WMTLayerProps props{};
+  if (!layer_)
+    return false;
+  layer_.getProps(props);
+  double scale = native_contents_scale_ > 0 ? native_contents_scale_ : 1.0;
+  uint32_t native_width = uint32_t(props.bounds_width * scale + 0.5);
+  uint32_t native_height = uint32_t(props.bounds_height * scale + 0.5);
+  if (native_width < input_width || native_height < input_height)
+    return false;
+  width = native_width;
+  height = native_height;
+  return true;
 }
 
 bool

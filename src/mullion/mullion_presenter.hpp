@@ -85,6 +85,11 @@ public:
 
   PresentState synchronizeLayerProperties();
 
+  // where a MetalFX scaler upscales `input` to: the layer's size on screen, in pixels, so a frame is shown at the
+  // display's (in fullscreen) or the window's resolution. false while the layer has no size, or one smaller than the
+  // input (the caller upscales by its factor then)
+  bool upscaleOutputSize(uint32_t input_width, uint32_t input_height, uint32_t &width, uint32_t &height);
+
   // how later frames are put on the target (the swap chain's settings)
   void
   changePresentation(const MullionPresentation &presentation) {
@@ -118,6 +123,7 @@ private:
   WMT::MetalLayer layer_;
   InternalCommandLibrary &lib_;
   WMTLayerProps layer_props_;
+  double native_contents_scale_ = 1.0;
   uint32_t sample_count_;
   WMTColorSpace colorspace_ = WMTColorSpaceSRGB;
   WMTHDRMetadata hdr_metadata_;

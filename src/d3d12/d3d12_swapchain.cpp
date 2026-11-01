@@ -628,8 +628,10 @@ public:
       auto &color = backbuffers[0]->texture;
       WMTTextureInfo info{};
       info.pixel_format = color->pixelFormat();
+      // the display's (or the window's) resolution; the factor where the layer has no size yet
       info.width = uint32_t(backbuffer_desc.Width * scale_factor);
       info.height = uint32_t(backbuffer_desc.Height * scale_factor);
+      presenter->upscaleOutputSize(uint32_t(backbuffer_desc.Width), backbuffer_desc.Height, info.width, info.height);
       info.depth = 1;
       info.array_length = 1;
       info.type = WMTTextureType2D;
@@ -733,10 +735,12 @@ public:
         desc_.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : colorspace_,
         LayerSupportEDR()
     );
-    if (presenter->changeLayerProperties(
-            desc_.Format, target_color_space, settings_.target_width * scale_factor,
-            settings_.target_height * scale_factor, desc_.SampleDesc.Count
-        )) {
+    double width = settings_.target_width * scale_factor, height = settings_.target_height * scale_factor;
+    if (upscaled_) {
+      width = upscaled_.width();
+      height = upscaled_.height();
+    }
+    if (presenter->changeLayerProperties(desc_.Format, target_color_space, width, height, desc_.SampleDesc.Count)) {
       // TODO(d3d12): flush command queue
     }
   };
