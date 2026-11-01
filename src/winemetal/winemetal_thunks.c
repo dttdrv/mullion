@@ -1994,6 +1994,12 @@ MTL4CommandBuffer_orderAliases(obj_handle_t buffer, bool inside) {
 }
 
 WINEMETAL_API void
+MTLCommandBuffer_waitUntilSignaled(obj_handle_t cmdbuf, obj_handle_t event, uint64_t value) {
+  struct unixcall_generic_obj_obj_uint64_noret params = {.handle = cmdbuf, .arg0 = event, .arg1 = value};
+  UNIX_CALL(WMTUnixCommandBufferWaitSignal, &params);
+}
+
+WINEMETAL_API void
 WMTBootstrapKeep(const char *name, obj_handle_t object) {
   struct unixcall_bootstrap params = {.object = object};
   strncpy(params.name, name, sizeof(params.name) - 1);

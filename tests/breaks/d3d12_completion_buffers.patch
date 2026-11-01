@@ -1,0 +1,24 @@
+# Metal 3: every command buffer signals its slot's event when it starts, before its work, and its fences are signalled then
+# family native-metal3
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -944,6 +944,10 @@
+           inflight->cmdbuf.orderAliases();
+       } else {
+         inflight->cmdbuf = encoded ? std::move(encoded) : queue->queue_.commandBuffer();
++        if (EventWait()) {
++          inflight->cmdbuf.encodeSignalEvent(queue->slot_events_[seq % kCommandQueueSize], seq);
++          inflight->signals = true;
++        }
+       }
+       if (queue->profile_) {
+         auto &buffer = queue->profile_->buffers[seq % kCommandQueueSize];
+@@ -955,7 +959,7 @@
+     End() {
+       auto ended = inflight->cmdbuf;
+       if constexpr (!Metal4)
+-        if (EventWait() && (++queue->ends_since_signal_ == queue->ends_between_signals_ || inflight->presents)) {
++        if (EventWait() && !inflight->signals) {
+           // last, after all the buffer's work; the slot is the sequence number's until it retires
+           auto seq = queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed);
+           ended.encodeSignalEvent(queue->slot_events_[seq % kCommandQueueSize], seq);

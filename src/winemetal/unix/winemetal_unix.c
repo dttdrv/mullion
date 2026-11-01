@@ -199,6 +199,20 @@ _MTLCommandBuffer_waitUntilCompleted(void *obj) {
 }
 
 static NTSTATUS
+_MTLCommandBuffer_waitUntilSignaled(void *obj) {
+  struct unixcall_generic_obj_obj_uint64_noret *params = obj;
+  id<MTLCommandBuffer> buffer = (id<MTLCommandBuffer>)params->handle;
+  // the buffer signals the event after its work, which a failed buffer may never reach: its status ends the wait then.
+  // what the work wrote is visible to the CPU at the signal, as at a GPU wait for it (Metal, Resource synchronization:
+  // events), before Metal calls the buffer completed
+  // a buffer that fails before its signal ends the wait within a few milliseconds; a long one costs a status read each
+  while (![(id<MTLSharedEvent>)params->arg0 waitUntilSignaledValue:params->arg1 timeoutMS:4])
+    if ([buffer status] >= MTLCommandBufferStatusCompleted)
+      break;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MTLCommandBuffer_status(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = [(id<MTLCommandBuffer>)params->handle status];
@@ -6457,6 +6471,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLCommandBuffer_waitUntilSignaled,
 };
 
 #ifndef MULLION_NATIVE
@@ -6658,6 +6673,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTL4CommandBuffer_orderAliases,
     &_MTL4CommandBuffer_waitForGPU,
     &_WMTBootstrapKeep,
+    &_MTLCommandBuffer_waitUntilSignaled,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

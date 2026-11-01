@@ -1,0 +1,2 @@
+Metal 3, signal after the work: read in full every time: true
+Metal 3, signal before the work: read in full every time: false
