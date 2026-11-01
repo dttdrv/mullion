@@ -147,6 +147,32 @@ tessellation_pieces(
   return {(vertices + primitives - 1) / primitives, primitives};
 }
 
+// the most vertices and primitives of a mesh threadgroup that takes a group of a patch's workloads, one after another
+// (air_tessellation.metal's tess_output), as the vertices in the lower 16 bits and the primitives in the upper: the
+// vertices of the largest workload, since a larger mesh keeps fewer threadgroups on the GPU at once, and twice as
+// many primitives, since the workloads of a group share vertices, at most a mesh's 512 and as far as the mesh's size
+// allows. 0 where a workload does not fit a mesh, and threadgroups share its primitives instead (tessellation_pieces)
+constexpr uint32_t mesh_primitive_limit = 512;
+
+inline uint32_t
+pack_group_size(uint32_t vertices, uint32_t primitives) {
+  return vertices | primitives << 16;
+}
+
+inline uint32_t
+tessellation_group_size(
+    uint32_t factor, microsoft::D3D11_SB_TESSELLATOR_DOMAIN domain,
+    microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE primitive, uint32_t vertex_size
+) {
+  uint32_t vertices = get_max_workload_vertices(factor, domain);
+  // a point has its size too
+  vertex_size += get_primitive_vertices(primitive) == 1 ? sizeof(float) : 0;
+  for (uint32_t primitives = std::min(2 * vertices, mesh_primitive_limit); primitives >= vertices; primitives--)
+    if (mesh_size(vertices, vertex_size, primitives) <= mesh_size_limit)
+      return pack_group_size(vertices, primitives);
+  return 0;
+}
+
 // the largest factor a pipeline tessellates at, and the segments it cuts an edge into at most: the hull shader's
 // largest factor, as far as `most_segments`
 inline std::pair<float, uint32_t>

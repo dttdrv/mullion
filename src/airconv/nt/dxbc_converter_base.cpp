@@ -3201,18 +3201,34 @@ Converter::operator()(const InstCut &Inst) {
 void
 Converter::HullGenerateWorkload(
     const char *Domain, llvm::Value *PatchIndex, llvm::Value *CountPtr, llvm::Value *DataPtr, uint32_t Capacity,
-    TessellatorPartitioning Partitioning, llvm::ArrayRef<llvm::Value *> TessFactors
+    llvm::Value *GroupsPtr, uint32_t GroupLimit, TessellatorPartitioning Partitioning,
+    llvm::ArrayRef<llvm::Value *> TessFactors
 ) {
   using namespace llvm;
 
   auto &Context = air.getContext();
-  auto Attrs = AttributeList::get(
-      Context, {{3U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
-  );
+  // with groups the workloads are read back too (a workload's edges shared with the one before it)
+  auto Attrs = GroupLimit ? AttributeList::get(
+                                Context, {{5U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+                            )
+                          : AttributeList::get(
+                                Context, {{3U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {5U, Attribute::get(Context, Attribute::AttrKind::WriteOnly)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                                          {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+                            );
 
-  SmallVector<Value *> Ops{PatchIndex, CountPtr, DataPtr, ir.getInt32(Capacity), ir.getInt32((uint32_t)Partitioning)};
+  SmallVector<Value *> Ops{
+      PatchIndex,
+      CountPtr,
+      DataPtr,
+      ir.getInt32(Capacity),
+      GroupsPtr ? GroupsPtr : llvm::Constant::getNullValue(DataPtr->getType()),
+      ir.getInt32(GroupLimit),
+      ir.getInt32((uint32_t)Partitioning)
+  };
   Ops.append(TessFactors.begin(), TessFactors.end());
   SmallVector<Type *> Tys;
   for (auto Op : Ops)
@@ -3285,6 +3301,68 @@ Converter::DomainGetLocation(llvm::Value *WorkloadIndex, llvm::Value *ThreadInde
       ir.CreateExtractValue(Return, 0ull), ir.CreateIsNotNull(ir.CreateExtractValue(Return, 1)),
       ir.CreateIsNotNull(ir.CreateExtractValue(Return, 2))
   };
+}
+
+std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
+Converter::DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *DataPtr) {
+  using namespace llvm;
+
+  auto &Context = air.getContext();
+  auto Attrs = AttributeList::get(
+      Context, {{4U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
+                {4U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
+  );
+  SmallVector<Value *> Ops{First, End, ThreadIndex, DataPtr};
+  SmallVector<Type *> Tys;
+  for (auto Op : Ops)
+    Tys.push_back(Op->getType());
+  auto Fn = air.getModule()->getOrInsertFunction(
+      "mullion.get_group_location",
+      llvm::FunctionType::get(
+          llvm::StructType::create(Context, {air.getFloatTy(2), air.getByteTy(), air.getByteTy()}, ""), Tys, false
+      ),
+      Attrs
+  );
+  auto Return = ir.CreateCall(Fn, Ops);
+  return {
+      ir.CreateExtractValue(Return, 0ull), ir.CreateIsNotNull(ir.CreateExtractValue(Return, 1)),
+      ir.CreateIsNotNull(ir.CreateExtractValue(Return, 2))
+  };
+}
+
+void
+Converter::DomainGenerateGroup(
+    llvm::Value *First, llvm::Value *End, llvm::Value *DataPtr, TessellatorOutputPrimitive Primitive,
+    llvm::Value *Behind, llvm::Value *Lane
+) {
+  using namespace llvm;
+
+  auto &Context = air.getContext();
+  auto Attrs = AttributeList::get(
+      Context, {{3U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
+                {3U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {5U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+  );
+  auto TyBehind = ir.getInt32Ty()->getPointerTo(3);
+  SmallVector<Value *> Ops{
+      First, End, DataPtr, air.getMeshHandle(), Behind ? Behind : llvm::Constant::getNullValue(TyBehind), Lane
+  };
+  SmallVector<Type *> Tys;
+  for (auto Op : Ops)
+    Tys.push_back(Op->getType());
+  const char *Suffix = Primitive == TessellatorOutputPrimitive::point          ? ".point"
+                       : Primitive == TessellatorOutputPrimitive::line         ? ".line"
+                       : Primitive == TessellatorOutputPrimitive::triangle_ccw ? ".triangle_ccw"
+                                                                               : ".triangle";
+  auto Fn = air.getModule()->getOrInsertFunction(
+      std::string("mullion.domain_generate_group") + Suffix, llvm::FunctionType::get(air.getVoidTy(), Tys, false), Attrs
+  );
+  ir.CreateCall(Fn, Ops);
 }
 
 // the domain location of a corner of the workload's primitive, and whether the workload has that primitive

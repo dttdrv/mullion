@@ -1,0 +1,15 @@
+# a group takes workloads as long as their vertices fit, however many primitives they make
+diff --git a/src/airconv/shaders/air_tessellation.metal b/src/airconv/shaders/air_tessellation.metal
+index 479b730..2119221 100644
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -242,8 +242,7 @@ emit(tess_output out, tess_frame a, tess_frame b) {
+     tess_workload before = out.workloads[index - 1];
+     shared = shared_vertices(before, workload);
+   }
+-  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff) &&
+-      out.next[4] + added <= out.group_limit >> 16) {
++  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff)) {
+     out.next[2] += added - shared;
+     out.next[4] += added;
+   } else {

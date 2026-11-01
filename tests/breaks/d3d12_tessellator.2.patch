@@ -1,0 +1,14 @@
+# a group's threads number a triangle by the inner steps before its slot, not the outer ones
+diff --git a/src/airconv/shaders/air_tessellation.metal b/src/airconv/shaders/air_tessellation.metal
+index 479b730..75187aa 100644
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -813,7 +813,7 @@ group_triangles(
+       if (step_inner || step_outer) {
+         short3 triangle = step_inner ? short3(base_inner + i, base_outer + taken_o, base_inner + i + 1)
+                                      : short3(base_outer + o, base_outer + o + 1, base_inner + taken_i);
+-        int n = primitives + taken_i + taken_o;
++        int n = primitives + taken_i;
+         mesh.set_index(n * 3, triangle[0]);
+         mesh.set_index(n * 3 + (1 ^ ccw_xor), triangle[1]);
+         mesh.set_index(n * 3 + (2 ^ ccw_xor), triangle[2]);

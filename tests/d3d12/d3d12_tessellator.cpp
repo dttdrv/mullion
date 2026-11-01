@@ -255,8 +255,10 @@ main(int argc, char **argv) {
           }
           for (UINT y = 0; y < height; y++)
             for (UINT x = 0; x < width; x++) {
-              float got = pixel(read_pixels, x, y)[0],
-                    want = weight(instances) * expected_cover(domain, partitioning, patch, clockwise, x, y);
+              float cover = expected_cover(domain, partitioning, patch, clockwise, x, y),
+                    got = pixel(read_pixels, x, y)[0], want = weight(instances) * cover;
+              // and 64 times the numbers of the patches over the pixel, 0 to count - 1
+              float numbers = 64 * cover * (count * (count - 1) / 2);
               float product = pixel(read_pixels, x, y)[1], want_product = products.empty() ? NAN : products[y * width + x];
               if (want > 0 && !std::isnan(want_product) && !(std::abs(product - count * want_product) <= count * product_tolerance) &&
                   wrong++ < 2)
@@ -264,11 +266,12 @@ main(int argc, char **argv) {
                     "%s, %u of factors %g %g %g %g, inside %g %g: pixel %u,%u has product %g, want %g\n", name.c_str(),
                     count, patch[0], patch[1], patch[2], patch[3], patch[4], patch[5], x, y, product, count * want_product
                 );
-              if (want >= 0 && got != count * want && wrong++ < 2)
+              if (want >= 0 && got != count * want + numbers && wrong++ < 2)
                 printf(
-                    "%s, %s, %u of factors %g %g %g %g, inside %g %g: pixel %u,%u is covered %g times, want %g\n",
+                    "%s, %s, %u of factors %g %g %g %g, inside %g %g: pixel %u,%u is covered %g times with the "
+                    "patches' numbers, want %g\n",
                     name.c_str(), clockwise ? "clockwise" : "counter-clockwise", count, patch[0], patch[1], patch[2],
-                    patch[3], patch[4], patch[5], x, y, got, count * want
+                    patch[3], patch[4], patch[5], x, y, got, count * want + numbers
                 );
             }
           pixels->Unmap(0, nullptr);
