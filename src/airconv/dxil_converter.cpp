@@ -2193,7 +2193,9 @@ convert_dxil(
     auto loop = block("atomic64"), attempt = block("atomic64_attempt"), gate = block("atomic64_gate"),
          try_lock = block("atomic64_try"), deferred = block("atomic64_deferred"), held = block("atomic64_held"),
          retry = block("atomic64_retry"), waiting = block("atomic64_waiting"), given_up = block("atomic64_given_up"),
-         next = block("atomic64_next");
+         next = block("atomic64_next"), chosen = block("atomic64_chosen"), spin = block("atomic64_spin"),
+         spin_retry = block("atomic64_spin_retry"), spin_held = block("atomic64_spin_held"),
+         spin_given_up = block("atomic64_spin_given_up"), round_end = block("atomic64_round_end");
     // a pixel shader's helper lanes take no part: their atomics do nothing, so one would spin on a lock forever
     ir.SetInsertPoint(head->getTerminator());
     Value *lane = ctx.shader_type == D3D10_SB_PIXEL_SHADER
@@ -2240,18 +2242,28 @@ convert_dxil(
     ir.CreateCondBr(ir.CreateICmpEQ(spun, ir.getInt32(kSpins)), given_up, waiting);
     ir.SetInsertPoint(waiting);
     ir.CreateBr(next);
+    auto give_up = [&](llvm::BasicBlock *to) {
+      air.CreateAtomicRMW(
+          AtomicRMWInst::Or, ir.CreateGEP(ir.getInt32Ty(), locks, {ir.CreateAdd(mask, ir.getInt32(2))}), ir.getInt32(1)
+      );
+      ir.CreateBr(to);
+    };
+    // the word's update, under the lock, which it then releases
+    auto hold = [&](llvm::BasicBlock *to) {
+      air.CreateAtomicFence(word.memory, scope);
+      auto value = word.read();
+      // an exchange's write does not wait on the read for its value, so nothing else keeps them in order
+      air.CreateAtomicFence(word.memory, scope);
+      word.write(update(value));
+      air.CreateAtomicFence(word.memory, scope);
+      air.CreateAtomicRMW(AtomicRMWInst::Add, lock, ir.getInt32(1));
+      ir.CreateBr(to);
+      return value;
+    };
     ir.SetInsertPoint(given_up);
-    air.CreateAtomicRMW(AtomicRMWInst::Or, ir.CreateGEP(ir.getInt32Ty(), locks, {ir.CreateAdd(mask, ir.getInt32(2))}), ir.getInt32(1));
-    ir.CreateBr(next);
+    give_up(next);
     ir.SetInsertPoint(held);
-    air.CreateAtomicFence(word.memory, scope);
-    auto value = word.read();
-    // an exchange's write does not wait on the read for its value, so nothing else keeps them in order
-    air.CreateAtomicFence(word.memory, scope);
-    word.write(update(value));
-    air.CreateAtomicFence(word.memory, scope);
-    air.CreateAtomicRMW(AtomicRMWInst::Add, lock, ir.getInt32(1));
-    ir.CreateBr(next);
+    auto value = hold(next);
     ir.SetInsertPoint(next);
     auto still = ir.CreatePHI(ir.getInt1Ty(), 5), got = ir.CreatePHI(ir.getInt64Ty(), 5);
     auto spins_next = ir.CreatePHI(ir.getInt32Ty(), 5), last_next = ir.CreatePHI(ir.getInt32Ty(), 5);
@@ -2268,10 +2280,47 @@ convert_dxil(
     incoming(waiting, ir.getTrue(), old, spun, seen);
     incoming(deferred, ir.getTrue(), old, spins, last);
     incoming(attempt, pending, old, spins, last);
-    pending->addIncoming(still, next);
-    old->addIncoming(got, next);
-    spins->addIncoming(spins_next, next);
-    last->addIncoming(last_next, next);
+    // then, with every lock the group took in the round released, its first lane still waiting spins on its own, as one
+    // lane at a time did: with only a try a round, locks that many groups want (every pixel of a texel's primitives on
+    // one) were not taken before the GPU's watchdog (d3d12_atomic64_pixels on family 7). no lane of its group holds
+    // that lock (one of its word left it to the first, the others released theirs), and it holds none itself
+    ir.CreateCondBr(still, chosen, round_end);
+    ir.SetInsertPoint(chosen);
+    ir.CreateCondBr(simd("simd_is_first", ir.getInt1Ty(), {}), spin, round_end);
+    ir.SetInsertPoint(spin);
+    auto spin_spins = ir.CreatePHI(ir.getInt32Ty(), 2), spin_last = ir.CreatePHI(ir.getInt32Ty(), 2);
+    spin_spins->addIncoming(spins_next, chosen);
+    spin_last->addIncoming(last_next, chosen);
+    auto spin_expected = ir.CreateAnd(spin_last, ir.getInt32(~1u));
+    auto spin_exchange = ir.CreateAtomicCmpXchg(lock, spin_expected, ir.CreateOr(spin_expected, ir.getInt32(1)), {},
+                                                AtomicOrdering::Monotonic, AtomicOrdering::Monotonic);
+    auto spin_seen = ir.CreateExtractValue(spin_exchange, 0);
+    ir.CreateCondBr(ir.CreateExtractValue(spin_exchange, 1), spin_held, spin_retry);
+    ir.SetInsertPoint(spin_retry);
+    auto spin_spun = ir.CreateSelect(
+        ir.CreateICmpEQ(spin_seen, spin_last), ir.CreateAdd(spin_spins, ir.getInt32(1)), ir.getInt32(0)
+    );
+    spin_spins->addIncoming(spin_spun, spin_retry);
+    spin_last->addIncoming(spin_seen, spin_retry);
+    ir.CreateCondBr(ir.CreateICmpEQ(spin_spun, ir.getInt32(kSpins)), spin_given_up, spin);
+    ir.SetInsertPoint(spin_given_up);
+    give_up(round_end);
+    ir.SetInsertPoint(spin_held);
+    auto spin_value = hold(round_end);
+    ir.SetInsertPoint(round_end);
+    auto still_end = ir.CreatePHI(ir.getInt1Ty(), 4), got_end = ir.CreatePHI(ir.getInt64Ty(), 4);
+    for (auto from : {next, chosen}) {
+      still_end->addIncoming(still, from);
+      got_end->addIncoming(got, from);
+    }
+    still_end->addIncoming(ir.getFalse(), spin_held);
+    got_end->addIncoming(spin_value, spin_held);
+    still_end->addIncoming(ir.getFalse(), spin_given_up);
+    got_end->addIncoming(PoisonValue::get(ir.getInt64Ty()), spin_given_up);
+    pending->addIncoming(still_end, round_end);
+    old->addIncoming(got_end, round_end);
+    spins->addIncoming(spins_next, round_end);
+    last->addIncoming(last_next, round_end);
     ir.CreateBr(loop);
     ir.SetInsertPoint(&*exit->getFirstInsertionPt());
     return old;
