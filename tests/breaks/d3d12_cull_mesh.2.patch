@@ -1,0 +1,14 @@
+# a triangle's SV_PrimitiveID counts the kept triangles before it, not every one
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2700,7 +2700,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     air.CreateSetMeshPrimitiveID(
+         slot, builder.CreateAdd(
+                   primitives_before,
+-                  air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid_primitive_mask, below))
++                  air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(ballot, below))
+               )
+     );
+     // the first vertex chooses the primitive's layer and viewport (D3D11.3 15.8.1), an out-of-range viewport being 0

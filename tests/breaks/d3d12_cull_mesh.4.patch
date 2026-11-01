@@ -1,0 +1,14 @@
+# ExecuteIndirect binds a mesh function's draw arguments to the object stage
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3957,7 +3957,7 @@ public:
+           EncodeBuffer(
+               WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, control_points), SM50_BINDING_INDEX_PATCH_SIZE
+           );
+-        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
++        EncodeBuffer(WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
+       }
+       auto draw = [&] {
+         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
