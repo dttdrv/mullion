@@ -1,0 +1,14 @@
+# the parts of a split mesh grid each start from group 0: the mesh shader leaves out its part's first group
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index a541fba..4b273bb 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -4506,7 +4506,7 @@ convert_dxil_mesh_stage(
+     auto words = builder.CreateBitCast(function->getArg(raster_scale), i32->getPointerTo((unsigned)air::AddressSpace::constant));
+     for (unsigned i = 0; i < 3; i++) {
+       auto first = builder.CreateLoad(i32, builder.CreateConstGEP1_32(i32, words, SM50_RASTER_SCALE_MESH_ORIGIN + i));
+-      group = builder.CreateInsertElement(group, builder.CreateAdd(builder.CreateExtractElement(group, i), first), i);
++      group = builder.CreateInsertElement(group, builder.CreateAdd(builder.CreateExtractElement(group, i), builder.CreateMul(first, builder.getInt32(0))), i);
+     }
+   }
+   auto size = llvm::ConstantDataVector::get(context, llvm::ArrayRef<uint32_t>(threads, 3));

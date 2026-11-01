@@ -1,0 +1,14 @@
+# an amplification shader builds its payload in place 16 bytes past where the mesh shader reads it
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index a541fba..3c250f8 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1535,7 +1535,7 @@ convert_dxil(
+         call->setArgOperand(4, UndefValue::get(call->getArgOperand(4)->getType()));
+       IRBuilder<> b(&*ctx.function->getEntryBlock().getFirstInsertionPt());
+       auto payload = b.CreateBitCast(
+-          ctx.resource.payload,
++          b.CreateConstGEP1_32(b.getInt32Ty(), ctx.resource.payload, 4),
+           sent->getValueType()->getPointerTo(ctx.resource.payload->getType()->getPointerAddressSpace())
+       );
+       if (auto err = retarget(sent, payload))

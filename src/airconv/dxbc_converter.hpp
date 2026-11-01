@@ -311,6 +311,8 @@ struct context {
   // the shader's groups work together through globallycoherent memory, which each group sync makes visible GPU-wide
   // (SM50_SHADER_FLAG_COHERENT_GROUP_SYNC)
   bool coherent_group_sync = false;
+  // an amplification shader may build the payload it sends in Metal's payload itself (SM50_SHADER_FLAG_STAGED_PAYLOAD)
+  bool direct_payload = false;
   // the function is made from the shader's own signature, so it takes the SIMD-group inputs the shader defines; not
   // so for a domain shader run inside a geometry shader's function, nor for a ray shader's visible function
   bool own_signature = true;
@@ -467,11 +469,12 @@ struct SignatureContext {
 RegisterComponentType component_type_from_pixel_format(air::MTLPixelFormat format);
 
 // the input a stage that writes rasterized positions scales them with (llvm::air::AIRBuilder::RasterScale)
+// (all SM50_RASTER_SCALE_WORDS for a stage that reads the mesh group origin)
 inline uint32_t
-DefineRasterScale(air::FunctionSignatureBuilder &signature) {
+DefineRasterScale(air::FunctionSignatureBuilder &signature, uint32_t words = 1) {
   return signature.DefineInput(air::ArgumentBindingBuffer{
       .location_index = SM50_BINDING_INDEX_RASTER_SCALE,
-      .array_size = 1,
+      .array_size = words,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
       .type = air::msl_float,

@@ -1486,6 +1486,66 @@ convert_dxil(
       if (is_dx_op(&I))
         calls.push_back(cast<CallInst>(&I));
 
+  // an amplification shader builds its payload in a groupshared variable and sends it with DispatchMesh. where that
+  // variable is the payload from its first byte, no larger, and only loaded, stored and copied, the group builds it in
+  // Metal's payload itself: DispatchMesh copies nothing, its group needs no memory for it, and the group's barriers
+  // order the payload as they order groupshared memory. Otherwise (a local variable, atomics, another variable)
+  // DispatchMesh copies it as before
+  bool direct_payload = false;
+  if (ctx.direct_payload && shader->shader_type == D3D12_SB_AMPLIFICATION_SHADER) {
+    GlobalVariable *sent = nullptr;
+    std::vector<CallInst *> dispatches;
+    bool one = true;
+    for (auto call : calls)
+      if (opcode(call) == DispatchMesh) {
+        auto base = dyn_cast<GlobalVariable>(call->getArgOperand(4)->stripPointerCasts());
+        one &= base && (!sent || base == sent);
+        sent = base;
+        dispatches.push_back(call);
+      }
+    if (!one)
+      sent = nullptr;
+    auto &layout = ctx.module.getDataLayout();
+    // whether every access through `v` is one retarget can rebuild on the payload, besides DispatchMesh's
+    std::function<bool(Value *)> plain = [&](Value *v) {
+      for (auto user : v->users()) {
+        if (auto expr = dyn_cast<ConstantExpr>(user)) {
+          if ((expr->getOpcode() != llvm::Instruction::GetElementPtr && expr->getOpcode() != llvm::Instruction::BitCast) ||
+              !plain(expr))
+            return false;
+        } else if (isa<GetElementPtrInst>(user) || isa<BitCastInst>(user)) {
+          if (!plain(user))
+            return false;
+        } else if (auto store = dyn_cast<StoreInst>(user)) {
+          if (store->getPointerOperand() != v)
+            return false;
+        } else if (auto call = dyn_cast<CallInst>(user)) {
+          auto intrinsic = dyn_cast<IntrinsicInst>(call);
+          if (!(intrinsic && (isa<MemTransferInst>(intrinsic) || isa<MemSetInst>(intrinsic) || intrinsic->isLifetimeStartOrEnd())) &&
+              !std::count(dispatches.begin(), dispatches.end(), call))
+            return false;
+        } else if (!isa<LoadInst>(user))
+          return false;
+      }
+      return true;
+    };
+    if (sent && !dispatches.empty() && sent->getAddressSpace() == (unsigned)air::AddressSpace::threadgroup &&
+        layout.getTypeAllocSize(sent->getValueType()) <= std::max(shader->payload_size, 4u) && plain(sent)) {
+      for (auto call : dispatches)
+        call->setArgOperand(4, UndefValue::get(call->getArgOperand(4)->getType()));
+      IRBuilder<> b(&*ctx.function->getEntryBlock().getFirstInsertionPt());
+      auto payload = b.CreateBitCast(
+          ctx.resource.payload,
+          sent->getValueType()->getPointerTo(ctx.resource.payload->getType()->getPointerAddressSpace())
+      );
+      if (auto err = retarget(sent, payload))
+        return std::move(err);
+      if (sent->use_empty())
+        sent->eraseFromParent();
+      direct_payload = true;
+    }
+  }
+
   // a ray tracing shader's system values are fields of its context, and its calls of other shaders go through the
   // pipeline's function table: the runtime's slots (mullion_command.metal) or, from there, the shaders'
   auto ray = ctx.resource.ray_context;
@@ -1699,13 +1759,29 @@ convert_dxil(
     vertex_columns = cm->registers[0].size() + 4 + clip_count;
     primitive_columns = cm->registers[1].size() + 3;
   }
-  // the counts SetMeshOutputCounts gave this thread, nothing until then
+  // only the counts of the first active thread count (Mesh Shader spec, SetMeshOutputCounts), and the shader sets them
+  // in uniform flow: the group's first SIMD-group sets them, as its first active thread has them (SetMeshOutputCounts
+  // below). where the group reads them once every thread is through, that SIMD-group keeps them in threadgroup
+  // memory, nothing until then; only it writes there, so no other's write lands after them
   Value *mesh_counts[2]{};
+  auto first_simd = [&] {
+    return ir.CreateICmpULT(ctx.resource.thread_id_in_group_flat_arg, ir.getInt32(std::max(ctx.simd_width, 1u)));
+  };
+  auto keep_counts = [&] {
+    IRBuilder<>::InsertPointGuard guard(ir);
+    // after the thread's index, which may still end the entry block
+    if (auto flat = dyn_cast<llvm::Instruction>(ctx.resource.thread_id_in_group_flat_arg))
+      flat->getNextNode() ? ir.SetInsertPoint(flat->getNextNode()) : ir.SetInsertPoint(flat->getParent());
+    else
+      ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
+    auto elsewhere = threadgroup(ir.getInt32Ty());
+    for (auto &count : mesh_counts)
+      ir.CreateStore(ir.getInt32(0), ir.CreateSelect(first_simd(), count = threadgroup(ir.getInt32Ty()), elsewhere));
+  };
   if (cm) {
+    keep_counts();
     IRBuilder<>::InsertPointGuard guard(ir);
     ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
-    for (auto &count : mesh_counts)
-      ir.CreateStore(ir.getInt32(0), count = ir.CreateAlloca(ir.getInt32Ty()));
     conservative_vertices =
         threadgroup(ArrayType::get(ArrayType::get(ir.getInt32Ty(), vertex_columns), std::max(shader->mesh_max_vertices, 1u)));
     conservative_primitives = threadgroup(
@@ -1717,10 +1793,9 @@ convert_dxil(
     if (culls)
       staged_culled = threadgroup(ArrayType::get(i8, shader->mesh_max_primitives));
   } else if (staged_positions || cull_distances) {
+    keep_counts();
     IRBuilder<>::InsertPointGuard guard(ir);
     ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
-    for (auto &count : mesh_counts)
-      ir.CreateStore(ir.getInt32(0), count = ir.CreateAlloca(ir.getInt32Ty()));
     if (staged_positions)
       staged_position = threadgroup(ArrayType::get(ArrayType::get(ir.getFloatTy(), 4), shader->mesh_max_vertices));
     if (cull_distances) {
@@ -2631,18 +2706,19 @@ convert_dxil(
       ir.CreateStore(ir.CreateBitCast(v, slot), ptr);
       break;
     }
-    case SetMeshOutputCounts:
-      // Metal counts the vertices itself; a conservative mesh's are its triangles', set at the end
-      if (cm) {
-        for (unsigned i = 0; i < 2; i++)
-          ir.CreateStore(a(1 + i), mesh_counts[i]);
-        break;
-      }
-      air.CreateSetMeshPrimitiveCount(a(2));
+    case SetMeshOutputCounts: {
+      // the first SIMD-group sets the group's counts as its first active thread has them (mesh_counts). Metal counts
+      // the vertices itself; a conservative mesh's are its triangles', set at the end
+      Value *counts[2] = {move("simd_broadcast_first", a(1), {}), move("simd_broadcast_first", a(2), {})};
+      ir.SetInsertPoint(SplitBlockAndInsertIfThen(first_simd(), call, false));
+      if (!cm)
+        air.CreateSetMeshPrimitiveCount(counts[1]);
       if (mesh_counts[0])
         for (unsigned i = 0; i < 2; i++)
-          ir.CreateStore(a(1 + i), mesh_counts[i]);
+          ir.CreateStore(counts[i], mesh_counts[i]);
+      ir.SetInsertPoint(call);
       break;
+    }
     case EmitIndices:
       for (unsigned i = 0; i < corners; i++) {
         auto index = ir.CreateTrunc(a(2 + i), i8);
@@ -2670,12 +2746,15 @@ convert_dxil(
         break;
       }
       // DispatchMesh is a group barrier, and takes its arguments from the group's first thread (Mesh Shader spec,
-      // "DispatchMesh intrinsic"): the threads build the payload together, and one sends it
-      air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+      // "DispatchMesh intrinsic"): the threads build the payload together, and one sends it. a payload built in
+      // place needs neither: Metal starts an object threadgroup's mesh grid once all its threads are through
+      if (!direct_payload)
+        air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
       ir.SetInsertPoint(SplitBlockAndInsertIfThen(
           ir.CreateICmpEQ(ctx.resource.thread_id_in_group_flat_arg, ir.getInt32(0)), call, false
       ));
-      ir.CreateStore(ir.CreateLoad(type, local), payload);
+      if (!direct_payload)
+        ir.CreateStore(ir.CreateLoad(type, local), payload);
       // a conservative mesh shader grows each D3D group's triangles in slices, threadgroups along x
       Value *grid = UndefValue::get(FixedVectorType::get(ir.getInt32Ty(), 3));
       for (unsigned i = 0; i < 3; i++)
@@ -4158,6 +4237,20 @@ convert_dxil(
       });
     ir.CreateBr(epilogue);
   }
+  // where the group builds its payload in place, its barriers order the payload as they order groupshared memory
+  if (direct_payload)
+    for (auto &BB : *ctx.function)
+      for (auto &I : BB) {
+        auto call = dyn_cast<CallInst>(&I);
+        auto callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || (callee->getName() != "air.wg.barrier" && callee->getName() != "air.atomic.fence"))
+          continue;
+        auto flags = dyn_cast<ConstantInt>(call->getArgOperand(0));
+        if (flags && (flags->getZExtValue() & uint32_t(llvm::air::MemFlags::Threadgroup)))
+          call->setArgOperand(
+              0, ConstantInt::get(flags->getType(), flags->getZExtValue() | uint32_t(llvm::air::MemFlags::ObjectData))
+          );
+      }
   // groupshared 64-bit atomics, which DXIL has as LLVM's own atomic instructions
   SmallVector<llvm::Instruction *> wide;
   for (auto &BB : *ctx.function)
@@ -4358,7 +4451,10 @@ convert_dxil_mesh_stage(
     return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
   setup_tgsm(shader_info, resource_map, types, module);
 
-  auto raster_scale = DefineRasterScale(func_signature);
+  // a mesh shader without an amplification shader runs DispatchMesh's grid itself, which Metal has smaller than D3D12:
+  // a grid past it runs in parts, and the raster scale's buffer tells each part's first group
+  bool origin = mesh && link && !link->amplified && !conservative;
+  auto raster_scale = DefineRasterScale(func_signature, origin ? SM50_RASTER_SCALE_WORDS : 1);
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, true);
 
   auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);
@@ -4405,6 +4501,14 @@ convert_dxil_mesh_stage(
       );
     }
   }
+  if (origin) {
+    auto i32 = builder.getInt32Ty();
+    auto words = builder.CreateBitCast(function->getArg(raster_scale), i32->getPointerTo((unsigned)air::AddressSpace::constant));
+    for (unsigned i = 0; i < 3; i++) {
+      auto first = builder.CreateLoad(i32, builder.CreateConstGEP1_32(i32, words, SM50_RASTER_SCALE_MESH_ORIGIN + i));
+      group = builder.CreateInsertElement(group, builder.CreateAdd(builder.CreateExtractElement(group, i), first), i);
+    }
+  }
   auto size = llvm::ConstantDataVector::get(context, llvm::ArrayRef<uint32_t>(threads, 3));
   auto at = [&](unsigned i) { return builder.CreateExtractElement(thread, i); };
   resource_map.thread_id_in_group_arg = thread;
@@ -4430,6 +4534,7 @@ convert_dxil_mesh_stage(
       .metal_version = metal_version,
       .simd_width = sm50_common ? sm50_common->simd_width : 0,
       .coherent_group_sync = pShaderInternal->groups_work_together && (shader_flags & SM50_SHADER_FLAG_COHERENT_GROUP_SYNC),
+      .direct_payload = !mesh && !(shader_flags & SM50_SHADER_FLAG_STAGED_PAYLOAD),
   };
 
   auto real_entry = convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);

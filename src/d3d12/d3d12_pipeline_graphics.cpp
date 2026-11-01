@@ -22,6 +22,7 @@
 #include "mullion_stream_output.hpp"
 #include "mullion_shader_cache.hpp"
 #include "tessellation_limits.hpp"
+#include "util_env.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "sha1/sha1_util.hpp"
@@ -1219,6 +1220,11 @@ public:
     Name({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS, MS, AS});
 
     if (mesh_shader) {
+      // an amplification shader builds its payload in place (airconv's direct payload); MULLION_D3D12_FAST_MESH=0, read
+      // once, keeps the copy DispatchMesh made before, for A/B runs. the flag is in the shader cache's key
+      static const bool fast_mesh = env::getEnvVar("MULLION_D3D12_FAST_MESH") != "0";
+      if (!fast_mesh)
+        common.flags = SM50_SHADER_FLAG(common.flags | SM50_SHADER_FLAG_STAGED_PAYLOAD);
       if (FAILED(hr = InitializeShader(device_, MS, &shader_ms, &ref_ms)) ||
           (AS.pShaderBytecode && FAILED(hr = InitializeShader(device_, AS, &shader_as, &ref_as))))
         return hr;
@@ -1485,11 +1491,13 @@ public:
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
         return function(shader, code, root_signature(rootsig, args), name, linked);
       };
-      // the mesh shader names its outputs as the pixel shader's inputs
+      // the mesh shader names its outputs as the pixel shader's inputs, and without an amplification shader runs
+      // DispatchMesh's grid itself (in parts, past Metal's limit)
       SM50_SHADER_MESH_SHADER_DATA link{&common, SM50_SHADER_MESH_SHADER, pDesc->PS.pShaderBytecode};
+      link.amplified = AS.pShaderBytecode;
+      object_stage = AS.pShaderBytecode || conservative;
       if (conservative) {
         link.conservative = true;
-        link.amplified = AS.pShaderBytecode;
         link.triangles = ref_ms.MeshConservativeTriangles;
         link.slices = (std::max(ref_ms.MeshMaxPrimitives, 1u) + link.triangles - 1) / link.triangles;
         link.flat_inputs = pixel_shader ? ref_ps.PixelShader.FlatInputs : 0;
@@ -1518,6 +1526,7 @@ public:
         DumpShaders({AS, MS, pDesc->PS});
         return E_FAIL;
       }
+      mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
     } else if (geometry_shader) {
       // a strip's primitives share vertices, so strips and lists each have their pipeline
       auto inputs = geometry_inputs();
