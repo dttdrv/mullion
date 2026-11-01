@@ -653,6 +653,11 @@ public:
              "x", info.height, "; presenting without it");
         scaler = nullptr;
         upscaled = {};
+      } else {
+        Logger::info(str::format(
+            "MetalFX: spatial upscaling ", backbuffer_desc.Width, "x", backbuffer_desc.Height, " to ", info.width, "x",
+            info.height, device_->UsesMetal4() ? " (Metal 4)" : ""
+        ));
       }
     }
 
