@@ -114,6 +114,10 @@ struct RenderEncoderData : EncoderData {
   uint16_t render_target_array_length;
   uint32_t render_target_height;
   uint32_t render_target_width;
+  // a pass without attachments begun by a draw that rasterizes nothing (MTLD3D12GraphicsPipelineState's rasterless),
+  // a pixel in size: one that is 16384 by 16384 costs the GPU most of a millisecond. a draw that rasterizes begins
+  // another
+  bool rasterless = false;
   wmtcmd_render_nop cmd_head{WMTRenderCommandNop};
   wmtcmd_base *cmd_tail = (wmtcmd_base *)&cmd_head;
   // compute commands that run before the pass: the resolvers of its indirect commands, whose commands it then runs

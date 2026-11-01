@@ -1,0 +1,12 @@
+# one-pass stream output takes the object threadgroups of a predicated draw, whose count is zeroed, for whole primitives
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2670,7 +2670,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     // a predicated draw's count is zeroed after its groups were counted
+     auto from = builder.CreateMul(builder.CreateZExt(warp_id, types._long), builder.getInt64(warp_primitive_count));
+     auto primitives = builder.CreateAdd(
+-        single_before, builder.CreateSelect(builder.CreateICmpULT(from, single_whole), from, single_whole)
++        single_before, from
+     );
+     auto invocations = builder.CreateMul(primitives, builder.getInt64(pGeometryStage ? pGeometryStage->gs_instance_count : 1));
+     for (uint32_t s = 0; s < 4; s++)

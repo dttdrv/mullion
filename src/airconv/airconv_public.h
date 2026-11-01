@@ -135,6 +135,10 @@ struct MTL_GEOMETRY_SHADER_REFLECTION {
   /* whether a conservative rasterizer can grow the triangles it emits: three vertices for each, as many as its strip
      of the most vertices has, fit a mesh (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative) */
   uint32_t ConservativeFits;
+  /* whether every invocation emits and cuts the same on each stream, its code having no branches, and no more than
+     its maxvertexcount: stream output then knows each invocation's primitives before it runs
+     (SM50_SHADER_STREAM_OUTPUT_DATA's single_pass) */
+  uint32_t FixedEmits;
 };
 
 struct MTL_POST_TESSELLATOR_REFLECTION {
@@ -354,6 +358,11 @@ struct SM50_SHADER_STREAM_OUTPUT_DATA {
   uint32_t strides[4];
   uint32_t rasterized_stream; /* ~0u for none */
   bool counting;
+  /* one pass, without a counting one: each object threadgroup's primitives follow from its place, when its input has
+     no strip cuts and is not assembled (a triangle strip with adjacency) and every geometry invocation emits the same
+     (MTL_GEOMETRY_SHADER_REFLECTION's FixedEmits). the draw's filled sizes are in its scratch first
+     (SM50StreamOutputSinglePass) */
+  bool single_pass;
 };
 
 /* what a stream output draw binds at SM50_BINDING_INDEX_STREAM_OUTPUT0: each slot's buffer, size and BufferFilledSize
@@ -375,6 +384,22 @@ struct SM50_STREAM_OUTPUT_TARGETS {
 static inline uint64_t
 SM50StreamOutputZeroed(uint64_t groups) {
   return 8 * 4 + 4 * 4 * (groups + ((groups + (1u << SM50_STREAM_OUTPUT_BLOCK_SHIFT) - 1) >> SM50_STREAM_OUTPUT_BLOCK_SHIFT));
+}
+/* whether a pipeline's stream output of `primitive` (D3D10_SB_PRIMITIVE) lists or strips may run in one pass
+   (SM50_SHADER_STREAM_OUTPUT_DATA's single_pass): `cuts` is whether an index may cut its strips, and `fixed` whether
+   it has no geometry shader or one that emits fixed (MTL_GEOMETRY_SHADER_REFLECTION's FixedEmits). its scratch is
+   the filled sizes alone */
+static inline bool
+SM50StreamOutputSinglePass(uint32_t primitive, bool strip, bool cuts, bool fixed) {
+  /* D3D10_SB_PRIMITIVE_TRIANGLE_ADJ: a triangle strip with adjacency */
+  return fixed && !(strip && (cuts || primitive == 7));
+}
+/* the payload of a one-pass stream output pipeline without a geometry shader that rasterizes nothing: its object
+   stage streams each vertex out from the thread that ran it, and starts no mesh threadgroups, so it passes nothing on */
+enum { SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE = 16 };
+static inline bool
+SM50StreamOutputDirect(bool single_pass, bool geometry_shader, bool pass_through) {
+  return single_pass && !geometry_shader && !pass_through;
 }
 /* the bytes of the whole area, for object threadgroups of at most `invocations` geometry invocations each */
 static inline uint64_t

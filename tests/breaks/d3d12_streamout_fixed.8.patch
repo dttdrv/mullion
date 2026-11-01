@@ -1,0 +1,12 @@
+# one-pass stream output without a geometry shader moves the filled sizes on by one instance's primitives
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2631,7 +2631,7 @@ convert_dxbc_vertex_for_geometry_shader(
+             builder, types, so, targets, input_primitive, strip, direct_outputs, max_output_register,
+             builder.CreateAdd(group_start, warp_vertex_id), single_before,
+             builder.CreateMul(warp_id, builder.getInt32(warp_primitive_count)), warp_primitive_count, single_whole, last,
+-            builder.CreateMul(builder.CreateZExt(instances, types._long), single_whole)
++            single_whole
+         ))
+       return err;
+   }

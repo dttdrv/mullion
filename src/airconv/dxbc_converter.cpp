@@ -2066,6 +2066,7 @@ static int SM50InitializeUncached(
           sm50_shader->gs_output_topology == microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP && triangles &&
           3 * triangles <= 256 && triangles <= 512 &&
           mullion::dxbc::mesh_size(3 * triangles, vertex_size, triangles * 4) <= mullion::dxbc::mesh_size_limit;
+      pRefl->GeometryShader.FixedEmits = mullion::dxbc::fixed_stream_primitives(sm50_shader).has_value();
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader = {sm50_shader->pso_valid_output_reg_mask, sm50_shader->ps_has_coverage_output, 0, 0,
@@ -2504,6 +2505,9 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
   bool pass_through =
       mullion::dxbc::args_get_data<SM50_SHADER_PSO_GEOMETRY_SHADER, SM50_SHADER_PSO_GEOMETRY_SHADER_DATA>(pGeometryShaderArgs, &pso_data) &&
       pso_data->pass_through;
+  SM50_SHADER_STREAM_OUTPUT_DATA *so = nullptr;
+  bool direct = mullion::dxbc::args_get_data<SM50_SHADER_STREAM_OUTPUT, SM50_SHADER_STREAM_OUTPUT_DATA>(pGeometryShaderArgs, &so) &&
+                !so->counting && SM50StreamOutputDirect(so->single_pass, pGeometryShader != nullptr, pass_through);
 
   auto pModule = std::make_unique<Module>("shader.air", context);
   initializeModule(*pModule);
@@ -2516,7 +2520,7 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
                                       (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName, context, *pModule,
                                       pGeometryShaderArgs
                                   )
-                                : mullion::dxbc::convert_null_geometry_shader(FunctionName, context, *pModule)) {
+                                : mullion::dxbc::convert_null_geometry_shader(FunctionName, context, *pModule, direct)) {
     errorOut << llvm::toString(std::move(err));
     *ppError = (sm50_error_t)errorObj;
     return 1;

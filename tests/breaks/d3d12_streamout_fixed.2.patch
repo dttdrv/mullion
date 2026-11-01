@@ -1,0 +1,12 @@
+# one-pass stream output counts a strip's whole primitives one short
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2510,7 +2510,7 @@ convert_dxbc_vertex_for_geometry_shader(
+       return llvm::make_error<UnsupportedFeature>("one-pass stream output of strips that may be cut, or are assembled");
+     auto count = builder.CreateZExt(vertex_count, types._long);
+     auto reach = builder.getInt64(vertex_per_primitive - 1);
+-    single_whole = strip ? builder.CreateSelect(builder.CreateICmpUGT(count, reach), builder.CreateSub(count, reach), builder.getInt64(0))
++    single_whole = strip ? builder.CreateSelect(builder.CreateICmpUGT(count, reach), builder.CreateSub(count, builder.getInt64(vertex_per_primitive)), builder.getInt64(0))
+                          : builder.CreateUDiv(count, builder.getInt64(vertex_per_primitive));
+     single_before = builder.CreateMul(builder.CreateZExt(instance_id, types._long), single_whole);
+   }

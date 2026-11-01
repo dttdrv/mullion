@@ -1,0 +1,12 @@
+# one-pass stream output starts every instance's primitives where the draw's first instance's start
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2512,7 +2512,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     auto reach = builder.getInt64(vertex_per_primitive - 1);
+     single_whole = strip ? builder.CreateSelect(builder.CreateICmpUGT(count, reach), builder.CreateSub(count, reach), builder.getInt64(0))
+                          : builder.CreateUDiv(count, builder.getInt64(vertex_per_primitive));
+-    single_before = builder.CreateMul(builder.CreateZExt(instance_id, types._long), single_whole);
++    single_before = builder.getInt64(0);
+   }
+ 
+   // explicit initialization

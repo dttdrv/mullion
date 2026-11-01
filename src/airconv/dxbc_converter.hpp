@@ -786,7 +786,7 @@ void setup_immediate_constant_buffer(
   air::AirType &types, llvm::Module &module, llvm::IRBuilder<> &builder
 );
 
-llvm::Error convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module);
+llvm::Error convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module, bool direct);
 llvm::Error convert_pass_through_geometry_shader(
   const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
   SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
@@ -799,6 +799,11 @@ llvm::Error convert_dxbc_geometry_shader(
   llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,
   SM50ShaderInternal *pHullStage = nullptr
 );
+
+// a geometry shader's primitives per stream when every invocation completes the same (MTL_GEOMETRY_SHADER_REFLECTION's
+// FixedEmits): its code runs from start to return without a branch, so its emits and cuts are fixed, and it emits no
+// more vertices than it declares
+std::optional<std::array<uint32_t, 4>> fixed_stream_primitives(const SM50ShaderInternal *pShaderInternal);
 
 llvm::Error convert_dxbc_vertex_for_geometry_shader(
   const SM50ShaderInternal *pShaderInternal, const char *name,
