@@ -525,10 +525,6 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
      stage passes on in SM50_CONSERVATIVE_VARYINGS (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative), takes every
      sample as covered, and divides its perspective inputs by SM50_CONSERVATIVE_RCP_W's */
   bool conservative;
-  /* with conservative: the mesh stage passes on the polygon of the pixels the primitive touches
-     (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative_hull), so the shader tests no pixel, and writes the depth
-     only where Metal would clamp it otherwise: when it may discard or writes memory */
-  bool conservative_hull;
   /* variable rate shading (D3D12 Variable Rate Shading, tier 2): a pixel shader of coarse pixels, two wide or high at
      most, whose rate is SM50_SHADING_RATE's at SM50_BINDING_INDEX_SHADING_RATE combined with the primitive's and the
      image's. it does nothing where MTL_PIXEL_SHADER_REFLECTION's FineShading */
@@ -538,6 +534,10 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   /* lines reach the rasterizer as quadrilaterals (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's quad_lines), whose
      barycentrics are SM50_BARYCENTRIC_ROWS */
   bool quad_lines;
+  /* with conservative: the mesh stage passes on the polygon of the pixels the primitive touches
+     (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative_hull), so the shader tests no pixel, and writes the depth
+     only where Metal would clamp it otherwise: when the shader may discard or change its coverage, or writes memory */
+  bool conservative_hull;
 };
 
 /* conservative rasterization's per-primitive varyings, flat floats named "mullion_conservative0" and on: the corners

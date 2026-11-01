@@ -417,9 +417,9 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
       auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, blend, bounds,
-             late, conservative, hull, coarse, rate, quads] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+             late, conservative, coarse, rate, quads, hull] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
       hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, blend, bounds, late,
-           conservative, hull, coarse, rate, quads);
+           conservative, coarse, rate, quads, hull);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -810,23 +810,26 @@ struct Group {
   // pipeline's sample mask, which Metal's pipelines do not have, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's sample_mask
   // does. the device keeps one of each
   WMT::Reference<WMT::Function>
-  TestFragment(bool conservative, bool bounds, uint32_t sample_mask) {
+  TestFragment(bool conservative, bool depth, bool bounds, uint32_t sample_mask) {
     std::lock_guard<mullion::mutex> lock(device_->test_fragments_mutex);
-    auto &function = device_->test_fragments[{conservative, bounds, sample_mask}];
+    auto &function = device_->test_fragments[{conservative, depth, bounds, sample_mask}];
     if (!function)
-      function = CompileTestFragment(conservative, bounds, sample_mask);
+      function = CompileTestFragment(conservative, depth, bounds, sample_mask);
     return function;
   }
 
+  // `depth`: it writes the depth, as a conservative rasterizer's that may discard does (a hull's too, whose pixels
+  // it does not test)
   WMT::Reference<WMT::Function>
-  CompileTestFragment(bool conservative, bool bounds, uint32_t sample_mask) {
+  CompileTestFragment(bool conservative, bool depth, bool bounds, uint32_t sample_mask) {
+    depth |= conservative;
     bool masked = bounds || sample_mask != ~0u;
     auto corners = std::to_string(SM50_CONSERVATIVE_CORNERS);
     std::string source = "#include <metal_stdlib>\nusing namespace metal;\nstruct In {\n  float4 position [[position]];\n";
     for (uint32_t i = 0; conservative && i < SM50_CONSERVATIVE_VARYINGS; i++)
       source += "  float v" + std::to_string(i) + " [[user(mullion_conservative" + std::to_string(i) + "), flat]];\n";
     source += "};\nstruct Out {\n";
-    source += conservative ? "  float z [[depth(any)]];\n" : "";
+    source += depth ? "  float z [[depth(any)]];\n" : "";
     source += masked ? "  uint samples [[sample_mask]];\n" : "";
     source += "};\nfragment Out test_fragment(In in [[stage_in]]";
     if (bounds)
@@ -854,9 +857,10 @@ struct Group {
   }
   if (outside)
     discard_fragment();
-  out.z = in.position.z;
 )";
     }
+    if (depth)
+      source += "  out.z = in.position.z;\n";
     if (masked)
       source += "  out.samples = " +
                 std::string(bounds ? "(bounds.x ? samples[uint(in.position.y) * bounds.y + uint(in.position.x)] : ~0u)"
@@ -1304,7 +1308,9 @@ public:
                         (ref_vs.CullDistances || (stream_output && so_data.rasterized_stream == 0) || quad_lines ||
                          conservative);
     geometry_shader |= pass_through;
-    passes_through = geometry_shader && !pDesc->GS.pShaderBytecode;
+    // a geometry pipeline without a geometry shader passes the vertex shader's primitives on in a mesh function of
+    // its own, which reads no root arguments
+    mesh_reads_root_arguments = !(geometry_shader && !pDesc->GS.pShaderBytecode);
     mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
@@ -1463,8 +1469,10 @@ public:
     uint32_t all_samples = raster_samples >= 32 ? ~0u : (1u << raster_samples) - 1;
     if ((sample_mask & all_samples) == all_samples)
       sample_mask = ~0u;
+    // a hull's that tests the depth bounds or keeps a sample mask discards, so it writes the depth as a conservative
+    // pixel shader that discards does
     if (((conservative && !conservative_hull) || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
-        !(ps_func = TestFragment(conservative && !conservative_hull, depth_bounds_emulated, sample_mask)))
+        !(ps_func = TestFragment(conservative && !conservative_hull, conservative, depth_bounds_emulated, sample_mask)))
       return E_FAIL;
 
     auto geometry_inputs = [&] {

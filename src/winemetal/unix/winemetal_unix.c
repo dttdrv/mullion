@@ -1662,18 +1662,21 @@ vertex_values_work(id<MTLDevice> device) {
   return works;
 }
 
-/* barycentrics, and the inputs at each vertex D3D12 has with them (BarycentricsSupported), checked once a process */
+/* barycentrics, and the inputs at each vertex D3D12 has with them (BarycentricsSupported): the triangle is drawn the
+ * first time a process asks, on the device it asks of (one GPU), and never again */
 static NTSTATUS
 _MTLDevice_supportsShaderBarycentricCoordinates(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
-  static int works = -1;
+  static dispatch_once_t once;
+  static bool works;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   if (![device supportsShaderBarycentricCoordinates]) {
     params->ret = false;
     return STATUS_SUCCESS;
   }
-  if (works < 0)
+  dispatch_once(&once, ^{
     works = vertex_values_work(device);
+  });
   params->ret = works;
   return STATUS_SUCCESS;
 }
@@ -2392,6 +2395,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool coarse_shading;
   uint32_t shading_rate_varying;
   bool quad_lines;
+  bool conservative_hull;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2420,6 +2424,8 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   bool conservative;
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
+  bool conservative_hull;
+  bool conservative_inner;
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA32 {
@@ -2500,6 +2506,7 @@ sm50_compilation_argument32_convert(
       data->coarse_shading = src->coarse_shading;
       data->shading_rate_varying = src->shading_rate_varying;
       data->quad_lines = src->quad_lines;
+      data->conservative_hull = src->conservative_hull;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -2546,6 +2553,8 @@ sm50_compilation_argument32_convert(
       data->conservative = src->conservative;
       data->flat_inputs = src->flat_inputs;
       data->noperspective_inputs = src->noperspective_inputs;
+      data->conservative_hull = src->conservative_hull;
+      data->conservative_inner = src->conservative_inner;
       break;
     }
     case SM50_SHADER_MESH_SHADER: {

@@ -1,0 +1,14 @@
+# the fragment function of a hull pipeline without a pixel shader tests the depth bounds without writing the depth
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 2ef05b8..ace52b0 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1472,7 +1472,7 @@ public:
+     // a hull's that tests the depth bounds or keeps a sample mask discards, so it writes the depth as a conservative
+     // pixel shader that discards does
+     if (((conservative && !conservative_hull) || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
+-        !(ps_func = TestFragment(conservative && !conservative_hull, conservative, depth_bounds_emulated, sample_mask)))
++        !(ps_func = TestFragment(conservative && !conservative_hull, conservative && !conservative_hull, depth_bounds_emulated, sample_mask)))
+       return E_FAIL;
+ 
+     auto geometry_inputs = [&] {

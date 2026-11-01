@@ -1246,7 +1246,7 @@ public:
     bool mesh = pso_graphics_->threads_per_patch || Geometry() || pso_graphics_->mesh_shader;
     bool vertex = !mesh;
     // a mesh stage that only passes the vertex shader's primitives on reads no root arguments
-    bool mesh_reads = mesh && !pso_graphics_->passes_through;
+    bool mesh_reads = mesh && pso_graphics_->mesh_reads_root_arguments;
     auto geometry_buffer = [&](uint64_t Offset, uint8_t Index) {
       if (mesh)
         EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, Index);
@@ -2708,7 +2708,7 @@ public:
     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
       bool adjacency = p->adjacency && Adjacency(topology_);
       return int(p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) +
-             int(p->threads_per_patch || (p->geometry_shader && !p->passes_through) || p->mesh_shader);
+             int(p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) * p->mesh_reads_root_arguments;
     };
     if (!pso_graphics_ || stages(pso_graphics_.ptr()) != stages(graphics_pso))
       dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature, DirtyState::VertexBuffer);

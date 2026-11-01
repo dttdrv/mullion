@@ -186,6 +186,11 @@ struct Vertex {
   UINT flat;
 };
 
+template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, typename T> struct alignas(void *) Subobject {
+  D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
+  T data{};
+};
+
 int
 main(int argc, char **argv) {
   Compiler compiler;
@@ -219,16 +224,19 @@ main(int argc, char **argv) {
   };
   // the pipelines: conservative, counting the shader's runs, with depth clipping and without; writing depth with a
   // shader that writes no memory and one that may discard; and a geometry shader's, not conservative
+  // (and depth with the depth bounds test or a sample mask, which a pixel shader or the fragment function of a
+  // pipeline without one keeps by discarding)
   auto pipeline = [&](const std::string &pixel, bool conservative, bool depth_clips, bool depth, bool geometry,
-                      ComPtr<ID3D12PipelineState> &out) {
+                      ComPtr<ID3D12PipelineState> &out, UINT sample_mask = ~0u, bool bounds = false) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = rs.Get();
     desc.VS = bytecode(vs);
     if (geometry)
       desc.GS = bytecode(gs);
-    desc.PS = bytecode(pixel);
+    if (!pixel.empty())
+      desc.PS = bytecode(pixel);
     desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    desc.SampleMask = ~0u;
+    desc.SampleMask = sample_mask;
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     desc.RasterizerState.DepthClipEnable = depth_clips;
@@ -245,14 +253,60 @@ main(int argc, char **argv) {
       desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
       desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     }
-    return device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&out));
+    if (!bounds)
+      return device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&out));
+    ComPtr<ID3D12Device2> device2;
+    HRESULT hr = device.As(&device2);
+    if (FAILED(hr))
+      return hr;
+    struct alignas(void *) {
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, ID3D12RootSignature *> rs;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, D3D12_SHADER_BYTECODE> vs;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_SHADER_BYTECODE> ps;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, D3D12_BLEND_DESC> blend;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, UINT> sample_mask;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_RASTERIZER_DESC> raster;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1, D3D12_DEPTH_STENCIL_DESC1> depth;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC> layout;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY, D3D12_PRIMITIVE_TOPOLOGY_TYPE> topology;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_RT_FORMAT_ARRAY> targets;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT, DXGI_FORMAT> depth_format;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, DXGI_SAMPLE_DESC> samples;
+    } stream;
+    stream.rs.data = desc.pRootSignature;
+    stream.vs.data = desc.VS;
+    stream.ps.data = desc.PS;
+    stream.blend.data = desc.BlendState;
+    stream.sample_mask.data = desc.SampleMask;
+    stream.raster.data = desc.RasterizerState;
+    auto &d = stream.depth.data;
+    d.DepthEnable = desc.DepthStencilState.DepthEnable;
+    d.DepthWriteMask = desc.DepthStencilState.DepthWriteMask;
+    d.DepthFunc = desc.DepthStencilState.DepthFunc;
+    d.DepthBoundsTestEnable = TRUE;
+    stream.layout.data = desc.InputLayout;
+    stream.topology.data = desc.PrimitiveTopologyType;
+    stream.targets.data.NumRenderTargets = 1;
+    stream.targets.data.RTFormats[0] = desc.RTVFormats[0];
+    stream.depth_format.data = desc.DSVFormat;
+    stream.samples.data = desc.SampleDesc;
+    D3D12_PIPELINE_STATE_STREAM_DESC stream_desc{sizeof(stream), &stream};
+    return device2->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&out));
   };
-  ComPtr<ID3D12PipelineState> counted, unclipped, plain, discarding, geometry;
+  ComPtr<ID3D12PipelineState> counted, unclipped, plain, discarding, geometry, masked, bounded, bounded_alone;
   CHECK(pipeline(ps, true, true, false, false, counted));
   CHECK(pipeline(ps, true, false, false, false, unclipped));
   CHECK(pipeline(ps_plain, true, true, true, false, plain));
   CHECK(pipeline(ps_discard, true, true, true, false, discarding));
   CHECK(pipeline(ps, false, true, false, true, geometry));
+  // the one sample's mask (all of them, and still a mask the shader keeps)
+  CHECK(pipeline(ps_plain, true, true, true, false, masked, 1));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2{};
+  device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options2, sizeof(options2));
+  if (options2.DepthBoundsTestSupported) {
+    CHECK(pipeline(ps_plain, true, true, true, false, bounded, ~0u, true));
+    CHECK(pipeline("", true, true, true, false, bounded_alone, ~0u, true));
+  }
 
   // two regions of counts, a draw each
   const UINT64 region = kPixels * 16, uav_bytes = 2 * region;
@@ -474,15 +528,16 @@ main(int argc, char **argv) {
     expect(!off, "the geometry shader's triangle, moved by its root constants: %u pixels wrong", off);
   }
 
-  // the depth of a steep triangle at each pixel: the plane's at the center, clamped to the viewport's range
-  const Triangle steep{"a steep triangle", {{8, 8}, {13, 8}, {8, 28}}, {0.0, 1.0, 0.5}};
-  for (auto [pipeline, how] : {std::pair{plain.Get(), "a shader that writes no memory"},
-                              std::pair{discarding.Get(), "a shader that may discard"}}) {
-    step("the depth of a steep triangle, %s", how);
+  // the depth of a triangle at each pixel: the plane's at the center, clamped to the viewport's range. a steep one, and
+  // one across the near plane, whose pixels past the clipped edge take the plane's depth there clamped
+  auto check_depth = [&](const Triangle &t, ID3D12PipelineState *pipeline, const char *how) -> HRESULT {
+    step("the depth of %s, %s", t.what, how);
     static Result got;
-    CHECK(run({{&steep, pipeline, &kViewports[0]}}, true, got));
+    HRESULT hr = run({{&t, pipeline, &kViewports[0]}}, true, got);
+    if (FAILED(hr))
+      return hr;
     auto &vp = kViewports[0];
-    auto snapped = snap(drawn(steep, vp, true));
+    auto snapped = snap(drawn(t, vp, true));
     unsigned off = 0, written = 0;
     for (int y = 0; y < (int)kHeight; y++)
       for (int x = 0; x < (int)kWidth; x++) {
@@ -490,17 +545,27 @@ main(int argc, char **argv) {
         if (d == 1)
           continue;
         written++;
-        double z = std::clamp(plane_z(steep, vp, x + 0.5, y + 0.5), 0.0, 1.0);
+        double z = std::clamp(plane_z(t, vp, x + 0.5, y + 0.5), 0.0, 1.0);
         double want = vp.MinDepth + z * (vp.MaxDepth - vp.MinDepth);
         // what the plane moves within a 256th of a pixel, which snapping the corners moves it
-        double slope = std::abs(plane_z(steep, vp, x + 1.5, y + 0.5) - plane_z(steep, vp, x + 0.5, y + 0.5)) +
-                       std::abs(plane_z(steep, vp, x + 0.5, y + 1.5) - plane_z(steep, vp, x + 0.5, y + 0.5));
+        double slope = std::abs(plane_z(t, vp, x + 1.5, y + 0.5) - plane_z(t, vp, x + 0.5, y + 0.5)) +
+                       std::abs(plane_z(t, vp, x + 0.5, y + 1.5) - plane_z(t, vp, x + 0.5, y + 0.5));
         double tolerance = slope * (vp.MaxDepth - vp.MinDepth) / 256 + 1e-6;
         bool close = overlaps(snapped, x, y, 1.0 / 256, false);
         if ((!close || std::abs(d - want) > tolerance) && off++ < 6)
-          printf("  %s: pixel (%d, %d) depth %.7g, want %.7g (near %d)\n", how, x, y, d, want, close);
+          printf("  %s, %s: pixel (%d, %d) depth %.7g, want %.7g (near %d)\n", t.what, how, x, y, d, want, close);
       }
-    expect(!off && written, "the steep triangle's depth, %s: %u of %u pixels wrong", how, off, written);
+    expect(!off && written, "the depth of %s, %s: %u of %u pixels wrong", t.what, how, off, written);
+    return S_OK;
+  };
+  const Triangle steep{"a steep triangle", {{8, 8}, {13, 8}, {8, 28}}, {0.0, 1.0, 0.5}};
+  CHECK(check_depth(steep, plain.Get(), "a shader that writes no memory"));
+  CHECK(check_depth(steep, discarding.Get(), "a shader that may discard"));
+  CHECK(check_depth(across, plain.Get(), "a shader that writes no memory"));
+  CHECK(check_depth(across, masked.Get(), "a sample mask"));
+  if (options2.DepthBoundsTestSupported) {
+    CHECK(check_depth(across, bounded.Get(), "the depth bounds test"));
+    CHECK(check_depth(across, bounded_alone.Get(), "the depth bounds test without a pixel shader"));
   }
   return verdict();
 }

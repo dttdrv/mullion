@@ -1,0 +1,16 @@
+# a hull's pixel shader writes the depth only when it discards or writes memory itself, not for the depth bounds, sample mask and coverage the converter adds
+diff --git a/src/airconv/dxbc_converter.cpp b/src/airconv/dxbc_converter.cpp
+index 8d33ffa..8f62e3e 100644
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -824,9 +824,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     });
+     // every discard and coverage the converter adds counts: the depth bounds, the pipeline's sample mask,
+     // alpha-to-coverage, clip distances tested per sample and coarse pixels
+-    bool clamps_wrongly = !conservative_hull || shader_info->use_discard || !shader_info->uavMap.empty() ||
+-                          pso_data->depth_bounds || pso_sample_mask != 0xffffffff || pso_alpha_to_coverage ||
+-                          pso_data->clip_distances || coarse_shading;
++    bool clamps_wrongly = !conservative_hull || shader_info->use_discard || !shader_info->uavMap.empty();
+     if (!writes_depth && clamps_wrongly && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
+       auto at = func_signature.DefineOutput(air::OutputDepth{air::DepthArgument::any});
+       epilogue >> [=](pvalue value) {

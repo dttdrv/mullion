@@ -822,7 +822,11 @@ llvm::Error convert_dxbc_pixel_shader(
     bool writes_depth = std::ranges::any_of(func_signature.Outputs(), [](auto &output) {
       return std::holds_alternative<air::OutputDepth>(output);
     });
-    bool clamps_wrongly = !conservative_hull || shader_info->use_discard || !shader_info->uavMap.empty();
+    // every discard and coverage the converter adds counts: the depth bounds, the pipeline's sample mask,
+    // alpha-to-coverage, clip distances tested per sample and coarse pixels
+    bool clamps_wrongly = !conservative_hull || shader_info->use_discard || !shader_info->uavMap.empty() ||
+                          pso_data->depth_bounds || pso_sample_mask != 0xffffffff || pso_alpha_to_coverage ||
+                          pso_data->clip_distances || coarse_shading;
     if (!writes_depth && clamps_wrongly && !pso_disable_depth_output && !func_signature.EarlyFragmentTests()) {
       auto at = func_signature.DefineOutput(air::OutputDepth{air::DepthArgument::any});
       epilogue >> [=](pvalue value) {
