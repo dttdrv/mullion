@@ -406,6 +406,11 @@ inline std::string
 clip_varying_name(uint32_t index) {
   return "clip" + std::to_string(index);
 }
+// a cull distance a pipeline's pixel shader tests (SM50_CULL_VARYING)
+inline std::string
+cull_varying_name(uint32_t index) {
+  return SM50_CULL_VARYING + std::to_string(index);
+}
 constexpr air::MSLScalerOrVectorType
 varying_type(RegisterComponentType type) {
   return type == RegisterComponentType::Float ? air::MSLScalerOrVectorType(air::msl_float) : air::msl_uint;

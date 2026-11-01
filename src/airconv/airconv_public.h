@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 90
+#define AIRCONV_VERSION 91
 
 #ifdef __cplusplus
 #include <string>
@@ -157,6 +157,8 @@ struct MTL_PIXEL_SHADER_REFLECTION {
   uint32_t FineShading;
   /* the shader reads barycentrics (SV_Barycentrics) */
   uint32_t Barycentrics;
+  /* the depth and stencil tests run before the shader ([earlydepthstencil]): its discards leave them done */
+  uint32_t EarlyTests;
 };
 
 struct MTL_SHADER_REFLECTION {
@@ -506,6 +508,9 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   bool single_raster_sample;
   /* how many clip distances reach the shader as varyings, to test at each sample (D3D11.3 15.4.1) */
   uint32_t clip_distances;
+  /* how many cull distances reach the shader as SM50_CULL_VARYING's: it discards every pixel of a primitive they cull,
+     before anything else it does (D3D11.3 15.4.2) */
+  uint32_t cull_distances;
   struct SM50_SHADER_BLEND blend[8];
   /* the depth bounds test, which a GPU without it has the pixel shader do: at SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES a
      byte for each pixel holds, a bit for each sample, the samples whose depth is in the bounds, and at
@@ -599,7 +604,19 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA {
   bool RasterizationDisabled;
   /* the clip distances leave as varyings, which the pixel shader tests (SM50_SHADER_PSO_PIXEL_SHADER_DATA) */
   bool ClipDistanceVaryings;
+  /* the cull distances leave as SM50_CULL_VARYING's too, which the pixel shader tests (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
+     cull_distances) */
+  bool CullDistanceVaryings;
 };
+
+/* a cull distance a pipeline's pixel shader tests (SM50_SHADER_PSO_PIXEL_SHADER_DATA's cull_distances): each is a float
+   varying "mullion_cull0" and on, 1 at a vertex whose distance is at least 0 and 0 at one behind it (negative or NaN),
+   which the pixel shader takes linearly in the window. a primitive all of whose vertices are behind one has it 0 at
+   each of its points, and its pixels and their neighbours in the quad; one with a vertex not behind it has it nonzero
+   at each pixel, or else across the quad, as a nonzero affine function is zero on a line at most: the shader discards
+   a pixel where one of the varyings and both its derivatives are 0. a primitive Metal clips keeps a nonzero point of
+   it when it has one, as the points it adds lie between a corner and the next */
+#define SM50_CULL_VARYING "mullion_cull"
 
 /* a geometry pipeline's object threadgroup takes a warp of the draw's vertices: as many whole input primitives as
    its threads, no more than a SIMD group's, and its payload hold. the payload has four words, then the vertices'
@@ -663,6 +680,7 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA {
   bool pipeline_statistics;
   /* as SM50_SHADER_GS_PASS_THROUGH_DATA's */
   bool clip_distance_varyings;
+  bool cull_distance_varyings;
   /* the lines passed on are quadrilaterals (D3D11.3 3.4.5): two counterclockwise triangles, which the pipeline
      draws with no culling, no depth bias, solid fill and counterclockwise front faces, as lines are drawn */
   bool quad_lines;

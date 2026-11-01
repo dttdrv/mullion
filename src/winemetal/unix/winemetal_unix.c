@@ -2316,6 +2316,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool centered_samples;
   bool single_raster_sample;
   uint32_t clip_distances;
+  uint32_t cull_distances;
   struct SM50_SHADER_BLEND blend[8];
   bool depth_bounds;
   bool late_tests;
@@ -2334,6 +2335,7 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
   };
   bool RasterizationDisabled;
   bool ClipDistanceVaryings;
+  bool CullDistanceVaryings;
 };
 
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
@@ -2346,6 +2348,7 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   bool pass_through;
   bool pipeline_statistics;
   bool clip_distance_varyings;
+  bool cull_distance_varyings;
   bool quad_lines;
   bool barycentrics;
   bool conservative;
@@ -2424,6 +2427,7 @@ sm50_compilation_argument32_convert(
       data->centered_samples = src->centered_samples;
       data->single_raster_sample = src->single_raster_sample;
       data->clip_distances = src->clip_distances;
+      data->cull_distances = src->cull_distances;
       memcpy(data->blend, src->blend, sizeof(data->blend));
       data->depth_bounds = src->depth_bounds;
       data->late_tests = src->late_tests;
@@ -2456,6 +2460,7 @@ sm50_compilation_argument32_convert(
       data->Data = src->Data;
       data->RasterizationDisabled = src->RasterizationDisabled;
       data->ClipDistanceVaryings = src->ClipDistanceVaryings;
+      data->CullDistanceVaryings = src->CullDistanceVaryings;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
@@ -2472,6 +2477,7 @@ sm50_compilation_argument32_convert(
       data->pass_through = src->pass_through;
       data->pipeline_statistics = src->pipeline_statistics;
       data->clip_distance_varyings = src->clip_distance_varyings;
+      data->cull_distance_varyings = src->cull_distance_varyings;
       data->quad_lines = src->quad_lines;
       data->barycentrics = src->barycentrics;
       data->conservative = src->conservative;

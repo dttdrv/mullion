@@ -728,6 +728,13 @@ llvm::Error convert_dxbc_pixel_shader(
     }));
   if (clips || pso_sample_mask != 0xffffffff)
     input_coverage = func_signature.DefineInput(air::InputInputCoverage{});
+  // the cull distances' varyings, linear in the window (SM50_CULL_VARYING)
+  std::vector<uint32_t> culls;
+  for (uint32_t i = 0; pso_data && i < pso_data->cull_distances; i++)
+    culls.push_back(func_signature.DefineInput(air::InputFragmentStageIn{
+        .user = cull_varying_name(i), .type = air::msl_float, .interpolation = air::Interpolation::center_no_perspective,
+        .pull_mode = false
+    }));
 
   // the depth bounds test of a GPU without one: the pixel's position, whether the draw tests, and the samples that pass
   uint32_t bounds_position = ~0u, bounds_enabled = ~0u, bounds_mask = ~0u;
@@ -877,6 +884,35 @@ llvm::Error convert_dxbc_pixel_shader(
 
   setup_metal_version(module, metal_version);
   air.CenteredSamples = pso_data && pso_data->centered_samples;
+
+  // a pixel of a primitive a cull distance culls is discarded before the shader does anything, the quad's derivatives
+  // taken while all its threads run: one where a varying and both its derivatives are 0 (SM50_CULL_VARYING)
+  if (culls.size()) {
+    auto zero = llvm::ConstantFP::get(types._float, 0.0);
+    llvm::Value *culled = builder.getFalse();
+    for (auto index : culls) {
+      auto in_front = function->getArg(index);
+      auto behind = builder.CreateAnd(
+          builder.CreateFCmpOEQ(in_front, zero),
+          builder.CreateAnd(
+              builder.CreateFCmpOEQ(air.CreateDerivative(in_front, false), zero),
+              builder.CreateFCmpOEQ(air.CreateDerivative(in_front, true), zero)
+          )
+      );
+      culled = builder.CreateOr(culled, behind);
+    }
+    auto discard = llvm::BasicBlock::Create(context, "cull_discard", function, epilogue_bb);
+    auto live = llvm::BasicBlock::Create(context, "cull_live", function, epilogue_bb);
+    builder.CreateCondBr(culled, discard, live);
+    builder.SetInsertPoint(discard);
+    air.CreateDiscard();
+    // and does nothing more: Metal keeps a discarded run's memory writes under multisampling
+    if (function->getReturnType()->isVoidTy())
+      builder.CreateRetVoid();
+    else
+      builder.CreateRet(llvm::Constant::getNullValue(function->getReturnType()));
+    builder.SetInsertPoint(live);
+  }
 
   std::vector<std::pair<llvm::Argument *, llvm::Value *>> conservative_inputs;
   llvm::SmallPtrSet<llvm::Instruction *, 32> conservative_own;
@@ -1329,6 +1365,11 @@ llvm::Error convert_dxbc_vertex_shader(
       air::OutputClipDistance{pShaderInternal->clip_distance_scalars.size()}
     );
   };
+  // and whether each vertex is in front of each cull distance, for the pixel shader to cull by (SM50_CULL_VARYING)
+  std::vector<uint32_t> cull_out_idx;
+  if (gs_passthrough && gs_passthrough->CullDistanceVaryings)
+    for (uint32_t i = 0; i < pShaderInternal->cull_distance_scalars.size(); i++)
+      cull_out_idx.push_back(func_signature.DefineOutput(air::OutputVertex{.user = cull_varying_name(i), .type = air::msl_float}));
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_VERTEX_SHADER, rootsig->bytecode,
@@ -1464,6 +1505,22 @@ llvm::Error convert_dxbc_vertex_shader(
         value, clip_distance_array, {clip_distance_out_idx}
       );
   };
+  for (uint32_t i = 0; value && i < cull_out_idx.size(); i++) {
+    auto &scalar = pShaderInternal->cull_distance_scalars[i];
+    auto distance = builder.CreateLoad(
+        types._float, builder.CreateGEP(
+                          resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(),
+                          resource_map.output.ptr_float4,
+                          {builder.getInt32(0), builder.getInt32(scalar.reg), builder.getInt32(scalar.component)}
+                      )
+    );
+    auto in_front = builder.CreateFCmpOGE(distance, llvm::ConstantFP::get(types._float, 0.0));
+    value = builder.CreateInsertValue(
+        value,
+        builder.CreateSelect(in_front, llvm::ConstantFP::get(types._float, 1.0), llvm::ConstantFP::get(types._float, 0.0)),
+        {cull_out_idx[i]}
+    );
+  }
 
   if (value == nullptr) {
     builder.CreateRetVoid();
@@ -2058,6 +2115,7 @@ static int SM50InitializeUncached(
       // EvaluateAttribute* evaluates where the shader chooses, which coarse shading does not move
       pRefl->PixelShader.FineShading = sm50_shader->ps_fine_shading || sm50_shader->shader_info.pull_mode_reg_mask;
       pRefl->PixelShader.Barycentrics = sm50_shader->shader_info.use_barycentrics;
+      pRefl->PixelShader.EarlyTests = sm50_shader->func_signature.EarlyFragmentTests();
       for (auto &out : sm50_shader->output_signature) {
         if (out.reg() >= std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats))
           continue;

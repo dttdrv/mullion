@@ -1633,6 +1633,14 @@ convert_pass_through_geometry_shader(
     func_signature.DefineMeshVertexOutput(air::OutputMeshData{
         .user = "mullion_barycentrics" + std::to_string(i), .type = air::msl_float, .index = rows_at + i
     });
+  // the cull distances as the pixel shader of a pipeline that culls in it takes them (SM50_CULL_VARYING), after
+  // everything else
+  uint32_t culls_at = rows_at + (rows ? SM50_BARYCENTRIC_ROWS : 0) + (conservative ? SM50_CONSERVATIVE_VARYINGS + SM50_CONSERVATIVE_RCP_W + SM50_BARYCENTRIC_ROWS : 0);
+  bool cull_varyings = pso_data->cull_distance_varyings;
+  for (uint32_t i = 0; cull_varyings && i < pVertexStage->cull_distance_scalars.size(); i++)
+    func_signature.DefineMeshVertexOutput(
+        air::OutputMeshData{.user = cull_varying_name(i), .type = air::msl_float, .index = culls_at + i}
+    );
   if (pVertexStage->cull_distance_scalars.size() || conservative)
     func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveCulled{});
   // Metal's points have a size to be given, Direct3D's are a pixel wide (D3D11.3 3.4.6)
@@ -1813,6 +1821,13 @@ convert_pass_through_geometry_shader(
       auto rcp_w = builder.CreateFDiv(air.getFloat(1), builder.CreateExtractElement(clip[corner], 3));
       auto weight = i % 3 != corner ? air.getFloat(0) : i < 3 ? rcp_w : air.getFloat(1);
       air.CreateSetMeshVertexData(vertex, builder.getInt32(rows_at + i), weight);
+    }
+    for (uint32_t i = 0; cull_varyings && i < pVertexStage->cull_distance_scalars.size(); i++) {
+      auto &d = pVertexStage->cull_distance_scalars[i];
+      auto in_front = builder.CreateFCmpOGE(real(component(corner, d.reg, d.component)), air.getFloat(0));
+      air.CreateSetMeshVertexData(
+          vertex, builder.getInt32(culls_at + i), builder.CreateSelect(in_front, air.getFloat(1), air.getFloat(0))
+      );
     }
     if (own.count == 1)
       air.CreateSetMeshPointSize(vertex, air.getFloat(1.0));
