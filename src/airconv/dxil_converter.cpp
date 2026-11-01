@@ -329,6 +329,33 @@ is_dx_op(const Value *value) {
   return call && call->getCalledFunction() && call->getCalledFunction()->getName().startswith("dx.op.");
 }
 
+// SM50_RAY_SHADER_CALLS of a library function and of the functions it calls
+uint32_t
+ray_calls(const Function &F) {
+  uint32_t calls = 0;
+  SmallPtrSet<const Function *, 8> seen{&F};
+  SmallVector<const Function *, 8> next{&F};
+  while (!next.empty()) {
+    auto f = next.pop_back_val();
+    for (auto &I : instructions(f)) {
+      auto call = dyn_cast<CallInst>(&I);
+      auto callee = call ? call->getCalledFunction() : nullptr;
+      if (!call || (callee && callee->isIntrinsic()))
+        continue;
+      if (is_dx_op(call)) {
+        auto op = opcode(call);
+        calls |= op == TraceRay ? SM50_RAY_SHADER_CALLS_TRACE : op == CallShader ? SM50_RAY_SHADER_CALLS_CALLABLE : 0;
+      } else if (!callee || callee->isDeclaration()) {
+        // another library's function, or an indirect call
+        calls |= SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE;
+      } else if (seen.insert(callee).second) {
+        next.push_back(callee);
+      }
+    }
+  }
+  return calls;
+}
+
 // SM 6.6 annotates every handle with its resource's properties, which the handle's range says already: what uses the
 // annotation uses the handle
 void
@@ -949,7 +976,7 @@ read_dxil(
       if (!f || !kind)
         continue;
       auto size = [&](uint64_t t) { return tag(properties, t) ? (uint32_t)md_uint(*tag(properties, t)) : 0; };
-      shader->ray_shaders.push_back({f->getName().str(), {(uint32_t)md_uint(*kind), size(6), size(7)}});
+      shader->ray_shaders.push_back({f->getName().str(), {(uint32_t)md_uint(*kind), size(6), size(7), ray_calls(*f)}});
     }
     return Error::success();
   }
@@ -1514,20 +1541,31 @@ convert_dxil(
     );
     return b.CreateIntToPtr(address, b.getInt32Ty()->getPointerTo(1));
   };
+  // the runtime's functions are called by name, as a Metal function calls an extern [[visible]] one: every ray
+  // tracing pipeline links them, and with no call through the table between them and the kernel, Metal can compile
+  // a trace into the kernel (mullion_command.metal, kRayFCIndex_DirectCalls)
   auto ray_call = [&](uint32_t slot, Value *first, Value *second) {
     auto &b = ctx.builder;
     auto i8p = b.getInt8PtrTy();
-    auto table = ray_value(RayShaders);
-    auto pointer = b.CreateCall(
-        ctx.module.getOrInsertFunction(
-            "air.get_function_pointer_visible_function_table",
-            FunctionType::get(i8p, {table->getType(), b.getInt32Ty()}, false)
-        ),
-        {table, b.getInt32(slot)}
-    );
     auto ty = FunctionType::get(b.getVoidTy(), {ray->getType(), i8p, i8p}, false);
     auto untyped = [&](Value *v) -> Value * { return v ? b.CreateBitCast(v, i8p) : ConstantPointerNull::get(i8p); };
-    b.CreateCall(ty, b.CreateBitCast(pointer, ty->getPointerTo()), {ray, untyped(first), untyped(second)});
+    const char *runtime = slot == SM50_RAY_FUNCTION_TRACE        ? "mullion_ray_trace"
+                          : slot == SM50_RAY_FUNCTION_REPORT_HIT ? "mullion_ray_report_hit"
+                          : slot == SM50_RAY_FUNCTION_CALL       ? "mullion_ray_call"
+                                                                 : nullptr;
+    assert(runtime);
+    auto reference = std::string(runtime) + ".MTL_VISIBLE_FN_REF";
+    auto callee = ctx.module.getFunction(reference);
+    if (!callee) {
+      callee = Function::Create(ty, GlobalValue::ExternalLinkage, reference, ctx.module);
+      callee->setSection("air.externally_defined");
+      ctx.module.getOrInsertNamedMetadata("air.visible_function_references")
+          ->addOperand(MDNode::get(
+              ctx.llvm, {MDString::get(ctx.llvm, "air.visible_function_reference"), ValueAsMetadata::get(callee),
+                         MDString::get(ctx.llvm, runtime)}
+          ));
+    }
+    b.CreateCall(ty, callee, {ray, untyped(first), untyped(second)});
   };
   // an any hit shader ends with its verdict where it calls IgnoreHit or AcceptHitAndEndSearch
   auto ray_verdict = [&](CallInst *call, SM50_RAY_VERDICT verdict) {

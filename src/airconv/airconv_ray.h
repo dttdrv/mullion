@@ -13,7 +13,7 @@ typedef uint32_t sm50_ray_dword;
 
 /* a ray tracing pipeline's visible function table: the runtime's functions, then shaders, each at the slot the
    device gave it, so that a shader identifier means the same in every state object that has the shader. a shader
-   calls the runtime through its slots (TraceRay, ReportHit, CallShader) */
+   calls the runtime's functions (TraceRay, ReportHit, CallShader) by name, which every pipeline links */
 enum SM50_RAY_FUNCTION {
   SM50_RAY_FUNCTION_NONE,
   SM50_RAY_FUNCTION_TRACE,

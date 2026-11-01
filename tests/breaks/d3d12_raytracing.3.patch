@@ -1,0 +1,12 @@
+# an intersection shader's ReportHit reports the hit to the runtime that traces its ray
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1508,7 +1508,7 @@ convert_dxil(
+     auto ty = FunctionType::get(b.getVoidTy(), {ray->getType(), i8p, i8p}, false);
+     auto untyped = [&](Value *v) -> Value * { return v ? b.CreateBitCast(v, i8p) : ConstantPointerNull::get(i8p); };
+     const char *runtime = slot == SM50_RAY_FUNCTION_TRACE        ? "mullion_ray_trace"
+-                          : slot == SM50_RAY_FUNCTION_REPORT_HIT ? "mullion_ray_report_hit"
++                          : slot == SM50_RAY_FUNCTION_REPORT_HIT ? "mullion_ray_call"
+                           : slot == SM50_RAY_FUNCTION_CALL       ? "mullion_ray_call"
+                                                                  : nullptr;
+     assert(runtime);
