@@ -4990,6 +4990,22 @@ public:
   }
 
   // the float format MetalFX reads motion vectors of a typeless or integer resource as
+  // depth and exposure as MetalFX reads them: a 32- or 16-bit texture a game created typeless is viewed as
+  // integers, and MetalFX reads those bits as the float they hold (Starfield's depth and exposure are R32_TYPELESS)
+  static WMTPixelFormat
+  ScalarFloatFormat(WMTPixelFormat format) {
+    switch (format) {
+    case WMTPixelFormatR32Uint:
+    case WMTPixelFormatR32Sint:
+      return WMTPixelFormatR32Float;
+    case WMTPixelFormatR16Uint:
+    case WMTPixelFormatR16Sint:
+      return WMTPixelFormatR16Float;
+    default:
+      return format;
+    }
+  }
+
   static WMTPixelFormat
   MotionVectorFormat(WMTPixelFormat format) {
     switch (format) {
@@ -5045,6 +5061,7 @@ public:
       if (!std::exchange(warned, true))
         WARN("TemporalUpscale: motion vectors at the output resolution are not supported yet");
     }
+    auto depth_format = ScalarFloatFormat(depth->pixelFormat());
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
       *ppCache = cache = new UpscalerCache;
@@ -5055,14 +5072,14 @@ public:
                                  output->height(),
                                  uint32_t(color->pixelFormat()),
                                  uint32_t(output->pixelFormat()),
-                                 uint32_t(depth->pixelFormat()),
+                                 uint32_t(depth_format),
                                  uint32_t(motion_format),
                                  uint32_t(!!pDesc->AutoExposure)};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
       info.output_format = output->pixelFormat();
-      info.depth_format = depth->pixelFormat();
+      info.depth_format = depth_format;
       info.motion_format = motion_format;
       info.input_width = color->width();
       info.input_height = color->height();
@@ -5085,14 +5102,27 @@ public:
           "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
           info.output_height, device_->UsesMetal4() ? " (Metal 4)" : ""
       ));
+      // MULLION_LOG_LEVEL=debug: what the game gives the scaler, for an image that comes out wrong
+      if (Logger::logLevel() <= LogLevel::Debug)
+        Logger::debug(str::format(
+            "MetalFX: color format ", color->pixelFormat(), ", output format ", output->pixelFormat(), " usage ",
+            output->usage(), ", depth format ", depth->pixelFormat(), " ", depth->width(), "x", depth->height(),
+            ", motion format ", motion_format, " ", motion->width(), "x", motion->height(), ", exposure ",
+            exposure ? str::format(exposure->pixelFormat(), " ", exposure->width(), "x", exposure->height()) : "none",
+            ", auto exposure ", pDesc->AutoExposure, ", content ", pDesc->InputContentWidth, "x",
+            pDesc->InputContentHeight, ", pre-exposure ", pDesc->PreExposure, ", motion scale ",
+            pDesc->MotionVectorScaleX, ",", pDesc->MotionVectorScaleY, ", depth reversed ", pDesc->DepthReversed,
+            ", motion at output resolution ", pDesc->MotionVectorInDisplayRes
+        ));
     }
     auto pass = RecordUpscale();
     pass->temporal = cache->temporal;
     pass->color = UpscaleView(color);
     pass->output = UpscaleView(output);
-    pass->depth = UpscaleView(depth);
+    pass->depth = UpscaleView(depth, depth_format);
     pass->motion = UpscaleView(motion, motion_format);
-    pass->exposure = UpscaleView(exposure);
+    pass->exposure =
+        UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
     pass->props = WMTFXTemporalScalerProps{
         pDesc->InputContentWidth ? pDesc->InputContentWidth : color->width(),
         pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
@@ -5132,6 +5162,7 @@ public:
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
       *ppCache = cache = new UpscalerCache;
+    auto depth_format = ScalarFloatFormat(depth->pixelFormat());
     std::array<uint32_t, 14> key{2,
                                  color->width(),
                                  color->height(),
@@ -5139,7 +5170,7 @@ public:
                                  output->height(),
                                  uint32_t(color->pixelFormat()),
                                  uint32_t(output->pixelFormat()),
-                                 uint32_t(depth->pixelFormat()),
+                                 uint32_t(depth_format),
                                  uint32_t(motion_format),
                                  uint32_t(diffuse->pixelFormat()),
                                  uint32_t(specular->pixelFormat()),
@@ -5149,7 +5180,7 @@ public:
     if (!cache->denoised || cache->key != key) {
       WMTFXDenoisedScalerInfo info{};
       info.color_format = color->pixelFormat();
-      info.depth_format = depth->pixelFormat();
+      info.depth_format = depth_format;
       info.motion_format = motion_format;
       info.diffuse_albedo_format = diffuse->pixelFormat();
       info.specular_albedo_format = specular->pixelFormat();
@@ -5180,14 +5211,15 @@ public:
     pass->denoised = cache->denoised;
     auto &args = pass->denoise;
     args.color = UpscaleView(color).handle;
-    args.depth = UpscaleView(depth).handle;
+    args.depth = UpscaleView(depth, depth_format).handle;
     args.motion = UpscaleView(motion, motion_format).handle;
     args.diffuse_albedo = UpscaleView(diffuse).handle;
     args.specular_albedo = UpscaleView(specular).handle;
     args.normal = UpscaleView(normals).handle;
     args.roughness = UpscaleView(roughness).handle;
     args.specular_hit_distance = UpscaleView(hit_distance).handle;
-    args.exposure = UpscaleView(exposure).handle;
+    args.exposure =
+        UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid).handle;
     args.output = UpscaleView(output).handle;
     args.pre_exposure = pDesc->PreExposure;
     args.jitter_offset_x = pDesc->JitterOffsetX;
