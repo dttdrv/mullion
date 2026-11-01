@@ -424,9 +424,10 @@ public:
     } else {
       // each command's draw is command i of the indirect command buffer (an indexed one's extras are past them, below)
       source << "render_command cmd(command_data.cmd_buf, i);\n";
-      // no command to write where each command's draw is left in an IndirectMeshDraw, with no threadgroups so far
+      // no command to write where each command's draw is left in an IndirectMeshDraw, with no threadgroups so far. a
+      // command past the count is not run, and an indexed one's place may hold another's extra by now
       source << "if (command_data.draws) command_data.draws[i].threadgroups = uint3(0), command_data.draws[i].zero[0] = 0;\n"
-                "else cmd.reset();\n";
+                "else if (i < count) cmd.reset();\n";
       source << "if (command_data.omitted) command_data.omitted[i] = 0;\n";
       source << "if (command_data.so_lacked) command_data.so_lacked[i] = 0;\n";
     }
