@@ -776,7 +776,10 @@ private:
       device_->CheckAtomicLocks();
       if (record_totals_)
         CompareGPURecords(inflight.records, record_totals_);
-      if (inflight.cmdbuf.status() == WMTCommandBufferStatusError) {
+      // read once: Metal may fail the buffer between two reads, and an error neither the report below nor the list of
+      // buffers whose status is to come sees would be lost
+      const auto status = inflight.cmdbuf.status();
+      if (status == WMTCommandBufferStatusError) {
         // the first says why; Metal fails what follows a fault of the process's too. MULLION_TRACE_GPU has them all:
         // one Metal calls an innocent victim of a GPU recovery leaves the one at fault to another command buffer
         bool first = SUCCEEDED(device_->RemovedReason());
@@ -877,7 +880,7 @@ private:
       }
       sample(inflight.sampled.size());
       uint32_t omitted[2] = {};
-      if (inflight.cmdbuf.status() != WMTCommandBufferStatusError)
+      if (status != WMTCommandBufferStatusError)
         for (auto &[buffer, words, scratch] : inflight.omitted)
           for (auto word : words)
             omitted[scratch] = std::max(omitted[scratch], word);
@@ -890,7 +893,7 @@ private:
         ERR("Stream output from an indirect command needed ", omitted[1], " bytes of scratch, more than it had: the "
             "command was not run, and lists recorded from now on have that much");
       }
-      if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+      if (status <= WMTCommandBufferStatusScheduled) {
         std::lock_guard lock(feedback_mutex_);
         unsettled_.emplace_back(inflight.cmdbuf, internal_seq);
       }
