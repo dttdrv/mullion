@@ -1,0 +1,14 @@
+# the lane that writes a texel for the SIMD group writes only its own bits
+# family native
+# family native-metal3
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3314,7 +3314,7 @@
+         ir.CreateCondBr(ir.CreateICmpEQ(lane_index(), leader), lead, next);
+         ir.SetInsertPoint(lead);
+         write(
+-            ir.CreateAnd(leader_key, ir.getInt32(0xffff)), ir.CreateLShr(leader_key, 16), leader_slice, merged
++            ir.CreateAnd(leader_key, ir.getInt32(0xffff)), ir.CreateLShr(leader_key, 16), leader_slice, bits
+         );
+         ir.CreateBr(next);
+         ir.SetInsertPoint(next);

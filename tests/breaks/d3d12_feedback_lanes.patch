@@ -1,0 +1,16 @@
+# the lanes of a SIMD group put together their writes to a texel of any slice: the slice is left out of the texel's key
+# family native
+# family native-metal3
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3306,9 +3306,7 @@
+         auto leader = ir.CreateTrunc(ir.CreateCall(ctz, {lanes, ir.getFalse()}), ir.getInt32Ty());
+         auto leader_key = move("simd_shuffle", key, {i16(leader)});
+         auto leader_slice = move("simd_shuffle", slice, {i16(leader)});
+-        auto same = ir.CreateAnd(
+-            pending, ir.CreateAnd(ir.CreateICmpEQ(key, leader_key), ir.CreateICmpEQ(slice, leader_slice))
+-        );
++        auto same = ir.CreateAnd(pending, ir.CreateICmpEQ(key, leader_key));
+         auto merged =
+             simd("simd_or", ir.getInt32Ty(), {ir.CreateSelect(same, bits, ir.getInt32(0))}, ir.getInt32Ty());
+         ir.CreateCondBr(ir.CreateICmpEQ(lane_index(), leader), lead, next);

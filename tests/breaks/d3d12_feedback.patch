@@ -1,0 +1,14 @@
+# a trilinear sample leaves out its second mip whenever it is the next after the first
+# family native
+# family native-metal3
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3235,7 +3235,7 @@
+       // makes. the map's texels get the same bits. MULLION_AIRCONV_SKIP=feedback-merge leaves this out
+       bool merge_skipped = feedback_merge_skipped();
+       if (!merge_skipped)
+-        levels[1].second = ir.CreateAnd(mip_linear, ir.CreateICmpNE(levels[1].first, levels[0].first));
++        levels[1].second = ir.CreateAnd(mip_linear, ir.CreateICmpUGT(levels[1].first, ir.CreateAdd(levels[0].first, ir.getInt32(1))));
+       // lanes put their writes together only where they write one map: its handle is the same in every lane unless
+       // it was made with a NonUniformResourceIndex. compute and pixel shaders have their lane's index. a pixel shader's
+       // helper lanes write nothing ("Helper lanes" in the spec; Metal drops their atomics), so they take no part
