@@ -50,12 +50,18 @@ struct MTL_DENOISED_UPSCALE_D3D12_DESC {
   FLOAT ViewToClip[16];
 };
 
+// a feature's MetalFX scaler, which its owner destroys when it is done with the feature
+class IMTLD3D12Upscaler {
+public:
+  virtual void STDMETHODCALLTYPE Destroy() = 0;
+};
+
 DEFINE_COM_INTERFACE("987426c0-bca1-4bfb-8e8a-1da3257f8467", IMTLD3D12CommandListExt) : public IUnknown {
   virtual BOOL STDMETHODCALLTYPE SupportsTemporalUpscale() = 0;
   virtual BOOL STDMETHODCALLTYPE SupportsDenoisedUpscale() = 0;
-  // *ppCache is a feature's scaler, made at its first upscale and again when the inputs' sizes or formats change;
-  // ReleaseUpscaler frees it
-  virtual HRESULT STDMETHODCALLTYPE TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, void **ppCache) = 0;
-  virtual HRESULT STDMETHODCALLTYPE DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, void **ppCache) = 0;
-  virtual void STDMETHODCALLTYPE ReleaseUpscaler(void *pCache) = 0;
+  // *ppUpscaler is a feature's scaler, made at its first upscale and again when the inputs' sizes or formats change
+  virtual HRESULT STDMETHODCALLTYPE
+  TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
+  virtual HRESULT STDMETHODCALLTYPE
+  DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
 };

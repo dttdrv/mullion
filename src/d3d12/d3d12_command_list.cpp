@@ -4965,7 +4965,11 @@ public:
   }
 
   // MetalFX (IMTLD3D12CommandListExt): a feature's scaler, and the inputs it was made for
-  struct UpscalerCache {
+  struct UpscalerCache final : IMTLD3D12Upscaler {
+    void STDMETHODCALLTYPE
+    Destroy() final {
+      delete this;
+    }
     std::array<uint32_t, 14> key{};
     Rc<TemporalScaler> temporal;
     Rc<DenoisedScaler> denoised;
@@ -5023,7 +5027,7 @@ public:
   }
 
   HRESULT
-  TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, void **ppCache) {
+  TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
     if (!pDesc || !ppCache)
       return E_INVALIDARG;
     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
@@ -5041,9 +5045,9 @@ public:
       if (!std::exchange(warned, true))
         WARN("TemporalUpscale: motion vectors at the output resolution are not supported yet");
     }
-    auto &cache = *reinterpret_cast<UpscalerCache **>(ppCache);
+    auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
-      cache = new UpscalerCache;
+      *ppCache = cache = new UpscalerCache;
     std::array<uint32_t, 14> key{1,
                                  color->width(),
                                  color->height(),
@@ -5104,7 +5108,7 @@ public:
   }
 
   HRESULT
-  DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, void **ppCache) {
+  DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
     if (!pDesc || !ppCache)
       return E_INVALIDARG;
     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
@@ -5125,9 +5129,9 @@ public:
       if (!std::exchange(warned, true))
         WARN("DenoisedUpscale: roughness in the normals' alpha is read from their first channel");
     }
-    auto &cache = *reinterpret_cast<UpscalerCache **>(ppCache);
+    auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
-      cache = new UpscalerCache;
+      *ppCache = cache = new UpscalerCache;
     std::array<uint32_t, 14> key{2,
                                  color->width(),
                                  color->height(),
@@ -5224,16 +5228,12 @@ public:
              list_->device_->GetMTLDevice().supportsFXTemporalScaler();
     }
     HRESULT STDMETHODCALLTYPE
-    TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, void **ppCache) final {
+    TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {
       return list_->TemporalUpscale(pDesc, ppCache);
     }
     HRESULT STDMETHODCALLTYPE
-    DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, void **ppCache) final {
+    DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {
       return list_->DenoisedUpscale(pDesc, ppCache);
-    }
-    void STDMETHODCALLTYPE
-    ReleaseUpscaler(void *pCache) final {
-      delete static_cast<UpscalerCache *>(pCache);
     }
 
   private:
