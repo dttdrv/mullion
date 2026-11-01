@@ -467,8 +467,8 @@ enum SM50_SHADER_FLAG {
   /* no sampler has a border color Metal lacks (SM50_SAMPLER_BORDER): samples leave out the custom border's emulation */
   SM50_SHADER_FLAG_NO_CUSTOM_BORDER = 1 << 6,
   /* an amplification shader builds its payload in groupshared memory and DispatchMesh copies it to Metal's payload, as
-     before the payload was built in place (MULLION_D3D12_FAST_MESH=0, for A/B runs) */
-  SM50_SHADER_FLAG_STAGED_PAYLOAD = 1 << 7,
+     before the payload was built in place (MULLION_D3D12_FAST_MESH=0, for A/B runs). bit 7 is coarse shading's (#136) */
+  SM50_SHADER_FLAG_STAGED_PAYLOAD = 1 << 8,
 };
 
 struct SM50_SHADER_COMMON_DATA {
