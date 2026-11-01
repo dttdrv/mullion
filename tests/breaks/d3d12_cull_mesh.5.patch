@@ -1,0 +1,14 @@
+# a triangle's SV_PrimitiveID leaves out the triangles of the mesh threadgroups before its own
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2699,7 +2699,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     auto slot = air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(ballot, below));
+     air.CreateSetMeshPrimitiveID(
+         slot, builder.CreateAdd(
+-                  primitives_before,
++                  builder.getInt32(0),
+                   air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid_primitive_mask, below))
+               )
+     );

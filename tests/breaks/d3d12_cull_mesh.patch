@@ -1,0 +1,14 @@
+# the mesh stage writes each triangle at its own place, not after the kept ones before it: those past the count are lost
+# family native
+# family native-metal3
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -2696,7 +2696,7 @@ convert_dxbc_vertex_for_geometry_shader(
+     auto emit = llvm::BasicBlock::Create(context, "mesh_emit", function);
+     builder.CreateCondBr(keep, emit, return_);
+     builder.SetInsertPoint(emit);
+-    auto slot = air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(ballot, below));
++    auto slot = lane;
+     air.CreateSetMeshPrimitiveID(
+         slot, builder.CreateAdd(
+                   primitives_before,

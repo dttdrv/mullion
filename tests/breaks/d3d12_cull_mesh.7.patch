@@ -1,0 +1,13 @@
+# a mesh-only pipeline's mesh stage counts as not reading the root arguments, as a pass-through one's does not
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1548,7 +1548,6 @@ public:
+       mesh_only = mesh_only_lists && pass_through && !sm50_shader_t(shader_gs) && ref_vs.CullDistances &&
+                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
+                   !conservative && !quad_lines;
+-      mesh_reads_root_arguments |= mesh_only;
+       if (!patches && (!(pso = variant(false, false, mesh_only)) || (strips && !(pso_strip = variant(true)))))
+         return hr;
+       if (!patches && stream_output &&
