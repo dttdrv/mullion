@@ -1,0 +1,12 @@
+# an indexed indirect draw's indices past its view draw nothing
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -546,7 +546,7 @@ public:
+           indices();
+           source << "}\n";
+         };
+-        extra("rest", [&] { draw("extra", "rest", "command_data.zeros"); });
++        extra("0", [&] { draw("extra", "rest", "command_data.zeros"); });
+         extra("wrapped_inside", [&] {
+           source << "if (ib32bit) {\n";
+           draw("extra", "wrapped_inside", "reinterpret_cast<device uint *>(ib)");

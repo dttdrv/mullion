@@ -1,0 +1,12 @@
+# a pixel shader reading SV_InnerCoverage is created at tier 0
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -316,7 +316,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
+     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
+     // SV_InnerCoverage needs conservative rasterization tier 3, which D3D11 here does not report
+     // (ConservativeRasterizationTier): a shader the device cannot run is refused
+-    if (!managed_shader || managed_shader->reflection().PixelShader.InnerCoverage) {
++    if (!managed_shader) {
+       return E_INVALIDARG;
+     }
+     if (!ppShader)
