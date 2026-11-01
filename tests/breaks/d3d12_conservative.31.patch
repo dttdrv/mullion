@@ -1,0 +1,12 @@
+# a flat varying of a mesh shader's grown triangle is the first corner's, not its own
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -4103,7 +4103,7 @@
+         for (uint32_t i = 0; i < cm->registers[0].size(); i++) {
+           auto reg = cm->registers[0][i];
+           bool integer = cm->integers[0][i], flat = integer || (cm->flat_inputs >> reg & 1);
+-          Value *value = flat ? word(conservative_vertices, corner[u], i)
++          Value *value = flat ? word(conservative_vertices, corner[0], i)
+                               : blend(cm->noperspective_inputs >> reg & 1 ? triangle.linear : triangle.over_w, u, i);
+           if (flat && !integer)
+             value = real(value);

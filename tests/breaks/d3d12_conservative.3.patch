@@ -1,9 +1,9 @@
 # noperspective inputs are extrapolated with perspective
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -1636,7 +1636,7 @@
-       // a flat varying is the first corner's
-       auto value = component(triangle && flat ? 0 : corner, v.reg, v.component);
+@@ -1817,7 +1817,7 @@
+       // a flat varying is its own corner's, as conservative_point's
+       auto value = component(corner, v.reg, v.component);
        if (triangle && !flat) {
 -        bool screen = pso_data->noperspective_inputs >> v.reg & 1;
 +        bool screen = false;

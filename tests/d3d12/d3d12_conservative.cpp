@@ -35,10 +35,20 @@
 #include <string>
 
 static const char hlsl[] = R"hlsl(
+// GetAttributeAtVertex reads only inputs without interpolation, and every stage writes V as ps_barycentrics reads it:
+// DXC packs a signature by its elements' interpolation, and an input must sit where the stage before put its output
+// (D3D12 pipeline validation, DirectXShaderCompiler issue 75)
+#ifdef BARYCENTRICS
+#define PERSPECTIVE_MODE nointerpolation
+#define SCREEN_MODE nointerpolation
+#else
+#define PERSPECTIVE_MODE
+#define SCREEN_MODE noperspective
+#endif
 struct V {
   float4 position : SV_Position;
-  float perspective : PERSPECTIVE;
-  noperspective float screen : SCREEN;
+  PERSPECTIVE_MODE float perspective : PERSPECTIVE;
+  SCREEN_MODE float screen : SCREEN;
   nointerpolation uint flat : FLAT;
 };
 V vs(float4 position : POSITION, float perspective : PERSPECTIVE, float screen : SCREEN, uint flat : FLAT) {
@@ -78,13 +88,7 @@ float ps_evaluate(V v, bool front : SV_IsFrontFace) : SV_Target {
   return 1;
 }
 #ifdef BARYCENTRICS
-struct W {
-  float4 position : SV_Position;
-  nointerpolation float perspective : PERSPECTIVE;
-  nointerpolation float screen : SCREEN;
-  nointerpolation uint flat : FLAT;
-};
-float ps_barycentrics(W v, float3 b : SV_Barycentrics, noperspective float3 n : SV_Barycentrics1) : SV_Target {
+float ps_barycentrics(V v, float3 b : SV_Barycentrics, noperspective float3 n : SV_Barycentrics1) : SV_Target {
   uint2 p = uint2(v.position.xy);
   uint i = p.y * WIDTH + p.x, was;
   float3 perspective = {GetAttributeAtVertex(v.perspective, 0), GetAttributeAtVertex(v.perspective, 1),
@@ -443,27 +447,42 @@ main(int argc, char **argv) {
   mesh_defines.insert(mesh_defines.end(), {"MESH", "TRIANGLES=256", "REAL=200"});
   auto small_defines = defines;
   small_defines.insert(small_defines.end(), {"MESH", "TRIANGLES=4", "REAL=1"});
-  std::string ms, ms_amplified, ms_writes, as;
-  if (meshes) {
-    ms = compiler.compile(hlsl, "ms", "ms_6_5", mesh_defines);
-    ms_amplified = compiler.compile(hlsl, "ms_amplified", "ms_6_5", mesh_defines);
-    ms_writes = compiler.compile(hlsl, "ms_writes", "ms_6_5", small_defines);
-    as = compiler.compile(hlsl, "as", "as_6_5", mesh_defines);
-    if (ms.empty() || ms_amplified.empty() || ms_writes.empty() || as.empty()) {
+  // barycentrics are DXIL's (shader model 6.1), on a device that has them
+  D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3{};
+  device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3));
+  bool supported = compiler.dxc && options3.BarycentricsSupported;
+  // the mesh shaders, then those of V as ps_barycentrics reads it
+  std::string ms[2], ms_amplified[2], ms_writes[2], as;
+  for (int b = 0; meshes && b <= supported; b++) {
+    auto with = [&](std::vector<std::string> d) {
+      if (b)
+        d.push_back("BARYCENTRICS");
+      return d;
+    };
+    ms[b] = compiler.compile(hlsl, "ms", "ms_6_5", with(mesh_defines));
+    ms_amplified[b] = compiler.compile(hlsl, "ms_amplified", "ms_6_5", with(mesh_defines));
+    ms_writes[b] = compiler.compile(hlsl, "ms_writes", "ms_6_5", with(small_defines));
+    if (ms[b].empty() || ms_amplified[b].empty() || ms_writes[b].empty()) {
       printf("failed: the mesh shaders did not compile\n");
       return 1;
     }
   }
-  // barycentrics are DXIL's (shader model 6.1), on a device that has them
-  D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3{};
-  device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3));
-  std::string ps_barycentrics;
-  if (compiler.dxc && options3.BarycentricsSupported) {
+  if (meshes && (as = compiler.compile(hlsl, "as", "as_6_5", mesh_defines)).empty()) {
+    printf("failed: the mesh shaders did not compile\n");
+    return 1;
+  }
+  std::string ps_barycentrics, barycentric_vs, barycentric_gs, barycentric_hs, barycentric_ds;
+  if (supported) {
     auto barycentric_defines = defines;
     barycentric_defines.push_back("BARYCENTRICS");
     ps_barycentrics = compiler.compile(hlsl, "ps_barycentrics", "ps_6_1", barycentric_defines);
-    if (ps_barycentrics.empty()) {
-      printf("failed: the barycentrics shader did not compile\n");
+    barycentric_vs = compiler.compile(hlsl, "vs", "vs", barycentric_defines);
+    barycentric_gs = compiler.compile(hlsl, "gs", "gs", barycentric_defines);
+    barycentric_hs = compiler.compile(hlsl, "hs", "hs", barycentric_defines);
+    barycentric_ds = compiler.compile(hlsl, "ds", "ds", barycentric_defines);
+    if (ps_barycentrics.empty() || barycentric_vs.empty() || barycentric_gs.empty() || barycentric_hs.empty() ||
+        barycentric_ds.empty()) {
+      printf("failed: the barycentrics shaders did not compile\n");
       return 1;
     }
   }
@@ -496,13 +515,14 @@ main(int argc, char **argv) {
     Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, DXGI_SAMPLE_DESC> samples;
     Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, UINT> sample_mask;
   } stream;
-  // a mesh pipeline of the graphics pipeline's state
-  auto mesh_pipeline = [&](int path, const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc, ComPtr<ID3D12PipelineState> &out) {
+  // a mesh pipeline of the graphics pipeline's state, of the mesh shaders for ps_barycentrics with `b`
+  auto mesh_pipeline = [&](int path, const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc, ComPtr<ID3D12PipelineState> &out,
+                           int b = 0) {
     stream = {};
     stream.rs.data = desc.pRootSignature;
     if (path == 5)
       stream.as.data = bytecode(as);
-    stream.ms.data = bytecode(path == 5 ? ms_amplified : path == 6 ? ms_writes : ms);
+    stream.ms.data = bytecode(path == 5 ? ms_amplified[b] : path == 6 ? ms_writes[b] : ms[b]);
     stream.ps.data = desc.PS;
     stream.raster.data = desc.RasterizerState;
     stream.depth.data = desc.DepthStencilState;
@@ -569,10 +589,15 @@ main(int argc, char **argv) {
           } else {
             CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&inner_pso[geometry])));
           }
-          if (!ps_barycentrics.empty()) {
+          if (supported) {
             desc.PS = bytecode(ps_barycentrics);
+            desc.VS = bytecode(barycentric_vs);
+            if (desc.GS.pShaderBytecode)
+              desc.GS = bytecode(barycentric_gs);
+            if (desc.HS.pShaderBytecode)
+              desc.HS = bytecode(barycentric_hs), desc.DS = bytecode(barycentric_ds);
             if (meshed(geometry)) {
-              CHECK(mesh_pipeline(geometry, desc, barycentric_pso[geometry]));
+              CHECK(mesh_pipeline(geometry, desc, barycentric_pso[geometry], 1));
             } else {
               CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&barycentric_pso[geometry])));
             }

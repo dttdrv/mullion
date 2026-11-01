@@ -1,12 +1,12 @@
-# a flat output of the grown triangle's points is the last corner's
+# a flat output of the grown triangle's points is the first corner's, not its own
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -337,7 +337,7 @@
-       // a flat register is the first corner's
+@@ -368,7 +368,7 @@
+       // each one's at a vertex (GetAttributeAtVertex)
        bool flat = reg != position_reg &&
                    (component_types[c] != RegisterComponentType::Float || (flat_inputs >> reg & 1));
--      pvalue component = at(0);
-+      pvalue component = at(2);
+-      pvalue component = at(u);
++      pvalue component = at(0);
        if (reg == position_reg) {
          component = builder.CreateBitCast(builder.CreateExtractElement(triangle.position[u], uint64_t(c)), types._int);
        } else if (!flat) {
