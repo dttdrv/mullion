@@ -1261,7 +1261,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         unsigned draws = 0, geometry = 0, tessellation = 0;
         for (auto cmd = reinterpret_cast<const wmtcmd_base *>(&data->cmd_head); cmd;
              cmd = reinterpret_cast<const wmtcmd_base *>(cmd->next.ptr)) {
-          geometry += cmd->type >= WMTRenderCommandMullionGeometryDraw && cmd->type <= WMTRenderCommandMullionGeometryDrawIndexedIndirect;
+          geometry += (cmd->type >= WMTRenderCommandMullionGeometryDraw && cmd->type <= WMTRenderCommandMullionGeometryDrawIndexedIndirect) ||
+                      cmd->type == WMTRenderCommandMullionMeshDraw;
           tessellation += cmd->type >= WMTRenderCommandMullionTessellationMeshDraw &&
                           cmd->type <= WMTRenderCommandMullionTessellationMeshDrawIndexedIndirect;
           draws += cmd->type >= WMTRenderCommandDraw && cmd->type <= WMTRenderCommandDrawMeshThreadgroupsIndirect;

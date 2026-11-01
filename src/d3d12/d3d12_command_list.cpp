@@ -1254,8 +1254,12 @@ public:
     };
     if (dirty_state_.test(DirtyState::VertexBuffer)) {
       auto [Offset, Stride] = PopulateVertexBufferTable(1);
-      if (Stride && mesh)
+      // and the mesh stage, which runs the vertex shader where a list of triangles has it alone (MeshOnly)
+      if (Stride && mesh) {
         EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
+        if (pso_graphics_->mesh_only)
+          EncodeBuffer(WMTRenderCommandSetMeshBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
+      }
       if (Stride && vertex)
         EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
       dirty_state_.clr(DirtyState::VertexBuffer);
@@ -1604,8 +1608,15 @@ public:
     return RenderTargets(pso_graphics_->geometry_shader && strip ? pso_graphics_->pso_strip : pso_graphics_->pso);
   }
 
+  // whether the draw's pipeline is a mesh function alone, which runs the vertex shader in the mesh stage: a list of
+  // triangles passed through (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
+  bool
+  MeshOnly() {
+    return pso_graphics_->mesh_only && !PassesAdjacency() && !pso_graphics_->patches && !Strip(topology_);
+  }
+
   // a geometry-shader draw runs its vertices in warps of object threadgroups (airconv's layout), which read the draw's
-  // D3D12 arguments and its index buffer view, empty for a draw without indices
+  // D3D12 arguments and its index buffer view, empty for a draw without indices; or of mesh threadgroups (MeshOnly)
   template <typename Arguments>
   void
   EncodeGeometryDraw(const Arguments &Args, uint32_t Count, const D3D12_INDEX_BUFFER_VIEW &View) {
@@ -1633,11 +1644,13 @@ public:
     // the object stage reads the vertex count from the arguments' first word, so a skipped draw has none
     if (predication_region_)
       predicated_.push_back({uint32_t((Offset + sizeof(View)) / 4), reinterpret_cast<const uint32_t *>(&Args)[0], 0});
-    EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, SM50_BINDING_INDEX_INDEX_BUFFER);
-    EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset + sizeof(View), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
+    bool mesh_only = MeshOnly();
+    auto stage = mesh_only ? WMTRenderCommandSetMeshBuffer : WMTRenderCommandSetObjectBuffer;
+    EncodeBuffer(stage, Offset, SM50_BINDING_INDEX_INDEX_BUFFER);
+    EncodeBuffer(stage, Offset + sizeof(View), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
     auto draw = [&] {
       auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_mullion_geometry_draw>();
-      cmd.type = WMTRenderCommandMullionGeometryDraw;
+      cmd.type = mesh_only ? WMTRenderCommandMullionMeshDraw : WMTRenderCommandMullionGeometryDraw;
       cmd.draw_arguments_offset = Offset + sizeof(View);
       cmd.warp_count = warps;
       cmd.instance_count = Args.InstanceCount;
@@ -3910,6 +3923,11 @@ public:
     // the command's stages read and has the threadgroups the resolver left for it (none past the count)
     auto heap = allocator_->gpu_heap_buffer_address_;
     WMTSize object{cmd->geometry_threads, 1, 1}, mesh{1, 1, 1};
+    // a mesh function alone takes the warps as mesh threadgroups, and what the object stage reads (MeshOnly)
+    bool mesh_only = geometry && MeshOnly();
+    auto stage = mesh_only ? WMTRenderCommandSetMeshBuffer : WMTRenderCommandSetObjectBuffer;
+    if (mesh_only)
+      std::swap(object, mesh);
     if (dispatch_mesh) {
       object = {cmd->object_threads[0], cmd->object_threads[1], cmd->object_threads[2]};
       mesh = {cmd->mesh_threads[0], cmd->mesh_threads[1], cmd->mesh_threads[2]};
@@ -3921,7 +3939,7 @@ public:
     if (!dispatch_mesh && !cmd->threads_per_patch) {
       auto [origin, origin_offset] = allocator_->AllocateGPUHeap(2 * sizeof(uint32_t), 8);
       memset(origin, 0, 2 * sizeof(uint32_t));
-      EncodeBuffer(WMTRenderCommandSetObjectBuffer, origin_offset, SM50_BINDING_INDEX_DRAW_ORIGIN);
+      EncodeBuffer(stage, origin_offset, SM50_BINDING_INDEX_DRAW_ORIGIN);
     }
     for (UINT i = 0; i < MaxCommandCount; i++) {
       auto at = cmd->draws - heap + i * sizeof(IndirectMeshDraw);
@@ -3932,17 +3950,14 @@ public:
       }
       if (!dispatch_mesh) {
         EncodeBuffer(
-            WMTRenderCommandSetObjectBuffer, cmd->vertex_buffer - heap + i * cmd->vertex_argbuf_stride,
-            SM50_BINDING_INDEX_VERTEX_BUFFER
+            stage, cmd->vertex_buffer - heap + i * cmd->vertex_argbuf_stride, SM50_BINDING_INDEX_VERTEX_BUFFER
         );
-        EncodeBuffer(WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, view), SM50_BINDING_INDEX_INDEX_BUFFER);
+        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, view), SM50_BINDING_INDEX_INDEX_BUFFER);
         if (cmd->threads_per_patch)
           EncodeBuffer(
               WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, control_points), SM50_BINDING_INDEX_PATCH_SIZE
           );
-        EncodeBuffer(
-            WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS
-        );
+        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       }
       auto draw = [&] {
         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();

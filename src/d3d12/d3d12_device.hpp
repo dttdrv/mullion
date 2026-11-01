@@ -508,6 +508,9 @@ public:
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in `pso_strip` for strips (none for points)
   bool geometry_shader = false;
+  // its `pso` is a mesh function alone that runs the vertex shader and passes a list of triangles on, culling them by
+  // their cull distances, with no object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
+  bool mesh_only = false;
   // a stage reads or writes a UAV: only then can a UAV barrier order anything a draw of it does inside a render pass
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
