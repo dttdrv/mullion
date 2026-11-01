@@ -821,6 +821,11 @@ public:
     return MTLCommandBuffer_waitUntilCompleted(handle);
   }
 
+  void
+  waitUntilSignaled(SharedEvent event, uint64_t value) {
+    MTLCommandBuffer_waitUntilSignaled(handle, event.handle, value);
+  }
+
   WMTCommandBufferStatus
   status() {
     return MTLCommandBuffer_status(handle);

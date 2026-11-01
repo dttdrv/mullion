@@ -1,0 +1,18 @@
+# Metal 4 signals a command buffer's fences once it is committed, without waiting for the GPU to finish its work
+# family native
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -760,9 +760,10 @@
+       // waits for it here: the profile, for its GPU times, and a dumped frame, for its status
+       // Metal 3: the slot's event likewise, unless what is read now needs Metal to have completed the buffer: the
+       // profile's GPU times, its counter samples (resolveCounterRange), or a dumped frame's status
+-      if constexpr (Metal4)
+-        profile_ || inflight.settles ? inflight.cmdbuf.waitUntilCompleted() : inflight.cmdbuf.waitForGPU();
+-      else if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
++      if constexpr (Metal4) {
++        if (profile_ || inflight.settles)
++          inflight.cmdbuf.waitUntilCompleted();
++      } else if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+         if (profile_ || !inflight.signals || inflight.samples || inflight.settles)
+           inflight.cmdbuf.waitUntilCompleted();
+         else

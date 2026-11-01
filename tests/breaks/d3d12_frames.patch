@@ -1,0 +1,13 @@
+# a dumped frame's command buffer is retired at the GPU's event, so its status is read before Metal calls it completed
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -2464,7 +2464,6 @@
+       cmdbuf.presentDrawable(drawable);
+     if (!dump_frames.empty()) {
+       DumpFrame(backbuffer, *scope.inflight, id, number);
+-      scope.inflight->settles = true;
+     }
+     scope.inflight->semaphore = hLantecyWaitable;
+     scope.inflight->presents = true;
