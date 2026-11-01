@@ -511,6 +511,10 @@ public:
   // its `pso` is a mesh function alone that runs the vertex shader and passes a list of triangles on, culling them by
   // their cull distances, with no object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
   bool mesh_only = false;
+  // its mesh function reads the root arguments and static samplers, which are bound to the mesh stage then: one that
+  // runs a shader of the pipeline's (a mesh, domain or geometry shader, or the vertex shader where mesh_only), not one
+  // that only passes a vertex shader's primitives on
+  bool mesh_reads_root_arguments = true;
   // a stage reads or writes a UAV: only then can a UAV barrier order anything a draw of it does inside a render pass
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)

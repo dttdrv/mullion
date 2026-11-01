@@ -1243,11 +1243,14 @@ public:
     // a mesh shader pipeline has an object stage (its amplification shader, if any) and a mesh stage
     bool mesh = pso_graphics_->threads_per_patch || Geometry() || pso_graphics_->mesh_shader;
     bool vertex = !mesh;
+    // the root arguments and static samplers reach the mesh stage where its function reads them
+    // (mesh_reads_root_arguments): not the pass-through mesh stage of a pipeline without a geometry shader
+    bool mesh_reads = mesh && pso_graphics_->mesh_reads_root_arguments;
     auto geometry_buffer = [&](uint64_t Offset, uint8_t Index) {
-      if (mesh) {
+      if (mesh)
         EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, Index);
+      if (mesh_reads)
         EncodeBuffer(WMTRenderCommandSetMeshBuffer, Offset, Index);
-      }
       if (vertex)
         EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, Index);
       EncodeBuffer(WMTRenderCommandSetFragmentBuffer, Offset, Index);
@@ -2712,9 +2715,11 @@ public:
     if (pso_graphics_.ptr() == graphics_pso)
       return;
     // tessellation, geometry shaders and stream output bind root arguments to other stages
+    // and a pipeline whose mesh stage reads them, or reads the vertex buffers (mesh_only), to others again
     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
       bool adjacency = p->adjacency && Adjacency(topology_);
-      return p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency;
+      return (p->threads_per_patch || p->geometry_shader || p->mesh_shader || adjacency) |
+             p->mesh_reads_root_arguments << 1 | p->mesh_only << 2;
     };
     if (!pso_graphics_ || stages(pso_graphics_.ptr()) != stages(graphics_pso))
       dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature, DirtyState::VertexBuffer);

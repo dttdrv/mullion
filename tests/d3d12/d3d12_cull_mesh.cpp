@@ -5,7 +5,8 @@
 // culled ones too (8.17), SV_InstanceID, and a flat attribute from the triangle's first vertex (the provoking vertex,
 // 8.14). it holds for draws with a start vertex, a start index, a base vertex and a start instance, for an indexed list
 // with the strip cut index among its indices (a list never cuts, 8.13 / D3D12 IBStripCutValue), for ExecuteIndirect
-// of both kinds of draw, and for a strip.
+// of both kinds of draw, for a strip, and for a list drawn between two draws of a geometry shader pipeline that reads
+// the same vertex buffers.
 // the reference draws the same triangles without cull distances, its pixel shader discarding the triangles the CPU
 // finds culled by their SV_PrimitiveID and SV_InstanceID. the draws are thousands of triangles, so a Metal pipeline that
 // passes several triangles on per threadgroup meets culled and kept triangles side by side in every group.
@@ -35,6 +36,11 @@ V vs(In i, uint instance : SV_InstanceID) {
   v.cull = float2(i.cull.x * i.flip, i.cull.y);
 #endif
   return v;
+}
+// a geometry shader that passes triangles on, drawn before and after a case's draw in the same pass
+[maxvertexcount(3)] void gs(triangle V i[3], inout TriangleStream<V> s) {
+  for (uint k = 0; k < 3; k++)
+    s.Append(i[k]);
 }
 ByteAddressBuffer culled : register(t0);
 uint4 ps(V v, uint primitive : SV_PrimitiveID) : SV_Target {
@@ -265,7 +271,7 @@ main(int argc, char **argv) {
   const Instance instances[3] = {{{0, 0}, 1}, {{0, 0}, 1}, {{128, 0}, -1}};
 
   // the cases: each a list of triangles (vertex indices), drawn one of several ways
-  enum Kind { List, Indexed, Cut, IndirectList, IndirectIndexed, Strip };
+  enum Kind { List, Indexed, Cut, IndirectList, IndirectIndexed, Strip, BetweenGS };
   struct Case {
     const char *name;
     Kind kind;
@@ -310,6 +316,10 @@ main(int argc, char **argv) {
       for (UINT k : {0u, 1u})
         h.indices.push_back((y * kColumns) * 4 + k);
     cases.push_back(h);
+    Case i = c;
+    i.name = "a list between geometry shader draws";
+    i.kind = BetweenGS;
+    cases.push_back(i);
   }
 
   // the root signature: the reference's table of culled triangles
@@ -321,7 +331,7 @@ main(int argc, char **argv) {
     printf("failed: no root signature\n");
     return 1;
   }
-  ComPtr<ID3D12PipelineState> pso[2]; // the case's, the reference's
+  ComPtr<ID3D12PipelineState> pso[2], gs_pso; // the case's, the reference's; the geometry shader's
   for (int reference = 0; reference < 2; reference++) {
     std::vector<std::string> defines = {"CULL=" + std::to_string(1 - reference), "WIDTH=" + std::to_string(kWidth),
                                         "HEIGHT=" + std::to_string(kHeight), "PRIMITIVES=" + std::to_string(kTriangles)};
@@ -354,6 +364,15 @@ main(int argc, char **argv) {
       desc.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_UINT;
       desc.SampleDesc.Count = 1;
       CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso[reference])));
+      if (reference) {
+        auto gs = compiler.compile(hlsl, "gs", "gs", defines);
+        if (gs.empty()) {
+          printf("failed: the geometry shader does not compile\n");
+          return 1;
+        }
+        desc.GS = bytecode(gs);
+        CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&gs_pso)));
+      }
     }
   }
 
@@ -470,7 +489,18 @@ main(int argc, char **argv) {
       D3D12_INDEX_BUFFER_VIEW ibv{ib->GetGPUVirtualAddress(), UINT(index_data.size() * 2), DXGI_FORMAT_R16_UINT};
       list->IASetIndexBuffer(&ibv);
       list->IASetPrimitiveTopology(strip ? D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      // the geometry shader pipeline's draws: the same vertex buffers, through the object stage
+      auto gs_draw = [&] {
+        list->SetPipelineState(gs_pso.Get());
+        list->DrawInstanced(30, 1, c.start, c.first_instance);
+        list->SetPipelineState(pso[reference].Get());
+      };
       switch (c.kind) {
+      case BetweenGS:
+        gs_draw();
+        list->DrawInstanced(UINT(c.indices.size()), c.count, c.start, c.first_instance);
+        gs_draw();
+        break;
       case List:
       case Strip:
         list->DrawInstanced(UINT(c.indices.size()), c.count, c.start, c.first_instance);

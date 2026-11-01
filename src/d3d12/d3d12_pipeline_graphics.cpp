@@ -1304,6 +1304,9 @@ public:
                         (ref_vs.CullDistances || (stream_output && so_data.rasterized_stream == 0) || quad_lines ||
                          conservative);
     geometry_shader |= pass_through;
+    // a mesh stage that runs a shader of the pipeline's reads its root arguments; the vertex shader's primitives passed
+    // on alone read none (mesh_only below runs the vertex shader there too)
+    mesh_reads_root_arguments = mesh_shader || tessellation || pDesc->GS.pShaderBytecode;
     mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
@@ -1545,6 +1548,7 @@ public:
       mesh_only = mesh_only_lists && pass_through && !sm50_shader_t(shader_gs) && ref_vs.CullDistances &&
                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
                   !conservative && !quad_lines;
+      mesh_reads_root_arguments |= mesh_only;
       if (!patches && (!(pso = variant(false, false, mesh_only)) || (strips && !(pso_strip = variant(true)))))
         return hr;
       if (!patches && stream_output &&
