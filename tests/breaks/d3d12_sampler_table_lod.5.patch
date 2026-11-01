@@ -1,0 +1,12 @@
+# a sample's branch joins the next sample's on another sampler, which takes the first sampler's side
+--- a/src/airconv/transforms/merge_sample_branches.cpp
++++ b/src/airconv/transforms/merge_sample_branches.cpp
+@@ -69,8 +69,6 @@ struct Equal {
+ bool
+ Join(Diamond &First, const Diamond &Second) {
+   auto Between = First.Join;
+-  if (!Equal()(First.Branch->getCondition(), Second.Branch->getCondition()))
+-    return false;
+   // what the first sample's value feeds stays after it; the rest moves before the first branch, which nothing in the
+   // arms writes memory past
+   SmallPtrSet<Instruction *, 16> After;

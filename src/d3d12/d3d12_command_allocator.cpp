@@ -172,6 +172,13 @@ MTLD3D12CommandAllocatorImpl::GPURecordsFor(EncoderData *Root) {
 }
 
 MTLD3D12CommandAllocatorImpl::~MTLD3D12CommandAllocatorImpl() {
+  // what no submitted list still runs goes to the device's pool
+  if (!pending) {
+    for (auto &[key, unused] : icb_pool_)
+      device_->indirect_command_buffers.Give(std::move(unused));
+    for (auto &used : icb_)
+      device_->indirect_command_buffers.Give(std::move(used));
+  }
   ReleaseRuns();
   delete records_;
 }
@@ -292,7 +299,10 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   encoder_last = nullptr;
   encoder_count_ = 0;
 
-  // the pool keeps only what the last use made, so it grows with a use and never past it
+  // the pool keeps only what the last use made, so it grows with a use and never past it; what that use left unused
+  // goes to the device's, for another allocator
+  for (auto &[key, unused] : icb_pool_)
+    device_->indirect_command_buffers.Give(std::move(unused));
   icb_pool_.clear();
   for (auto &used : icb_)
     icb_pool_.emplace(used.key, std::move(used));
@@ -373,8 +383,8 @@ MTLD3D12CommandAllocatorImpl::EncodeComputeResolver(MTLD3D12CommandSignature *pC
 }
 
 // an indirect command buffer of the kind `info` describes, for `count` commands: a pooled one of the same kind and
-// size when the allocator has one, else a new one, of the next power of two in size so that others fit it. both
-// leave its GPU resource ID in `info`; the lists keep it until the allocator is reset
+// size when the allocator or else the device has one, else a new one, of the next power of two in size so that others
+// fit it. both leave its GPU resource ID in `info`; the lists keep it until the allocator is reset
 WMT::IndirectCommandBuffer
 MTLD3D12CommandAllocatorImpl::AcquireICB(WMTIndirectCommandBufferInfo &info, uint64_t count, WMTResourceOptions options) {
   uint64_t capacity = std::bit_ceil(std::max<uint64_t>(count, 1));
@@ -387,13 +397,14 @@ MTLD3D12CommandAllocatorImpl::AcquireICB(WMTIndirectCommandBufferInfo &info, uin
   PooledICB entry;
   bool pooled = false;
   for (auto [it, end] = icb_pool_.equal_range(key); it != end; ++it)
-    if (it->second.capacity == capacity && it->second.options == options &&
-        !memcmp(&it->second.kind, &kind, sizeof(kind))) {
+    if (it->second.Is(key, kind, capacity, options)) {
       entry = std::move(it->second);
       icb_pool_.erase(it);
       pooled = true;
       break;
     }
+  if (!pooled)
+    pooled = device_->indirect_command_buffers.Take(key, kind, capacity, options, entry);
   if (!pooled) {
     entry.icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, capacity, options);
     entry.gpu_resource_id = info.gpu_resource_id;

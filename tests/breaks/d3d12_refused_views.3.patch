@@ -1,0 +1,14 @@
+# a refused render target view leaves the slot's earlier view
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 6559436..28d8576 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1231,7 +1231,7 @@ public:
+       return;
+     }
+     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
+-    if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
++    if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor)) && false) {
+       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+       Heap->AddRenderTarget(Index, nullptr);
+     }

@@ -1,0 +1,14 @@
+# a buffer that is not reserved is described as one that is
+diff --git a/src/d3d12/d3d12_buffer.cpp b/src/d3d12/d3d12_buffer.cpp
+index 79e843c..c0dc72f 100644
+--- a/src/d3d12/d3d12_buffer.cpp
++++ b/src/d3d12/d3d12_buffer.cpp
+@@ -303,7 +303,7 @@ public:
+       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
+       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
+   ) {
+-    if (!reserved_)
++    if (false)
+       return NoTiling(TotalTileCount, PackedMipInfo, StandardTileShape, SubresourceTilingCount);
+     UINT tile = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
+     UINT tiles = UINT((desc_.Width + tile - 1) / tile);

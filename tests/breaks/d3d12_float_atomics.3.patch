@@ -1,0 +1,23 @@
+# airconv: a float exchange on a typed UAV reads and writes its texel without taking the lock
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index 9f451fe..4c5134d 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3345,10 +3345,15 @@ convert_dxil(
+         auto operand = [&](unsigned i) {
+           return float_texel ? ir.CreateZExt(ir.CreateBitCast(a(i), ir.getInt32Ty()), ir.getInt64Ty()) : a(i);
+         };
+-        ret = locked(word, locks, [&](Value *old) {
++        auto update = [&](Value *old) {
+           return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
+                           : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
+-        });
++        };
++        if (float_texel) {
++          ret = word.read();
++          word.write(update(ret));
++        } else
++          ret = locked(word, locks, update);
+         if (float_texel)
+           ret = ir.CreateBitCast(ir.CreateTrunc(ret, ir.getInt32Ty()), ty);
+         break;

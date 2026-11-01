@@ -1,0 +1,14 @@
+# a pipeline without a pixel shader gets no fragment function for its sample mask, so it writes every sample.
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index db0c0f9..5c43471 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1419,7 +1419,7 @@ public:
+     uint32_t all_samples = raster_samples >= 32 ? ~0u : (1u << raster_samples) - 1;
+     if ((sample_mask & all_samples) == all_samples)
+       sample_mask = ~0u;
+-    if ((conservative || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
++    if ((conservative || depth_bounds_emulated) && !ps_func &&
+         !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask)))
+       return E_FAIL;
+ 

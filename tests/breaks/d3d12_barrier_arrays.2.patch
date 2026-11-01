@@ -1,0 +1,14 @@
+# a Barrier call stops at the first barrier that orders, so a later one naming a cleared texture is lost
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 3d6d419..6781f8b 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4868,6 +4868,8 @@ public:
+         auto resource = group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? nullptr
+                         : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].pResource
+                                                                    : group.pBufferBarriers[i].pResource;
++        if (ordered)
++          return;
+         if (!clears_.empty())
+           BarrierNames(resource);
+         BarrierLeaves(resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATES(0));

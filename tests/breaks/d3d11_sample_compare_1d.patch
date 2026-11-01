@@ -1,0 +1,17 @@
+# airconv: a compared 1D view bound through the binding table (Direct3D 11) is a texture_2d, not a depth texture
+diff --git a/src/airconv/air_signature.hpp b/src/airconv/air_signature.hpp
+index 513ae03..33364b4 100644
+--- a/src/airconv/air_signature.hpp
++++ b/src/airconv/air_signature.hpp
+@@ -78,9 +78,9 @@ using TextureKind = llvm::air::Texture::ResourceKind;
+ inline TextureKind lowering_texture_1d_to_2d(TextureKind kind, bool compared = false) {
+   switch (kind) {
+   case TextureKind::texture_1d:
+-    return compared ? TextureKind::depth_2d : TextureKind::texture_2d;
++    return TextureKind::texture_2d;
+   case TextureKind::texture_1d_array:
+-    return compared ? TextureKind::depth_2d_array : TextureKind::texture_2d_array;
++    return TextureKind::texture_2d_array;
+   default:
+     break;
+   }

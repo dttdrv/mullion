@@ -1,12 +1,12 @@
 # the scalar ending exactly at the view end reads zero
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2548,7 +2548,7 @@
-       Value *inside = nullptr;
+@@ -2766,7 +2766,7 @@
        if (buffer.Metadata) {
          auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
--        inside = ir.CreateICmpULE(end, buffer.Metadata);
-+        inside = ir.CreateICmpULT(end, buffer.Metadata);
-         offset = ir.CreateSelect(inside, offset, ir.getInt64(0));
+         auto zero = ir.CreatePointerCast(dxbc.ZeroRow(), ir.getInt8Ty()->getPointerTo(space));
+-        pointer = ir.CreateSelect(ir.CreateICmpULE(end, buffer.Metadata), pointer, zero);
++        pointer = ir.CreateSelect(ir.CreateICmpULT(end, buffer.Metadata), pointer, zero);
        }
-       auto space = buffer.Pointer->getType()->getPointerAddressSpace();
+       ret = ir.CreateAlignedLoad(
+           ty, ir.CreatePointerCast(pointer, ty->getPointerTo(space)),

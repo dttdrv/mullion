@@ -1,0 +1,14 @@
+# Barrier takes an access from NO_ACCESS for aliasing in texture and global barrier groups only, not in buffer ones.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index c6da044..4292058 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4863,7 +4863,7 @@ public:
+                       ? std::pair{group.pTextureBarriers[i].AccessBefore, group.pTextureBarriers[i].AccessAfter}
+                       : std::pair{group.pBufferBarriers[i].AccessBefore, group.pBufferBarriers[i].AccessAfter};
+         aliasing |= before == D3D12_BARRIER_ACCESS_NO_ACCESS || after == D3D12_BARRIER_ACCESS_NO_ACCESS;
+-        activates |= before == D3D12_BARRIER_ACCESS_NO_ACCESS;
++        activates |= group.Type != D3D12_BARRIER_TYPE_BUFFER && before == D3D12_BARRIER_ACCESS_NO_ACCESS;
+       }
+     if (aliasing)
+       va_found_ = nullptr;

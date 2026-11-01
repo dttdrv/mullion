@@ -1,0 +1,13 @@
+# a keyed mutex opened in the registering process does not keep its name
+diff --git a/src/mullion/mullion_keyed_mutex.cpp b/src/mullion/mullion_keyed_mutex.cpp
+index dd7f119..cbef26e 100644
+--- a/src/mullion/mullion_keyed_mutex.cpp
++++ b/src/mullion/mullion_keyed_mutex.cpp
+@@ -119,7 +119,6 @@ KeyedMutex::import(WMT::Device device, D3DKMT_HANDLE global_kmt) {
+   ret->global_kmt_ = global_kmt;
+   ret->local_kmt_ = open.hKeyedMutex;
+   ret->event_ = device.newSharedEventWithMachPort(mach_port);
+-  hold.keep(ret->event_.handle);
+   return ret;
+ }
+ 

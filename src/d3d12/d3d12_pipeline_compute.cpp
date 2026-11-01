@@ -220,8 +220,15 @@ public:
   Initialize(const void *blob, SIZE_T size) {
     if (!size)
       return S_OK;
-    if (!blob || size < kHeaderSize || memcmp(blob, kMagic, sizeof(kMagic)))
+    if (!blob)
       return FAIL(E_INVALIDARG);
+    // a blob that is not a Mullion library at all (another driver's, an older Mullion's) is one of another driver:
+    // games keep their pipeline cache file across runs and only replace it on DRIVER_VERSION_MISMATCH, so
+    // E_INVALIDARG would leave them building every pipeline on every launch (vkd3d-proton's
+    // d3d12_cached_pipeline_state_validate: "Avoid E_INVALIDARG with an invalid header size, since that may confuse
+    // some games")
+    if (size < kHeaderSize || memcmp(blob, kMagic, sizeof(kMagic)))
+      return D3D12_ERROR_DRIVER_VERSION_MISMATCH;
     auto data = static_cast<const char *>(blob);
     SIZE_T offset = sizeof(kMagic);
     auto read = [&](auto &value) {

@@ -1,0 +1,13 @@
+# a pipeline with DSVFormat UNKNOWN and a forced sample count takes both planes, so with no targets it rasterizes its own sample count where the pass rasterizes the forced one. Metal reports it only under its validation (faults.py --validate).
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index e58c45b..c285147 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -973,7 +973,6 @@ public:
+       if (dsv_flags & 2)
+         info.stencil_pixel_format = format_desc.PixelFormat;
+     } else if (auto &ds = pDesc->DepthStencilState;
+-               !pDesc->RasterizerState.ForcedSampleCount &&
+                ((ds.DepthEnable && (ds.DepthFunc != D3D12_COMPARISON_FUNC_ALWAYS ||
+                                     ds.DepthWriteMask != D3D12_DEPTH_WRITE_MASK_ZERO || ds.StencilEnable)) ||
+                 ds.StencilEnable || depth_bounds || depth_bounds_emulated)) {

@@ -226,6 +226,9 @@ struct io_binding_map {
   // the samples a pixel shader's output keeps: those of its clip test (SM50_SHADER_PSO_PIXEL_SHADER_DATA::clip_distances)
   // in the depth bounds (depth_bounds)
   llvm::Value *kept_samples = nullptr;
+  // o0.a as the pixel shader wrote it, before the shader blends target 0, for alpha-to-coverage (D3D11.3 17.18);
+  // null when o0 is not blended
+  llvm::Value *coverage_alpha = nullptr;
   // a conservative rasterizer's SV_InnerCoverage, 0 or 1; null without one
   llvm::Value *inner_coverage = nullptr;
   // a coarse shading pixel shader's rate (D3D12_SHADING_RATE), its SV_ShadingRate
@@ -599,6 +602,8 @@ public:
   uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   // a pixel shader that runs per pixel or sample at any shading rate (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool ps_fine_shading = false;
+  // a pixel shader that outputs depth (MTL_PIXEL_SHADER_REFLECTION's DepthOutput)
+  bool ps_depth_output = false;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
   // a DXIL library's ray tracing shaders, by their functions' names
   struct RayShader {

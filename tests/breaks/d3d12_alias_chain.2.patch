@@ -1,0 +1,15 @@
+# Metal 4: an aliasing barrier an encoding thread encodes orders nothing
+# family native
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 0fefc83..19768de 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1936,8 +1936,6 @@ public:
+     }
+     case EncoderType::Settle:
+       // the encoding threads' aliasing barriers (Parallel); the queue's are the scope's (OrderAliases)
+-      if constexpr (Metal4)
+-        cmdbuf.orderAliases(true);
+       break;
+     default:
+       break;

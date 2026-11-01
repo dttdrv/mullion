@@ -232,8 +232,9 @@ public:
     for (unsigned i = 0; i < formats.size(); i++)
       targets.colors[i].pixel_format = formats[i];
     variant.blend = blend->SetupMetalPipelineDescriptor(&targets, formats.size(), reflection().PSValidRenderTargets);
+    // the pixel shader makes the coverage where Metal does not (IMTLD3D11BlendState::SetupMetalPipelineDescriptor)
     variant.alpha_to_coverage &= !reflection().PixelShader.HasCoverageOutput && !formats.empty() &&
-                                 IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(formats[0])));
+                                 (IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(formats[0]))) || variant.blend[0].blend);
     return get_shader(variant);
   }
   virtual const Sha1Digest& sha1() = 0;

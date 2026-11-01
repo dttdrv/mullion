@@ -2,6 +2,9 @@
 #include <numeric>
 #include <map>
 #include <atomic>
+#include <chrono>
+#include <cmath>
+#include <thread>
 
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"
@@ -298,7 +301,25 @@ public:
 
   HRESULT
   STDMETHODCALLTYPE
-  WaitForVBlank() final { return S_OK; }
+  WaitForVBlank() final {
+    // "Halt a thread until the next vertical blank occurs" (Microsoft Learn, IDXGIOutput::WaitForVBlank). the
+    // display's refreshes are not told to a Windows thread, so the next one is estimated, as DXVK does: refreshes
+    // come once a period of the current mode's refresh rate, counted from the steady clock's epoch
+    wsi::WsiMode mode = {};
+    double hz = 0;
+    if (wsi::getCurrentDisplayMode(monitor_, &mode) && mode.refreshRate.denominator)
+      hz = double(mode.refreshRate.numerator) / double(mode.refreshRate.denominator);
+    // 0 or 1 is "the display hardware's default" (DEVMODE, dmDisplayFrequency)
+    if (hz <= 1)
+      hz = 60;
+    const std::chrono::duration<double> period(1.0 / hz);
+    auto now = std::chrono::steady_clock::now().time_since_epoch();
+    auto next = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        (std::floor(now / period) + 1) * period
+    ));
+    std::this_thread::sleep_until(next);
+    return S_OK;
+  }
 
   HRESULT
   STDMETHODCALLTYPE

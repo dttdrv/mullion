@@ -1,0 +1,12 @@
+# every D3D12CreateDevice call makes a new device
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -2742,7 +2742,7 @@ CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
+   Com<MTLD3D12DeviceImpl> device;
+   for (auto &[luid, existing] : device_singletons)
+     if (luid.LowPart == desc.AdapterLuid.LowPart && luid.HighPart == desc.AdapterLuid.HighPart &&
+-        existing->AddRefIfReferenced())
++        false && existing->AddRefIfReferenced())
+       device = Com<MTLD3D12DeviceImpl>::transfer(existing);
+   if (device) {
+     if (FAILED(hr = device->GetDeviceRemovedReason()))

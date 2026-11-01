@@ -1,0 +1,14 @@
+# a fence object waits for a notification of a value its shared event already has, as it did before
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index af44570..c682dad 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -321,7 +321,7 @@ struct Reached {
+   void
+   Expect(uint64_t expected, std::function<void()> &&reached) {
+     std::lock_guard<mullion::mutex> lock(mutex_);
+-    if (expected <= value || Has(expected))
++    if (expected <= value)
+       return reached();
+     waiting_.emplace_back(expected, std::move(reached));
+     Waiting(expected);

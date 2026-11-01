@@ -1,9 +1,11 @@
 # a domain shader's triangles are not grown
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index 9d9cad8..c8e7b0b 100644
 --- a/src/airconv/dxbc_converter_ts.cpp
 +++ b/src/airconv/dxbc_converter_ts.cpp
-@@ -1253,6 +1253,8 @@
+@@ -1265,6 +1265,8 @@ convert_dxbc_tesselator_domain_shader(
+       if (viewport_reg != ~0u)
          viewport_index = builder.CreateExtractElement(corner_at(p, 0, viewport_reg), uint64_t(viewport_component));
-       viewport_index = air.CreateIntBinOp(llvm::air::AIRBuilder::min, viewport_index, builder.getInt32(15), false);
        auto triangle = conservative_triangle(builder, air, types, clip, function->getArg(viewports_idx), viewport_index);
 +      for (uint32_t u = 0; u < 3; u++)
 +        triangle.position[u] = clip[u];

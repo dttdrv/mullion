@@ -1,0 +1,12 @@
+# the configured memory cap is not applied
+--- a/src/dxgi/dxgi_adapter.cpp
++++ b/src/dxgi/dxgi_adapter.cpp
+@@ -265,7 +265,7 @@
+   uint64_t
+   DeviceMemory() {
+     uint64_t memory = device_.recommendedMaxWorkingSetSize();
+-    return options_.maxDeviceMemory ? std::min(memory, options_.maxDeviceMemory) : memory;
++    return memory;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE QueryVideoMemoryInfo(

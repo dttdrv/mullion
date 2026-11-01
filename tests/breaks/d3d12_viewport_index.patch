@@ -1,0 +1,14 @@
+# airconv: a written depth is clamped to the range at its raw SV_ViewportArrayIndex, past the table for 16 or more
+diff --git a/src/airconv/dxbc_signature.cpp b/src/airconv/dxbc_signature.cpp
+index a5ef2e3..0308c60 100644
+--- a/src/airconv/dxbc_signature.cpp
++++ b/src/airconv/dxbc_signature.cpp
+@@ -646,7 +646,7 @@ void handle_signature_ps(
+             auto selected =
+               ir.CreateSelect(ir.CreateICmpULT(written, ir.getInt32(SM50_VIEWPORTS)), written, ir.getInt32(0));
+             auto range = [&](unsigned end) {
+-              auto index = ir.CreateAdd(ir.CreateShl(selected, 1), ir.getInt32(end));
++              auto index = ir.CreateAdd(ir.CreateShl(written, 1), ir.getInt32(end));
+               return ir.CreateLoad(ctx.types._float, ir.CreateGEP(ctx.types._float, ctx.function->getArg(ranges), index));
+             };
+             llvm::Value *depth = ir.CreateLoad(

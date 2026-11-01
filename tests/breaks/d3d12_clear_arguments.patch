@@ -1,0 +1,14 @@
+# ClearRenderTargetView takes an array with a count of 0 as rectangles, and clears nothing.
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index c095314..adf6455 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3100,7 +3100,7 @@ public:
+     auto stored = RenderTargetColor(AttachmentDesc.Format, Color);
+     Color = stored.data();
+     // no rectangles clear the whole view, whatever the array is, as vkd3d-proton does
+-    if (Rects && RectCount) {
++    if (Rects) {
+       UsedTexture(AttachmentDesc.Texture);
+       allocator_->clear_rtv_.begin(AttachmentDesc.Texture, AttachmentDesc.View, AttachmentDesc.DepthPlane);
+       for (unsigned i = 0; i < RectCount; i++) {

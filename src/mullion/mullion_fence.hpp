@@ -87,6 +87,7 @@ public:
   EventListener();
   ~EventListener();
 
+  // `event` is one of Mullion's own, which stays open until the notification has come
   void setEventOnValue(Fence const *fence, HANDLE event, uint64_t value);
   void setEventOnValue(WMT::SharedEvent shared, HANDLE event, uint64_t value);
 
@@ -96,16 +97,14 @@ private:
 };
 
 #ifdef _WIN32
-// sharing of fences (ID3D11Fence and ID3D12Fence, CreateSharedHandle): a D3DKMT allocation of `device` whose private
-// runtime data is the registered name of the event's mach port, 0 if one cannot be made
-D3DKMT_HANDLE shareEvent(D3DKMT_HANDLE device, WMT::SharedEvent event);
-// an NT handle of `allocation`, named `name` among the session's objects when it has a name
-HRESULT shareHandle(D3DKMT_HANDLE allocation, const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name,
+// sharing of fences (ID3D11Fence and ID3D12Fence, CreateSharedHandle): `name` is the registered name of the event's
+// mach port, false if one cannot be made
+bool shareEvent(WMT::SharedEvent event, char (&name)[54]);
+// a new handle to the fence of `event_name`, named `name` among the session's objects when it has a name
+HRESULT shareHandle(const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes, const WCHAR *name,
                     HANDLE *handle);
-// the event of a handle shareEvent's allocation was shared by, and that allocation's handle in `device`; none if the
-// handle shares something else
-WMT::Reference<WMT::SharedEvent> openSharedEvent(WMT::Device mtl, D3DKMT_HANDLE device, HANDLE handle,
-                                                 D3DKMT_HANDLE &allocation);
+// the event of a handle shareHandle made, and its registered name; none if the handle shares something else
+WMT::Reference<WMT::SharedEvent> openSharedEvent(WMT::Device mtl, HANDLE handle, char (&event_name)[54]);
 // a new NT handle to what is shared under `name` among the session's objects
 HRESULT openHandleByName(const WCHAR *name, DWORD access, HANDLE *handle);
 #endif

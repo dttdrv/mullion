@@ -340,9 +340,12 @@ public:
       if (attachment_desc.pixel_format != WMTPixelFormatInvalid)
         blend[rt] = ShaderBlend(attachment_desc, renderTarget, logic);
     }
-    // Metal takes no alpha-to-coverage with an integer target 0, where the pixel shader makes the coverage
-    info->alpha_to_coverage_enabled =
-        desc_.AlphaToCoverageEnable && !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info->colors[0].pixel_format)));
+    // Metal takes no alpha-to-coverage with an integer target 0, and takes it from the color the fragment function
+    // returns, which a target 0 the pixel shader blends itself (ShaderBlend) has blended: the pixel shader makes the
+    // coverage then
+    info->alpha_to_coverage_enabled = desc_.AlphaToCoverageEnable &&
+                                      !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info->colors[0].pixel_format))) &&
+                                      !blend[0].blend;
     return blend;
   }
 

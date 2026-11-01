@@ -59,7 +59,7 @@ public:
 
     // assert(Iter->second.resource_type != shader::common::ResourceType::NonApplicable);
     auto ResourceKindLogical = air::to_air_resource_type(Iter->second.resource_type, Iter->second.compared);
-    auto ResourceKind = air::lowering_texture_1d_to_2d(ResourceKindLogical);
+    auto ResourceKind = air::lowering_texture_1d_to_2d(ResourceKindLogical, Iter->second.compared);
     auto SampleType = std::visit(
         patterns{
             [](air::MSLInt) { return Texture::sample_int; }, [](air::MSLUint) { return Texture::sample_uint; },

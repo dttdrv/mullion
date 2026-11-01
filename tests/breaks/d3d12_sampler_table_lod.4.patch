@@ -1,0 +1,12 @@
+# each lane takes its own sampler's side, not its quad's together
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2378,7 +2378,7 @@ Converter::SampleImplicit(
+   auto Own = llvm::BasicBlock::Create(ctx.llvm, "sample_implicit", Head->getParent(), Tail);
+   auto Scaled = llvm::BasicBlock::Create(ctx.llvm, "sample_gradients", Head->getParent(), Tail);
+   ir.SetInsertPoint(Head);
+-  ir.CreateCondBr(Whole, Own, Scaled)->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
++  ir.CreateCondBr(Isotropic, Own, Scaled)->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
+   ir.SetInsertPoint(Own);
+   auto Implicit = Biased();
+   ir.CreateBr(Tail);
