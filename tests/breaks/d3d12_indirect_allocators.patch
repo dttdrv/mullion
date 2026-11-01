@@ -1,0 +1,12 @@
+# a pooled indirect command buffer of another size is taken, so a call of more commands than it holds loses the rest
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -582,7 +582,7 @@
+       WMTResourceOptions options;
+       bool
+       Is(uint64_t key_, const WMTIndirectCommandBufferInfo &kind_, uint64_t capacity_, WMTResourceOptions options_) const {
+-        return key == key_ && capacity == capacity_ && options == options_ && !memcmp(&kind, &kind_, sizeof(kind));
++        return options == options_ && !memcmp(&kind, &kind_, sizeof(kind));
+       }
+     };
+     static constexpr uint64_t kCommands = 1 << 18;

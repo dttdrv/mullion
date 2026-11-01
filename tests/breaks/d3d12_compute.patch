@@ -1,0 +1,12 @@
+# a constant row past the view reads the view's first row instead of 0
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -95,7 +95,7 @@
+   }();
+   if (Buffer.Metadata && !skip) {
+     auto InBounds = ir.CreateICmpULT(Row, ir.CreateTrunc(ir.CreateLShr(Buffer.Metadata, 4), air.getIntTy()));
+-    RowPointer = ir.CreateSelect(InBounds, RowPointer, ZeroRow());
++    RowPointer = ir.CreateSelect(InBounds, RowPointer, ir.CreateGEP(TyIntVec4, Buffer.Pointer, ir.getInt32(0)));
+   }
+   auto Load = [&](unsigned Dword) -> llvm::Value * {
+     return ir.CreateLoad(air.getIntTy(), ir.CreateGEP(TyIntVec4, RowPointer, {ir.getInt32(0), ir.getInt32(Dword)}));

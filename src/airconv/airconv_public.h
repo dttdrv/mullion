@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 91
+#define AIRCONV_VERSION 93
 
 #ifdef __cplusplus
 #include <string>
@@ -157,6 +157,8 @@ struct MTL_PIXEL_SHADER_REFLECTION {
   uint32_t FineShading;
   /* the shader reads barycentrics (SV_Barycentrics) */
   uint32_t Barycentrics;
+  /* the shader outputs depth (SV_Depth, SV_DepthGreaterEqual or SV_DepthLessEqual) */
+  uint32_t DepthOutput;
   /* the depth and stencil tests run before the shader ([earlydepthstencil]): its discards leave them done */
   uint32_t EarlyTests;
 };

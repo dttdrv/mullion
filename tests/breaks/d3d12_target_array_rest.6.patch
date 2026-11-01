@@ -1,0 +1,14 @@
+# a 3D render target view of -1 W slices takes the mip's whole depth from its first W slice
+diff --git a/src/d3d12/d3d12_texture.cpp b/src/d3d12/d3d12_texture.cpp
+index aac062a..c020eeb 100644
+--- a/src/d3d12/d3d12_texture.cpp
++++ b/src/d3d12/d3d12_texture.cpp
+@@ -974,7 +974,7 @@ public:
+       auto ArraySize = std::max<UINT16>(desc_.DepthOrArraySize >> ViewDesc.Texture3D.MipSlice, 1);
+       RenderTargetDesc.DepthPlane = ViewDesc.Texture3D.FirstWSlice;
+       RenderTargetDesc.RenderTargetArrayLength =
+-          ViewDesc.Texture3D.WSize == ~0u ? ArraySize - ViewDesc.Texture3D.FirstWSlice : ViewDesc.Texture3D.WSize;
++          ViewDesc.Texture3D.WSize == ~0u ? ArraySize : ViewDesc.Texture3D.WSize;
+       if (!WithinSlices(ViewDesc.Texture3D.FirstWSlice, RenderTargetDesc.RenderTargetArrayLength, ArraySize))
+         return FAIL(E_INVALIDARG);
+       View = texture->createView(view_descriptor);

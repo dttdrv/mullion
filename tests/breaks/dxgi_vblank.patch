@@ -1,0 +1,11 @@
+# WaitForVBlank returns at once
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -302,6 +302,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   WaitForVBlank() final {
++    return S_OK;
+     // "Halt a thread until the next vertical blank occurs" (Microsoft Learn, IDXGIOutput::WaitForVBlank). the
+     // display's refreshes are not told to a Windows thread, so the next one is estimated, as DXVK does: refreshes
+     // come once a period of the current mode's refresh rate, counted from the steady clock's epoch

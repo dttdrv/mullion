@@ -1,0 +1,15 @@
+# Metal's alpha-to-coverage stays on for a target 0 the pixel shader blends, and reads the blended alpha
+diff --git a/src/d3d11/d3d11_state_object.cpp b/src/d3d11/d3d11_state_object.cpp
+index a8553ab..bab4cb7 100644
+--- a/src/d3d11/d3d11_state_object.cpp
++++ b/src/d3d11/d3d11_state_object.cpp
+@@ -344,8 +344,7 @@ public:
+     // returns, which a target 0 the pixel shader blends itself (ShaderBlend) has blended: the pixel shader makes the
+     // coverage then
+     info->alpha_to_coverage_enabled = desc_.AlphaToCoverageEnable &&
+-                                      !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info->colors[0].pixel_format))) &&
+-                                      !blend[0].blend;
++                                      !IsIntegerFormat(WMTPixelFormat(ORIGINAL_FORMAT(info->colors[0].pixel_format)));
+     return blend;
+   }
+ 

@@ -1,0 +1,14 @@
+# SetEventOnMultipleFenceCompletion sets the app's handle when the values come, as it did before
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 4db9df7..6976b95 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1700,7 +1700,7 @@ public:
+       if (began)
+         diag::Waited("fence", began, thread);
+       if (object)
+-        SetEvent(object.get());
++        SetEvent(hEvent);
+       *set = true;
+       set->notify_all();
+     };

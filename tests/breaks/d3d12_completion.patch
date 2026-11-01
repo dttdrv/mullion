@@ -1,0 +1,18 @@
+# Metal 4 signals a command buffer's fences once it is committed, without waiting for the GPU to finish its work
+# family native
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -729,9 +729,10 @@
+       Watched(internal_seq);
+       // Metal 4: the queue's event says the work is done; its feedback may come later, and only the profile, which
+       // reads its GPU times, waits for it here
+-      if constexpr (Metal4)
+-        profile_ ? inflight.cmdbuf.waitUntilCompleted() : inflight.cmdbuf.waitForGPU();
+-      else if (profile_ || inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
++      if constexpr (Metal4) {
++        if (profile_)
++          inflight.cmdbuf.waitUntilCompleted();
++      } else if (profile_ || inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
+         inflight.cmdbuf.waitUntilCompleted();
+       auto completed = profile_ ? diag::Now() : 0;
+       Watched(0);

@@ -1,0 +1,14 @@
+# a pipeline with DSVFormat UNKNOWN drops its pixel shader's depth in the variants with a view, which test and write the rasterized depth.
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index e58c45b..101e9b1 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1693,7 +1693,7 @@ public:
+           // a pipeline without a pixel shader may have the depth bounds test's fragment function, which has no variants
+           // a pipeline of any depth stencil format was converted without the depth its shader outputs, which a
+           // variant with the view's depth keeps
+-          bool depth = any_format && (DSVPlanar & 1) && ref_ps.PixelShader.DepthOutput;
++          bool depth = false;
+           if (auto blends = blend_mask_ & Mask;
+               pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth)) {
+             auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11];

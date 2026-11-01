@@ -4,22 +4,50 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <unordered_set>
+#include <unordered_map>
+#include <utility>
 #include "log/log.hpp"
 #include "thread.hpp"
 
 namespace mullion {
 
 // Metal holds maxArgumentBufferSamplerCount distinct samplers ("unique argument buffer samplers per app") and the
-// ones past it sample wrong with no error (measured on an M1 Pro): the first of them says so. an id Metal gives again
-// is the slot it reuses, so the ids seen count the slots taken
-static void
-Hold(WMT::Device device, uint64_t id) {
+// ones past it sample wrong with no error (measured on an M1 Pro). an id Metal gives again is the slot it reuses, so
+// the ids seen count the slots taken. past them a sampler is the held one of its filters, address modes, border and
+// comparison whose LOD clamps are nearest, then its anisotropy: a clamp picks the mip read, anisotropy only its taps
+static WMT::Reference<WMT::SamplerState>
+NewState(WMT::Device device, WMTSamplerInfo &info) {
   static mullion::mutex mutex;
-  static std::unordered_set<uint64_t> ids;
+  static std::unordered_map<uint64_t, WMTSamplerInfo> held;
   std::lock_guard<mullion::mutex> lock(mutex);
-  if (ids.insert(id).second && ids.size() == device.maxArgumentBufferSamplerCount() + 1)
-    WARN("Sampler: past the ", ids.size() - 1, " distinct samplers Metal holds; the newer ones sample wrong");
+  if (held.size() < device.maxArgumentBufferSamplerCount()) {
+    auto state = device.newSamplerState(info);
+    if (state)
+      held.emplace(info.gpu_resource_id, info);
+    return state;
+  }
+  auto apart = [&](const WMTSamplerInfo &other) {
+    return std::pair(std::abs(other.lod_min_clamp - info.lod_min_clamp) + std::abs(other.lod_max_clamp - info.lod_max_clamp),
+                     std::abs(std::countr_zero(other.max_anisotroy) - std::countr_zero(info.max_anisotroy)));
+  };
+  const WMTSamplerInfo *nearest = nullptr;
+  for (auto &[id, other] : held) {
+    if (other.min_filter == info.min_filter && other.mag_filter == info.mag_filter && other.mip_filter == info.mip_filter &&
+        other.r_address_mode == info.r_address_mode && other.s_address_mode == info.s_address_mode &&
+        other.t_address_mode == info.t_address_mode && other.border_color == info.border_color &&
+        other.compare_function == info.compare_function && other.normalized_coords == info.normalized_coords &&
+        other.lod_average == info.lod_average && other.support_argument_buffers == info.support_argument_buffers &&
+        (!nearest || apart(other) < apart(*nearest)))
+      nearest = &other;
+  }
+  static bool past, unmatched;
+  if (!(nearest && apart(*nearest) == std::pair(0.0f, 0)) && !std::exchange(past, true))
+    WARN("Sampler: past the ", held.size(), " distinct samplers Metal holds; newer ones are the nearest held");
+  if (nearest)
+    info = *nearest;
+  else if (!std::exchange(unmatched, true))
+    WARN("Sampler: no held sampler has the filters and address modes of a newer one, which samples wrong");
+  return device.newSamplerState(info);
 }
 
 void
@@ -45,12 +73,11 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
   capped.max_anisotroy = std::bit_ceil(std::max(capped.max_anisotroy, 1u));
   ret->info_ = capped;
 
-  ret->sampler_state = device.newSamplerState(ret->info_);
+  ret->sampler_state = NewState(device, ret->info_);
   if (!ret->sampler_state) {
     return nullptr;
   }
   ret->sampler_state_handle = ret->info_.gpu_resource_id;
-  Hold(device, ret->sampler_state_handle);
 
   WMTSamplerInfo cube_sampler_info = capped;
   // it's probably still wrong, but the best result we can get
@@ -64,20 +91,18 @@ Sampler::createSampler(WMT::Device device, const WMTSamplerInfo &info, float lod
     cube_sampler_info.t_address_mode = WMTSamplerAddressModeClampToEdge;
     cube_sampler_info.r_address_mode = WMTSamplerAddressModeClampToEdge;
   }
-  ret->sampler_state_cube = device.newSamplerState(cube_sampler_info);
+  ret->sampler_state_cube = NewState(device, cube_sampler_info);
   if (!ret->sampler_state_cube) {
     return nullptr;
   }
   ret->sampler_state_cube_handle = cube_sampler_info.gpu_resource_id;
-  Hold(device, ret->sampler_state_cube_handle);
   if (border_color) {
     WMTSamplerInfo white_info = capped;
     white_info.border_color = WMTSamplerBorderColorOpaqueWhite;
-    ret->sampler_state_white = device.newSamplerState(white_info);
+    ret->sampler_state_white = NewState(device, white_info);
     if (!ret->sampler_state_white)
       return nullptr;
     ret->sampler_state_white_handle = white_info.gpu_resource_id;
-    Hold(device, ret->sampler_state_white_handle);
     std::copy_n(border_color, 4, ret->border_color);
   }
   constexpr uint64_t field_max = (1 << SM50_SAMPLER_METADATA_LOD_BITS) - 1;

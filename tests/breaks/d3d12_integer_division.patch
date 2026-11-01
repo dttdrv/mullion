@@ -1,0 +1,14 @@
+# an unsigned remainder keeps LLVM's urem, whose result by zero is undefined
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index 9c41559..efe30c9 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1364,7 +1364,7 @@ convert_dxil(
+     for (auto &I : make_early_inc_range(instructions(*start))) {
+       auto op = I.getOpcode();
+       bool is_signed = op == llvm::Instruction::SDiv || op == llvm::Instruction::SRem;
+-      if (!is_signed && op != llvm::Instruction::UDiv && op != llvm::Instruction::URem)
++      if (!is_signed && op != llvm::Instruction::UDiv)
+         continue;
+       auto dividend = I.getOperand(0), divisor = I.getOperand(1);
+       if (auto known = dyn_cast<ConstantInt>(divisor); known && !known->isZero() && !(is_signed && known->isMinusOne()))

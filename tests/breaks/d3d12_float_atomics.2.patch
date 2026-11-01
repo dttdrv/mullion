@@ -1,0 +1,16 @@
+# airconv: a float compare exchange on a typed UAV compares values, not bits (-0.0 matches 0.0)
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index 9f451fe..a1f14a6 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3346,7 +3346,9 @@ convert_dxil(
+           return float_texel ? ir.CreateZExt(ir.CreateBitCast(a(i), ir.getInt32Ty()), ir.getInt64Ty()) : a(i);
+         };
+         ret = locked(word, locks, [&](Value *old) {
+-          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
++          auto as_float = [&](Value *v) { return ir.CreateBitCast(ir.CreateTrunc(v, ir.getInt32Ty()), ir.getFloatTy()); };
++          auto equal = float_texel ? ir.CreateFCmpOEQ(as_float(old), as_float(operand(5))) : ir.CreateICmpEQ(old, operand(5));
++          return exchange ? ir.CreateSelect(equal, operand(6), old)
+                           : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
+         });
+         if (float_texel)

@@ -1,0 +1,15 @@
+# airconv: a float exchange on an R32_FLOAT typed UAV takes Metal's integer texture atomic, which is null
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index 9f451fe..6d6e6ae 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -3286,8 +3286,7 @@ convert_dxil(
+       // Metal has texture atomics on integer textures only: a float exchange on a typed resource (an R32_FLOAT
+       // RWTexture or RWBuffer, HLSL SM 6.6, which DXIL gives as an exchange of its bits) runs under a lock as a
+       // 64-bit atomic does, its bits the word's low half
+-      bool float_texel =
+-          !h.buffer && !ty->isIntegerTy(64) && h.texture->Texture.sample_type == Texture::sample_float;
++      bool float_texel = false;
+       auto locks = ty->isIntegerTy(64) || float_texel ? ctx.binding.GetAtomicLocks(air) : nullptr;
+       if (float_texel && !locks)
+         return make_error<UnsupportedFeature>("float atomic on a typed resource without the atomic lock table");

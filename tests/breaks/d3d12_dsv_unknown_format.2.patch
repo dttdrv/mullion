@@ -1,0 +1,14 @@
+# a stencil test alone does not make a pipeline with DSVFormat UNKNOWN test the view bound.
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index e58c45b..8306a77 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -976,7 +976,7 @@ public:
+                !pDesc->RasterizerState.ForcedSampleCount &&
+                ((ds.DepthEnable && (ds.DepthFunc != D3D12_COMPARISON_FUNC_ALWAYS ||
+                                     ds.DepthWriteMask != D3D12_DEPTH_WRITE_MASK_ZERO || ds.StencilEnable)) ||
+-                ds.StencilEnable || depth_bounds || depth_bounds_emulated)) {
++                depth_bounds || depth_bounds_emulated)) {
+       // D3D12 asks for the bound view's format, but titles that test depth or stencil without one rely on drivers
+       // testing the view bound (vkd3d-proton keeps it: "A workaround for SottR, which creates pipelines with
+       // DSV_UNKNOWN, but still insists on using a depth buffer", libs/vkd3d/state.c). a test of ALWAYS that writes

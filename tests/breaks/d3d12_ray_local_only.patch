@@ -1,0 +1,14 @@
+# a ray tracing shader with no global root signature has no lock table
+diff --git a/src/airconv/dxil_converter.cpp b/src/airconv/dxil_converter.cpp
+index e569dba..386823b 100644
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -1476,7 +1476,7 @@ convert_dxil(
+   // global root arguments', or for a ray tracing shader with no global root signature its dispatch's. null where
+   // neither has one (airconv's command line, with no root signature)
+   auto atomic_locks = [&]() -> Value * {
+-    if (auto locks = ctx.binding.GetAtomicLocks(air); locks || !ray)
++    if (auto locks = ctx.binding.GetAtomicLocks(air); locks || ray)
+       return locks;
+     auto &b = ctx.builder;
+     auto i64 = b.getInt64Ty();
