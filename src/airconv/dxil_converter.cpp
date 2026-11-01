@@ -37,6 +37,7 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include <format>
 #include <map>
+#include <optional>
 #include <set>
 
 namespace mullion::dxbc {
@@ -2139,6 +2140,8 @@ convert_dxil(
     llvm::air::MemFlags memory;
     std::function<Value *()> read;
     std::function<void(Value *)> write;
+    // a buffer word's pointer, whose 32-bit halves have atomics (split64)
+    Value *halves = nullptr;
   };
   // the word at a buffer or groupshared pointer. groupshared words key with their threadgroup's position, so
   // threadgroups do not share locks for the same word
@@ -2168,21 +2171,61 @@ convert_dxil(
               [=, &ir, &air](Value *v) {
                 air.CreateDeviceCoherentStore(ir.CreateTrunc(v, i32), half(0));
                 air.CreateDeviceCoherentStore(ir.CreateTrunc(ir.CreateLShr(v, 32), i32), half(1));
-              }};
+              },
+              ptr};
     }
     for (uint32_t c = 0; c < 3; c++)
       key = ir.CreateAdd(ir.CreateMul(key, ir.getInt64(0x9e3779b97f4a7c15)), ir.CreateZExt(thread_input(GroupId, c), i64));
     return {key, llvm::air::MemFlags::Threadgroup, [=, &ir] { return (Value *)ir.CreateLoad(i64, ptr); },
             [=, &ir](Value *v) { ir.CreateStore(v, ptr); }};
   };
+  // the 64-bit atomics split64 does, as the op on 32-bit halves: a subtract is an add of the negated value
+  auto split_kind = [](AtomicRMWInst::BinOp op) -> std::optional<AtomicRMWInst::BinOp> {
+    switch (op) {
+    case AtomicRMWInst::Add:
+    case AtomicRMWInst::Sub:
+      return AtomicRMWInst::Add;
+    case AtomicRMWInst::And:
+    case AtomicRMWInst::Or:
+    case AtomicRMWInst::Xor:
+      return op;
+    default:
+      return std::nullopt;
+    }
+  };
+  // a 64-bit add, subtract, and, or or xor whose old value goes unused, as an atomic on each 32-bit half, without a
+  // lock: a bitwise op's halves are independent, and an add carries into the high half when the low half wraps (each
+  // add's own low step tells whether it did). between the halves the word is part way through a step, so it is only
+  // for words that every other op of the shader changes the same way, unread (split_buffers): the steps then commute,
+  // and the word ends as some order of them would leave it
+  auto split64 = [&](Value *ptr, AtomicRMWInst::BinOp op, Value *v) {
+    auto i32 = ir.getInt32Ty();
+    if (op == AtomicRMWInst::Sub)
+      v = ir.CreateNeg(v);
+    auto low = ir.CreateBitCast(ptr, i32->getPointerTo(ptr->getType()->getPointerAddressSpace()));
+    auto high = ir.CreateConstGEP1_32(i32, low, 1);
+    auto lo = ir.CreateTrunc(v, i32), hi = ir.CreateTrunc(ir.CreateLShr(v, 32), i32);
+    auto kind = *split_kind(op);
+    auto old = air.CreateAtomicRMW(kind, low, lo);
+    if (kind == AtomicRMWInst::Add)
+      hi = ir.CreateAdd(hi, ir.CreateZExt(ir.CreateICmpULT(ir.CreateAdd(old, lo), old), i32));
+    air.CreateAtomicRMW(kind, high, hi);
+  };
   // a 64-bit atomic, which Apple GPUs lack (but min and max without a result): `update` of `word`'s old value under a
-  // lock word of `locks` hashed from its key, returning the old value. every 64-bit atomic takes a lock, so none races
-  // a lock-free one. the lanes of a SIMD group take their locks in rounds: in each, the first pending lane and every
-  // pending lane whose lock word is not the first's try theirs once, and a lane that takes its lock updates the word
-  // and releases it in the same round. so no lane waits across rounds on a lock its own group holds (the group's lanes
-  // do not run apart), lanes of different words do not wait for each other, and lanes of one word take turns as one
-  // lane at a time did
-  auto locked = [&](const Word64 &word, Value *locks, std::function<Value *(Value *)> update) -> Value * {
+  // lock word of `locks` hashed from its key, returning the old value. the native min and max and the split ones take
+  // no lock, so where another shader (another stage of a draw, an overlapping dispatch or another queue's work) does
+  // locked ops on the same word at the same time, without a barrier between, they race them. a locked add, and, or or
+  // xor on a buffer word writes its step as a split one does (`op`, of `operand`), so a split step of the same kind is
+  // never undone, though the old value the locked one returns may have a split step's low half and not yet its carry. a
+  // locked exchange, compare-exchange, min or max, any op on a typed view, and a split step of another kind, change the
+  // word in ways that do not commute with a split step, and may leave a value no order of the steps would. within one
+  // shader none of this arises (split_buffers, split_shared). the lanes of a SIMD group take their locks in rounds: in
+  // each, the first pending lane and every pending lane whose lock word is not the first's try theirs once, and a lane
+  // that takes its lock updates the word and releases it in the same round. so no lane waits across rounds on a lock
+  // its own group holds (the group's lanes do not run apart), lanes of different words do not wait for each other, and
+  // lanes of one word take turns as one lane at a time did
+  auto locked = [&](const Word64 &word, Value *locks, std::function<Value *(Value *)> update,
+                    std::optional<AtomicRMWInst::BinOp> op = std::nullopt, Value *operand = nullptr) -> Value * {
     if (air.DiscardWrites && word.memory != llvm::air::MemFlags::Threadgroup)
       return word.read();
     auto scope = word.memory == llvm::air::MemFlags::Threadgroup ? llvm::air::ThreadScope::Threadgroup
@@ -2248,7 +2291,10 @@ convert_dxil(
     auto value = word.read();
     // an exchange's write does not wait on the read for its value, so nothing else keeps them in order
     air.CreateAtomicFence(word.memory, scope);
-    word.write(update(value));
+    if (word.halves && op && split_kind(*op))
+      split64(word.halves, *op, operand);
+    else
+      word.write(update(value));
     air.CreateAtomicFence(word.memory, scope);
     air.CreateAtomicRMW(AtomicRMWInst::Add, lock, ir.getInt32(1));
     ir.CreateBr(next);
@@ -2328,6 +2374,31 @@ convert_dxil(
     return !call->getType()->isIntegerTy(64) || (opcode(call) != AtomicBinOp && opcode(call) != AtomicCompareExchange) ||
            native_extreme(call);
   });
+  // a raw or structured buffer's handle: its words are a buffer's memory, whose 32-bit halves Metal has atomics on. a
+  // typed buffer's or texture's 64-bit texels are not, and may alias a buffer's words
+  auto raw_buffer = [&](Value *handle) {
+    auto made = dyn_cast<CallInst>(handle);
+    if (!made || !is_dx_op(made) || opcode(made) != CreateHandle || constant(arg(made, 1)) != UAV)
+      return false;
+    auto uav = info.uavMap.find(constant(arg(made, 2)));
+    return uav != info.uavMap.end() && uav->second.resource_type == shader::common::ResourceType::NonApplicable;
+  };
+  // a shader whose 64-bit atomics are all on raw or structured buffers and all one op that commutes with itself (add,
+  // and, or or xor), none using its old value, splits them into 32-bit atomics without the locks (split64)
+  std::optional<AtomicRMWInst::BinOp> split_buffers;
+  if (!native_extremes) {
+    bool splits = true;
+    for (auto call : calls)
+      if (call->getType()->isIntegerTy(64) && (opcode(call) == AtomicBinOp || opcode(call) == AtomicCompareExchange)) {
+        auto kind = opcode(call) == AtomicBinOp && call->use_empty() && raw_buffer(arg(call, 1))
+                        ? split_kind(atomic_op(constant(arg(call, 2))))
+                        : std::nullopt;
+        splits = splits && kind && (!split_buffers || *split_buffers == *kind);
+        split_buffers = kind;
+      }
+    if (!splits)
+      split_buffers.reset();
+  }
 
   for (auto call : calls) {
     ir.SetInsertPoint(call);
@@ -3322,6 +3393,15 @@ convert_dxil(
         ret = UndefValue::get(ty);
         break;
       }
+      // split_buffers holds only where every 64-bit atomic of the shader is on a raw or structured buffer
+      if (ty->isIntegerTy(64) && split_buffers && h.buffer) {
+        split64(
+            unit_ptr(*h.buffer, ir.getInt64Ty(), ir.CreateLShr(byte_address(h, a(first), a(first + 1)), 3)),
+            atomic_op(constant(a(2))), a(6)
+        );
+        ret = UndefValue::get(ty);
+        break;
+      }
       // Metal has texture atomics on integer textures only: a float exchange on a typed resource (an R32_FLOAT
       // RWTexture or RWBuffer, HLSL SM 6.6, which DXIL gives as an exchange of its bits) runs under a lock as a
       // 64-bit atomic does, its bits the word's low half
@@ -3384,10 +3464,13 @@ convert_dxil(
         auto operand = [&](unsigned i) {
           return float_texel ? ir.CreateZExt(ir.CreateBitCast(a(i), ir.getInt32Ty()), ir.getInt64Ty()) : a(i);
         };
-        ret = locked(word, locks, [&](Value *old) {
-          return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
-                          : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
-        });
+        ret = locked(
+            word, locks,
+            [&](Value *old) {
+              return exchange ? ir.CreateSelect(ir.CreateICmpEQ(old, operand(5)), operand(6), old)
+                              : buildAtomicRMWValue(atomic_op(code), ir, old, operand(6));
+            },
+            exchange ? std::nullopt : std::optional(atomic_op(code)), operand(6));
         if (float_texel)
           ret = ir.CreateBitCast(ir.CreateTrunc(ret, ir.getInt32Ty()), ty);
         break;
@@ -4166,8 +4249,25 @@ convert_dxil(
         wide.push_back(rmw);
       else if (auto cx = dyn_cast<AtomicCmpXchgInst>(&I); cx && cx->getCompareOperand()->getType()->isIntegerTy(64))
         wide.push_back(cx);
+  // as for buffers, the shader's groupshared ones split when they are all one op that commutes with itself, unread
+  std::optional<AtomicRMWInst::BinOp> split_shared;
+  for (auto I : wide) {
+    auto rmw = dyn_cast<AtomicRMWInst>(I);
+    auto kind = rmw && rmw->use_empty() ? split_kind(rmw->getOperation()) : std::nullopt;
+    if (!kind || (split_shared && *split_shared != *kind)) {
+      split_shared.reset();
+      break;
+    }
+    split_shared = kind;
+  }
   for (auto I : wide) {
     ir.SetInsertPoint(I);
+    if (split_shared) {
+      auto rmw = cast<AtomicRMWInst>(I);
+      split64(rmw->getPointerOperand(), rmw->getOperation(), rmw->getValOperand());
+      I->eraseFromParent();
+      continue;
+    }
     auto locks = atomic_locks();
     if (!locks)
       return make_error<UnsupportedFeature>("64-bit groupshared atomic without a lock table");
