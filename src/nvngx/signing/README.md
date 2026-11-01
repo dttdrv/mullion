@@ -10,7 +10,7 @@ So Mullion's `nvngx.dll` is signed with Mullion's own key, and DXGI trusts its c
 
 - `mullion-ngx.pem` is the certificate: self-issued, "Mullion NGX", code signing only. It names Mullion,
   not NVIDIA; NGX asks only for a trusted chain.
-- `src/dxgi/dxgi_ngx_certificate.h` is the same certificate in DER. With `MULLION_ENABLE_NVEXT=1`, DXGI adds it to the
+- `src/dxgi/dxgi_ngx_certificate.h` is the same certificate in DER. With NVEXT on (see below), DXGI adds it to the
   prefix's `Root` store, and sets `NGXCore\FullPath` and `nvlddmkm\NGXCore\NGXPath` to its own folder (System32 for a
   Wine builtin). The trust is the prefix's only.
 - The private key is the repository secret `MULLION_NGX_SIGNING_KEY` (PEM). The CI `package` job signs both
@@ -26,7 +26,7 @@ A new key needs a new certificate here and in `dxgi_ngx_certificate.h`
 
 A game sees DLSS when Mullion shows it an NVIDIA RTX GPU and NGX finds the signed core:
 
-- `MULLION_ENABLE_NVEXT=1` in the game's environment;
+- `MULLION_ENABLE_NVEXT=1` in the game's environment, or the NVIDIA vendor ID below (`MULLION_ENABLE_NVEXT=0` turns it off);
 - `dxgi.customVendorId = 10de`, `dxgi.customDeviceId = 2704` and `dxgi.customDeviceDesc = "NVIDIA GeForce RTX 4080"`
   (quoted: an unquoted value ends at its first space) in the game's section of the configuration;
 - the signed `nvngx.dll` in the prefix's System32 and in Wine's own `lib/wine/<arch>-windows` (`install.sh` puts both).

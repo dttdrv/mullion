@@ -1,6 +1,6 @@
 #pragma once
 // the certificate Mullion's nvngx.dll is signed with (src/nvngx/signing/mullion-ngx.pem, in DER): NGX loads only a core
-// whose signature chains to a trusted root, so MULLION_ENABLE_NVEXT=1 adds it to the prefix's Root store
+// whose signature chains to a trusted root, so NVEXT adds it to the prefix's Root store
 // (regenerate with: openssl x509 -in src/nvngx/signing/mullion-ngx.pem -outform der | xxd -i)
 static const unsigned char mullion_ngx_certificate[] = {
   0x30, 0x82, 0x04, 0x35, 0x30, 0x82, 0x02, 0x9d, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14, 0x38,

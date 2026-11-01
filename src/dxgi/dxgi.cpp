@@ -2,6 +2,8 @@
 #include "dxgi_ngx_certificate.h"
 #include "log/log.hpp"
 #include "util_env.hpp"
+#include "config/config.hpp"
+#include <algorithm>
 #include "winemetal.h"
 #include <mutex>
 #include <utility>
@@ -37,7 +39,19 @@ static void TrustNGXCertificate() {
   FreeLibrary(crypt32);
 }
 
-// MULLION_ENABLE_NVEXT=1: an NVIDIA GPU's driver registry values, where NGX looks for its core: NVIDIA
+// NVEXT is on with MULLION_ENABLE_NVEXT=1, or where the configuration shows the program an NVIDIA GPU
+// (dxgi.customVendorId = 10de), unless MULLION_ENABLE_NVEXT=0: a launcher that rewrites the environment it starts a
+// game with leaves the configuration's per-program section alone
+static bool NvidiaExtensionRequested() {
+  auto env = env::getEnvVar("MULLION_ENABLE_NVEXT");
+  if (env == "1" || env == "0")
+    return env == "1";
+  auto vendor = Config::getInstance().getOption<std::string>("dxgi.customVendorId");
+  std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) { return std::tolower(c); });
+  return vendor == "10de" || vendor == "0x10de";
+}
+
+// NVEXT: an NVIDIA GPU's driver registry values, where NGX looks for its core: NVIDIA
 // Corporation\Global\NGXCore FullPath and nvlddmkm\NGXCore NGXPath, both the folder this DXGI was loaded from, which
 // has Mullion's nvngx.dll. A process without it leaves them as they are: they are the prefix's, and another process's
 // (Steam's, which loads this DXGI too) removal raced the game's
@@ -45,7 +59,7 @@ static void InitializeVendorExtensionNV() {
 #ifdef __i386__
   return;
 #endif
-  if (env::getEnvVar("MULLION_ENABLE_NVEXT") != "1")
+  if (!NvidiaExtensionRequested())
     return;
   HKEY key1 = nullptr, key2 = nullptr, key3 = nullptr, key4 = nullptr;
   auto name1 = L"{41FCC608-8496-4DEF-B43E-7D9BD675A6FF}";
