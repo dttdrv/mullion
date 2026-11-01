@@ -1130,6 +1130,7 @@ read_dxil(
   for (auto [op, type] : attribute_inputs)
     if (used_ops.count(op) && !mesh_stage)
       declare(D3D10_SB_OPCODE_DCL_INPUT, type, 0, 0, D3D10_SB_NAME_UNDEFINED, 0, ~0u);
+  info.discards = used_ops.count(Discard) != 0;
   if (used_ops.count(SampleIndex))
     shader->func_signature.DefineInput(air::InputSampleIndex{});
   for (auto op : {BufferStore, RawBufferStore, TextureStore, AtomicBinOp, AtomicCompareExchange, BufferUpdateCounter,

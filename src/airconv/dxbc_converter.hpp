@@ -118,6 +118,8 @@ public:
   // the input registers a pixel shader also reads at each vertex of the primitive (DXIL's AttributeAtVertex)
   uint32_t vertex_value_reg_mask = 0;
   bool use_barycentrics = false;
+  // a pixel shader that may discard
+  bool discards = false;
 };
 
 Instruction readInstruction(

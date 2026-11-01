@@ -11,6 +11,8 @@
 // edges, far outside the cell, behind the near plane, at several w; and the pipelines take the color target, a depth
 // target alone (no pixel shader), a pixel shader that counts its runs in memory (where the clip distances are tested in
 // the pixel shader), one whose depth test comes first ([earlydepthstencil]), and 4x multisampling.
+// the same with a pixel shader that may discard. Mullion culls in the pixel shader or the mesh stage by pipeline
+// (MULLION_D3D12_PIXEL_CULL); `all` as the second argument has every pipeline that can cull in its pixel shader
 #include "d3d12_test.hpp"
 #include <algorithm>
 #include <array>
@@ -69,6 +71,12 @@ V vs(In i) {
   return v;
 }
 float4 ps_color(float4 pos : SV_Position) : SV_Target { return float4(1, 0.5, 0.25, 1); }
+// one that may discard (and never does)
+float4 ps_discard_color(float4 pos : SV_Position) : SV_Target {
+  if (pos.x < 0)
+    discard;
+  return float4(1, 0.5, 0.25, 1);
+}
 RWByteAddressBuffer runs : register(u1);
 float4 ps_count(float4 pos : SV_Position) : SV_Target {
   uint2 p = uint2(pos.xy);
@@ -76,6 +84,44 @@ float4 ps_count(float4 pos : SV_Position) : SV_Target {
   return float4(1, 0.5, 0.25, 1);
 }
 [earlydepthstencil] float4 ps_early(float4 pos : SV_Position) : SV_Target { return float4(1, 0.5, 0.25, 1); }
+
+#ifndef GRID
+#define GRID 64
+#endif
+// the benchmark's layers: a full-window grid of GRID x GRID / 16 * 9 quads at depth Z, one cull distance in front
+cbuffer Layer : register(b0) { float z; };
+struct BV {
+  float4 pos : SV_Position;
+  float2 uv : TEXCOORD0;
+#if CULL
+  float cull : SV_CullDistance;
+#endif
+};
+BV vs_layer(uint id : SV_VertexID) {
+  uint quad = id / 6, corner = id % 6, w = GRID, h = GRID * 9 / 16;
+  uint2 c = uint2(quad % w, quad / w) + uint2(corner == 1 || corner >= 4 ? 1 : 0, corner == 2 || corner == 3 || corner == 5 ? 1 : 0);
+  BV v;
+  v.uv = float2(c) / float2(w, h);
+  v.pos = float4(v.uv * float2(2, -2) + float2(-1, 1), z, 1);
+#if CULL
+  v.cull = 1;
+#endif
+  return v;
+}
+float4 ps_flat(BV v) : SV_Target { return float4(v.uv, z, 1); }
+float4 shade(BV v) {
+  float3 c = float3(v.uv, z);
+  for (int i = 0; i < 16; i++)
+    c = sin(c * 1.7 + c.yzx) * 0.5 + cos(c.zxy * 2.3);
+  return float4(c, 1);
+}
+float4 ps_heavy(BV v) : SV_Target { return shade(v); }
+// the same, but one that may discard (and never does: the layers are nearer than 2), writes its depth, or may write
+// memory
+float4 ps_discard(BV v) : SV_Target { float4 c = shade(v); if (z > 2) discard; return c; }
+float4 ps_depth(BV v, out float depth : SV_Depth) : SV_Target { depth = v.pos.z; return shade(v); }
+RWByteAddressBuffer sink : register(u1);
+float4 ps_uav(BV v) : SV_Target { float4 c = shade(v); if (z > 2) sink.Store(0, 1); return c; }
 )hlsl";
 
 namespace {
@@ -258,11 +304,138 @@ struct Pipeline {
   const char *name;
   int layout;
   unsigned distances;
-  enum { Color, Depth, Count, Early } kind;
+  enum { Color, Depth, Count, Early, Discard } kind;
   UINT samples;
 };
 
 } // namespace
+
+
+// `bench`: GPU time of opaque, depth-tested layers over a 1920 x 1080 window, drawn back to front and front to back,
+// with and without a cull distance (in front of every vertex, so nothing is culled), for overdraw against the pixel
+// shader's discard (MULLION_D3D12_PIXEL_CULL picks how a pipeline with cull distances culls)
+static int
+bench(Compiler &compiler) {
+  const UINT width = 1920, height = 1080, grid = 64, frames = 40;
+  const UINT vertices = grid * (grid * 9 / 16) * 6;
+  ComPtr<ID3D12Device> device;
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  D3D12_ROOT_PARAMETER parameters[2] = {{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}, {D3D12_ROOT_PARAMETER_TYPE_UAV}};
+  parameters[0].Constants = {0, 0, 1};
+  parameters[1].Descriptor = {1, 0};
+  auto rs = root_signature(device.Get(), {2, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE});
+  auto sink = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, 256, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+  ComPtr<ID3D12CommandQueue> queue;
+  D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+  CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+  ComPtr<ID3D12CommandAllocator> allocator;
+  ComPtr<ID3D12GraphicsCommandList> list;
+  CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
+  CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
+  CHECK(list->Close());
+  D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
+  D3D12_CLEAR_VALUE clear_color{DXGI_FORMAT_R8G8B8A8_UNORM, {0, 0, 0, 0}}, clear_depth{DXGI_FORMAT_D32_FLOAT};
+  clear_depth.DepthStencil.Depth = 1;
+  D3D12_RESOURCE_DESC t{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, width, height, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0},
+                        D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+  ComPtr<ID3D12Resource> target, depth;
+  CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &t, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                        &clear_color, IID_PPV_ARGS(&target)));
+  t.Format = DXGI_FORMAT_D32_FLOAT;
+  t.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &t, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                        &clear_depth, IID_PPV_ARGS(&depth)));
+  ComPtr<ID3D12DescriptorHeap> rtvs, dsvs;
+  D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1}, dsv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1};
+  CHECK(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtvs)));
+  CHECK(device->CreateDescriptorHeap(&dsv_desc, IID_PPV_ARGS(&dsvs)));
+  auto rtv = rtvs->GetCPUDescriptorHandleForHeapStart(), dsv = dsvs->GetCPUDescriptorHandleForHeapStart();
+  device->CreateRenderTargetView(target.Get(), nullptr, rtv);
+  device->CreateDepthStencilView(depth.Get(), nullptr, dsv);
+  ComPtr<ID3D12QueryHeap> queries;
+  D3D12_QUERY_HEAP_DESC query_desc{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 2};
+  CHECK(device->CreateQueryHeap(&query_desc, IID_PPV_ARGS(&queries)));
+  auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, 16, D3D12_RESOURCE_STATE_COPY_DEST);
+  UINT64 frequency;
+  CHECK(queue->GetTimestampFrequency(&frequency));
+
+  const char *environment = getenv("MULLION_D3D12_PIXEL_CULL");
+  printf("MULLION_D3D12_PIXEL_CULL=%s\n", environment ? environment : "(unset)");
+  // the pixel shader, and whether the pipeline blends
+  const std::pair<const char *, bool> shaders[] = {{"ps_flat", false},    {"ps_heavy", false}, {"ps_discard", false},
+                                                   {"ps_depth", false},   {"ps_uav", false},   {"ps_heavy", true}};
+  const char *only = getenv("BENCH_PS");
+  for (auto [ps_entry, blended] : shaders)
+    for (int cull = 0; cull < 2; cull++) {
+      if (only && strcmp(only, ps_entry) && !(blended && !strcmp(only, "blend")))
+        continue;
+      std::vector<std::string> defines = {"LAYOUT=1", "CULL=" + std::to_string(cull), "WIDTH=1", "GRID=" + std::to_string(grid)};
+      auto vs = compiler.compile(hlsl, "vs_layer", "vs", defines), ps = compiler.compile(hlsl, ps_entry, "ps", defines);
+      if (vs.empty() || ps.empty())
+        return 1;
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+      desc.pRootSignature = rs.Get();
+      desc.VS = bytecode(vs);
+      desc.PS = bytecode(ps);
+      desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+      if (blended)
+        desc.BlendState.RenderTarget[0] = {TRUE, FALSE, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
+                                           D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP,
+                                           D3D12_COLOR_WRITE_ENABLE_ALL};
+      desc.SampleMask = ~0u;
+      desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
+      desc.RasterizerState.DepthClipEnable = TRUE;
+      desc.DepthStencilState.DepthEnable = TRUE;
+      desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+      desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+      desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      desc.NumRenderTargets = 1;
+      desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+      desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+      desc.SampleDesc.Count = 1;
+      ComPtr<ID3D12PipelineState> pso;
+      CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)));
+      for (UINT layers : {4u, 10u, 20u})
+        for (int front_first = 0; front_first < 2; front_first++) {
+          std::vector<double> times;
+          for (UINT f = 0; f < frames; f++) {
+            CHECK(allocator->Reset());
+            CHECK(list->Reset(allocator.Get(), pso.Get()));
+            list->ClearRenderTargetView(rtv, clear_color.Color, 0, nullptr);
+            list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
+            list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+            list->SetGraphicsRootSignature(rs.Get());
+            list->SetGraphicsRootUnorderedAccessView(1, sink->GetGPUVirtualAddress());
+            D3D12_VIEWPORT viewport{0, 0, (float)width, (float)height, 0, 1};
+            D3D12_RECT scissor{0, 0, (LONG)width, (LONG)height};
+            list->RSSetViewports(1, &viewport);
+            list->RSSetScissorRects(1, &scissor);
+            list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+            for (UINT l = 0; l < layers; l++) {
+              UINT order = front_first ? l : layers - 1 - l;
+              float z = 0.1f + 0.8f * order / layers;
+              list->SetGraphicsRoot32BitConstants(0, 1, &z, 0);
+              list->DrawInstanced(vertices, 1, 0, 0);
+            }
+            list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
+            list->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback.Get(), 0);
+            CHECK(submit(device.Get(), queue.Get(), list.Get()));
+            UINT64 *stamps;
+            CHECK(readback->Map(0, nullptr, (void **)&stamps));
+            if (f >= 5)
+              times.push_back(double(stamps[1] - stamps[0]) * 1000 / frequency);
+            readback->Unmap(0, nullptr);
+          }
+          std::sort(times.begin(), times.end());
+          printf("bench %-10s %-9s layers %2u %-14s gpu median %.3f ms (p10 %.3f)\n", blended ? "ps_blend" : ps_entry,
+                 cull ? "cull" : "no-cull", layers, front_first ? "front-to-back" : "back-to-front",
+                 times[times.size() / 2], times[times.size() / 10]);
+        }
+    }
+  return 0;
+}
 
 int
 main(int argc, char **argv) {
@@ -271,6 +444,11 @@ main(int argc, char **argv) {
     printf("skipped: dxcompiler.dll not found\n");
     return 77;
   }
+  if (argc > 2 && !strcmp(argv[2], "bench"))
+    return bench(compiler);
+  // `all`: every pipeline that can culls in its pixel shader, not only those that already lose hidden surface removal
+  if (argc > 2 && !strcmp(argv[2], "all"))
+    SetEnvironmentVariableA("MULLION_D3D12_PIXEL_CULL", "all");
   const Pipeline pipelines[] = {
       {"one distance", 1, 1, Pipeline::Color, 1},
       {"eight distances", 2, 8, Pipeline::Color, 1},
@@ -282,6 +460,11 @@ main(int argc, char **argv) {
       {"eight distances, runs counted", 2, 8, Pipeline::Count, 1},
       {"two distances after two clip distances, runs counted", 4, 2, Pipeline::Count, 1},
       {"three distances beside a clip distance, early depth test", 3, 3, Pipeline::Early, 1},
+      {"one distance, a pixel shader that may discard", 1, 1, Pipeline::Discard, 1},
+      {"eight distances, a pixel shader that may discard", 2, 8, Pipeline::Discard, 1},
+      {"eight distances, a pixel shader that may discard, 4x multisampled", 2, 8, Pipeline::Discard, 4},
+      {"three distances beside a clip distance, a pixel shader that may discard", 3, 3, Pipeline::Discard, 1},
+      {"two distances after two clip distances, a pixel shader that may discard", 4, 2, Pipeline::Discard, 1},
   };
 
   ComPtr<ID3D12Device> device;
@@ -371,7 +554,10 @@ main(int argc, char **argv) {
 
     // the pipelines: with cull distances, and the reference's without
     bool color = p.kind != Pipeline::Depth, depth = p.kind == Pipeline::Depth || p.kind == Pipeline::Early;
-    const char *ps_entry = p.kind == Pipeline::Count ? "ps_count" : p.kind == Pipeline::Early ? "ps_early" : "ps_color";
+    const char *ps_entry = p.kind == Pipeline::Count     ? "ps_count"
+                           : p.kind == Pipeline::Early   ? "ps_early"
+                           : p.kind == Pipeline::Discard ? "ps_discard_color"
+                                                         : "ps_color";
     ComPtr<ID3D12PipelineState> pso[2];
     for (int cull = 0; cull < 2; cull++) {
       std::vector<std::string> defines = {"LAYOUT=" + std::to_string(p.layout), "CULL=" + std::to_string(1 - cull),

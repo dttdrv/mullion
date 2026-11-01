@@ -37,6 +37,10 @@ foreach t : [['d3d12_sdk_configuration', []], ['d3d12_metal4_passes', []], ['d3d
       test(t[0] + '_predicated_' + front_end, exe, args: [front_end, 'predicated'], timeout: 600)
       benchmark(t[0] + '_' + front_end, exe, args: [front_end, 'bench'], timeout: 600)
     endif
+    if t[0] == 'd3d12_cull_distance'
+      test(t[0] + '_all_' + front_end, exe, args: [front_end, 'all'], timeout: 600)
+      benchmark(t[0] + '_' + front_end, exe, args: [front_end, 'bench'], timeout: 900)
+    endif
     if t[0] == 'd3d12_pass_overlap'
       benchmark(t[0] + '_' + front_end, exe, args: [front_end, 'bench'], timeout: 600)
       benchmark(t[0] + '_mixed_' + front_end, exe, args: [front_end, 'bench-mixed'], timeout: 600)

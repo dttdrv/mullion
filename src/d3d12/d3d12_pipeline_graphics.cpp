@@ -1333,14 +1333,25 @@ public:
       });
       conservative = false;
     }
-    // the pixel shader discards the pixels of a triangle a cull distance culls instead, before anything else it does
+    // the pixel shader can discard the pixels of a triangle a cull distance culls instead, before anything else it does
     // (SM50_CULL_VARYING), the vertex shader drawn as usual: not a pixel shader whose depth and stencil tests come first,
     // which a discard leaves done, not lines, points or wireframe, which rasterize one edge of a triangle without its
-    // third vertex, and not where the varyings would be more than Metal passes. MULLION_D3D12_PIXEL_CULL=0 culls in
-    // the mesh stage as before
-    static const bool pixel_culls = env::getEnvVar("MULLION_D3D12_PIXEL_CULL") != "0";
-    uint32_t culls = pixel_culls && plain && ref_vs.CullDistances &&
-                             pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE &&
+    // third vertex, and not where the varyings would be more than Metal passes. a discard costs an opaque pipeline the
+    // GPU's removal of hidden surfaces (2 to 3 times the GPU time of 10 to 20 layers drawn back to front, many times
+    // that with blending, where the mesh stage costs 10-20% more), so by default only a pipeline that has lost it
+    // already culls in its pixel shader: one whose pixel shader may discard, writes depth or uses UAVs, and blends no
+    // target. MULLION_D3D12_PIXEL_CULL=all culls in the pixel shader wherever it can, 0 nowhere
+    static const std::string pixel_culls = env::getEnvVar("MULLION_D3D12_PIXEL_CULL");
+    bool blends = false;
+    for (unsigned i = 0; i < pDesc->NumRenderTargets && i < 8; i++) {
+      auto &target = pDesc->BlendState.RenderTarget[pDesc->BlendState.IndependentBlendEnable ? i : 0];
+      blends |= target.BlendEnable || target.LogicOpEnable;
+    }
+    bool prefer_mesh = !pDesc->PS.pShaderBytecode ||
+                                (!ref_ps.PixelShader.Discards && !ref_ps.PixelShader.DepthOutput && !ref_ps.UAVSlotMask) ||
+                                blends || pDesc->BlendState.AlphaToCoverageEnable;
+    uint32_t culls = pixel_culls != "0" && (pixel_culls == "all" || !prefer_mesh) && plain &&
+                             ref_vs.CullDistances && pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE &&
                              pDesc->RasterizerState.FillMode == D3D12_FILL_MODE_SOLID && !stream_output &&
                              !conservative && !(pDesc->PS.pShaderBytecode && ref_ps.PixelShader.EarlyTests) &&
                              PixelShaderVaryings(pDesc->PS) + ref_vs.ClipDistances + ref_vs.CullDistances <= 124

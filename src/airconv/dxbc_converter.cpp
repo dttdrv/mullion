@@ -2133,6 +2133,7 @@ static int SM50InitializeUncached(
       pRefl->PixelShader.Barycentrics = sm50_shader->shader_info.use_barycentrics;
       pRefl->PixelShader.DepthOutput = sm50_shader->ps_depth_output;
       pRefl->PixelShader.EarlyTests = sm50_shader->func_signature.EarlyFragmentTests();
+      pRefl->PixelShader.Discards = sm50_shader->shader_info.discards;
       for (auto &out : sm50_shader->output_signature) {
         if (out.reg() >= std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats))
           continue;

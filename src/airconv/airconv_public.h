@@ -161,6 +161,8 @@ struct MTL_PIXEL_SHADER_REFLECTION {
   uint32_t DepthOutput;
   /* the depth and stencil tests run before the shader ([earlydepthstencil]): its discards leave them done */
   uint32_t EarlyTests;
+  /* the shader may discard */
+  uint32_t Discards;
 };
 
 struct MTL_SHADER_REFLECTION {
