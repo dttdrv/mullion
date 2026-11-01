@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 92
+#define AIRCONV_VERSION 93
 
 #ifdef __cplusplus
 #include <string>
@@ -159,6 +159,10 @@ struct MTL_PIXEL_SHADER_REFLECTION {
   uint32_t Barycentrics;
   /* the shader outputs depth (SV_Depth, SV_DepthGreaterEqual or SV_DepthLessEqual) */
   uint32_t DepthOutput;
+  /* the shader reads inputs at each vertex (GetAttributeAtVertex), which only a primitive of the original vertices has */
+  uint32_t VertexValues;
+  /* the shader reads SV_InnerCoverage */
+  uint32_t InnerCoverage;
 };
 
 struct MTL_SHADER_REFLECTION {
@@ -530,6 +534,10 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   /* lines reach the rasterizer as quadrilaterals (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's quad_lines), whose
      barycentrics are SM50_BARYCENTRIC_ROWS */
   bool quad_lines;
+  /* with conservative: the mesh stage passes on the polygon of the pixels the primitive touches
+     (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative_hull), so the shader tests no pixel, and writes the depth
+     only where Metal would clamp it otherwise: when the shader may discard or change its coverage, or writes memory */
+  bool conservative_hull;
 };
 
 /* conservative rasterization's per-primitive varyings, flat floats named "mullion_conservative0" and on: the corners
@@ -545,6 +553,10 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
    passes a pixel shader that reads barycentrics: each point's weights of the primitive's corners times its 1/w, then
    the weights, floats named "mullion_barycentrics0" to 5, which Metal interpolates linearly in the window */
 #define SM50_BARYCENTRIC_ROWS 6
+/* the points of a conservative hull, the clipped polygon grown by the pixel's square: each of its
+   SM50_CONSERVATIVE_CORNERS corners once, and once more for each quadrant its edges' normals turn through there, four
+   in all (some of them repeated) */
+#define SM50_CONSERVATIVE_HULL_POINTS (4 + SM50_CONSERVATIVE_CORNERS)
 /* what a conservative rasterizer's mesh stage reads: the viewports by viewport array index (x, y, width, height), then
    whether the pipeline clips depth and whether its front faces are counterclockwise (1 or 0) */
 struct SM50_CONSERVATIVE_VIEWPORTS {
@@ -678,6 +690,14 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA {
   bool conservative;
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
+  /* passing triangles through, conservative, a pipeline of one raster sample: each triangle is the polygon of the
+     pixels whose squares it touches, the triangle as clipped grown by the square (conservative_triangle), a fan of
+     SM50_CONSERVATIVE_HULL_POINTS - 2 Metal triangles. Metal rasterizes a pixel at its center, so what it covers is
+     what D3D does and the pixel shader tests nothing (SM50_SHADER_PSO_PIXEL_SHADER_DATA's conservative_hull) */
+  bool conservative_hull;
+  /* with conservative_hull: the pixel shader reads SV_InnerCoverage, so the hull's points pass on the polygon too
+     (SM50_CONSERVATIVE_VARYINGS), which they otherwise leave out */
+  bool conservative_inner;
 };
 
 struct SM50_SHADER_PSO_TESSELLATOR_DATA {

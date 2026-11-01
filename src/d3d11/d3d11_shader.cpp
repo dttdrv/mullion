@@ -187,7 +187,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   std::string func_name = "ps_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
 
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
-    SM50_SHADER_PSO_PIXEL_SHADER_DATA data;
+    SM50_SHADER_PSO_PIXEL_SHADER_DATA data{};
     data.type = SM50_SHADER_PSO_PIXEL_SHADER;
     data.next = common;
     data.sample_mask = variant.sample_mask;
@@ -204,6 +204,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.depth_bounds = false;
     data.late_tests = false;
     data.conservative = false;
+    data.conservative_hull = false;
     data.coarse_shading = false;
     data.shading_rate_varying = 0;
     data.quad_lines = false;

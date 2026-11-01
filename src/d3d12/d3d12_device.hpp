@@ -508,6 +508,9 @@ public:
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in `pso_strip` for strips (none for points)
   bool geometry_shader = false;
+  // whether its mesh stage, if it has one, reads the root arguments and static samplers: all but a geometry
+  // pipeline's that only passes the vertex shader's primitives on (convert_pass_through_geometry_shader)
+  bool mesh_reads_root_arguments = true;
   // a stage reads or writes a UAV: only then can a UAV barrier order anything a draw of it does inside a render pass
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
@@ -556,6 +559,8 @@ public:
   bool writes_depth = false;
   // conservative rasterization of triangles: the mesh stage reads the viewports (SM50_BINDING_INDEX_VIEWPORTS)
   bool conservative = false;
+  // of the hulls of the triangles' pixels, which the mesh stage shares among SM50_CONSERVATIVE_HULL_POINTS threads
+  bool conservative_hull = false;
 
   // whether its pixel shader has a variant of coarse pixels (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool coarse_shading = false;
@@ -773,7 +778,7 @@ public:
 
   // the fragment functions of pipelines without a pixel shader, by what they do (conservative rasterization, the depth
   // bounds test, the sample mask): compiled once each (MTLD3D12GraphicsPipelineState's TestFragment)
-  std::map<std::tuple<bool, bool, uint32_t>, WMT::Reference<WMT::Function>> test_fragments;
+  std::map<std::tuple<bool, bool, bool, uint32_t>, WMT::Reference<WMT::Function>> test_fragments;
   mullion::mutex test_fragments_mutex;
 
   // whether acceleration structures keep what they were built from, which serializing and decoding them gives back

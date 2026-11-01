@@ -141,11 +141,13 @@ stream_output_input(air::FunctionSignatureBuilder &signature, llvm::LLVMContext 
 // a w of 1, so what Metal interpolates over them is linear in the window: an input over w and the plane's 1/w
 // (SM50_CONSERVATIVE_RCP_W), from the corners' homogeneous barycentrics there, which hold behind the eye too. a polygon
 // of no area takes the first corner's inputs and faces back ("degenerate triangles must be considered back facing",
-// D3D12 conservative rasterization)
+// D3D12 conservative rasterization). with `hull` (one raster sample) Metal rasterizes instead the polygon grown by the
+// square, SM50_CONSERVATIVE_HULL_POINTS points whose pixels are just those the polygon touches, which the pixel shader
+// need not test; without `weigh` it leaves the points in hull_points for conservative_weigh
 ConservativeTriangle
 conservative_triangle(
     llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, air::AirType &types, pvalue const (&clip)[3],
-    pvalue viewports, pvalue viewport_index
+    pvalue viewports, pvalue viewport_index, bool hull, bool weigh
 ) {
   using llvm::air::AIRBuilder;
   ConservativeTriangle out;
@@ -208,10 +210,6 @@ conservative_triangle(
     return {add(at(viewport, 0), mul(add(x, f(1)), mul(at(viewport, 2), f(0.5)))),
             add(at(viewport, 1), mul(sub(f(1), y), mul(at(viewport, 3), f(0.5))))};
   };
-  auto ndc = [&](pvalue x, pvalue y) -> std::array<pvalue, 2> {
-    return {sub(div(sub(x, at(viewport, 0)), mul(at(viewport, 2), f(0.5))), f(1)),
-            sub(f(1), div(sub(y, at(viewport, 1)), mul(at(viewport, 3), f(0.5))))};
-  };
   // twice the signed area, positive turning clockwise in the window
   auto area = [&](auto &points, size_t n) {
     pvalue sum = f(0);
@@ -245,86 +243,195 @@ conservative_triangle(
   }
   auto det = add(add(mul(column[0][0], row[0][0]), mul(column[0][1], row[0][1])), mul(column[0][2], row[0][2]));
   auto degenerate = builder.CreateOr(builder.CreateFCmpOEQ(polygon_area, f(0)), builder.CreateFCmpOEQ(det, f(0)));
-  // the triangle's edges moved out by the square, where its corners are before the eye
-  const double grow = 1 + 1.0 / 64;
-  std::array<pvalue, 2> corner[3];
-  pvalue before = builder.getTrue();
-  for (uint32_t k = 0; k < 3; k++) {
-    before = builder.CreateAnd(before, builder.CreateFCmpOGT(at(clip[k], 3), f(eye)));
-    corner[k] = window(div(at(clip[k], 0), at(clip[k], 3)), div(at(clip[k], 1), at(clip[k], 3)));
-  }
-  auto inward = builder.CreateSelect(builder.CreateFCmpOGT(polygon_area, f(0)), f(1), f(-1));
-  pvalue nx[3], ny[3], c[3];
-  for (uint32_t i = 0; i < 3; i++) {
-    auto &a = corner[i], &b = corner[(i + 1) % 3];
-    nx[i] = mul(sub(a[1], b[1]), inward), ny[i] = mul(sub(b[0], a[0]), inward);
-    c[i] = sub(add(mul(nx[i], a[0]), mul(ny[i], a[1])), mul(add(abs(nx[i]), abs(ny[i])), f(grow)));
-  }
-  std::array<pvalue, 2> moved[3];
-  for (uint32_t k = 0; k < 3; k++) {
-    uint32_t a = (k + 2) % 3, b = k; // the edges into and out of corner k
-    auto d = sub(mul(nx[a], ny[b]), mul(ny[a], nx[b]));
-    moved[k] = {div(sub(mul(c[a], ny[b]), mul(c[b], ny[a])), d), div(sub(mul(nx[a], c[b]), mul(nx[b], c[a])), d)};
-  }
-  // the box around the polygon, as much larger, and the half of the box twice its size that has it
-  pvalue low[2], high[2];
-  for (uint32_t axis = 0; axis < 2; axis++) {
-    low[axis] = high[axis] = out.window[0][axis];
-    for (uint32_t k = 1; k < SM50_CONSERVATIVE_CORNERS; k++)
-      low[axis] = min(low[axis], out.window[k][axis]), high[axis] = max(high[axis], out.window[k][axis]);
-    low[axis] = sub(low[axis], f(grow)), high[axis] = add(high[axis], f(grow));
-  }
-  auto width = sub(high[0], low[0]), height = sub(high[1], low[1]);
-  std::array<pvalue, 2> box[3] = {
-      {low[0], low[1]}, {add(low[0], mul(width, f(2))), low[1]}, {low[0], add(low[1], mul(height, f(2)))}
-  };
-  auto use_moved = builder.CreateAnd(
-      builder.CreateAnd(before, builder.CreateNot(degenerate)),
-      builder.CreateFCmpOLE(abs(area(moved, 3)), mul(mul(width, height), f(4)))
-  );
-  // the box's half turns clockwise; it turns as the polygon does, or back where it is degenerate
+  // the box's half and the hull turn clockwise as the polygon does, or back where it is degenerate
   auto clockwise = builder.CreateSelect(degenerate, counterclockwise, builder.CreateFCmpOGT(polygon_area, f(0)));
-  for (uint32_t u = 0; u < 3; u++) {
-    uint32_t mirrored = u ? 3 - u : 0;
-    pvalue point[2];
-    for (uint32_t axis = 0; axis < 2; axis++)
-      point[axis] = builder.CreateSelect(
-          use_moved, moved[u][axis], builder.CreateSelect(clockwise, box[u][axis], box[mirrored][axis])
-      );
-    auto [x, y] = ndc(point[0], point[1]);
-    // in floats the window barycentrics sum to about 1, so what is blended is divided by their sum: a constant
-    // input stays exact
-    pvalue weight[3], linear[3], rcp_w = f(0), z = f(0), sum = f(0);
-    for (uint32_t j = 0; j < 3; j++) {
-      weight[j] = div(add(add(mul(row[j][0], x), mul(row[j][1], y)), row[j][2]), det);
-      linear[j] = mul(weight[j], at(clip[j], 3));
-      rcp_w = add(rcp_w, weight[j]);
-      z = add(z, mul(weight[j], at(clip[j], 2)));
-      sum = add(sum, linear[j]);
+  std::vector<std::array<pvalue, 2>> points;
+  if (hull) {
+    // the pixels whose squares the polygon touches: the polygon grown by the square (its Minkowski sum), whose
+    // corners are the polygon's, each moved to the square's corners between its edges' outward normals. a 256th of a
+    // pixel more than half, the uncertainty tier 2 has room for, takes the squares that only touch it; as the corners
+    // are snapped to a 256th, so are the hull's. walked with the polygon's area positive, the normals turn through
+    // the square's quadrants once, so the polygon's n corners and the square's 4 make n + 4 points, some repeated: a
+    // corner repeated, or an edge along an axis, adds a point of its own again. a segment's two ends turn half a
+    // turn each, and a point all of it at its first corner
+    const double half = 0.5 + 1.0 / 256;
+    const uint32_t n = SM50_CONSERVATIVE_CORNERS;
+    auto positive = builder.CreateFCmpOGE(polygon_area, f(0));
+    std::array<pvalue, 2> corner[n];
+    for (uint32_t k = 0; k < n; k++)
+      for (uint32_t axis = 0; axis < 2; axis++)
+        corner[k][axis] = builder.CreateSelect(positive, out.window[k][axis], out.window[(n - k) % n][axis]);
+    // the square's corners by quadrant of the normals they lie along, turning as the normals do
+    const double square[4][2] = {{half, half}, {-half, half}, {-half, -half}, {half, -half}};
+    // each edge's quadrant; an edge of no length (a repeated corner) takes the one before it with a length, so its
+    // corner adds no turn
+    auto i32 = [&](uint32_t v) { return builder.getInt32(v); };
+    pvalue own[n], none[n], quadrant[n], carried = i32(0);
+    for (uint32_t k = 0; k < n; k++) {
+      auto &a = corner[k], &b = corner[(k + 1) % n];
+      auto dx = sub(b[0], a[0]), dy = sub(b[1], a[1]);
+      // the outward normal (dy, -dx)
+      auto right = builder.CreateFCmpOGE(dy, f(0)), up = builder.CreateFCmpOGE(builder.CreateFNeg(dx), f(0));
+      own[k] = builder.CreateSelect(right, builder.CreateSelect(up, i32(0), i32(3)), builder.CreateSelect(up, i32(1), i32(2)));
+      none[k] = builder.CreateAnd(builder.CreateFCmpOEQ(dx, f(0)), builder.CreateFCmpOEQ(dy, f(0)));
+      carried = builder.CreateSelect(none[k], carried, own[k]);
     }
-    for (uint32_t j = 0; j < 3; j++) {
-      auto first = f(j == 0 ? 1.0 : 0.0);
-      out.over_w[u][j] = builder.CreateSelect(degenerate, first, weight[j]);
-      out.linear[u][j] = builder.CreateSelect(degenerate, first, linear[j]);
+    for (uint32_t k = 0; k < n; k++)
+      carried = quadrant[k] = builder.CreateSelect(none[k], carried, own[k]);
+    // corner k (between edges k - 1 and k) takes the square's corners from its incoming edge's quadrant on: one more
+    // than the quadrants the normal turns there
+    pvalue first[n], start[n + 1], turned = i32(0);
+    start[0] = i32(0);
+    for (uint32_t k = 0; k < n; k++) {
+      first[k] = quadrant[(k + n - 1) % n];
+      auto turns = builder.CreateAnd(builder.CreateSub(quadrant[k], first[k]), i32(3));
+      turned = builder.CreateAdd(turned, turns);
+      start[k + 1] = builder.CreateAdd(start[k], builder.CreateAdd(turns, i32(1)));
     }
-    out.sum[u] = builder.CreateSelect(degenerate, f(1), sum);
-    out.rcp_w[u] = builder.CreateSelect(degenerate, f(1), div(rcp_w, sum));
-    pvalue position = llvm::UndefValue::get(types._float4);
-    position = builder.CreateInsertElement(position, x, uint64_t(0));
-    position = builder.CreateInsertElement(position, y, uint64_t(1));
-    position = builder.CreateInsertElement(position, builder.CreateSelect(degenerate, first_depth, div(z, sum)), uint64_t(2));
-    out.position[u] = builder.CreateInsertElement(position, f(1), uint64_t(3));
+    // a point (or a polygon of no edges' turn) takes the whole square at its first corner
+    auto whole = builder.CreateICmpEQ(turned, i32(0));
+    for (uint32_t k = 1; k <= n; k++)
+      start[k] = builder.CreateSelect(whole, builder.CreateAdd(start[k], i32(4)), start[k]);
+    for (uint32_t v = 0; v < SM50_CONSERVATIVE_HULL_POINTS; v++) {
+      // the corner whose points v is among, and which of them
+      pvalue at[2] = {corner[0][0], corner[0][1]}, from = first[0], begin = i32(0);
+      for (uint32_t k = 1; k < n; k++) {
+        auto past = builder.CreateICmpUGE(i32(v), start[k]);
+        at[0] = builder.CreateSelect(past, corner[k][0], at[0]), at[1] = builder.CreateSelect(past, corner[k][1], at[1]);
+        from = builder.CreateSelect(past, first[k], from), begin = builder.CreateSelect(past, start[k], begin);
+      }
+      auto q = builder.CreateAnd(builder.CreateAdd(from, builder.CreateSub(i32(v), begin)), i32(3));
+      pvalue offset[2] = {f(square[0][0]), f(square[0][1])};
+      for (uint32_t c = 1; c < 4; c++) {
+        auto is = builder.CreateICmpEQ(q, i32(c));
+        offset[0] = builder.CreateSelect(is, f(square[c][0]), offset[0]);
+        offset[1] = builder.CreateSelect(is, f(square[c][1]), offset[1]);
+      }
+      points.push_back({add(at[0], offset[0]), add(at[1], offset[1])});
+    }
+    // turning as the polygon does, or back where it is degenerate: the other way round from the first point
+    auto turned_points = points;
+    for (uint32_t v = 1; v < SM50_CONSERVATIVE_HULL_POINTS; v++)
+      for (uint32_t axis = 0; axis < 2; axis++)
+        points[v][axis] = builder.CreateSelect(
+            clockwise, turned_points[v][axis], turned_points[SM50_CONSERVATIVE_HULL_POINTS - v][axis]
+        );
+  } else {
+    // the triangle's edges moved out by the square, where its corners are before the eye
+    const double grow = 1 + 1.0 / 64;
+    std::array<pvalue, 2> corner[3];
+    pvalue before = builder.getTrue();
+    for (uint32_t k = 0; k < 3; k++) {
+      before = builder.CreateAnd(before, builder.CreateFCmpOGT(at(clip[k], 3), f(eye)));
+      corner[k] = window(div(at(clip[k], 0), at(clip[k], 3)), div(at(clip[k], 1), at(clip[k], 3)));
+    }
+    auto inward = builder.CreateSelect(builder.CreateFCmpOGT(polygon_area, f(0)), f(1), f(-1));
+    pvalue nx[3], ny[3], c[3];
+    for (uint32_t i = 0; i < 3; i++) {
+      auto &a = corner[i], &b = corner[(i + 1) % 3];
+      nx[i] = mul(sub(a[1], b[1]), inward), ny[i] = mul(sub(b[0], a[0]), inward);
+      c[i] = sub(add(mul(nx[i], a[0]), mul(ny[i], a[1])), mul(add(abs(nx[i]), abs(ny[i])), f(grow)));
+    }
+    std::array<pvalue, 2> moved[3];
+    for (uint32_t k = 0; k < 3; k++) {
+      uint32_t a = (k + 2) % 3, b = k; // the edges into and out of corner k
+      auto d = sub(mul(nx[a], ny[b]), mul(ny[a], nx[b]));
+      moved[k] = {div(sub(mul(c[a], ny[b]), mul(c[b], ny[a])), d), div(sub(mul(nx[a], c[b]), mul(nx[b], c[a])), d)};
+    }
+    // the box around the polygon, as much larger, and the half of the box twice its size that has it
+    pvalue low[2], high[2];
+    for (uint32_t axis = 0; axis < 2; axis++) {
+      low[axis] = high[axis] = out.window[0][axis];
+      for (uint32_t k = 1; k < SM50_CONSERVATIVE_CORNERS; k++)
+        low[axis] = min(low[axis], out.window[k][axis]), high[axis] = max(high[axis], out.window[k][axis]);
+      low[axis] = sub(low[axis], f(grow)), high[axis] = add(high[axis], f(grow));
+    }
+    auto width = sub(high[0], low[0]), height = sub(high[1], low[1]);
+    std::array<pvalue, 2> box[3] = {
+        {low[0], low[1]}, {add(low[0], mul(width, f(2))), low[1]}, {low[0], add(low[1], mul(height, f(2)))}
+    };
+    auto use_moved = builder.CreateAnd(
+        builder.CreateAnd(before, builder.CreateNot(degenerate)),
+        builder.CreateFCmpOLE(abs(area(moved, 3)), mul(mul(width, height), f(4)))
+    );
+    for (uint32_t u = 0; u < 3; u++) {
+      uint32_t mirrored = u ? 3 - u : 0;
+      std::array<pvalue, 2> point;
+      for (uint32_t axis = 0; axis < 2; axis++)
+        point[axis] = builder.CreateSelect(
+            use_moved, moved[u][axis], builder.CreateSelect(clockwise, box[u][axis], box[mirrored][axis])
+        );
+      points.push_back(point);
+    }
   }
+  // what weighs a point of the window: the matrix's rows, the corners and the viewport
+  for (uint32_t j = 0; j < 3; j++) {
+    out.corners[j] = clip[j];
+    for (uint32_t c = 0; c < 3; c++)
+      out.row[j][c] = row[j][c];
+  }
+  out.det = det, out.degenerate = degenerate, out.first_depth = first_depth, out.viewport = viewport;
+  out.hull_points = points;
+  out.points = 0;
+  if (!hull || weigh)
+    for (auto &point : points)
+      conservative_weigh(builder, air, out, point);
   return out;
+}
+
+// the point of a conservative triangle at `point` of the window: its weights of the corners, the plane's 1/w there and
+// its position, as the triangle's next point
+void
+conservative_weigh(
+    llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, ConservativeTriangle &out, const std::array<pvalue, 2> &point
+) {
+  auto f = [&](double v) { return air.getFloat(v); };
+  auto at = [&](pvalue v, uint32_t i) { return builder.CreateExtractElement(v, i); };
+  auto add = [&](pvalue a, pvalue b) { return builder.CreateFAdd(a, b); };
+  auto sub = [&](pvalue a, pvalue b) { return builder.CreateFSub(a, b); };
+  auto mul = [&](pvalue a, pvalue b) { return builder.CreateFMul(a, b); };
+  auto div = [&](pvalue a, pvalue b) { return builder.CreateFDiv(a, b); };
+  auto &viewport = out.viewport, &det = out.det, &degenerate = out.degenerate, &first_depth = out.first_depth;
+  auto &row = out.row;
+  auto &clip = out.corners;
+  auto ndc = [&](pvalue x, pvalue y) -> std::array<pvalue, 2> {
+    return {sub(div(sub(x, at(viewport, 0)), mul(at(viewport, 2), f(0.5))), f(1)),
+            sub(f(1), div(sub(y, at(viewport, 1)), mul(at(viewport, 3), f(0.5))))};
+  };
+  uint32_t u = out.points++;
+  auto [x, y] = ndc(point[0], point[1]);
+  // in floats the window barycentrics sum to about 1, so what is blended is divided by their sum: a constant
+  // input stays exact
+  pvalue weight[3], linear[3], rcp_w = f(0), z = f(0), sum = f(0);
+  for (uint32_t j = 0; j < 3; j++) {
+    weight[j] = div(add(add(mul(row[j][0], x), mul(row[j][1], y)), row[j][2]), det);
+    linear[j] = mul(weight[j], at(clip[j], 3));
+    rcp_w = add(rcp_w, weight[j]);
+    z = add(z, mul(weight[j], at(clip[j], 2)));
+    sum = add(sum, linear[j]);
+  }
+  for (uint32_t j = 0; j < 3; j++) {
+    auto first = f(j == 0 ? 1.0 : 0.0);
+    out.over_w[u][j] = builder.CreateSelect(degenerate, first, weight[j]);
+    out.linear[u][j] = builder.CreateSelect(degenerate, first, linear[j]);
+  }
+  out.sum[u] = builder.CreateSelect(degenerate, f(1), sum);
+  out.rcp_w[u] = builder.CreateSelect(degenerate, f(1), div(rcp_w, sum));
+  pvalue position = llvm::UndefValue::get(llvm::FixedVectorType::get(builder.getFloatTy(), 4));
+  position = builder.CreateInsertElement(position, x, uint64_t(0));
+  position = builder.CreateInsertElement(position, y, uint64_t(1));
+  position = builder.CreateInsertElement(position, builder.CreateSelect(degenerate, first_depth, div(z, sum)), uint64_t(2));
+  out.position[u] = builder.CreateInsertElement(position, f(1), uint64_t(3));
+
 }
 
 void
 conservative_varyings(
     llvm::air::AIRBuilder &air, const ConservativeTriangle &triangle, uint32_t u, pvalue vertex, uint32_t at,
-    bool barycentrics
+    bool barycentrics, bool window
 ) {
   auto &builder = air.builder;
-  for (uint32_t i = 0; i < SM50_CONSERVATIVE_VARYINGS; i++)
+  for (uint32_t i = 0; window && i < SM50_CONSERVATIVE_VARYINGS; i++)
     air.CreateSetMeshVertexData(vertex, builder.getInt32(at + i), triangle.window[i / 2][i % 2]);
   for (uint32_t i = 0; i < SM50_CONSERVATIVE_RCP_W; i++)
     air.CreateSetMeshVertexData(vertex, builder.getInt32(at + SM50_CONSERVATIVE_VARYINGS + i), triangle.rcp_w[u]);
@@ -338,9 +445,9 @@ conservative_varyings(
 }
 
 void
-define_conservative_varyings(air::FunctionSignatureBuilder &signature, uint32_t at, bool barycentrics) {
+define_conservative_varyings(air::FunctionSignatureBuilder &signature, uint32_t at, bool barycentrics, bool window) {
   constexpr uint32_t own = SM50_CONSERVATIVE_VARYINGS + SM50_CONSERVATIVE_RCP_W;
-  for (uint32_t i = 0; i < own + (barycentrics ? SM50_BARYCENTRIC_ROWS : 0); i++)
+  for (uint32_t i = window ? 0 : SM50_CONSERVATIVE_VARYINGS; i < own + (barycentrics ? SM50_BARYCENTRIC_ROWS : 0); i++)
     signature.DefineMeshVertexOutput(air::OutputMeshData{
         .user = i < own ? "mullion_conservative" + std::to_string(i) : "mullion_barycentrics" + std::to_string(i - own),
         .type = air::msl_float,
@@ -1601,7 +1708,10 @@ convert_pass_through_geometry_shader(
   // (D3D11.3 3.4.5): what Metal's own lines are not. conservative rasterization of triangles: each the triangle
   // conservative_triangle makes of it
   bool quads = pso_data->quad_lines && own.count == 2, conservative = pso_data->conservative && own.count == 3;
-  uint32_t corners = quads ? 4 : own.count, primitives = quads ? 2 : 1;
+  // or of one raster sample, the fan of its hull, whose vertices all take the first corner's flat inputs
+  bool hull = conservative && pso_data->conservative_hull;
+  uint32_t corners = quads ? 4 : hull ? SM50_CONSERVATIVE_HULL_POINTS : own.count,
+           primitives = quads ? 2 : hull ? SM50_CONSERVATIVE_HULL_POINTS - 2 : 1;
   func_signature.DefineInput(air::InputMesh{
       corners, primitives,
       quads || own.count == 3 ? air::MeshOutputTopology::Triangle
@@ -1609,6 +1719,9 @@ convert_pass_through_geometry_shader(
                               : air::MeshOutputTopology::Point
   });
   uint32_t tg_in_grid_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
+  // a hull's points and triangles are shared among the threadgroup's threads, however many the draw gives it
+  uint32_t thread_idx = hull ? func_signature.DefineInput(air::InputThreadPositionInThreadgroup{}) : ~0u,
+           threads_idx = hull ? func_signature.DefineInput(air::InputThreadsPerThreadgroup{}) : ~0u;
   func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
   // what the vertex shader outputs, as the mesh's: the position, the layer and viewport its first vertex chooses,
   // and its other registers as varyings
@@ -1679,7 +1792,7 @@ convert_pass_through_geometry_shader(
         .arg_name = "viewports",
         .raster_order_group = {}
     });
-    define_conservative_varyings(func_signature, conservative_at, pso_data->barycentrics);
+    define_conservative_varyings(func_signature, conservative_at, pso_data->barycentrics, !hull || pso_data->conservative_inner);
   }
 
   auto raster_scale = DefineRasterScale(func_signature);
@@ -1710,7 +1823,7 @@ convert_pass_through_geometry_shader(
   auto primitive_id = builder.CreateAdd(
       word(kPayloadPrimitivesBefore), air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, builder.CreateAnd(valid, below))
   );
-  for (uint32_t i = 0; i < primitives; i++)
+  for (uint32_t i = 0; !hull && i < primitives; i++)
     air.CreateSetMeshPrimitiveID(builder.getInt32(i), primitive_id);
   auto odd = strip_parity(builder, air, valid, lane, word(kPayloadStripOffset));
   uint32_t registers = pVertexStage->max_output_register;
@@ -1777,21 +1890,22 @@ convert_pass_through_geometry_shader(
   }
   // what of each of the primitive's corners each of a triangle's vertices has: its own corner's, or for a conservative
   // rasterizer's triangle what conservative_triangle finds there
-  pvalue over_w[3][3], window_linear[3][3], grown[3] = {};
+  pvalue over_w[SM50_CONSERVATIVE_HULL_POINTS][3], window_linear[SM50_CONSERVATIVE_HULL_POINTS][3],
+      grown[SM50_CONSERVATIVE_HULL_POINTS] = {};
   for (uint32_t u = 0; u < own.count; u++)
     for (uint32_t k = 0; k < 3; k++)
       over_w[u][k] = window_linear[u][k] = air.getFloat(u == k ? 1.0 : 0.0);
   std::optional<ConservativeTriangle> triangle;
   if (conservative && clip[0]) {
-    triangle = conservative_triangle(builder, air, types, clip, function->getArg(viewports_idx), viewport());
-    for (uint32_t u = 0; u < own.count; u++) {
+    triangle = conservative_triangle(builder, air, types, clip, function->getArg(viewports_idx), viewport(), hull, !hull);
+    for (uint32_t u = 0; u < triangle->points; u++) {
       for (uint32_t k = 0; k < 3; k++)
         over_w[u][k] = triangle->over_w[u][k], window_linear[u][k] = triangle->linear[u][k];
       grown[u] = triangle->position[u];
     }
   }
   // vertex j's value of what the corners have, `bits` reads them
-  auto blend = [&](pvalue(&parts)[3][3], uint32_t j, auto &&bits) {
+  auto blend = [&](pvalue(&parts)[SM50_CONSERVATIVE_HULL_POINTS][3], uint32_t j, auto &&bits) {
     pvalue value = nullptr;
     for (uint32_t k = 0; k < 3; k++) {
       auto part = builder.CreateFMul(parts[j][k], real(bits(k)));
@@ -1800,9 +1914,8 @@ convert_pass_through_geometry_shader(
     return builder.CreateFDiv(value, triangle->sum[j]);
   };
   // a quadrilateral's corners are its ends' to either side, the first end's two then the second's
-  for (uint32_t u = 0; u < corners; u++) {
-    auto vertex = builder.getInt32(u);
-    uint32_t corner = quads ? u / 2 : u;
+  auto emit = [&](pvalue vertex, uint32_t u) {
+    uint32_t corner = quads ? u / 2 : hull ? 0 : u;
     if (clip[corner]) {
       pvalue position = triangle ? grown[u] : clip[corner];
       if (half_width) {
@@ -1836,7 +1949,9 @@ convert_pass_through_geometry_shader(
         air.CreateSetMeshClipDistance(vertex, builder.getInt32(distance.index()), value);
     }
     if (triangle)
-      conservative_varyings(air, *triangle, u, vertex, conservative_at, pso_data->barycentrics);
+      conservative_varyings(
+          air, *triangle, u, vertex, conservative_at, pso_data->barycentrics, !hull || pso_data->conservative_inner
+      );
     for (uint32_t i = 0; rows && clip[corner] && i < SM50_BARYCENTRIC_ROWS; i++) {
       auto rcp_w = builder.CreateFDiv(air.getFloat(1), builder.CreateExtractElement(clip[corner], 3));
       auto weight = i % 3 != corner ? air.getFloat(0) : i < 3 ? rcp_w : air.getFloat(1);
@@ -1844,18 +1959,16 @@ convert_pass_through_geometry_shader(
     }
     if (own.count == 1)
       air.CreateSetMeshPointSize(vertex, air.getFloat(1.0));
-  }
-  // the normal turns the line a quarter clockwise on the screen, so (a+, b+, a-) and (a-, b+, b-) run
-  // counterclockwise, and each starts at the first end, whose constant attributes are the line's (D3D11.3 8.14)
-  static constexpr uint32_t quad_indices[] = {0, 2, 1, 1, 2, 3};
-  for (uint32_t i = 0; i < (quads ? std::size(quad_indices) : own.count); i++)
-    air.CreateSetMeshIndex(builder.getInt32(i), builder.getInt32(quads ? quad_indices[i] : i));
-  for (uint32_t i = 0; i < primitives; i++) {
+  };
+  for (uint32_t u = 0; !hull && u < corners; u++)
+    emit(builder.getInt32(u), u);
+  // the primitive's layer and viewport, the first vertex's
+  auto primitive_outputs = [&](pvalue i) {
     if (auto layer = chosen(D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX))
-      air.CreateSetMeshRenderTargetArrayIndex(builder.getInt32(i), layer);
+      air.CreateSetMeshRenderTargetArrayIndex(i, layer);
     if (auto viewport = chosen(D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX))
-      air.CreateSetMeshViewportArrayIndex(builder.getInt32(i), viewport);
-  }
+      air.CreateSetMeshViewportArrayIndex(i, viewport);
+  };
   // culled by a distance that every vertex is behind: negative, or NaN
   pvalue culled = triangle ? triangle->culled : builder.getFalse();
   for (auto &distance : pVertexStage->cull_distance_scalars) {
@@ -1866,10 +1979,62 @@ convert_pass_through_geometry_shader(
       );
     culled = builder.CreateOr(culled, behind);
   }
+  if (hull && triangle) {
+    // each thread the points from its own on, one threadgroup's width apart, and the fan's triangles of the same
+    // numbers: (0, k + 1, k + 2) from the first point, those of the points repeated where the hull has fewer having no
+    // area
+    auto first_k = builder.CreateExtractElement(function->getArg(thread_idx), uint64_t(0));
+    auto step = builder.CreateExtractElement(function->getArg(threads_idx), uint64_t(0));
+    auto head = builder.GetInsertBlock();
+    auto loop = llvm::BasicBlock::Create(context, "hull_point", function, done);
+    auto fan = llvm::BasicBlock::Create(context, "hull_triangle", function, done);
+    auto next = llvm::BasicBlock::Create(context, "hull_next", function, done);
+    auto after = llvm::BasicBlock::Create(context, "hull_after", function, done);
+    builder.CreateCondBr(builder.CreateICmpULT(first_k, builder.getInt32(corners)), loop, after);
+    builder.SetInsertPoint(loop);
+    auto k = builder.CreatePHI(types._int, 2);
+    k->addIncoming(first_k, head);
+    std::array<pvalue, 2> point = triangle->hull_points[0];
+    for (uint32_t v = 1; v < corners; v++) {
+      auto is = builder.CreateICmpEQ(k, builder.getInt32(v));
+      for (uint32_t axis = 0; axis < 2; axis++)
+        point[axis] = builder.CreateSelect(is, triangle->hull_points[v][axis], point[axis]);
+    }
+    auto whole = *triangle;
+    triangle->points = 0;
+    conservative_weigh(builder, air, *triangle, point);
+    for (uint32_t j = 0; j < 3; j++)
+      over_w[0][j] = triangle->over_w[0][j], window_linear[0][j] = triangle->linear[0][j];
+    grown[0] = triangle->position[0];
+    emit(k, 0);
+    *triangle = whole;
+    builder.CreateCondBr(builder.CreateICmpULT(k, builder.getInt32(primitives)), fan, next);
+    builder.SetInsertPoint(fan);
+    auto base = builder.CreateMul(k, builder.getInt32(3));
+    air.CreateSetMeshIndex(base, builder.getInt32(0));
+    air.CreateSetMeshIndex(builder.CreateAdd(base, builder.getInt32(1)), builder.CreateAdd(k, builder.getInt32(1)));
+    air.CreateSetMeshIndex(builder.CreateAdd(base, builder.getInt32(2)), builder.CreateAdd(k, builder.getInt32(2)));
+    air.CreateSetMeshPrimitiveID(k, primitive_id);
+    primitive_outputs(k);
+    air.CreateSetMeshPrimitiveCulled(k, culled);
+    builder.CreateBr(next);
+    builder.SetInsertPoint(next);
+    auto k_next = builder.CreateAdd(k, step);
+    k->addIncoming(k_next, next);
+    builder.CreateCondBr(builder.CreateICmpULT(k_next, builder.getInt32(corners)), loop, after);
+    builder.SetInsertPoint(after);
+  }
+  // the normal turns the line a quarter clockwise on the screen, so (a+, b+, a-) and (a-, b+, b-) run
+  // counterclockwise, and each starts at the first end, whose constant attributes are the line's (D3D11.3 8.14)
+  static constexpr uint32_t quad_indices[] = {0, 2, 1, 1, 2, 3};
+  for (uint32_t i = 0; !hull && i < (quads ? std::size(quad_indices) : own.count); i++)
+    air.CreateSetMeshIndex(builder.getInt32(i), builder.getInt32(quads ? quad_indices[i] : i));
+  for (uint32_t i = 0; !hull && i < primitives; i++)
+    primitive_outputs(builder.getInt32(i));
   if (pVertexStage->cull_distance_scalars.size() || conservative)
-    for (uint32_t i = 0; i < primitives; i++)
+    for (uint32_t i = 0; !hull && i < primitives; i++)
       air.CreateSetMeshPrimitiveCulled(builder.getInt32(i), culled);
-  builder.CreateStore(builder.getInt32(primitives), count);
+  builder.CreateStore(builder.getInt32(hull && !triangle ? 0 : primitives), count);
   builder.CreateBr(done);
 
   builder.SetInsertPoint(done);

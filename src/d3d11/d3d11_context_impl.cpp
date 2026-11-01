@@ -1744,6 +1744,7 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
+        cmd.mesh_threads = 1;
       };
       auto encoder = enc.currentRenderEncoder();
       if (encoder->so_count_pso)
@@ -1801,6 +1802,7 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
+        cmd.mesh_threads = 1;
         cmd.index_buffer = index_buffer;
         cmd.index_buffer_offset = index_buffer_offset;
       };

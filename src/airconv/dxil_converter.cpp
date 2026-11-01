@@ -1148,6 +1148,7 @@ read_dxil(
     shader->func_signature.DefineInput(air::InputThreadsPerSIMDGroup{});
   }
   info.use_msad = used_ops.count(Msad);
+  info.use_discard = used_ops.count(Discard);
   info.use_samplepos |= used({Texture2DMSGetSamplePosition, RenderTargetGetSamplePosition});
 
   // kDxilShaderFlagsTag, whose bit 3 is ForceEarlyDepthStencil

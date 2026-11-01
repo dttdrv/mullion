@@ -1,12 +1,14 @@
 # triangles are not grown
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 1bca39e..05f3526 100644
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -242,7 +242,7 @@
-   auto det = add(add(mul(column[0][0], row[0][0]), mul(column[0][1], row[0][1])), mul(column[0][2], row[0][2]));
-   auto degenerate = builder.CreateOr(builder.CreateFCmpOEQ(polygon_area, f(0)), builder.CreateFCmpOEQ(det, f(0)));
-   // the triangle's edges moved out by the square, where its corners are before the eye
--  const double grow = 1 + 1.0 / 64;
-+  const double grow = 0;
-   std::array<pvalue, 2> corner[3];
-   pvalue before = builder.getTrue();
-   for (uint32_t k = 0; k < 3; k++) {
+@@ -316,7 +316,7 @@ conservative_triangle(
+         );
+   } else {
+     // the triangle's edges moved out by the square, where its corners are before the eye
+-    const double grow = 1 + 1.0 / 64;
++    const double grow = 0;
+     std::array<pvalue, 2> corner[3];
+     pvalue before = builder.getTrue();
+     for (uint32_t k = 0; k < 3; k++) {
