@@ -202,6 +202,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.single_raster_sample = variant.single_raster_sample;
     data.clip_distances = variant.clip_distances;
     data.cull_distances = 0;
+    data.cull_depth = false;
     std::copy(variant.blend.begin(), variant.blend.end(), data.blend);
     data.depth_bounds = false;
     data.late_tests = false;

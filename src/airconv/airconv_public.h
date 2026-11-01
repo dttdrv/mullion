@@ -515,6 +515,9 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   /* how many cull distances reach the shader as SM50_CULL_VARYING's: it discards every pixel of a primitive they cull,
      before anything else it does (D3D11.3 15.4.2) */
   uint32_t cull_distances;
+  /* and writes the depth it would take, where the pipeline clamps depth (DepthClipEnable off): Metal clamps what a
+     function that may discard interpolates past the depth range wrongly, and what one writes as it should */
+  bool cull_depth;
   struct SM50_SHADER_BLEND blend[8];
   /* the depth bounds test, which a GPU without it has the pixel shader do: at SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES a
      byte for each pixel holds, a bit for each sample, the samples whose depth is in the bounds, and at

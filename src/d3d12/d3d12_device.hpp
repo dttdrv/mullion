@@ -773,7 +773,7 @@ public:
 
   // the fragment functions of pipelines without a pixel shader, by what they do (conservative rasterization, the depth
   // bounds test, the sample mask): compiled once each (MTLD3D12GraphicsPipelineState's TestFragment)
-  std::map<std::tuple<bool, bool, uint32_t, uint32_t>, WMT::Reference<WMT::Function>> test_fragments;
+  std::map<std::tuple<bool, bool, uint32_t, uint32_t, bool>, WMT::Reference<WMT::Function>> test_fragments;
   mullion::mutex test_fragments_mutex;
 
   // whether acceleration structures keep what they were built from, which serializing and decoding them gives back

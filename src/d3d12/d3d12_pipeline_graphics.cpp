@@ -181,6 +181,31 @@ PixelShaderVaryings(const D3D12_SHADER_BYTECODE &PS) {
   return scalars;
 }
 
+// the scalar varyings a vertex shader gives the stage after it: four for each register of its output signature that is
+// not a system value other than a clip or cull distance (airconv defines every component of such a register), or 128
+// when the signature cannot be read
+static uint32_t
+VertexShaderVaryings(const D3D12_SHADER_BYTECODE &VS) {
+  using namespace microsoft;
+  CSignatureParser parser;
+  if (!VS.pShaderBytecode || FAILED(DXBCGetOutputSignature(VS.pShaderBytecode, &parser)))
+    return 128;
+  const D3D11_SIGNATURE_PARAMETER *parameters;
+  uint32_t registers = 0, count = parser.GetParameters(&parameters);
+  for (uint32_t i = 0; i < count; i++)
+    switch (parameters[i].SystemValue) {
+    case D3D10_SB_NAME_UNDEFINED:
+    case D3D10_SB_NAME_CLIP_DISTANCE:
+    case D3D10_SB_NAME_CULL_DISTANCE:
+      if (parameters[i].Register < 32)
+        registers |= 1u << parameters[i].Register;
+      break;
+    default:
+      break;
+    }
+  return 4 * std::popcount(registers);
+}
+
 HRESULT
 ExtractMTLInputLayoutElements(
     MTLD3D12Device *device, const void *pShaderBytecodeWithInputSignature,
@@ -440,10 +465,10 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
-      auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls, blend,
-             bounds, late, conservative, coarse, rate, quads] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
-      hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls, blend, bounds, late,
-           conservative, coarse, rate, quads);
+      auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls,
+             cull_depth, blend, bounds, late, conservative, coarse, rate, quads] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+      hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls, cull_depth, blend,
+           bounds, late, conservative, coarse, rate, quads);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -830,19 +855,21 @@ struct Group {
   // pixel shaders do, writing their depth; of no sample in the depth bounds of a GPU without the test, keeping the
   // samples that are, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's depth_bounds does; keeps the samples of the pipeline's
   // sample mask, which Metal's pipelines do not have, as SM50_SHADER_PSO_PIXEL_SHADER_DATA's sample_mask does; and
-  // discards those of a primitive `culls` cull distances cull, as its cull_distances does (SM50_CULL_VARYING). the
-  // device keeps one of each
+  // discards those of a primitive `culls` cull distances cull, as its cull_distances does (SM50_CULL_VARYING), then
+  // writing the depth where the pipeline clamps it (`cull_depth`, as cull_depth does). the device keeps one of each
   WMT::Reference<WMT::Function>
-  TestFragment(bool conservative, bool bounds, uint32_t sample_mask, uint32_t culls) {
+  TestFragment(bool conservative, bool bounds, uint32_t sample_mask, uint32_t culls, bool cull_depth) {
     std::lock_guard<mullion::mutex> lock(device_->test_fragments_mutex);
-    auto &function = device_->test_fragments[{conservative, bounds, sample_mask, culls}];
+    auto &function = device_->test_fragments[{conservative, bounds, sample_mask, culls, cull_depth}];
     if (!function)
-      function = CompileTestFragment(conservative, bounds, sample_mask, culls);
+      function = CompileTestFragment(conservative, bounds, sample_mask, culls, cull_depth);
     return function;
   }
 
   WMT::Reference<WMT::Function>
-  CompileTestFragment(bool conservative, bool bounds, uint32_t sample_mask, uint32_t culls) {
+  CompileTestFragment(bool conservative, bool bounds, uint32_t sample_mask, uint32_t culls, bool cull_depth) {
+    // the depth it writes: a conservative rasterizer's, and a clamped one where it may discard by cull distance
+    bool depth = conservative || (culls && cull_depth);
     bool masked = bounds || sample_mask != ~0u;
     auto corners = std::to_string(SM50_CONSERVATIVE_CORNERS);
     std::string source = "#include <metal_stdlib>\nusing namespace metal;\nstruct In {\n  float4 position [[position]];\n";
@@ -851,10 +878,10 @@ struct Group {
     for (uint32_t i = 0; i < culls; i++)
       source += "  float cull" + std::to_string(i) + " [[user(" SM50_CULL_VARYING + std::to_string(i) + "), center_no_perspective]];\n";
     source += "};\nstruct Out {\n";
-    source += conservative ? "  float z [[depth(any)]];\n" : "";
+    source += depth ? "  float z [[depth(any)]];\n" : "";
     source += masked ? "  uint samples [[sample_mask]];\n" : "";
     // a function of no outputs, which only discards, returns nothing
-    bool outputs = conservative || masked;
+    bool outputs = depth || masked;
     std::string ret = outputs ? "  return out;\n" : "  return;\n";
     source += std::string("};\nfragment ") + (outputs ? "Out" : "void") + " test_fragment(In in [[stage_in]]";
     if (bounds)
@@ -889,6 +916,8 @@ struct Group {
   out.z = in.position.z;
 )";
     }
+    if (depth && !conservative)
+      source += "  out.z = in.position.z;\n";
     if (masked)
       source += "  out.samples = " +
                 std::string(bounds ? "(bounds.x ? samples[uint(in.position.y) * bounds.y + uint(in.position.x)] : ~0u)"
@@ -1336,7 +1365,8 @@ public:
     // the pixel shader can discard the pixels of a triangle a cull distance culls instead, before anything else it does
     // (SM50_CULL_VARYING), the vertex shader drawn as usual: not a pixel shader whose depth and stencil tests come first,
     // which a discard leaves done, not lines, points or wireframe, which rasterize one edge of a triangle without its
-    // third vertex, and not where the varyings would be more than Metal passes. a discard costs an opaque pipeline the
+    // third vertex, and not where the varyings, those the vertex shader writes or those the pixel shader reads, would be
+    // more than Metal passes. a discard costs an opaque pipeline the
     // GPU's removal of hidden surfaces (2 to 3 times the GPU time of 10 to 20 layers drawn back to front, many times
     // that with blending, where the mesh stage costs 10-20% more), so by default only a pipeline that has lost it
     // already culls in its pixel shader: one whose pixel shader may discard, writes depth or uses UAVs, and blends no
@@ -1354,7 +1384,8 @@ public:
                              ref_vs.CullDistances && pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE &&
                              pDesc->RasterizerState.FillMode == D3D12_FILL_MODE_SOLID && !stream_output &&
                              !conservative && !(pDesc->PS.pShaderBytecode && ref_ps.PixelShader.EarlyTests) &&
-                             PixelShaderVaryings(pDesc->PS) + ref_vs.ClipDistances + ref_vs.CullDistances <= 124
+                             PixelShaderVaryings(pDesc->PS) + ref_vs.ClipDistances + ref_vs.CullDistances <= 124 &&
+                             VertexShaderVaryings(pDesc->VS) + ref_vs.ClipDistances + ref_vs.CullDistances <= 124
                          ? ref_vs.CullDistances
                          : 0;
     // and passes lines on as quadrilaterals (D3D11.3 15.14.1, SM50_SHADER_PSO_GEOMETRY_SHADER_DATA)
@@ -1448,6 +1479,7 @@ public:
       data_ps.single_raster_sample = attached && pDesc->RasterizerState.ForcedSampleCount == 1;
       data_ps.clip_distances = clips;
       data_ps.cull_distances = culls;
+      data_ps.cull_depth = culls && !pDesc->RasterizerState.DepthClipEnable;
       std::copy(std::begin(blend), std::end(blend), data_ps.blend);
       data_ps.centered_samples =
           data_ps.single_raster_sample || pDesc->SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;
@@ -1510,7 +1542,9 @@ public:
     if ((sample_mask & all_samples) == all_samples)
       sample_mask = ~0u;
     if ((conservative || depth_bounds_emulated || sample_mask != ~0u || culls) && !ps_func &&
-        !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask, culls)))
+        !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask, culls,
+                                 culls && !pDesc->RasterizerState.DepthClipEnable &&
+                                     pDesc->DSVFormat != DXGI_FORMAT_UNKNOWN)))
       return E_FAIL;
 
     auto geometry_inputs = [&] {

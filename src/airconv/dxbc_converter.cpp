@@ -738,6 +738,23 @@ llvm::Error convert_dxbc_pixel_shader(
         .user = cull_varying_name(i), .type = air::msl_float, .interpolation = air::Interpolation::center_no_perspective,
         .pull_mode = false
     }));
+  // and the depth a pipeline that clamps it would take, which a shader that may discard has to write itself: Metal
+  // clamps what it interpolates past the depth range wrongly, and what it writes as it should (probe-depth-clamp.m),
+  // unless the shader writes its own or its tests come first
+  if (culls.size() && pso_data->cull_depth && !pso_disable_depth_output && !early_tests &&
+      !std::ranges::any_of(func_signature.Outputs(), [](auto &output) {
+        return std::holds_alternative<air::OutputDepth>(output);
+      })) {
+    auto position = func_signature.DefineInput(air::InputPosition{.interpolation = air::Interpolation::center_no_perspective});
+    auto at = func_signature.DefineOutput(air::OutputDepth{air::DepthArgument::any});
+    epilogue >> [=](pvalue value) {
+      return make_irvalue([=](struct context ctx) {
+        return ctx.builder.CreateInsertValue(
+            value, ctx.builder.CreateExtractElement(ctx.function->getArg(position), uint64_t(2)), {at}
+        );
+      });
+    };
+  }
 
   // the depth bounds test of a GPU without one: the pixel's position, whether the draw tests, and the samples that pass
   uint32_t bounds_position = ~0u, bounds_enabled = ~0u, bounds_mask = ~0u;

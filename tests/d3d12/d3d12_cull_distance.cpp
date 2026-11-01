@@ -10,7 +10,9 @@
 // distances, those the distances cull left out, through the same pipeline state. the corners lie on pixel centers and
 // edges, far outside the cell, behind the near plane, at several w; and the pipelines take the color target, a depth
 // target alone (no pixel shader), a pixel shader that counts its runs in memory (where the clip distances are tested in
-// the pixel shader), one whose depth test comes first ([earlydepthstencil]), and 4x multisampling.
+// the pixel shader), one whose depth test comes first ([earlydepthstencil]), and 4x multisampling; and pipelines
+// that clamp depth (DepthClipEnable off) with corners past the depth range, the depth clamped to the viewport's
+// MinDepth and MaxDepth, 0.25 and 0.75 (15.6, 17.10).
 // the same with a pixel shader that may discard. Mullion culls in the pixel shader or the mesh stage by pipeline
 // (MULLION_D3D12_PIXEL_CULL); `all` as the second argument has every pipeline that can cull in its pixel shader
 #include "d3d12_test.hpp"
@@ -206,14 +208,15 @@ culled(const std::array<Vertex, 3> &t, unsigned distances) {
 // the cell's items: corners on pixel centers and edges (most), far away, at several w, behind the near plane; and
 // distances that cull, that leave one vertex in front, and that cull only in the last component in use
 Item
-make_item(unsigned k, unsigned distances) {
+make_item(unsigned k, unsigned distances, bool clamp) {
   Item item;
   item.shape = Shape(k % 4);
   size_t count = item.shape == Strip ? 4 : item.shape == Adjacency ? 6 : 3;
   float cx = float(k % (kWidth / kCell) * kCell), cy = float(k / (kWidth / kCell) * kCell);
   unsigned geometry = (k / 4) % 6, pattern = (k / 24) % 6;
   for (size_t i = 0; i < count; i++) {
-    float x, y, z = 0.25f + 0.5f * unit(), w = 1;
+    // a pipeline that clamps depth takes corners past the depth range on either side
+    float x, y, z = clamp ? -0.6f + 2.2f * unit() : 0.25f + 0.5f * unit(), w = 1;
     if (geometry <= 2) {
       // multiples of half a pixel: edges through pixel centers
       x = cx + 1 + (next() % 29) * 0.5f;
@@ -306,6 +309,9 @@ struct Pipeline {
   unsigned distances;
   enum { Color, Depth, Count, Early, Discard } kind;
   UINT samples;
+  // depth clip off (DepthClipEnable), with a depth target and corners past the depth range: the depth is clamped to
+  // the viewport's (D3D11.3 15.6, 17.10)
+  bool clamp = false;
 };
 
 } // namespace
@@ -465,6 +471,9 @@ main(int argc, char **argv) {
       {"eight distances, a pixel shader that may discard, 4x multisampled", 2, 8, Pipeline::Discard, 4},
       {"three distances beside a clip distance, a pixel shader that may discard", 3, 3, Pipeline::Discard, 1},
       {"two distances after two clip distances, a pixel shader that may discard", 4, 2, Pipeline::Discard, 1},
+      {"two distances after two clip distances, runs counted, depth clamped", 4, 2, Pipeline::Count, 1, true},
+      {"eight distances, depth alone, depth clamped", 2, 8, Pipeline::Depth, 1, true},
+      {"three distances beside a clip distance, depth clamped", 3, 3, Pipeline::Color, 1, true},
   };
 
   ComPtr<ID3D12Device> device;
@@ -515,12 +524,12 @@ main(int argc, char **argv) {
   unsigned failures = 0, culled_total = 0, kept_total = 0;
   for (auto &p : pipelines) {
     // the items and what of them the reference draws
-    seed = 12345 + p.layout * 7 + p.kind * 131 + p.samples;
+    seed = 12345 + p.layout * 7 + p.kind * 131 + p.samples + p.clamp * 1009;
     std::vector<Item> items;
     std::vector<Vertex> vertices, reference;
     std::vector<std::pair<UINT, UINT>> ranges, reference_ranges; // first vertex and count, by item
     for (unsigned k = 0; k < kCells; k++) {
-      items.push_back(make_item(k, p.distances));
+      items.push_back(make_item(k, p.distances, p.clamp));
       ranges.push_back({UINT(vertices.size()), UINT(items.back().vertices.size())});
       vertices.insert(vertices.end(), items.back().vertices.begin(), items.back().vertices.end());
       UINT first = UINT(reference.size());
@@ -553,7 +562,7 @@ main(int argc, char **argv) {
     }
 
     // the pipelines: with cull distances, and the reference's without
-    bool color = p.kind != Pipeline::Depth, depth = p.kind == Pipeline::Depth || p.kind == Pipeline::Early;
+    bool color = p.kind != Pipeline::Depth, depth = p.kind == Pipeline::Depth || p.kind == Pipeline::Early || p.clamp;
     const char *ps_entry = p.kind == Pipeline::Count     ? "ps_count"
                            : p.kind == Pipeline::Early   ? "ps_early"
                            : p.kind == Pipeline::Discard ? "ps_discard_color"
@@ -583,7 +592,7 @@ main(int argc, char **argv) {
       desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
       desc.SampleMask = ~0u;
       desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
-      desc.RasterizerState.DepthClipEnable = TRUE;
+      desc.RasterizerState.DepthClipEnable = !p.clamp;
       desc.RasterizerState.MultisampleEnable = p.samples > 1;
       desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
       if (color) {
@@ -647,7 +656,8 @@ main(int argc, char **argv) {
       list->SetGraphicsRootSignature(rs.Get());
       list->SetGraphicsRootUnorderedAccessView(0, counts[i]->GetGPUVirtualAddress());
       list->SetPipelineState(pso[i].Get());
-      D3D12_VIEWPORT viewport{0, 0, (float)kWidth, (float)kWidth, 0, 1};
+      // a clamped pipeline's viewport has a depth range of its own, which the depth is clamped to
+      D3D12_VIEWPORT viewport{0, 0, (float)kWidth, (float)kWidth, p.clamp ? 0.25f : 0.0f, p.clamp ? 0.75f : 1.0f};
       list->RSSetViewports(1, &viewport);
       auto &vb = i ? reference_vb : test_vb;
       D3D12_VERTEX_BUFFER_VIEW vbv{vb->GetGPUVirtualAddress(), UINT(vb->GetDesc().Width), sizeof(Vertex)};
@@ -749,7 +759,14 @@ main(int argc, char **argv) {
                  want[3] = {word(color_at[1], color_row), p.samples == 1 ? word(depth_at[1], depth_row) : 0,
                             word(count_at[1], kWidth * 4)};
         drawn += want[0] != 0 || (depth && want[1] != 0x3f800000u);
-        if (got[0] == want[0] && got[1] == want[1] && got[2] == want[2])
+        // a depth the pixel shader writes and one the rasterizer interpolates may differ in the last bits (D3D11.3
+        // 3.1.4's 0.5 ULP is per operation), as may a triangle passed through the mesh stage: a clamped pipeline's
+        // depths agree within 2^-16
+        float got_depth, want_depth;
+        memcpy(&got_depth, &got[1], 4);
+        memcpy(&want_depth, &want[1], 4);
+        bool same_depth = got[1] == want[1] || (p.clamp && std::fabs(got_depth - want_depth) <= 1.0f / (1 << 16));
+        if (got[0] == want[0] && same_depth && got[2] == want[2])
           continue;
         if (wrong++ < 8) {
           const char *shapes[] = {"list", "strip", "adjacency", "indexed"};
