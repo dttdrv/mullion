@@ -1,0 +1,14 @@
+# the device reports barycentrics whether or not a fragment function reads the vertices' inputs
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 69e66cd..c7ea8b8 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1673,7 +1673,7 @@ _MTLDevice_supportsShaderBarycentricCoordinates(void *obj) {
+     return STATUS_SUCCESS;
+   }
+   if (works < 0)
+-    works = vertex_values_work(device);
++    works = true;
+   params->ret = works;
+   return STATUS_SUCCESS;
+ }

@@ -417,9 +417,9 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
       auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, blend, bounds,
-             late, conservative, coarse, rate, quads] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+             late, conservative, hull, coarse, rate, quads] = *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
       hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, blend, bounds, late,
-           conservative, coarse, rate, quads);
+           conservative, hull, coarse, rate, quads);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -433,8 +433,9 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
       auto &[next, type, strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat,
-             noperspective] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
-      hash(strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat, noperspective);
+             noperspective, hull, inner] = *(SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *)arg;
+      hash(strip, cut, index, primitive, pass, statistics, clips, quads, barycentrics, conservative, flat, noperspective,
+           hull, inner);
       break;
     }
     case SM50_SHADER_GS_PASS_THROUGH: {
@@ -640,8 +641,9 @@ protected:
     uint32_t primitive; // D3D10_SB_PRIMITIVE of the topology type
     bool clip_distance_varyings;
     bool quad_lines, barycentrics;
-    // conservative rasterization, and how the pixel shader interpolates its inputs
-    bool conservative;
+    // conservative rasterization, of the hull of a triangle's pixels where it can, and how the pixel shader
+    // interpolates its inputs
+    bool conservative, conservative_hull, conservative_inner;
     uint32_t flat_inputs, noperspective_inputs;
   };
   std::shared_ptr<GeometryInputs> topology_inputs_;
@@ -683,6 +685,8 @@ protected:
     pso_gs.clip_distance_varyings = in.clip_distance_varyings;
     pso_gs.quad_lines = in.quad_lines && pass_through && !counting;
     pso_gs.conservative = in.conservative && !counting && (!in.gs.empty() || pass_through);
+    pso_gs.conservative_hull = pso_gs.conservative && in.conservative_hull && in.gs.empty();
+    pso_gs.conservative_inner = in.conservative_inner;
     pso_gs.barycentrics = in.barycentrics && (pso_gs.quad_lines || pso_gs.conservative);
     pso_gs.flat_inputs = in.flat_inputs;
     pso_gs.noperspective_inputs = in.noperspective_inputs;
@@ -1300,6 +1304,7 @@ public:
                         (ref_vs.CullDistances || (stream_output && so_data.rasterized_stream == 0) || quad_lines ||
                          conservative);
     geometry_shader |= pass_through;
+    passes_through = geometry_shader && !pDesc->GS.pShaderBytecode;
     mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
@@ -1308,6 +1313,17 @@ public:
     // the alpha-to-coverage state reads the pixel shader's reflection
     if (pDesc->PS.pShaderBytecode && FAILED(hr = InitializeShader(device_, pDesc->PS, &shader_ps, &ref_ps)))
       return hr;
+    // a vertex shader's triangles at one raster sample, which Metal rasterizes at the pixel's center: the mesh stage
+    // passes on the hull of the pixels each touches, and the pixel shader tests none of them (and so discards
+    // none, which keeps Metal's hidden surface removal). a pixel shader that reads its inputs at each vertex needs the
+    // three corners as Metal's primitive. MULLION_CONSERVATIVE_HULL=0 grows one triangle and tests its pixels instead
+    static const bool hull_allowed = [] {
+      auto value = getenv("MULLION_CONSERVATIVE_HULL");
+      return !value || strcmp(value, "0");
+    }();
+    conservative_hull = hull_allowed && conservative && pass_through && pDesc->SampleDesc.Count <= 1 &&
+                        pDesc->RasterizerState.ForcedSampleCount <= 1 &&
+                        !(pDesc->PS.pShaderBytecode && ref_ps.PixelShader.VertexValues);
     // a pixel shader whose runs are seen tests the last pre-raster stage's clip distances itself (D3D11.3 15.4.1),
     // where Metal would cut the primitive and run a pixel on the cut once for each piece. a geometry shader after
     // tessellation still clips in Metal, and so does a conservative rasterizer's grown triangle, whose varyings are
@@ -1391,6 +1407,7 @@ public:
       data_ps.depth_bounds = depth_bounds_emulated;
       data_ps.late_tests = false;
       data_ps.conservative = conservative;
+      data_ps.conservative_hull = conservative_hull;
       data_ps.quad_lines = quad_lines && ref_ps.PixelShader.Barycentrics;
       data_ps.coarse_shading = false;
       // the primitive's shading rate, from the stage before the rasterizer: a domain or mesh shader has none
@@ -1446,8 +1463,8 @@ public:
     uint32_t all_samples = raster_samples >= 32 ? ~0u : (1u << raster_samples) - 1;
     if ((sample_mask & all_samples) == all_samples)
       sample_mask = ~0u;
-    if ((conservative || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
-        !(ps_func = TestFragment(conservative, depth_bounds_emulated, sample_mask)))
+    if (((conservative && !conservative_hull) || depth_bounds_emulated || sample_mask != ~0u) && !ps_func &&
+        !(ps_func = TestFragment(conservative && !conservative_hull, depth_bounds_emulated, sample_mask)))
       return E_FAIL;
 
     auto geometry_inputs = [&] {
@@ -1469,6 +1486,8 @@ public:
       in->strip_cut = pDesc->IBStripCutValue;
       in->primitive = pDesc->PrimitiveTopologyType;
       in->conservative = conservative;
+      in->conservative_hull = conservative_hull;
+      in->conservative_inner = ps_func && ref_ps.PixelShader.InnerCoverage;
       in->flat_inputs = ps_func ? ref_ps.PixelShader.FlatInputs : 0;
       in->noperspective_inputs = ps_func ? ref_ps.PixelShader.NoPerspectiveInputs : 0;
       WMT::InitializeMeshRenderPipelineInfo(in->info);

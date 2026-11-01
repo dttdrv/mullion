@@ -508,6 +508,9 @@ public:
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in `pso_strip` for strips (none for points)
   bool geometry_shader = false;
+  // a geometry pipeline without a geometry shader: its mesh stage only passes the vertex shader's primitives on, and
+  // reads no root arguments or static samplers
+  bool passes_through = false;
   // a stage reads or writes a UAV: only then can a UAV barrier order anything a draw of it does inside a render pass
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
@@ -556,6 +559,8 @@ public:
   bool writes_depth = false;
   // conservative rasterization of triangles: the mesh stage reads the viewports (SM50_BINDING_INDEX_VIEWPORTS)
   bool conservative = false;
+  // of the hulls of the triangles' pixels, which the mesh stage shares among SM50_CONSERVATIVE_HULL_POINTS threads
+  bool conservative_hull = false;
 
   // whether its pixel shader has a variant of coarse pixels (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool coarse_shading = false;

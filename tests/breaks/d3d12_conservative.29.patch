@@ -1,12 +1,14 @@
 # a triangle of no area takes the second corner's inputs
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 1bca39e..e266f19 100644
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -299,7 +299,7 @@
-       sum = add(sum, linear[j]);
-     }
-     for (uint32_t j = 0; j < 3; j++) {
--      auto first = f(j == 0 ? 1.0 : 0.0);
-+      auto first = f(j == 1 ? 1.0 : 0.0);
-       out.over_w[u][j] = builder.CreateSelect(degenerate, first, weight[j]);
-       out.linear[u][j] = builder.CreateSelect(degenerate, first, linear[j]);
-     }
+@@ -409,7 +409,7 @@ conservative_weigh(
+     sum = add(sum, linear[j]);
+   }
+   for (uint32_t j = 0; j < 3; j++) {
+-    auto first = f(j == 0 ? 1.0 : 0.0);
++    auto first = f(j == 1 ? 1.0 : 0.0);
+     out.over_w[u][j] = builder.CreateSelect(degenerate, first, weight[j]);
+     out.linear[u][j] = builder.CreateSelect(degenerate, first, linear[j]);
+   }

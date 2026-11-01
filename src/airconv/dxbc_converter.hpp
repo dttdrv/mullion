@@ -118,6 +118,9 @@ public:
   // the input registers a pixel shader also reads at each vertex of the primitive (DXIL's AttributeAtVertex)
   uint32_t vertex_value_reg_mask = 0;
   bool use_barycentrics = false;
+  // the shader may discard (discard, clip), and reads SV_InnerCoverage
+  bool use_discard = false;
+  bool use_inner_coverage = false;
 };
 
 Instruction readInstruction(
@@ -839,26 +842,38 @@ args_get_data(const struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *data, data_t *
 // conservative rasterization (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's conservative), dxbc_converter_gs.cpp: the
 // triangle Metal rasterizes for one of the pipeline's
 struct ConservativeTriangle {
-  using Weights = pvalue[3][3];
+  static constexpr uint32_t kMostPoints = SM50_CONSERVATIVE_HULL_POINTS;
+  using Weights = pvalue[kMostPoints][3];
+  uint32_t points = 3;                         // the grown triangle's, or a hull's SM50_CONSERVATIVE_HULL_POINTS
   Weights over_w, linear;                      // each point's weights of the corners
-  pvalue position[3], rcp_w[3];                // each point's, and the plane's 1/w there
-  pvalue sum[3];                               // each point's sum of its linear weights, which blends divide by
+  pvalue position[kMostPoints];                // each point's
+  pvalue rcp_w[kMostPoints];                   // the plane's 1/w there
+  pvalue sum[kMostPoints];                     // each point's sum of its linear weights, which blends divide by
   pvalue window[SM50_CONSERVATIVE_CORNERS][2]; // the polygon the pixel shader tests pixels against
   pvalue culled;                               // nothing of it is drawn
+  // a hull's points in the window, and what weighs a point (conservative_weigh)
+  std::vector<std::array<pvalue, 2>> hull_points;
+  pvalue corners[3], row[3][3], det, degenerate, first_depth, viewport;
 };
 
 // conservative_triangle's comment, at its definition
 ConservativeTriangle conservative_triangle(
     llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, air::AirType &types, pvalue const (&clip)[3],
-    pvalue viewports, pvalue viewport_index
+    pvalue viewports, pvalue viewport_index, bool hull = false, bool weigh = true
+);
+// conservative_weigh's comment, at its definition
+void conservative_weigh(
+    llvm::IRBuilder<> &builder, llvm::air::AIRBuilder &air, ConservativeTriangle &out, const std::array<pvalue, 2> &point
 );
 // the varyings of point `u` the pixel shader tests and divides by (SM50_CONSERVATIVE_VARYINGS, SM50_CONSERVATIVE_RCP_W),
 // and with `barycentrics` the primitive's weights there (SM50_BARYCENTRIC_ROWS), from mesh vertex data `at` on
 void conservative_varyings(
     llvm::air::AIRBuilder &air, const ConservativeTriangle &triangle, uint32_t u, pvalue vertex, uint32_t at,
-    bool barycentrics
+    bool barycentrics, bool window = true
 );
-void define_conservative_varyings(air::FunctionSignatureBuilder &signature, uint32_t at, bool barycentrics);
+void define_conservative_varyings(
+    air::FunctionSignatureBuilder &signature, uint32_t at, bool barycentrics, bool window = true
+);
 // the output registers (`output`, int4s) of the triangle's point `u`, from the corners' (`corner`): blended as the
 // pixel shader interpolates them (over w, or in the window), the position the triangle's, flat and integer ones their
 // own corner's

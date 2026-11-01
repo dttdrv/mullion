@@ -1,0 +1,14 @@
+# the hull's points take the second corner's flat inputs
+diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
+index 1bca39e..9900b7c 100644
+--- a/src/airconv/dxbc_converter_gs.cpp
++++ b/src/airconv/dxbc_converter_gs.cpp
+@@ -1913,7 +1913,7 @@ convert_pass_through_geometry_shader(
+   };
+   // a quadrilateral's corners are its ends' to either side, the first end's two then the second's
+   auto emit = [&](pvalue vertex, uint32_t u) {
+-    uint32_t corner = quads ? u / 2 : hull ? 0 : u;
++    uint32_t corner = quads ? u / 2 : hull ? 1 : u;
+     if (clip[corner]) {
+       pvalue position = triangle ? grown[u] : clip[corner];
+       if (half_width) {

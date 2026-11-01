@@ -1062,9 +1062,10 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
 /* a geometry draw's `warps` x `instances` object threadgroups, in Metal draws of at most `max` of them (0: one draw),
  * each told its first object threadgroup and instance (SM50_BINDING_INDEX_DRAW_ORIGIN) */
 static void
-draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max) {
+draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max,
+                    uint32_t mesh_threads) {
   uint32_t origin[2] = {0, 0};
-  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(1, 1, 1);
+  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(mesh_threads ? mesh_threads : 1, 1, 1);
   if (!max || (uint64_t)warps * instances <= max) {
     [encoder setObjectBytes:origin length:sizeof(origin) atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
     [encoder drawMeshThreadgroups:MTLSizeMake(warps, instances, 1)
@@ -1334,7 +1335,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       struct wmtcmd_render_mullion_geometry_draw *body = (struct wmtcmd_render_mullion_geometry_draw *)next;
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
       draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
-                          body->max_object_threadgroups);
+                          body->max_object_threadgroups, body->mesh_threads);
       break;
     }
     case WMTRenderCommandMullionGeometryDrawIndexed: {
@@ -1344,7 +1345,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                        atIndex:SM50_BINDING_INDEX_INDEX_BUFFER];
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
       draw_geometry_parts(encoder, body->warp_count, body->instance_count, body->vertex_per_warp,
-                          body->max_object_threadgroups);
+                          body->max_object_threadgroups, body->mesh_threads);
       break;
     }
     case WMTRenderCommandMullionGeometryDrawIndirect: {
@@ -1602,10 +1603,78 @@ _MTLDevice_supports32BitMSAA(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* whether a fragment function reads its inputs at each vertex of the triangle (MSL 4's vertex_value<T>, which
+ * GetAttributeAtVertex is built on): one triangle whose vertices output 1, 3 and 5 is drawn, and the pixel's shader
+ * returns what it reads. macOS 27.2 on an Apple M4 returns other values (1, 1, 0 as bits; tests/native/vertex_value),
+ * and a device that does reports no barycentrics */
+static bool
+vertex_values_work(id<MTLDevice> device) {
+  bool works = false;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      NSString *source = @"#include <metal_stdlib>\n"
+                          "using namespace metal;\n"
+                          "struct V { float4 p [[position]]; float a [[user(a), flat]]; };\n"
+                          "vertex V vs(uint id [[vertex_id]]) {\n"
+                          "  float2 q = float2((id << 1) & 2, id & 2);\n"
+                          "  V v; v.p = float4(q * float2(4, -4) + float2(-1, 1), 0.5, 1); v.a = 1 + id * 2; return v;\n"
+                          "}\n"
+                          "struct In { float4 p [[position]]; vertex_value<float> a [[user(a)]]; };\n"
+                          "fragment float4 ps(In in [[stage_in]]) {\n"
+                          "  return float4(in.a.get(vertex_index::first), in.a.get(vertex_index::second),\n"
+                          "                in.a.get(vertex_index::third), 1);\n"
+                          "}\n";
+      MTLCompileOptions *options = [[MTLCompileOptions new] autorelease];
+      options.languageVersion = MTLLanguageVersion4_0;
+      id<MTLLibrary> library = [[device newLibraryWithSource:source options:options error:nil] autorelease];
+      MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor new] autorelease];
+      desc.vertexFunction = [[library newFunctionWithName:@"vs"] autorelease];
+      desc.fragmentFunction = [[library newFunctionWithName:@"ps"] autorelease];
+      desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA32Float;
+      id<MTLRenderPipelineState> state =
+          library ? [[device newRenderPipelineStateWithDescriptor:desc error:nil] autorelease] : nil;
+      MTLTextureDescriptor *target = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                        width:4
+                                                                                       height:4
+                                                                                    mipmapped:NO];
+      target.usage = MTLTextureUsageRenderTarget;
+      target.storageMode = MTLStorageModeShared;
+      id<MTLTexture> texture = [[device newTextureWithDescriptor:target] autorelease];
+      id<MTLCommandQueue> queue = [[device newCommandQueue] autorelease];
+      if (state && texture && queue) {
+        MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = texture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLCommandBuffer> commands = [queue commandBuffer];
+        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+        [encoder setRenderPipelineState:state];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        float pixel[4] = {0};
+        [texture getBytes:pixel bytesPerRow:4 * 16 fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
+        works = commands.status == MTLCommandBufferStatusCompleted && pixel[0] == 1 && pixel[1] == 3 && pixel[2] == 5;
+      }
+    }
+  }
+  return works;
+}
+
+/* barycentrics, and the inputs at each vertex D3D12 has with them (BarycentricsSupported), checked once a process */
 static NTSTATUS
 _MTLDevice_supportsShaderBarycentricCoordinates(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
-  params->ret = [(id<MTLDevice>)params->handle supportsShaderBarycentricCoordinates];
+  static int works = -1;
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  if (![device supportsShaderBarycentricCoordinates]) {
+    params->ret = false;
+    return STATUS_SUCCESS;
+  }
+  if (works < 0)
+    works = vertex_values_work(device);
+  params->ret = works;
   return STATUS_SUCCESS;
 }
 
@@ -5405,11 +5474,11 @@ _MTL4CommandBuffer_present(void *obj) {
 
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
-    MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max
+    MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max, uint32_t mesh_threads
 ) {
   id<MTL4RenderCommandEncoder> encoder = (id<MTL4RenderCommandEncoder>)state->encoder;
   uint32_t origin[2] = {0, 0};
-  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(1, 1, 1);
+  MTLSize object = MTLSizeMake(threads, 1, 1), mesh = MTLSizeMake(mesh_threads ? mesh_threads : 1, 1, 1);
   if (!max || (uint64_t)warps * instances <= max) {
     metal4_bytes(state, Metal4ObjectBinding, origin, sizeof(origin), SM50_BINDING_INDEX_DRAW_ORIGIN);
     [encoder drawMeshThreadgroups:MTLSizeMake(warps, instances, 1)
@@ -5668,7 +5737,8 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
       struct wmtcmd_render_mullion_geometry_draw *body = (struct wmtcmd_render_mullion_geometry_draw *)next;
       metal4_offset(state, Metal4ObjectBinding, body->draw_arguments_offset, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       metal4_draw_geometry_parts(
-          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups
+          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups,
+          body->mesh_threads
       );
       break;
     }
@@ -5680,7 +5750,8 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
       );
       metal4_offset(state, Metal4ObjectBinding, body->draw_arguments_offset, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       metal4_draw_geometry_parts(
-          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups
+          state, body->warp_count, body->instance_count, body->vertex_per_warp, body->max_object_threadgroups,
+          body->mesh_threads
       );
       break;
     }
