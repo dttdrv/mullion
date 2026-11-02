@@ -232,8 +232,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   Reached retired_{};
 
   // Metal fails a command buffer that waits for an event for more than a few seconds, and ignores the queue's
-  // later ones, so no command buffer waits: the CPU does. after Wait for a value the fence has yet to reach, the
-  // work the application gives the queue is held, and a thread commits it in order once the fence is there
+  // later ones, so no command buffer waits for a signal that is not committed: the CPU does. after Wait for a value
+  // the fence has yet to reach, the work the application gives the queue is held, and a thread commits it in order
+  // once the fence is there, or once a Signal to it is committed, behind a wait of the GPU's (MTLD3D12Fence::Opener)
   mullion::mutex held_mutex_;
   mullion::condition_variable held_changed_;
   std::deque<std::function<void()>> held_;
@@ -257,15 +258,80 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
     void
     Open(bool cancel = false) {
-      std::lock_guard<mullion::mutex> lock(mutex);
+      std::unique_lock<mullion::mutex> lock(mutex);
       cancelled |= cancel && closed;
+      auto then = Release();
+      lock.unlock();
+      for (auto &follow : then)
+        follow();
+    }
+
+    // opens the gate for the queue to wait on the GPU in the CPU's place, for a Signal's committed command buffer
+    // (`wait` of its event and number): the wait goes before the buffers behind the gate, and after those before it,
+    // which are committed once the gate is the queue's (Install)
+    template <typename Wait>
+    void
+    OpenOnGPU(const WMT::Reference<WMT::SharedEvent> &signal, uint64_t number, Wait &&wait) {
+      std::unique_lock<mullion::mutex> lock(mutex);
+      if (!closed)
+        return;
+      event = signal;
+      seq = number;
+      if (installed)
+        wait(event, seq);
+      auto then = Release();
+      lock.unlock();
+      for (auto &follow : then)
+        follow();
+    }
+
+    // runs `follow` once the buffers behind the gate are committed: at once when it is open, never when it is
+    // cancelled. what it runs may open other gates, so it runs outside the gate's lock
+    template <typename Follow>
+    void
+    After(Follow &&follow) {
+      {
+        std::lock_guard<mullion::mutex> lock(mutex);
+        if (cancelled)
+          return;
+        if (closed) {
+          after.emplace_back(std::forward<Follow>(follow));
+          return;
+        }
+      }
+      follow();
+    }
+
+    bool
+    Waits() {
+      std::lock_guard<mullion::mutex> lock(mutex);
+      return closed || event;
+    }
+
+    template <typename Wait>
+    void
+    Install(Wait &&wait) {
+      std::lock_guard<mullion::mutex> lock(mutex);
+      installed = true;
+      if (!closed && event)
+        wait(event, seq);
+    }
+
+  private:
+    WMT::Reference<WMT::SharedEvent> event;
+    uint64_t seq = 0;
+    bool installed = false;
+    std::vector<std::function<void()>> after;
+
+    std::vector<std::function<void()>>
+    Release() {
       for (auto &[buffer, committed] : std::exchange(buffers, {}))
         Run(buffer, committed);
       closed = false;
       closed.notify_all();
+      return cancelled ? std::vector<std::function<void()>>{} : std::exchange(after, {});
     }
 
-  private:
     void
     Run(MetalCommandBuffer buffer, uint64_t *committed) {
       if (cancelled)
@@ -2250,6 +2316,36 @@ public:
       Hold([this] { diag::PopEvent(queue_events_); }, true);
   };
 
+  // a Signal's command buffer `seq` of `event` is committed: a Wait for its value waits for it on the GPU from now on,
+  // and one that came first opens its gate behind such a wait (MTLD3D12Fence::Opener). it may run on another thread
+  // as the queue goes, so it has what it needs of the queue's, and `queue` only names it
+  static void
+  Follow(
+      const void *queue, const void *device, const WMT::Reference<WMT::SharedEvent> &event, MTLD3D12Fence *fence,
+      uint64_t Value, uint64_t seq
+  ) {
+    std::vector<MTLD3D12Fence::Opener> due;
+    {
+      std::lock_guard<mullion::mutex> lock(fence->following_mutex);
+      // gates open on other threads, so a later Signal of this queue's may be followed first
+      if (fence->following.event.handle != event.handle || fence->following.seq <= seq)
+        fence->following = {Value, device, event, seq};
+      std::erase_if(fence->openers, [&](auto &opener) {
+        if (!*opener.closed)
+          return true;
+        if (opener.value > Value || opener.device != device)
+          return false;
+        due.push_back(std::move(opener));
+        return true;
+      });
+    }
+    if (!due.empty() && Logger::logLevel() == LogLevel::Trace)
+      TRACE(GetTickCount64(), " ms, queue ", queue, ": Signal of fence ", fence, " to ", Value, " opens ", due.size(),
+            " gates on the GPU");
+    for (auto &opener : due)
+      opener.open(event, seq);
+  }
+
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D12Fence *pFence, UINT64 Value) {
     // from the CPU, once the work before has completed and what it left for the CPU is done
@@ -2258,6 +2354,11 @@ public:
       std::lock_guard<mullion::mutex> lock(mutex_commit_);
       if (ends_since_signal_)
         ends_between_signals_ = std::exchange(ends_since_signal_, 0);
+      // a GPU wait for a buffer behind a closed gate could outlast Metal's patience: the Signal is followed once the
+      // buffer is committed
+      if constexpr (Metal4)
+        gate_->After([queue = this, device = device_, event = completion_event_, fence, Value,
+                      seq = inflight_cmdbuf_seq_ - 1] { Follow(queue, device, event, fence.ptr(), Value, seq); });
       retired_.Expect(inflight_cmdbuf_seq_ - 1, [this, fence, Value] {
         Trace("fence ", fence.ptr(), " reaches ", Value);
         FLIGHT_HEAVY(Sync, "fence %p reaches %llu", fence.ptr(), Value);
@@ -2276,7 +2377,26 @@ public:
     auto gate = std::make_shared<Gate>();
     gate->device = device_;
     gate->closed = true;
-    static_cast<MTLD3D12Fence *>(pFence)->completion->Expect(Value, [gate] { gate->Open(); });
+    // a value a Signal of this device's has given, after work it has committed, is waited for on the GPU: what the
+    // queue commits from here on waits for the Signal's command buffer, which can only take as long as its work. a
+    // value no such Signal has given yet closes the gate, which that Signal opens the same way once it is committed
+    if constexpr (Metal4) {
+      auto fence = static_cast<MTLD3D12Fence *>(pFence);
+      auto open = [gate, queue = queue_](const WMT::Reference<WMT::SharedEvent> &event, uint64_t seq) mutable {
+        gate->OpenOnGPU(event, seq, [&](auto &signal, uint64_t number) { queue.waitForEvent(signal, number); });
+      };
+      std::unique_lock<mullion::mutex> lock(fence->following_mutex);
+      auto following = fence->following;
+      if (fence->completion->value < Value && following.value >= Value && following.device == device_) {
+        lock.unlock();
+        open(following.event, following.seq);
+      } else if (fence->completion->value < Value) {
+        std::erase_if(fence->openers, [](auto &opener) { return !*opener.closed; });
+        fence->openers.push_back({Value, device_, std::shared_ptr<std::atomic<bool>>(gate, &gate->closed), open});
+      }
+    }
+    if (gate->closed)
+      static_cast<MTLD3D12Fence *>(pFence)->completion->Expect(Value, [gate] { gate->Open(); });
     auto work = [this, gate] {
       gate_->closed.wait(true);
       {
@@ -2284,6 +2404,8 @@ public:
         std::scoped_lock lock(mutex_commit_, held_mutex_);
         if (held_stop_)
           return;
+        if constexpr (Metal4)
+          gate->Install([this](auto &signal, uint64_t number) { queue_.waitForEvent(signal, number); });
         gate_ = gate;
         held_changed_.notify_all();
       }
@@ -2291,12 +2413,14 @@ public:
       if (gate->closed)
         StartCommitting();
     };
-    Trace("Wait for fence ", pFence, " at ", Value, gate->closed ? ", which holds the queue" : ", which it has had");
+    Trace("Wait for fence ", pFence, " at ", Value,
+          gate->closed ? ", which holds the queue" : gate->Waits() ? ", which waits on the GPU" : ", which it has had");
     FLIGHT_HEAVY(Sync, "queue %p: Wait for fence %p at %llu, holding %llu", this, pFence, Value, uint64_t(bool(gate->closed)));
     // MULLION_TRACE_SYNC: only the Waits that hold the queue's work back, which a hang waits on; heavy has every one
     if (gate->closed && !trace::Heavy(trace::Sync))
       TRACE_IN(Sync, "queue ", this, ": Wait for fence ", pFence, " at ", Value, " holds the queue's work");
-    if (gate->closed && !Hold(work))
+    // a gate a Signal opened already still has the queue wait on the GPU
+    if (gate->Waits() && !Hold(work))
       Hold(work, true);
     return S_OK;
   };

@@ -392,6 +392,26 @@ private:
 class MTLD3D12Fence : public ID3D12Fence1 {
 public:
   std::shared_ptr<Reached> completion = std::make_shared<Reached>();
+  // the last value a Signal of a Metal 4 queue gave the fence, with what says on the GPU that it is there: the
+  // queue's completion event at the command buffer the Signal follows, committed already. a Wait of a queue of the
+  // same device waits for that on the GPU, not for the CPU to see the value (MTLD3D12CommandQueue::Wait)
+  struct Following {
+    uint64_t value = 0;
+    const void *device = nullptr;
+    WMT::Reference<WMT::SharedEvent> event;
+    uint64_t seq = 0;
+  };
+  // a Wait whose queue holds its work behind a gate until the fence is at `value`: a Signal of the same device's to
+  // that value opens it once the Signal's command buffer is committed, and the queue waits for it on the GPU
+  struct Opener {
+    uint64_t value;
+    const void *device;
+    std::shared_ptr<std::atomic<bool>> closed;
+    std::function<void(const WMT::Reference<WMT::SharedEvent> &, uint64_t)> open;
+  };
+  mullion::mutex following_mutex;
+  Following following;
+  std::vector<Opener> openers;
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
   // the fence's value from now on, which a shared fence also gives the devices it is shared with

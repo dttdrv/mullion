@@ -15,6 +15,11 @@
 //   fence to its own value: every fence has its value once the queue's last signal has been reached. once behind
 //   a list that keeps the GPU, so that the signals fill the GPU's queue and the threads wait for its places, and
 //   once behind a wait that ends when half of them are in, so that held work is taken up while more arrives;
+// - set back: a fence a queue signaled to a value, then the CPU to a lower one (Signal "sets the fence to the
+//   specified value", ID3D12Fence::Signal, with no bound): a queue's wait for the first value waits until it is
+//   there again;
+// - a wait for a signal behind a list that is still on the GPU: what the waiting queue does next sees the list's
+//   writes;
 // - queues made and released without use, one after another: each release destroys its queue and returns.
 // no wait of the test is unbounded: one that outlives its time is a wrong result, and the test ends.
 #include "d3d12_test.hpp"
@@ -205,6 +210,15 @@ main(int argc, char **argv) {
   };
   UINT64 direct_value = frames + 1, compute_value = frames + 1;
 
+  step("set back: the CPU sets a fence below the value a queue signaled, and a wait for that value waits again");
+  CHECK(fences[Copy]->Signal(frames));
+  CHECK(queues[Compute]->Wait(fences[Copy].Get(), frames + 1));
+  CHECK(queues[Compute]->Signal(fences[Compute].Get(), ++compute_value));
+  Sleep(1000);
+  expect(fences[Compute]->GetCompletedValue() < compute_value, "the wait for %u ended while the fence was at %u", frames + 1, frames);
+  CHECK(fences[Copy]->Signal(frames + 1));
+  reached(Compute, compute_value);
+
   D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
   if (options.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_1) {
@@ -343,6 +357,36 @@ main(int argc, char **argv) {
   // a round whose list had ended before its threads started met no full queue
   // (a quarter of the rounds: how long a list keeps this GPU is measured once and moves)
   expect(met > most_ahead / 4, "the list kept the GPU until the threads started in %u of %u rounds", met, most_ahead);
+
+  // the direct queue copies the number the busy list adds to after a wait for the list's signal, then again once the
+  // CPU has seen both queues done: the copies agree only if the wait held the first back. the list is still on the
+  // GPU when the wait is given in most rounds, which is what a wait done by the GPU has to hold
+  const UINT rounds = 8;
+  auto copied = [&](UINT to) {
+    return recorded(Direct, [&](auto list) { list->CopyBufferRegion(readback.Get(), to * sizeof(UINT), number.Get(), 0, sizeof(UINT)); });
+  };
+  ID3D12CommandList *first = copied(0), *second = copied(1);
+  UINT running = 0;
+  for (UINT round = 0; round < rounds; round++) {
+    step("a wait for a list still on the GPU, round %u", round);
+    queues[Compute]->ExecuteCommandLists(1, &busy);
+    CHECK(queues[Compute]->Signal(fences[Compute].Get(), ++compute_value));
+    CHECK(queues[Direct]->Wait(fences[Compute].Get(), compute_value));
+    running += fences[Compute]->GetCompletedValue() < compute_value;
+    queues[Direct]->ExecuteCommandLists(1, &first);
+    CHECK(queues[Direct]->Signal(fences[Direct].Get(), ++direct_value));
+    reached(Direct, direct_value);
+    reached(Compute, compute_value);
+    queues[Direct]->ExecuteCommandLists(1, &second);
+    CHECK(queues[Direct]->Signal(fences[Direct].Get(), ++direct_value));
+    reached(Direct, direct_value);
+    UINT *got;
+    if (SUCCEEDED(readback->Map(0, nullptr, (void **)&got))) {
+      expect(got[0] == got[1], "the copy after the wait read %u, the copy after both queues %u", got[0], got[1]);
+      readback->Unmap(0, nullptr);
+    }
+  }
+  expect(running > rounds / 4, "the list was on the GPU when the wait was given in %u of %u rounds", running, rounds);
 
   const UINT unused = 256;
   step("%u queues made and released without use", unused);

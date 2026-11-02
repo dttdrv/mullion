@@ -4147,10 +4147,24 @@ _MTL4CommandQueue_event(void *obj) {
   struct unixcall_mtl4_event *params = obj;
   if (@available(macOS 26.0, *)) {
     id<MTL4CommandQueue> queue = (id<MTL4CommandQueue>)params->queue;
-    if (params->wait)
-      [queue waitForEvent:(id<MTLEvent>)params->event value:params->value];
-    else
-      [queue signalEvent:(id<MTLEvent>)params->event value:params->value];
+    id<MTLEvent> event = (id<MTLEvent>)params->event;
+    bool wait = params->wait;
+    uint64_t value = params->value;
+    void (^call)(void) = ^{
+      if (wait)
+        [queue waitForEvent:event value:value];
+      else
+        [queue signalEvent:event value:value];
+    };
+    // the queue's commits that came before are late: the call stays behind them (the copied block holds the queue
+    // and the event)
+    if (test_late_ns) {
+      pthread_mutex_lock(&test_late_mutex);
+      dispatch_async(test_late_commits, call);
+      pthread_mutex_unlock(&test_late_mutex);
+    } else {
+      call();
+    }
   }
   return STATUS_SUCCESS;
 }
