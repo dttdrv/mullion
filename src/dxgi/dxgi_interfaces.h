@@ -77,4 +77,6 @@ enum class VendorExtension {
 };
 
 extern VendorExtension g_extension_enabled;
+// what an enabled vendor extension needs of the prefix, done once a process, outside DllMain
+void TrustVendorExtension();
 } // namespace mullion

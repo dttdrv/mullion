@@ -1,5 +1,6 @@
 #include "dxgi_interfaces.h"
 #include "dxgi_ngx_certificate.h"
+#include <wincrypt.h>
 #include "log/log.hpp"
 #include "util_env.hpp"
 #include "config/config.hpp"
@@ -17,26 +18,30 @@ VendorExtension g_extension_enabled = VendorExtension::None;
 std::once_flag nvext_init;
 
 // trusts the certificate Mullion's nvngx.dll is signed with, in the prefix's Root store (NGX loads only a core whose
-// signature chains to a trusted root). crypt32 is loaded here only, for the processes that ask for NVEXT
+// signature chains to a trusted root). not in DllMain: opening Wine's Root store syncs it with the host's roots, once a
+// process, behind a semaphore other processes share, and crypt32 is loaded only for the processes that ask for NVEXT
 static void TrustNGXCertificate() {
-  typedef void *(WINAPI * open_t)(LPCSTR, DWORD, ULONG_PTR, DWORD, const void *);
-  typedef BOOL(WINAPI * add_t)(void *, DWORD, const BYTE *, DWORD, DWORD, void *);
-  typedef BOOL(WINAPI * close_t)(void *, DWORD);
   HMODULE crypt32 = LoadLibraryW(L"crypt32.dll");
   if (!crypt32)
     return;
-  auto open = (open_t)GetProcAddress(crypt32, "CertOpenStore");
-  auto add = (add_t)GetProcAddress(crypt32, "CertAddEncodedCertificateToStore");
-  auto close = (close_t)GetProcAddress(crypt32, "CertCloseStore");
-  // CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_LOCAL_MACHINE; X509_ASN_ENCODING, CERT_STORE_ADD_USE_EXISTING
+  auto open = (decltype(&CertOpenStore))GetProcAddress(crypt32, "CertOpenStore");
+  auto add = (decltype(&CertAddEncodedCertificateToStore))GetProcAddress(crypt32, "CertAddEncodedCertificateToStore");
+  auto close = (decltype(&CertCloseStore))GetProcAddress(crypt32, "CertCloseStore");
   if (open && add && close) {
-    if (void *store = open((LPCSTR)10, 0, 0, 2 << 16, L"Root")) {
-      if (!add(store, 1, mullion_ngx_certificate, sizeof(mullion_ngx_certificate), 2, nullptr))
+    if (HCERTSTORE store = open(CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE, L"Root")) {
+      if (!add(store, X509_ASN_ENCODING, mullion_ngx_certificate, sizeof(mullion_ngx_certificate),
+               CERT_STORE_ADD_USE_EXISTING, nullptr))
         Logger::warn("NVEXT: failed to trust the NGX core's certificate");
       close(store, 0);
     }
   }
   FreeLibrary(crypt32);
+}
+
+void TrustVendorExtension() {
+  static std::once_flag once;
+  if (g_extension_enabled == VendorExtension::Nvidia)
+    std::call_once(once, TrustNGXCertificate);
 }
 
 // NVEXT is on with MULLION_ENABLE_NVEXT=1, or where the configuration shows the program an NVIDIA GPU
@@ -95,7 +100,6 @@ static void InitializeVendorExtensionNV() {
     RegSetValueExW(key2, name1, 0, REG_DWORD, (const BYTE *)&_1, sizeof(_1));
     RegSetValueExW(key3, L"FullPath", 0, REG_SZ, (const BYTE *)folder, size);
     RegSetValueExW(key4, L"NGXPath", 0, REG_SZ, (const BYTE *)folder, size);
-    TrustNGXCertificate();
     Logger::info("Vendor extension enabled: NVEXT");
     g_extension_enabled = VendorExtension::Nvidia;
   }

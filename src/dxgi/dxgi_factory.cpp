@@ -467,6 +467,7 @@ private:
 };
 
 static HRESULT CreateFactory(UINT Flags, bool Extended, REFIID riid, void **ppFactory) {
+  TrustVendorExtension();
   try {
     MTLDXGIFactory* factory = new MTLDXGIFactory(Flags, Extended);
     HRESULT hr = factory->QueryInterface(riid, ppFactory);
