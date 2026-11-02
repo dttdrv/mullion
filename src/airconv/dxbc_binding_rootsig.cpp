@@ -23,6 +23,7 @@
 #include "../mullion/mullion_command_constants.hpp"
 #include "llvm/IR/DerivedTypes.h"
 #include <algorithm>
+#include <set>
 #include <cmath>
 #include <cassert>
 
@@ -128,7 +129,7 @@ public:
     auto [Pointer, Metadata] = GetBufferDescriptor(
         Builder, HeapPointer, Index, Builder.getIntTy(4)->getPointerTo(2), CBuf.range.lower_bound, DescriptorOffset
     );
-    return ConstantBufferDescriptor{Pointer, Metadata};
+    return ConstantBufferDescriptor{Pointer, Unbounded.count({D3D12_DESCRIPTOR_RANGE_TYPE_CBV, Range}) ? nullptr : Metadata};
   }
 
   SamplerDescriptor
@@ -292,13 +293,15 @@ public:
     auto DescriptorOffset = Iter->second.second;
     auto HeapPointer = GetArgument(Builder, RootSignatureArgumentIndex, SRV.arg_index);
     if (DescriptorOffset == ~0u) {
-      return BufferDescriptor{HeapPointer, Builder.builder.getInt64(0xffffffff), SRV.structure_stride, false};
+      return BufferDescriptor{HeapPointer, Builder.builder.getInt64(0xffffffff), SRV.structure_stride, false, false};
     }
     auto [Pointer, Metadata] = GetBufferDescriptor(
         Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), SRV.range.lower_bound, DescriptorOffset
     );
 
-    return BufferDescriptor{Pointer, Metadata, SRV.structure_stride, false};
+    return BufferDescriptor{
+        Pointer, Metadata, SRV.structure_stride, false, !Unbounded.count({D3D12_DESCRIPTOR_RANGE_TYPE_SRV, Range})
+    };
   }
 
   virtual llvm::Optional<BufferDescriptor>
@@ -315,14 +318,17 @@ public:
     auto HeapPointer = GetArgument(Builder, RootSignatureArgumentIndex, UAV.arg_index);
     if (DescriptorOffset == ~0u) {
       return BufferDescriptor{
-          HeapPointer, Builder.builder.getInt64(0xffffffff), UAV.structure_stride, UAV.global_coherent
+          HeapPointer, Builder.builder.getInt64(0xffffffff), UAV.structure_stride, UAV.global_coherent, false
       };
     }
     auto [Pointer, Metadata] = GetBufferDescriptor(
         Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), UAV.range.lower_bound, DescriptorOffset
     );
 
-    return BufferDescriptor{Pointer, Metadata, UAV.structure_stride, UAV.global_coherent};
+    return BufferDescriptor{
+        Pointer, Metadata, UAV.structure_stride, UAV.global_coherent,
+        !Unbounded.count({D3D12_DESCRIPTOR_RANGE_TYPE_UAV, Range})
+    };
   }
 
   virtual llvm::Optional<CounterDescriptor>
@@ -365,6 +371,9 @@ public:
   std::vector<std::tuple<bool, bool, bool>> StaticSamplerStates;
   uint32_t SparseBufferMappingsIndex;
   llvm::Value *SparseBufferMappings = nullptr;
+
+  // the table ranges whose descriptors root signature 1.1 says are static, by range type (BufferDescriptor::Bounded)
+  std::set<std::pair<D3D12_DESCRIPTOR_RANGE_TYPE, RangeId>> Unbounded;
 
   std::map<RangeId, std::pair<ConstantBufferInfo, uint64_t>> ConstantBuffers;
   std::map<RangeId, std::pair<SamplerInfo, uint64_t>> Samplers;
@@ -475,6 +484,15 @@ setup_binding_rootsig(
                                                 ? descriptor_offset
                                                 : range.OffsetInDescriptorsFromTableStart;
         descriptor_offset = calculated_descriptor_offset + range.NumDescriptors;
+        // D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS, which the bundled header lacks
+        constexpr uint32_t kKeepsBoundsChecks = 0x10000;
+        bool bounded = uint32_t(range.Flags) & (D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | kKeepsBoundsChecks);
+        auto bind = [&](RangeId id) {
+          if (bounded)
+            binding_map->Unbounded.erase({range.RangeType, id});
+          else
+            binding_map->Unbounded.insert({range.RangeType, id});
+        };
         switch (range.RangeType) {
         case D3D12_DESCRIPTOR_RANGE_TYPE_SRV: {
           for (auto &[_, srv] : shader_info->srvMap) {
@@ -486,6 +504,7 @@ setup_binding_rootsig(
                   srv, calculated_descriptor_offset + (srv.range.lower_bound - range.BaseShaderRegister)
               };
               binding_map->SRVs[range_id].first.arg_index = table_index;
+              bind(range_id);
             }
           }
           break;
@@ -500,6 +519,7 @@ setup_binding_rootsig(
                   uav, calculated_descriptor_offset + (uav.range.lower_bound - range.BaseShaderRegister)
               };
               binding_map->UAVs[range_id].first.arg_index = table_index;
+              bind(range_id);
               if (uav.rasterizer_order)
                 raster_order_group = 1;
             }
@@ -515,6 +535,7 @@ setup_binding_rootsig(
                   cbuf, calculated_descriptor_offset + (cbuf.range.lower_bound - range.BaseShaderRegister)
               };
               binding_map->ConstantBuffers[range_id].first.arg_index = table_index;
+              bind(range_id);
             }
           }
           break;

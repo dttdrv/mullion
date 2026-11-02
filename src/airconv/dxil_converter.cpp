@@ -2108,7 +2108,7 @@ convert_dxil(
       index = ir.CreateAnd(index, ir.getInt64(UINT32_MAX / (unit->getPrimitiveSizeInBits() / 8)));
     auto space = b.Pointer->getType()->getPointerAddressSpace();
     auto ptr = ir.CreateGEP(unit, ir.CreatePointerCast(b.Pointer, unit->getPointerTo(space)), {index});
-    if (!b.Metadata || inside)
+    if (!b.Bounds() || inside)
       return ptr;
     auto units = ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(unit->getPrimitiveSizeInBits() / 8));
     // a raw index is masked to 32 bits of bytes above, so it compares in the GPU's 32-bit integers

@@ -3,7 +3,12 @@
 // returns 0 for that component" (D3D11.3 22.4.10) and "Out of bounds addressing on u# means nothing is written to
 // the out of bounds memory" (22.4.11); structured buffers the same by the element's index (22.4.12, 22.4.13); typed
 // buffers by ld and store_uav_typed (22.4.6, 22.4.9). a root signature of version 1.0 keeps this for the views of
-// its tables (DirectX-Specs, Resource Binding: only static descriptors of version 1.1 give it up). engines rely on
+// its tables (DirectX-Specs, Resource Binding: only static descriptors of version 1.1 give it up), and one of 1.1
+// for a table whose descriptors are volatile or keep bounds checks: with static descriptors "Out of bounds accesses
+// to any Buffer views ... are invalid and produce undefined results" (Microsoft Learn, Root Signature Version 1.1,
+// Static and Volatile Flags), and DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS keeps them ("they must maintain
+// bounds checks", D3D12_DESCRIPTOR_RANGE_FLAGS). through static descriptors only the view's own elements are
+// read and stored, and must be what a bounded view gives for them. engines rely on
 // it: Unreal's vertex shaders read the GPU scene by an instance's number, and the number of an instance that is
 // not there reads zeros and nothing else happens.
 // a structured, a raw and a typed buffer of ELEMENTS elements each, every word different and none 0; the views
@@ -83,7 +88,33 @@ main(int argc, char **argv) {
   params[1].DescriptorTable = {1, &stored_range};
   params[2].Constants = {0, 0, 2};
   params[3].Descriptor = {Kinds, 0};
-  auto rs = root_signature(device.Get(), {(UINT)std::size(params), params});
+  auto versioned = [&](D3D12_DESCRIPTOR_RANGE_FLAGS flags) {
+    D3D12_DESCRIPTOR_RANGE1 read1{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, Kinds, 0, 0, flags},
+        stored1{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, Kinds, 0, 0, flags};
+    D3D12_ROOT_PARAMETER1 params1[std::size(params)];
+    for (UINT i = 0; i < std::size(params); i++)
+      params1[i] = {params[i].ParameterType};
+    params1[0].DescriptorTable = {1, &read1};
+    params1[1].DescriptorTable = {1, &stored1};
+    params1[2].Constants = params[2].Constants;
+    params1[3].Descriptor = {Kinds, 0};
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    desc.Desc_1_1 = {(UINT)std::size(params1), params1};
+    ComPtr<ID3DBlob> blob;
+    ComPtr<ID3D12RootSignature> rs;
+    if (SUCCEEDED(D3D12SerializeVersionedRootSignature(&desc, &blob, nullptr)))
+      device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rs));
+    return rs;
+  };
+  struct Signature {
+    const char *name;
+    ComPtr<ID3D12RootSignature> rs;
+    bool bounded;
+  } signatures[] = {
+      {"1.0", root_signature(device.Get(), {(UINT)std::size(params), params}), true},
+      {"1.1 volatile", versioned(D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE), true},
+      {"1.1 keeping bounds checks", versioned(D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS), true},
+      {"1.1 static", versioned(D3D12_DESCRIPTOR_RANGE_FLAG_NONE), false}};
 
   // what reads or stores, and in which stage
   struct Way {
@@ -93,16 +124,15 @@ main(int argc, char **argv) {
   } ways[] = {{"a vertex shader reads", "vs_reads", "ps_passes"}, {"a pixel shader reads", "vs", "ps_reads"}, {"a compute shader reads", nullptr, nullptr, "cs_reads"},
               {"a pixel shader stores", "vs", "ps_stores", nullptr, true}, {"a compute shader stores", nullptr, nullptr, "cs_stores", true}};
   const DXGI_FORMAT target_format = DXGI_FORMAT_R32G32B32A32_UINT;
-  for (auto &way : ways) {
+  auto make = [&](Way &way, ID3D12RootSignature *rs) {
     if (way.cs) {
       auto cs = compiler.compile(hlsl, way.cs, "cs");
-      D3D12_COMPUTE_PIPELINE_STATE_DESC desc{rs.Get(), bytecode(cs)};
-      CHECK(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&way.pso)));
-      continue;
+      D3D12_COMPUTE_PIPELINE_STATE_DESC desc{rs, bytecode(cs)};
+      return device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&way.pso));
     }
     auto vs = compiler.compile(hlsl, way.vs, "vs"), ps = compiler.compile(hlsl, way.ps, "ps");
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
-    desc.pRootSignature = rs.Get();
+    desc.pRootSignature = rs;
     desc.VS = bytecode(vs), desc.PS = bytecode(ps);
     desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     desc.SampleMask = ~0u;
@@ -110,8 +140,8 @@ main(int argc, char **argv) {
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     desc.NumRenderTargets = 1, desc.RTVFormats[0] = target_format;
     desc.SampleDesc = {1, 0};
-    CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&way.pso)));
-  }
+    return device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&way.pso));
+  };
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
@@ -174,90 +204,96 @@ main(int argc, char **argv) {
 
   // past the view and in the buffer, past the buffer, far past it, where the byte offset of a row wraps to 0, the largest
   const UINT indices[] = {0, count - 1, count, elements - first, 1u << 20, UINT((1ull << 32) / (words_of[Rows] * word)), ~0u};
-  for (auto &way : ways)
-    for (UINT index : indices) {
-      step("%s element %#x of views of %u elements", way.what, index, count);
-      // a value no word has
-      const UINT value = 0x80000000u + index % count;
-      if (FAILED(forget(back.Get())) || FAILED(forget(read_back.Get())) || FAILED(allocator->Reset()) ||
-          FAILED(list->Reset(allocator.Get(), way.pso.Get()))) {
-        expect(false, "the list could not be begun");
+  for (auto &signature : signatures)
+    for (auto &way : ways) {
+      if (!expect(signature.rs && SUCCEEDED(make(way, signature.rs.Get())), "root signature %s: no pipeline", signature.name))
         continue;
+      for (UINT index : indices) {
+        if (!signature.bounded && index >= count)
+          continue;
+        step("root signature %s: %s element %#x of views of %u elements", signature.name, way.what, index, count);
+        // a value no word has
+        const UINT value = 0x80000000u + index % count;
+        if (FAILED(forget(back.Get())) || FAILED(forget(read_back.Get())) || FAILED(allocator->Reset()) ||
+            FAILED(list->Reset(allocator.Get(), way.pso.Get()))) {
+          expect(false, "the list could not be begun");
+          continue;
+        }
+        // the stored buffers as they began
+        for (UINT kind = 0; kind < Kinds; kind++) {
+          auto to = buffers[1][kind].Get();
+          transition(list.Get(), to, storing, D3D12_RESOURCE_STATE_COPY_DEST);
+          list->CopyBufferRegion(to, 0, staged.Get(), begins(1, kind) * word, elements * words_of[kind] * word);
+          transition(list.Get(), to, D3D12_RESOURCE_STATE_COPY_DEST, storing);
+        }
+        ID3D12DescriptorHeap *bound[] = {views.Get()};
+        auto read_table = views->GetGPUDescriptorHandleForHeapStart(), stored_table = read_table;
+        stored_table.ptr += Kinds * apart;
+        const UINT constants[] = {index, value};
+        list->SetDescriptorHeaps(1, bound);
+        if (way.cs) {
+          list->SetComputeRootSignature(signature.rs.Get());
+          list->SetComputeRootDescriptorTable(0, read_table);
+          list->SetComputeRootDescriptorTable(1, stored_table);
+          list->SetComputeRoot32BitConstants(2, std::size(constants), constants, 0);
+          list->SetComputeRootUnorderedAccessView(3, result->GetGPUVirtualAddress());
+          list->Dispatch(1, 1, 1);
+          transition(list.Get(), result.Get(), storing, D3D12_RESOURCE_STATE_COPY_SOURCE);
+          list->CopyBufferRegion(read_back.Get(), 0, result.Get(), 0, read_words * word);
+          transition(list.Get(), result.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, storing);
+        } else {
+          const D3D12_VIEWPORT viewport{0, 0, 1, 1, 0, 1};
+          const D3D12_RECT scissor{0, 0, 1, 1};
+          list->SetGraphicsRootSignature(signature.rs.Get());
+          list->SetGraphicsRootDescriptorTable(0, read_table);
+          list->SetGraphicsRootDescriptorTable(1, stored_table);
+          list->SetGraphicsRoot32BitConstants(2, std::size(constants), constants, 0);
+          list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+          list->RSSetViewports(1, &viewport);
+          list->RSSetScissorRects(1, &scissor);
+          list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+          list->DrawInstanced(3, 1, 0, 0);
+          transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+          D3D12_TEXTURE_COPY_LOCATION from{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
+              to{read_back.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprint}};
+          list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+          transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+        for (UINT kind = 0; kind < Kinds; kind++) {
+          auto from = buffers[1][kind].Get();
+          transition(list.Get(), from, storing, D3D12_RESOURCE_STATE_COPY_SOURCE);
+          list->CopyBufferRegion(back.Get(), begins(1, kind) * word, from, 0, elements * words_of[kind] * word);
+          transition(list.Get(), from, D3D12_RESOURCE_STATE_COPY_SOURCE, storing);
+        }
+        HRESULT ran = submit(device.Get(), queue.Get(), list.Get());
+        const UINT *read, *left;
+        if (!expect(ran == S_OK, "the device did not live through it: %08lx", ran) || FAILED(read_back->Map(0, nullptr, (void **)&read)) ||
+            FAILED(back->Map(0, nullptr, (void **)&left)))
+          return verdict();
+        // the element's words, in the read buffers and in the stored ones; a raw buffer is addressed in bytes, which
+        // the shader counts in 32 bits
+        const UINT raw_index = word * index / word;
+        auto in_view = [&](UINT kind) { return (kind == Raw ? raw_index : index) < count; };
+        auto element = [&](UINT stored, UINT kind) { return begins(stored, kind) + (first + (kind == Raw ? raw_index : index)) * words_of[kind]; };
+        std::vector<UINT> want = pattern;
+        if (way.stores) {
+          for (UINT kind = 0; kind < Kinds; kind++)
+            if (in_view(kind))
+              want[element(1, kind) + words_of[kind] - 1] = value;
+        } else {
+          const UINT want_read[read_words] = {in_view(Rows) ? pattern[element(0, Rows)] : 0, in_view(Rows) ? pattern[element(0, Rows) + 1] : 0,
+                                              in_view(Raw) ? pattern[element(0, Raw)] : 0, in_view(Typed) ? pattern[element(0, Typed)] : 0};
+          expect(!memcmp(read, want_read, sizeof(want_read)), "read %#x %#x from the rows, %#x raw and %#x typed, want %#x %#x, %#x and %#x", read[0],
+                 read[1], read[2], read[3], want_read[0], want_read[1], want_read[2], want_read[3]);
+        }
+        unsigned wrong = 0;
+        for (UINT i = begins(1, 0); i < all_words; i++)
+          if (left[i] != want[i] && wrong++ < 4)
+            expect(false, "word %u of the stored buffers is %#x, want %#x", i - begins(1, 0), left[i], want[i]);
+        expect(wrong <= 4, "and %u more words", wrong - 4);
+        read_back->Unmap(0, nullptr);
+        back->Unmap(0, nullptr);
       }
-      // the stored buffers as they began
-      for (UINT kind = 0; kind < Kinds; kind++) {
-        auto to = buffers[1][kind].Get();
-        transition(list.Get(), to, storing, D3D12_RESOURCE_STATE_COPY_DEST);
-        list->CopyBufferRegion(to, 0, staged.Get(), begins(1, kind) * word, elements * words_of[kind] * word);
-        transition(list.Get(), to, D3D12_RESOURCE_STATE_COPY_DEST, storing);
-      }
-      ID3D12DescriptorHeap *bound[] = {views.Get()};
-      auto read_table = views->GetGPUDescriptorHandleForHeapStart(), stored_table = read_table;
-      stored_table.ptr += Kinds * apart;
-      const UINT constants[] = {index, value};
-      list->SetDescriptorHeaps(1, bound);
-      if (way.cs) {
-        list->SetComputeRootSignature(rs.Get());
-        list->SetComputeRootDescriptorTable(0, read_table);
-        list->SetComputeRootDescriptorTable(1, stored_table);
-        list->SetComputeRoot32BitConstants(2, std::size(constants), constants, 0);
-        list->SetComputeRootUnorderedAccessView(3, result->GetGPUVirtualAddress());
-        list->Dispatch(1, 1, 1);
-        transition(list.Get(), result.Get(), storing, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        list->CopyBufferRegion(read_back.Get(), 0, result.Get(), 0, read_words * word);
-        transition(list.Get(), result.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, storing);
-      } else {
-        const D3D12_VIEWPORT viewport{0, 0, 1, 1, 0, 1};
-        const D3D12_RECT scissor{0, 0, 1, 1};
-        list->SetGraphicsRootSignature(rs.Get());
-        list->SetGraphicsRootDescriptorTable(0, read_table);
-        list->SetGraphicsRootDescriptorTable(1, stored_table);
-        list->SetGraphicsRoot32BitConstants(2, std::size(constants), constants, 0);
-        list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        list->RSSetViewports(1, &viewport);
-        list->RSSetScissorRects(1, &scissor);
-        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        list->DrawInstanced(3, 1, 0, 0);
-        transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        D3D12_TEXTURE_COPY_LOCATION from{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
-            to{read_back.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprint}};
-        list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
-        transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-      }
-      for (UINT kind = 0; kind < Kinds; kind++) {
-        auto from = buffers[1][kind].Get();
-        transition(list.Get(), from, storing, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        list->CopyBufferRegion(back.Get(), begins(1, kind) * word, from, 0, elements * words_of[kind] * word);
-        transition(list.Get(), from, D3D12_RESOURCE_STATE_COPY_SOURCE, storing);
-      }
-      HRESULT ran = submit(device.Get(), queue.Get(), list.Get());
-      const UINT *read, *left;
-      if (!expect(ran == S_OK, "the device did not live through it: %08lx", ran) || FAILED(read_back->Map(0, nullptr, (void **)&read)) ||
-          FAILED(back->Map(0, nullptr, (void **)&left)))
-        return verdict();
-      // the element's words, in the read buffers and in the stored ones; a raw buffer is addressed in bytes, which
-      // the shader counts in 32 bits
-      const UINT raw_index = word * index / word;
-      auto in_view = [&](UINT kind) { return (kind == Raw ? raw_index : index) < count; };
-      auto element = [&](UINT stored, UINT kind) { return begins(stored, kind) + (first + (kind == Raw ? raw_index : index)) * words_of[kind]; };
-      std::vector<UINT> want = pattern;
-      if (way.stores) {
-        for (UINT kind = 0; kind < Kinds; kind++)
-          if (in_view(kind))
-            want[element(1, kind) + words_of[kind] - 1] = value;
-      } else {
-        const UINT want_read[read_words] = {in_view(Rows) ? pattern[element(0, Rows)] : 0, in_view(Rows) ? pattern[element(0, Rows) + 1] : 0,
-                                            in_view(Raw) ? pattern[element(0, Raw)] : 0, in_view(Typed) ? pattern[element(0, Typed)] : 0};
-        expect(!memcmp(read, want_read, sizeof(want_read)), "read %#x %#x from the rows, %#x raw and %#x typed, want %#x %#x, %#x and %#x", read[0],
-               read[1], read[2], read[3], want_read[0], want_read[1], want_read[2], want_read[3]);
-      }
-      unsigned wrong = 0;
-      for (UINT i = begins(1, 0); i < all_words; i++)
-        if (left[i] != want[i] && wrong++ < 4)
-          expect(false, "word %u of the stored buffers is %#x, want %#x", i - begins(1, 0), left[i], want[i]);
-      expect(wrong <= 4, "and %u more words", wrong - 4);
-      read_back->Unmap(0, nullptr);
-      back->Unmap(0, nullptr);
     }
   return verdict();
 }

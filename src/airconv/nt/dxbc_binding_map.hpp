@@ -38,6 +38,10 @@ struct BufferDescriptor {
   llvm::Value *Metadata;
   uint32_t StructureStride;
   bool GlobalCoherent;
+  // whether an access out of its bounds is defined: not through a root descriptor, nor through a descriptor root
+  // signature 1.1 says is static ("Out of bounds accesses to any Buffer views ... are invalid and produce undefined
+  // results", Root Signature Version 1.1, Static and Volatile Flags)
+  bool Bounded = true;
 };
 
 struct CounterDescriptor {

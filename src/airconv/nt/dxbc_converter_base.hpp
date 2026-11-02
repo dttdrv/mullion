@@ -63,6 +63,9 @@ struct BufferResourceHandle {
   uint32_t StructureStride; // 0 if not structured
   Swizzle Swizzle;
   bool GlobalCoherent;
+  bool Bounded = true; // BufferDescriptor::Bounded
+  // the metadata an access is checked against, where it has to be
+  llvm::Value *Bounds() const { return Bounded ? Metadata : nullptr; }
 };
 
 struct AtomicBufferResourceHandle {
@@ -71,6 +74,8 @@ struct AtomicBufferResourceHandle {
   uint32_t StructureStride; // 0 if not structured
   mask_t Mask;
   bool GlobalCoherent;
+  bool Bounded = true;
+  llvm::Value *Bounds() const { return Bounded ? Metadata : nullptr; }
 };
 
 struct UAVCounterHandle {
@@ -638,7 +643,7 @@ public:
   MakeBufferHandle(const BufferDescriptor &Descriptor, Swizzle Swizzle) {
     return {
         Descriptor.Pointer, Descriptor.Metadata, Descriptor.StructureStride, Swizzle,
-        Descriptor.GlobalCoherent && SupportsMemoryCoherency()
+        Descriptor.GlobalCoherent && SupportsMemoryCoherency(), Descriptor.Bounded
     };
   }
 
