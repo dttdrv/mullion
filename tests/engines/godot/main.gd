@@ -7,6 +7,7 @@ var camera := Camera3D.new()
 var environment := Environment.new()
 var frame := 0
 var spinning: Array[Node3D] = []
+var lamps: Array[PointLight2D] = []
 
 
 func material(color: Color, metallic := 0.0, roughness := 0.5) -> StandardMaterial3D:
@@ -195,6 +196,47 @@ func enter(phase: int) -> void:
 			bar.size = Vector2(200, 12)
 			layer.add_child(bar)
 			add_child(layer)
+		9:
+			# 2D lights with shadows cast by occluders, over a darkened canvas of their own
+			var canvas := CanvasLayer.new()
+			canvas.layer = 2
+			var ground := ColorRect.new()
+			ground.color = Color(0.6, 0.6, 0.6)
+			ground.size = Vector2(320, 180)
+			ground.position = Vector2(300, 160)
+			canvas.add_child(ground)
+			var dark := CanvasModulate.new()
+			dark.color = Color(0.25, 0.25, 0.3)
+			canvas.add_child(dark)
+			var glow := GradientTexture2D.new()
+			glow.fill = GradientTexture2D.FILL_RADIAL
+			glow.fill_from = Vector2(0.5, 0.5)
+			glow.fill_to = Vector2(0.5, 0)
+			glow.width = 256
+			glow.height = 256
+			glow.gradient = Gradient.new()
+			glow.gradient.colors = PackedColorArray([Color.WHITE, Color(1, 1, 1, 0)])
+			for i in 2:
+				var lamp := PointLight2D.new()
+				lamp.texture = glow
+				lamp.color = Color.from_hsv(0.1 + 0.5 * i, 0.8, 1)
+				lamp.energy = 1.5
+				lamp.shadow_enabled = true
+				lamp.shadow_filter = Light2D.SHADOW_FILTER_PCF5
+				lamp.position = Vector2(380 + 160 * i, 220)
+				canvas.add_child(lamp)
+				lamps.append(lamp)
+			for j in 3:
+				var occluder := LightOccluder2D.new()
+				occluder.occluder = OccluderPolygon2D.new()
+				occluder.occluder.polygon = PackedVector2Array([Vector2(-12, -12), Vector2(12, -12), Vector2(12, 12), Vector2(-12, 12)])
+				occluder.position = Vector2(400 + 60 * j, 260)
+				var block := Polygon2D.new()
+				block.polygon = occluder.occluder.polygon
+				block.color = Color(0.9, 0.3, 0.2)
+				occluder.add_child(block)
+				canvas.add_child(occluder)
+			add_child(canvas)
 
 
 func _process(_delta: float) -> void:
@@ -205,4 +247,6 @@ func _process(_delta: float) -> void:
 	camera.look_at(Vector3(0, 0.5, 0))
 	for node in spinning:
 		node.rotation = Vector3(turn * 2, turn * 3, 0)
+	for i in lamps.size():
+		lamps[i].position.y = 220 + 40 * sin(turn * 4 + i * PI)
 	frame += 1

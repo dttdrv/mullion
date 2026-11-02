@@ -62,8 +62,9 @@ def main():
     run.arguments(parser)
     parser.add_argument("--godot", required=True, type=Path, help="the directory with Godot's Windows and macOS builds")
     parser.add_argument("--out", required=True, type=Path, help="where the frames, logs and differences go")
-    parser.add_argument("--frames", type=int, default=216, help="frames to draw (default: %(default)s, the scene's nine phases)")
+    parser.add_argument("--frames", type=int, default=240, help="frames to draw (default: %(default)s, the scene's ten phases)")
     parser.add_argument("--seconds", type=int, default=600, help="the most a run may take (default: %(default)s)")
+    parser.add_argument("--family", default="native", help="the Apple GPU family Direct3D 12 runs as, as run.py names one (default: %(default)s)")
     args = parser.parse_args()
     with run.session(args) as runtime:
         compare(args, *runtime)
@@ -91,7 +92,7 @@ def compare(args, builds, binary, base):
         runs[name] = record([native, "--path", scene(name), "--rendering-driver", driver, *options(str(out / name / "frames" / "frame.png"))],
                             dict(base), out / name / "frames", args, out / f"{name}.txt")
     runs["d3d12"] = record([binary, windows, "--path", z(scene("d3d12")), "--rendering-driver", "d3d12", *options(z(out / "d3d12" / "frames" / "frame.png"))],
-                           base, out / "d3d12" / "frames", args, out / "d3d12.txt")
+                           run.as_family(base, args.family), out / "d3d12" / "frames", args, out / "d3d12.txt")
     for name, (status, written) in runs.items():
         print(f"{name}: exit status {status}, {len(written)} frames", flush=True)
     reference, again, tested, second = (runs[name][1] for name in ("vulkan", "vulkan-again", "d3d12", "metal"))
