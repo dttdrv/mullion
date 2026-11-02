@@ -389,6 +389,11 @@ public:
   }
 
   uint64_t
+  staticThreadgroupMemoryLength() const {
+    return MTLComputePipelineState_staticThreadgroupMemoryLength(handle);
+  }
+
+  uint64_t
   threadExecutionWidth() const {
     return MTLComputePipelineState_threadExecutionWidth(handle);
   }
@@ -1207,6 +1212,11 @@ public:
   uint64_t
   gpuCoreCount() const {
     return MTLDevice_gpuCoreCount(handle);
+  }
+
+  uint64_t
+  maxThreadgroupMemoryLength() const {
+    return MTLDevice_maxThreadgroupMemoryLength(handle);
   }
 
   bool

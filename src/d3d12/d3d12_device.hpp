@@ -618,6 +618,8 @@ public:
   WMTSize threadgroup_size;
   // see MTL_SHADER_REFLECTION::GroupsWorkTogether and DeviceAtomics64
   bool groups_work_together = false;
+  // a part of such a dispatch, in threadgroups (MTLD3D12Device::GroupsAtOnce)
+  uint64_t groups_at_once = 1;
 };
 
 // timestamp queries sample the GPU's clock into counter sample buffers. Metal makes few of them, with few samples
@@ -720,9 +722,10 @@ public:
   // the removal reason as it is, for Mullion's own checks. GetDeviceRemovedReason first reads what Metal said of the
   // command buffers whose work has finished (SettleCommandQueueFeedback): their fences are signalled before that comes
   virtual HRESULT RemovedReason() = 0;
-  // how many threads of a compute shader go to the GPU at once when its threadgroups wait for one another: the
-  // lanes it runs at once (the estimate behind TotalLaneCount)
-  virtual uint64_t ThreadsAtOnce() = 0;
+  // how many threadgroups of `threads` each of a compute pipeline go to the GPU at once when they wait for one
+  // another: those its cores keep (an Apple GPU takes turns among the ones it does not keep, which a group that waits
+  // makes take seconds), or with `kept` false those its SIMD groups run at once, the estimate behind TotalLaneCount
+  virtual uint64_t GroupsAtOnce(WMT::ComputePipelineState pipeline, uint64_t threads, bool kept) = 0;
   // the Metal language version the device's shaders are converted for (ShaderMetalVersion)
   virtual SM50_SHADER_METAL_VERSION GetMetalVersion() = 0;
   // the shader compiler's flags for what this GPU lacks (GPUShaderFlags)

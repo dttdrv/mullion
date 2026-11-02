@@ -898,8 +898,18 @@ private:
           };
           if (pass.type == EncoderType::Render)
             runs = diag::PipelineRuns(static_cast<const RenderEncoderData *>(pass.pass)->cmd_head, name);
-          else if (pass.type == EncoderType::Compute || pass.type == EncoderType::ComputeParts)
+          else if (pass.type == EncoderType::Compute)
             runs = diag::PipelineRuns(static_cast<const ComputeEncoderData *>(pass.pass)->cmd_head, name);
+          else if (pass.type == EncoderType::ComputeParts) {
+            // one dispatch, which the queue cuts in parts: its pipeline, the fewest parts it takes and its groups
+            auto data = static_cast<const ComputePartsEncoderData *>(pass.pass);
+            auto size = data->indirect ? WMTSize{data->indirect->ThreadGroupCountX, data->indirect->ThreadGroupCountY,
+                                                 data->indirect->ThreadGroupCountZ}
+                                       : data->size;
+            uint64_t groups = size.width * size.height * size.depth;
+            runs = str::format(name(reinterpret_cast<const wmtcmd_compute_setpso *>(data->cmd_head.next.ptr)->pso), '*',
+                               (groups + data->at_once - 1) / data->at_once, '*', groups, "*0");
+          }
           auto line = diag::Line("pass", profile_->id, internal_seq, pass.id, kind, pass.encoding, runs);
           line.pop_back();
           // the profile's clock is nanoseconds, the queries' the queue's frequency

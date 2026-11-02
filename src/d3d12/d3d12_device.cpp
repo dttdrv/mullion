@@ -443,10 +443,17 @@ public:
   }
 
   uint64_t
-  ThreadsAtOnce() {
-    // MULLION_D3D12_THREADS_AT_ONCE gives the number, for a test or to tell what a part's size does
+  GroupsAtOnce(WMT::ComputePipelineState pipeline, uint64_t threads, bool kept) {
+    // MULLION_D3D12_THREADS_AT_ONCE gives the threads, for a test or to tell what a part's size does
     static const uint64_t given = strtoull(env::getEnvVar("MULLION_D3D12_THREADS_AT_ONCE").c_str(), nullptr, 10);
-    return given ? given : total_lanes_;
+    if (given || !kept)
+      return std::max<uint64_t>((given ? given : total_lanes_) / threads, 1);
+    // a core keeps a threadgroup of the most threads the pipeline takes, whose barriers need them all at once, so as
+    // many of these as fit in those threads and in the core's threadgroup memory
+    uint64_t per_core = pipeline.maxTotalThreadsPerThreadgroup() / threads;
+    if (auto memory = pipeline.staticThreadgroupMemoryLength())
+      per_core = std::min<uint64_t>(per_core, GetMTLDevice().maxThreadgroupMemoryLength() / memory);
+    return std::max<uint64_t>(per_core, 1) * GetMTLDevice().gpuCoreCount();
   }
 
   SM50_SHADER_METAL_VERSION

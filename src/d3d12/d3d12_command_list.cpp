@@ -2022,8 +2022,7 @@ public:
       auto parts = static_cast<ComputePartsEncoderData *>(StartComputePass(true));
       if (!PreDispatch())
         return;
-      auto &group = pso_compute_->threadgroup_size;
-      parts->at_once = std::max<uint64_t>(device_->ThreadsAtOnce() / (group.width * group.height * group.depth), 1);
+      parts->at_once = pso_compute_->groups_at_once;
       parts->size = {X, Y, Z};
       parts->type = EncoderType::ComputeParts;
       Isolate(X, Y, Z);
@@ -3804,7 +3803,6 @@ public:
         auto [mapped, at] = allocator_->AllocateGPUHeap(MaxCommandCount * sizeof(D3D12_DISPATCH_ARGUMENTS),
                                                        alignof(D3D12_DISPATCH_ARGUMENTS));
         cmd->dispatches = allocator_->gpu_heap_buffer_address_ + at;
-        auto &group = pso_compute_->threadgroup_size;
         for (UINT i = 0; i < MaxCommandCount; i++) {
           auto pass = static_cast<ComputePartsEncoderData *>(StartComputePass(true));
           PreDispatch(sig->UpdateRootArguments);
@@ -3820,7 +3818,7 @@ public:
               binding.index = index;
             }
           }
-          pass->at_once = std::max<uint64_t>(device_->ThreadsAtOnce() / (group.width * group.height * group.depth), 1);
+          pass->at_once = pso_compute_->groups_at_once;
           pass->indirect = static_cast<const D3D12_DISPATCH_ARGUMENTS *>(mapped) + i;
           pass->type = EncoderType::ComputeParts;
         }

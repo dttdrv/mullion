@@ -5,9 +5,10 @@
 // another then waits a round). that changes what a kernel can see, so it must happen for those kernels only.
 // what a kernel sees of it: every group counts itself in at its start and then looks, turn after turn, whether all
 // GROUPS groups are in. in one dispatch they all are, at once; in parts the groups of every part but the last
-// give up at TURNS. GROUPS is more groups than a part ever has (parts are of at most 16384 threads) and fewer than
-// the GPU runs side by side. the counting and looking go through atomics on a buffer that is not globally coherent,
-// so they are the same in every case; the cases differ in what else the kernel does with a globally coherent buffer:
+// give up at TURNS. GROUPS is more groups than a part has (the test makes parts of 16384 threads, where the GPU's
+// own, the threadgroups its cores keep, varies with the GPU) and fewer than the GPU runs side by side. the counting
+// and looking go through atomics on a buffer that is not globally coherent, so they are the same in every case; the
+// cases differ in what else the kernel does with a globally coherent buffer:
 // - reads it in the loop, or does an atomic on it in the loop: its groups work together, the dispatch goes in parts;
 // - reads it before the loop only, only stores to it in the loop, reads it inside a switch with breaks and no loop
 //   around it, or has it and never touches it: one dispatch.
@@ -58,6 +59,7 @@ main(int argc, char **argv) {
     return 77;
   }
   const UINT groups = 320, turns = 1 << 16, words = 4;
+  SetEnvironmentVariableA("MULLION_D3D12_THREADS_AT_ONCE", "16384");
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER parameters[2] = {{D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_UAV}};
