@@ -2242,6 +2242,13 @@ _MetalLayer_setProps(void *obj) {
   struct unixcall_generic_obj_constptr_noret *params = obj;
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
   const struct WMTLayerProps *props = params->arg.ptr;
+  // a present sets them all each frame, and each setting waits for the main thread: only a change is set
+  if (layer.device == (id<MTLDevice>)props->device && layer.opaque == props->opaque &&
+      layer.framebufferOnly == props->framebuffer_only && layer.contentsScale == props->contents_scale &&
+      layer.displaySyncEnabled == props->display_sync_enabled &&
+      CGSizeEqualToSize(layer.drawableSize, CGSizeMake(props->drawable_width, props->drawable_height)) &&
+      layer.pixelFormat == to_metal_pixel_format(props->pixel_format))
+    return STATUS_SUCCESS;
   execute_on_main(^{
     layer.device = (id<MTLDevice>)props->device;
     layer.opaque = props->opaque;
@@ -3104,6 +3111,11 @@ _MetalLayer_setColorSpace(void *obj) {
   params->ret = false;
   if (!name)
     return STATUS_SUCCESS;
+  CFStringRef current = layer.colorspace ? CGColorSpaceGetName(layer.colorspace) : NULL;
+  if (current && CFEqual(current, name) && layer.wantsExtendedDynamicRangeContent == WMT_COLORSPACE_IS_HDR(colorspace)) {
+    params->ret = true;
+    return STATUS_SUCCESS;
+  }
   CGColorSpaceRef ref = CGColorSpaceCreateWithName(name);
   if (!ref)
     return STATUS_SUCCESS;

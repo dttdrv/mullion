@@ -21,8 +21,10 @@ ConvertSwapChainFormat(DXGI_FORMAT format) {
   case DXGI_FORMAT_B8G8R8A8_UNORM:
   case DXGI_FORMAT_R8G8B8A8_UNORM:
     return WMTPixelFormatBGRA8Unorm;
+  // the layer's order need not be the buffer's, as the frame is drawn into it: WindowServer shows a BGR10A2 layer
+  // directly on the display, and composites an RGB10A2 one
   case DXGI_FORMAT_R10G10B10A2_UNORM:
-    return WMTPixelFormatRGB10A2Unorm;
+    return WMTPixelFormatBGR10A2Unorm;
   case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
     return WMTPixelFormatBGR10_XR;
   case DXGI_FORMAT_R16G16B16A16_FLOAT:
