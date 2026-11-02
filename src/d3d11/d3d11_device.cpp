@@ -1246,7 +1246,19 @@ public:
       ID3D11UnorderedAccessView1 **ppUAView) override {
     InitReturnPtr(ppUAView);
 
-    if (!pResource || !(GetResourceCommon(pResource)->bindFlags() & D3D11_BIND_UNORDERED_ACCESS) ||
+    if (!pResource)
+      return E_INVALIDARG;
+    HRESULT hr = CreateUnorderedAccessViewOf(pResource, pDesc, ppUAView);
+    if (FAILED(hr))
+      WarnRefusedUnorderedAccessView(pResource, pDesc, hr);
+    return hr;
+  }
+
+  HRESULT
+  CreateUnorderedAccessViewOf(
+      ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC1 *pDesc,
+      ID3D11UnorderedAccessView1 **ppUAView) {
+    if (!(GetResourceCommon(pResource)->bindFlags() & D3D11_BIND_UNORDERED_ACCESS) ||
         (GetResourceCommon(pResource)->dxgi_usage_ & DXGI_USAGE_READ_ONLY))
       return E_INVALIDARG;
 
@@ -1260,6 +1272,45 @@ public:
     }
 
     return static_cast<D3D11ResourceCommon *>(pResource)->CreateUnorderedAccessView(pDesc, ppUAView);
+  }
+
+  // a refused view says what was asked for, as a game may stop over it without saying why
+  void
+  WarnRefusedUnorderedAccessView(
+      ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC1 *pDesc, HRESULT hr) {
+    D3D11_RESOURCE_DIMENSION dimension;
+    pResource->GetType(&dimension);
+    UINT format = 0, width = 0, height = 0, depthOrArray = 0, mips = 0, bind = 0, misc = 0, usage = 0, stride = 0;
+    if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
+      D3D11_BUFFER_DESC desc;
+      static_cast<ID3D11Buffer *>(pResource)->GetDesc(&desc);
+      width = desc.ByteWidth, bind = desc.BindFlags, misc = desc.MiscFlags, usage = desc.Usage,
+      stride = desc.StructureByteStride;
+    } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
+      D3D11_TEXTURE1D_DESC desc;
+      static_cast<ID3D11Texture1D *>(pResource)->GetDesc(&desc);
+      format = desc.Format, width = desc.Width, depthOrArray = desc.ArraySize, mips = desc.MipLevels,
+      bind = desc.BindFlags, misc = desc.MiscFlags, usage = desc.Usage;
+    } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+      D3D11_TEXTURE2D_DESC desc;
+      static_cast<ID3D11Texture2D *>(pResource)->GetDesc(&desc);
+      format = desc.Format, width = desc.Width, height = desc.Height, depthOrArray = desc.ArraySize,
+      mips = desc.MipLevels, bind = desc.BindFlags, misc = desc.MiscFlags, usage = desc.Usage;
+    } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+      D3D11_TEXTURE3D_DESC desc;
+      static_cast<ID3D11Texture3D *>(pResource)->GetDesc(&desc);
+      format = desc.Format, width = desc.Width, height = desc.Height, depthOrArray = desc.Depth,
+      mips = desc.MipLevels, bind = desc.BindFlags, misc = desc.MiscFlags, usage = desc.Usage;
+    }
+    const UINT *view = pDesc ? reinterpret_cast<const UINT *>(&pDesc->Buffer) : nullptr;
+    WARN(
+        "CreateUnorderedAccessView: refused (", std::hex, hr, std::dec, ") a view of a resource of dimension ",
+        dimension, ", format ", format, ", ", width, "x", height, "x", depthOrArray, ", ", mips, " mips, bind ",
+        std::hex, bind, ", misc ", misc, std::dec, ", usage ", usage, ", stride ", stride, "; view ",
+        pDesc ? "format " : "(none)", pDesc ? pDesc->Format : 0, pDesc ? ", dimension " : "",
+        pDesc ? pDesc->ViewDimension : 0, pDesc ? ", " : "", view ? view[0] : 0, " ", view ? view[1] : 0, " ",
+        view ? view[2] : 0, " ", view ? view[3] : 0
+    );
   }
 
   HRESULT STDMETHODCALLTYPE CreateRenderTargetView1(
