@@ -2227,6 +2227,17 @@ _MTLDevice_supportsFXTemporalScaler(void *obj) {
 }
 
 static NTSTATUS
+_MTLDevice_supportsFXDenoisedScaler(void *obj) {
+  struct unixcall_generic_obj_uint64_uint64_ret *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  params->ret = 0;
+  if (@available(macOS 26.0, *))
+    params->ret = params->arg ? [MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
+                              : [MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device];
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MetalLayer_setProps(void *obj) {
   struct unixcall_generic_obj_constptr_noret *params = obj;
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
@@ -6919,6 +6930,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTL4CommandBuffer_encodeTemporalScale,
     &_MTLDevice_newDenoisedScaler,
     &_MTLCommandBuffer_encodeDenoisedScale,
+    &_MTLDevice_supportsFXDenoisedScaler,
 };
 
 #ifndef MULLION_NATIVE
@@ -7128,6 +7140,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTL4CommandBuffer_encodeTemporalScale,
     &_MTLDevice_newDenoisedScaler,
     &_MTLCommandBuffer_encodeDenoisedScale,
+    &_MTLDevice_supportsFXDenoisedScaler,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

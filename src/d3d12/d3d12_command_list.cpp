@@ -5232,11 +5232,6 @@ public:
       ERR("DenoisedUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
       return E_INVALIDARG;
     }
-    if (pDesc->RoughnessInNormalAlpha) {
-      static bool warned = false;
-      if (!std::exchange(warned, true))
-        WARN("DenoisedUpscale: roughness in the normals' alpha is read from their first channel");
-    }
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
       *ppCache = cache = new UpscalerCache;
@@ -5294,7 +5289,11 @@ public:
     args.diffuse_albedo = UpscaleView(diffuse).handle;
     args.specular_albedo = UpscaleView(specular).handle;
     args.normal = UpscaleView(normals).handle;
-    args.roughness = UpscaleView(roughness).handle;
+    // MetalFX reads roughness from the first channel: packed in the normals' alpha, it is read through a view whose
+    // red is their alpha
+    args.roughness = pDesc->RoughnessInNormalAlpha
+                         ? UpscaleView(normals, WMTPixelFormat(normals->pixelFormat() | WMTPixelFormatAGBASwizzle)).handle
+                         : UpscaleView(roughness).handle;
     args.specular_hit_distance = UpscaleView(hit_distance).handle;
     args.exposure =
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid).handle;
@@ -5333,9 +5332,7 @@ public:
     }
     BOOL STDMETHODCALLTYPE
     SupportsDenoisedUpscale() final {
-      // MetalFX's denoiser is there from macOS 26, which Metal 4 needs too
-      return list_->device_->GetMTLDevice().supportsFamily(WMTGPUFamilyMetal4) &&
-             list_->device_->GetMTLDevice().supportsFXTemporalScaler();
+      return list_->device_->GetMTLDevice().supportsFXDenoisedScaler(list_->device_->UsesMetal4());
     }
     HRESULT STDMETHODCALLTYPE
     TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {

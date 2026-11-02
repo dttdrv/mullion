@@ -461,6 +461,7 @@ enum WMTPixelFormat : uint32_t {
   WMTPixelFormatR001Swizzle = 0b000011010010u << 12,
   WMTPixelFormat0R01Swizzle = 0b100101010010u << 12,
   WMTPixelFormatGBARSwizzle = 0b001001001011u << 12,
+  WMTPixelFormatAGBASwizzle = 0b011000000000u << 12,
   WMTPixelFormatRGB1Swizzle = WMTPixelFormatAlphaIsOne,
 
   WMTPixelFormatBGRX8Unorm = WMTPixelFormatAlphaIsOne | WMTPixelFormatBGRA8Unorm,
@@ -1956,6 +1957,9 @@ WINEMETAL_API bool MTLDevice_supportsFXSpatialScaler(obj_handle_t device);
 
 WINEMETAL_API bool MTLDevice_supportsFXTemporalScaler(obj_handle_t device);
 
+/* MetalFX temporal denoised upscaling, for Metal 4 command buffers or for Metal 3 ones */
+WINEMETAL_API bool MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4);
+
 struct WMTLayerProps {
   obj_handle_t device;
   double contents_scale;
@@ -2587,7 +2591,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixBootstrapKeep, WMTUnixDeviceSupportsSamplerReduction,
        WMTUnixCommandBufferWaitSignal, WMTUnixDeviceNewSpatialScaler4, WMTUnixMetal4SpatialScale,
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
-       WMTUnixCommandBufferDenoisedScale, WMTUnixCallCount };
+       WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

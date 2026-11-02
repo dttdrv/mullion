@@ -1405,6 +1405,16 @@ MTLDevice_supportsShaderBarycentricCoordinates(obj_handle_t device) {
 }
 
 WINEMETAL_API bool
+MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4) {
+  struct unixcall_generic_obj_uint64_uint64_ret params;
+  params.handle = device;
+  params.arg = metal4;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixDeviceSupportsFXDenoisedScaler, &params);
+  return params.ret;
+}
+
+WINEMETAL_API bool
 MTLDevice_supportsSamplerReduction(obj_handle_t device) {
   struct unixcall_generic_obj_uint64_ret params;
   params.handle = device;
