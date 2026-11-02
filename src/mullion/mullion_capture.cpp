@@ -1,5 +1,6 @@
 #include "mullion_capture.hpp"
 #include "log/log.hpp"
+#include "thread.hpp"
 #include "util_env.hpp"
 #include <ctime>
 
@@ -47,7 +48,8 @@ CaptureState::frame(WMT::Device device, uint64_t frame) {
     break;
   }
   case NextAction::StopCapture:
-    WMT::CaptureManager::sharedCaptureManager().stopCapture();
+    // Metal's stop waits for the device's work, which can wait for what the calling thread submits next
+    mullion::thread([] { WMT::CaptureManager::sharedCaptureManager().stopCapture(); }).detach();
     break;
   case NextAction::Nothing:
     if (shouldCaptureNextFrame())

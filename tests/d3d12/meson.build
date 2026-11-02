@@ -18,6 +18,9 @@ test('d3d12_d3d11on12', exe, timeout: 600)
 # reads launchd's names, which every test that shares objects changes, so it runs alone
 exe = executable('d3d12_shared_names', ['d3d12_shared_names.cpp'], dependencies: d3d12_test_deps + [cpp.find_library('d3d11')])
 test('d3d12_shared_names', exe, is_parallel: false, timeout: 600)
+# a GPU capture of a frame, which Metal takes only with MTL_CAPTURE_ENABLED in the process's environment
+exe = executable('d3d12_capture', ['d3d12_capture.cpp'], dependencies: d3d12_test_deps)
+test('d3d12_capture', exe, env: ['MTL_CAPTURE_ENABLED=1'], suite: 'window', timeout: 300)
 exe = executable('d3d12_trace_log', ['d3d12_trace_log.cpp'], dependencies: d3d12_test_deps + [cpp.find_library('d3d11')])
 test('d3d12_trace_log', exe, timeout: 600)
 exe = executable('d3d12_xrbias', ['d3d12_xrbias.cpp'], dependencies: d3d12_test_deps)

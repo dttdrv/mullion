@@ -1,0 +1,13 @@
+# a capture that never stops.
+diff --git a/src/mullion/mullion_capture.cpp b/src/mullion/mullion_capture.cpp
+--- a/src/mullion/mullion_capture.cpp
++++ b/src/mullion/mullion_capture.cpp
+@@ -49,7 +49,7 @@
+   }
+   case NextAction::StopCapture:
+     // Metal's stop waits for the device's work, which can wait for what the calling thread submits next
+-    mullion::thread([] { WMT::CaptureManager::sharedCaptureManager().stopCapture(); }).detach();
++    (void)0;
+     break;
+   case NextAction::Nothing:
+     if (shouldCaptureNextFrame())
