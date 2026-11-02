@@ -1,0 +1,12 @@
+# a release that wakes none of the instances waiting for the key it releases.
+diff --git a/src/mullion/mullion_keyed_mutex.cpp b/src/mullion/mullion_keyed_mutex.cpp
+--- a/src/mullion/mullion_keyed_mutex.cpp
++++ b/src/mullion/mullion_keyed_mutex.cpp
+@@ -309,7 +309,6 @@
+   func_release(fence);
+   if (!orders_shared_)
+     local_fence_ = fence;
+-  wake();
+   return S_OK;
+ }
+ 

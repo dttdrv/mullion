@@ -18,6 +18,7 @@
 #include <d3d11_1.h>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 static const UINT width = 64, height = 1;
@@ -492,15 +493,25 @@ parent() {
   CloseHandle(taken);
   // an owner that still exists, however far away, is not an abandoned one
   expect(crash_mutex->AcquireSync(0, 0) == WAIT_TIMEOUT, "a live owner's mutex read as abandoned");
-  if (!expect(!!SetEvent(die), "SetEvent: %lu", GetLastError()))
+  // a wait that began while the owner lived ends when it dies, abandoned, and not at its timeout
+  HRESULT waited = S_OK;
+  std::thread waiter([&] { waited = crash_mutex->AcquireSync(0, wait_ms); });
+  // time for the wait to begin
+  Sleep(200);
+  if (!expect(!!SetEvent(die), "SetEvent: %lu", GetLastError())) {
+    waiter.join();
     return verdict();
+  }
   CloseHandle(die);
   if (!expect(WaitForSingleObject(crash_child.hProcess, 60000) == WAIT_OBJECT_0, "the crashing child did not exit")) {
     TerminateProcess(crash_child.hProcess, 1);
+    waiter.join();
     return verdict();
   }
   GetExitCodeProcess(crash_child.hProcess, &code);
   CloseHandle(crash_child.hProcess);
+  waiter.join();
+  expect(waited == WAIT_ABANDONED, "a wait for the killed owner's mutex ended %#lx", (unsigned long)waited);
   step("the child died owning the mutex without unwinding anything, so the mutex is abandoned");
   for (unsigned attempt = 0; attempt < 2; attempt++) {
     expect(crash_mutex->AcquireSync(0, 0) == WAIT_ABANDONED, "the killed owner did not abandon the mutex");

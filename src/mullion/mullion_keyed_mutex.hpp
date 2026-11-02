@@ -41,6 +41,7 @@ struct SharedMutexState {
   char tag[20];
   volatile LONG64 owner;     // the owning instance's token, 0 when the mutex is free
   volatile LONG abandoned;   // set when the owner is destroyed while owning, and never cleared
+  volatile LONG waiters;     // the acquires asleep on the wake semaphore, or about to be
   uint64_t current_key;      // the key the last release released with
   uint64_t fence_value;      // the value the last release signaled on the shared event
 };
@@ -76,11 +77,16 @@ private:
 
   // maps the state out of the carrier, under a handle of this mutex's own
   static Rc<KeyedMutex> mapCarrierState(HANDLE carrier, size_t state_offset);
+  // opens the semaphore every instance's waiters sleep on, named after the mutex
+  bool openWake();
+  // wakes every waiter, to look at the state again
+  void wake();
 
   char name_[54] = {};         // the shared event's bootstrap name, which every instance looks its mach port up by
   HANDLE mapping_ = nullptr;   // the carrier, kept open so the state outlives the mutex that mapped it
   void *carrier_view_ = nullptr;
   SharedMutexState *state_ = nullptr;
+  HANDLE wake_ = nullptr;
   uint64_t token_ = 0;
   // whether the event this mutex orders on is the share's own. an instance whose creator's event is gone makes an
   // event of its own, which counts only its own releases: it waits for what that event has, never for a value

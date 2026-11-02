@@ -18,7 +18,9 @@
 
 #include "mullion_keyed_mutex.hpp"
 #include "log/log.hpp"
+#include <algorithm>
 #include <random>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -90,10 +92,14 @@ KeyedMutex::~KeyedMutex() {
   if (state_) {
     // "destroying the owner abandons its acquired mutex" (tests/d3d11/d3d11_shared_resource.cpp): an abandoned
     // mutex reports WAIT_ABANDONED to every later acquire and never grants ownership again
-    if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) == static_cast<LONG64>(token_))
+    if (InterlockedCompareExchange64(&state_->owner, 0, static_cast<LONG64>(token_)) == static_cast<LONG64>(token_)) {
       InterlockedExchange(&state_->abandoned, 1);
+      wake();
+    }
     state_ = nullptr;
   }
+  if (wake_)
+    CloseHandle(wake_);
   if (carrier_view_) {
     UnmapViewOfFile(carrier_view_);
     carrier_view_ = nullptr;
@@ -103,6 +109,23 @@ KeyedMutex::~KeyedMutex() {
     mapping_ = nullptr;
   }
 };
+
+bool
+KeyedMutex::openWake() {
+  char name[sizeof(name_) + 5];
+  snprintf(name, sizeof(name), "%s_wake", name_);
+  if (!(wake_ = CreateSemaphoreA(nullptr, 0, LONG_MAX, name)))
+    ERR("KeyedMutex: Failed to open the wake semaphore: ", GetLastError());
+  return wake_;
+}
+
+// a waiter counts itself before it looks at the state the last time, so a change made after that look finds it
+// counted: as many wakes as there are waiters, each of which looks again
+void
+KeyedMutex::wake() {
+  if (LONG waiters = InterlockedCompareExchange(&state_->waiters, 0, 0))
+    ReleaseSemaphore(wake_, waiters, nullptr);
+}
 
 // the state of a mutex is the share's own bytes: this maps the carrier out from `state_offset`, under a handle of
 // its own, so a mutex never holds the state open through a handle it does not own
@@ -159,7 +182,7 @@ KeyedMutex::create(WMT::Device device, HANDLE carrier, size_t state_offset) {
   memcpy(ret->name_, name, sizeof(name));
   ret->token_ = makeOwnerToken();
   ret->event_ = std::move(event);
-  return ret;
+  return ret->openWake() ? ret : nullptr;
 }
 
 Rc<KeyedMutex>
@@ -173,6 +196,8 @@ KeyedMutex::import(WMT::Device device, HANDLE carrier, size_t state_offset, cons
   }
 
   snprintf(ret->name_, sizeof(ret->name_), "%s", event_name);
+  if (!ret->openWake())
+    return {};
   mach_port_t mach_port = 0;
   if (WMTBootstrapLookUp(event_name, &mach_port)) {
     WMT::SharedNameHold hold(event_name);
@@ -200,49 +225,69 @@ KeyedMutex::acquire(KeyedMutexAcquire &&func_acquire, uint64_t key, uint32_t mil
   if (!state_)
     return E_FAIL;
   uint64_t deadline = GetTickCount64() + milliseconds;
-  // one liveness question per owner a wait sees, so a spinner does not ask it once a turn; the same
-  // owner is re-probed while waiting so a death mid-wait is not missed
-  uint64_t checked_owner = 0;
-  uint64_t last_probe = 0;
+  // the owner whose liveness was last asked, and its process while it is another's, which is signaled when it exits:
+  // an owner that dies without unwinding anything leaves its token behind and wakes no one
+  uint64_t watched = 0;
+  HANDLE owner_process = nullptr;
+  bool counted = false;
+  auto done = [&](HRESULT hr) {
+    if (counted)
+      InterlockedDecrement(&state_->waiters);
+    if (owner_process)
+      CloseHandle(owner_process);
+    return hr;
+  };
   for (;;) {
     LONG64 owner = InterlockedCompareExchange64(&state_->owner, 0, 0);
     if (owner == static_cast<LONG64>(token_))
-      return DXGI_ERROR_INVALID_CALL;
+      return done(DXGI_ERROR_INVALID_CALL);
     // WAIT_ABANDONED is sticky and grants no ownership: "abandoned mutex released without ownership"
     if (InterlockedCompareExchange(&state_->abandoned, 0, 0))
-      return WAIT_ABANDONED;
-    // an owner whose process is gone left the token behind and will never release it: the abandonment its
-    // destructor would have marked is marked here instead, whether the owner exited or was killed
-    // re-probe the same owner while waiting: an owner that dies mid-wait must abandon rather than
-    // leave a waiter spinning on a token that will never release (GitHub keyed-mutex residual)
-    uint64_t now = GetTickCount64();
-    if (owner && (uint64_t(owner) != checked_owner || now - last_probe >= 10)) {
-      checked_owner = uint64_t(owner);
-      last_probe = now;
-      if (!ownerProcessAlive(checked_owner)) {
+      return done(WAIT_ABANDONED);
+    if (owner && uint64_t(owner) != watched) {
+      watched = uint64_t(owner);
+      if (owner_process)
+        CloseHandle(std::exchange(owner_process, nullptr));
+      // an owner whose process is gone will never release: the abandonment its destructor would have marked is
+      // marked here instead, whether the owner exited or was killed
+      if (!ownerProcessAlive(watched)) {
         InterlockedExchange(&state_->abandoned, 1);
-        return WAIT_ABANDONED;
+        wake();
+        return done(WAIT_ABANDONED);
       }
+      if (DWORD(watched >> 32) != GetCurrentProcessId())
+        owner_process = OpenProcess(SYNCHRONIZE, FALSE, DWORD(watched >> 32));
     }
-    if (!owner) {
-      if (InterlockedCompareExchange64(&state_->owner, static_cast<LONG64>(token_), 0))
-        continue;
-      // "the initial key is zero and subsequent keys are those released"
+    // "the initial key is zero and subsequent keys are those released": a key nobody released yet waits for the
+    // release that publishes it, so ownership is taken only with the key, and a release changes the key only
+    // while its instance owns the mutex
+    if (!owner && state_->current_key == key &&
+        !InterlockedCompareExchange64(&state_->owner, static_cast<LONG64>(token_), 0)) {
       if (state_->current_key == key) {
         // wait for every earlier release's queued work before this instance's queued work runs. an instance whose
         // creator's event is gone has no shared history to wait for, and its own event counts only its own
         // releases, so it waits for what that event has reached and never for a value nothing would signal
         func_acquire(orders_shared_ ? state_->fence_value : local_fence_);
-        return S_OK;
+        return done(S_OK);
       }
-      // a key nobody released yet waits for the release that publishes it: "If the mutex is not released within
-      // the time-out interval, the method returns", so an acquirer that arrives before its turn finds the key
-      // when the other side releases it, and a wrong key with no timeout still fails at once
+      // another instance released another key between the look and the take
       InterlockedExchange64(&state_->owner, 0);
+      wake();
+      continue;
     }
-    if (!milliseconds || GetTickCount64() >= deadline)
-      return WAIT_TIMEOUT;
-    Sleep(1);
+    uint64_t now = GetTickCount64();
+    // "If the mutex is not released within the time-out interval, the method returns"
+    if (!milliseconds || now >= deadline)
+      return done(WAIT_TIMEOUT);
+    if (!counted) {
+      InterlockedIncrement(&state_->waiters);
+      counted = true;
+      continue;
+    }
+    HANDLE wakers[] = {wake_, owner_process};
+    if (WaitForMultipleObjects(owner_process ? 2 : 1, wakers, FALSE, DWORD(std::min<uint64_t>(deadline - now, INFINITE - 1))) ==
+        WAIT_OBJECT_0 + 1)
+      watched = 0;
   }
 }
 
@@ -264,6 +309,7 @@ KeyedMutex::release(KeyedMutexRelease &&func_release, uint64_t key) {
   func_release(fence);
   if (!orders_shared_)
     local_fence_ = fence;
+  wake();
   return S_OK;
 }
 

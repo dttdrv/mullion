@@ -1,0 +1,13 @@
+# a wait that does not watch the owner's process, so an owner killed while it is waited for is not seen.
+diff --git a/src/mullion/mullion_keyed_mutex.cpp b/src/mullion/mullion_keyed_mutex.cpp
+--- a/src/mullion/mullion_keyed_mutex.cpp
++++ b/src/mullion/mullion_keyed_mutex.cpp
+@@ -285,7 +285,7 @@
+       continue;
+     }
+     HANDLE wakers[] = {wake_, owner_process};
+-    if (WaitForMultipleObjects(owner_process ? 2 : 1, wakers, FALSE, DWORD(std::min<uint64_t>(deadline - now, INFINITE - 1))) ==
++    if (WaitForMultipleObjects(1, wakers, FALSE, DWORD(std::min<uint64_t>(deadline - now, INFINITE - 1))) ==
+         WAIT_OBJECT_0 + 1)
+       watched = 0;
+   }
