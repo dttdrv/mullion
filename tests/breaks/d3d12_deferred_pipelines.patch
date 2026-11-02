@@ -1,0 +1,12 @@
+# a draw reads a pipeline whose Metal pipeline a compile thread has not made yet
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1625,7 +1625,6 @@
+   // for each that only counts
+   WMT::RenderPipelineState
+   Pipeline(bool counting = false) {
+-    pso_graphics_->WaitPipeline();
+     bool strip = Strip(topology_);
+     if (PassesAdjacency() || pso_graphics_->patches)
+       return RenderTargets(pso_graphics_->TopologyPipeline(topology_, counting));

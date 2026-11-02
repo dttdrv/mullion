@@ -952,6 +952,13 @@ public:
     IsComputePipelineState = FALSE;
   }
 
+  // a compile of its Metal pipeline that has not begun is dropped, and one under way finished, before what it makes
+  // the pipeline of goes
+  ~MTLD3D12GraphicsPipelineStateImpl() {
+    if (deferred)
+      deferred->Cancel();
+  }
+
   // made when first drawn
   WMT::RenderPipelineState
   TopologyPipeline(D3D12_PRIMITIVE_TOPOLOGY topology, bool counting) final {
@@ -1708,7 +1715,18 @@ public:
         return FAIL(E_INVALIDARG);
       info.vertex_function = vs_func.handle;
       info.fragment_function = ps_func.handle;
-      if (!(pso = CreatePipeline(info, err))) {
+      if (DeferredPipeline::Enabled()) {
+        // Metal's compile of it on a compile thread (DeferredPipeline); a failure there leaves `pso` null, and the
+        // draws of it are dropped as those of a pipeline that could not be made. the functions go with it, and not the
+        // application's bytecode, which it may free once the pipeline is created
+        // it holds the pipeline by pointer: the pipeline's destructor drops or finishes it (Cancel)
+        deferred = std::make_shared<DeferredPipeline>([self = this, info, vs_func, ps_func]() {
+          WMT::Reference<WMT::Error> error;
+          if (!(self->pso = self->CreatePipeline(info, error)))
+            ERR("Failed to create PSO of shaders ", self->name, ": ", error.description().getUTF8String());
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = CreatePipeline(info, err))) {
         ERR("Failed to create PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->VS, pDesc->PS});
         return E_FAIL;
