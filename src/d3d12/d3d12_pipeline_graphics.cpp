@@ -773,7 +773,8 @@ protected:
   GeometryVariant(
       const std::shared_ptr<GeometryInputs> &inputs, sm50_shader_t shader_vs, sm50_shader_t shader_gs,
       D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status,
-      bool single = false, bool mesh_only = false
+      bool single = false, bool mesh_only = false, WMT::Reference<WMT::RenderPipelineState> *target = nullptr,
+      std::vector<std::function<void()>> *later = nullptr
   ) {
     status = E_FAIL;
     auto &in = *inputs;
@@ -830,10 +831,25 @@ protected:
                                  : !counting && SM50StreamOutputDirect(single, !!shader_gs, pass_through)
                                      ? SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE
                                      : SM50_GEOMETRY_PAYLOAD_SIZE;
+    // `later`: Metal's compile of it into `*target` on a compile thread (DeferredPipeline), as a plain pipeline's.
+    // its functions are made here, where what is wrong with the shaders shows, and go with it
+    if (later) {
+      later->push_back([this, target, inputs, info, vs_func, gs_func, statistics = std::move(statistics)]() mutable {
+        WMT::Reference<WMT::Error> err;
+        if (!(*target = CreatePipeline(info, err, std::move(statistics))))
+          ERR("Failed to create geometry PSO of shaders ", name, ": ", err.description().getUTF8String());
+      });
+      status = S_OK;
+      return variant;
+    }
     if (!(variant = CreatePipeline(info, err, std::move(statistics)))) {
       ERR("Failed to create geometry PSO of shaders ", name, ": ", err.description().getUTF8String());
       DumpShaders({VS, GS});
+    } else {
+      status = S_OK;
     }
+    if (target)
+      *target = variant;
     return variant;
   }
 
@@ -1680,11 +1696,17 @@ public:
       so_single = SM50StreamOutputSinglePass(input, false, false, fixed);
       so_single_strip =
           SM50StreamOutputSinglePass(input, true, pDesc->IBStripCutValue != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, fixed);
-      auto variant = [&](bool strip, bool counting = false, bool mesh_only = false) {
-        return GeometryVariant(
+      // their Metal pipelines are compiled on compile threads (DeferredPipeline), all of them in one job a draw waits
+      // for, as a plain pipeline's: a game that makes thousands of pipelines before it draws waits for none of them
+      std::vector<std::function<void()>> later;
+      auto *deferring = DeferredPipeline::Enabled() ? &later : nullptr;
+      auto variant = [&](WMT::Reference<WMT::RenderPipelineState> &target, bool strip, bool counting = false,
+                         bool mesh_only = false) {
+        GeometryVariant(
             inputs, shader_vs, shader_gs, pDesc->GS, strip, counting, pDesc->PrimitiveTopologyType, pass_through, hr,
-            strip ? so_single_strip : so_single, mesh_only
+            strip ? so_single_strip : so_single, mesh_only, &target, deferring
         );
+        return SUCCEEDED(hr);
       };
       bool strips = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
                               : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
@@ -1698,15 +1720,22 @@ public:
                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
                   !conservative && !quad_lines;
       mesh_reads_root_arguments |= mesh_only;
-      if (!patches && (!(pso = variant(false, false, mesh_only)) || (strips && !(pso_strip = variant(true)))))
+      if (!patches && (!variant(pso, false, false, mesh_only) || (strips && !variant(pso_strip, true))))
         return hr;
       // a one-pass variant has no counting pass
       if (!patches && stream_output &&
-          ((!so_single && !(so_count = variant(false, true))) ||
-           (strips && !so_single_strip && !(so_count_strip = variant(true, true)))))
+          ((!so_single && !variant(so_count, false, true)) ||
+           (strips && !so_single_strip && !variant(so_count_strip, true, true))))
         return hr;
       if (adjacency || patches)
         topology_inputs_ = inputs;
+      if (!later.empty()) {
+        deferred = std::make_shared<DeferredPipeline>([jobs = std::move(later)] {
+          for (auto &job : jobs)
+            job();
+        });
+        DeferredPipeline::Queue(deferred);
+      }
     } else if (!tessellation) {
       data_ia_layout.next = &clip_data;
       SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
