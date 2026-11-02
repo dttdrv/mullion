@@ -38,12 +38,6 @@ static void TrustNGXCertificate() {
   FreeLibrary(crypt32);
 }
 
-void TrustVendorExtension() {
-  static std::once_flag once;
-  if (g_extension_enabled == VendorExtension::Nvidia)
-    std::call_once(once, TrustNGXCertificate);
-}
-
 // NVEXT is on with MULLION_ENABLE_NVEXT=1, or where the configuration shows the program an NVIDIA GPU
 // (dxgi.customVendorId = 10de), unless MULLION_ENABLE_NVEXT=0: a launcher that rewrites the environment it starts a
 // game with leaves the configuration's per-program section alone
@@ -128,12 +122,19 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason,
   DisableThreadLibraryCalls(instance);
 
   InitializeMetalCachePath();
-  std::call_once(nvext_init, InitializeVendorExtensionNV);
-
   return TRUE;
 }
 
 #endif
+
+void InitializeVendorExtension() {
+#ifdef _WIN32
+  static std::once_flag once;
+  std::call_once(nvext_init, InitializeVendorExtensionNV);
+  if (g_extension_enabled == VendorExtension::Nvidia)
+    std::call_once(once, TrustNGXCertificate);
+#endif
+}
 
 extern "C" HRESULT __stdcall DXGIGetDebugInterface1(UINT Flags, REFIID riid,
                                                     void **ppDebug) {
