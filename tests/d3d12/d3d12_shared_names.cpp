@@ -52,15 +52,22 @@ names() {
   HeapFree(GetProcessHeap(), 0, unix_path);
   char *argv[] = {(char *)"/bin/sh", (char *)"-c", command.data(), nullptr};
   LONG status = spawn(argv, 1);
+  // a whole listing ends with its domain's closing brace: launchctl cuts a long one short, as names that processes
+  // before this one left can make it, and the names past the cut cannot be seen
+  bool whole = false;
   if (FILE *file = _wfopen(path, L"r")) {
     char line[512];
-    while (fgets(line, sizeof(line), file))
+    while (fgets(line, sizeof(line), file)) {
       if (char *name = strstr(line, "MULLION_shared_"))
         found.insert(std::string(name, strcspn(name, " \t\r\n")));
+      whole = !strcmp(line, "}\n");
+    }
     fclose(file);
   }
   DeleteFileW(path);
   expect(!status, "launchctl failed: %#lx", status);
+  expect(whole, "launchctl's listing is cut short, with %zu of Mullion's names in it: names left by earlier processes "
+                "fill it, and go at logout", found.size());
   return found;
 }
 
