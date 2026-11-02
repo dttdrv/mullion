@@ -28,7 +28,6 @@ copy_formats_header = configure_file(output : 'copy_formats.hpp',
 configure_file(input : 'host/resource_cases.py', output : 'resource_cases.hpp',
   command : [find_program('python3', native : true), '@INPUT@', '@OUTPUT@'] + cpp.cmd_array())
 
-subdir('dx11')
 # as the library builds D3D12 (src/meson.build)
 test_d3d12 = get_option('enable_d3d12') and cpu_family != 'x86'
 if test_d3d12
