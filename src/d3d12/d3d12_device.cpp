@@ -272,6 +272,7 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   std::vector<uint32_t> free_ray_functions_;
   uint32_t next_ray_function_ = SM50_RAY_FUNCTION_FIRST_SHADER;
   WMT::Reference<WMT::ResidencySet> residency_set_;
+  WMT::Reference<WMT::Heap> spare_tile_;
   // allocations were added or removed since the set was last committed (CommitResidency)
   bool residency_dirty_ = false;
   // the buffers by GPU address and the sparse ones' mapped tiles, under a lock of their own: every index buffer, root
@@ -2493,6 +2494,22 @@ public:
   WMTSparsePageSize
   GetSparsePageSize() {
     return sparse_page_size_;
+  }
+
+  WMT::Heap
+  SpareTile() final {
+    std::unique_lock<mullion::mutex> lock(residency_lock_);
+    if (!spare_tile_) {
+      WMTHeapInfo info{};
+      info.sparse_page_size = sparse_page_size_;
+      info.size = GetMTLDevice().sparseTileSizeInBytes(info.sparse_page_size);
+      info.type = WMTHeapTypePlacement;
+      spare_tile_ = GetMTLDevice().newHeap(info);
+      WMT::Allocation tile = spare_tile_;
+      residency_set_.addAllocations(&tile, 1);
+      residency_dirty_ = true;
+    }
+    return spare_tile_;
   }
 
   virtual FormatCapability

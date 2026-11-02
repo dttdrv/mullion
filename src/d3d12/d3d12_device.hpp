@@ -810,6 +810,9 @@ public:
 
   // the placement sparse page size whose tiles are D3D12's, or 0 without placement sparse resources (tiled resources)
   virtual WMTSparsePageSize GetSparsePageSize() = 0;
+  // a tile of memory that sparse resources map where they hold none of their own (MTLD3D12CommandQueueImpl::Settle):
+  // the device's, as they may outlive the queue that mapped them
+  virtual WMT::Heap SpareTile() = 0;
 
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 

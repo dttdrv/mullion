@@ -628,28 +628,15 @@ private:
 
   // Metal lets go of the memory a resource's unmapped tiles had when the resource next has a tile mapped: until then
   // they read it, and take writes to it (seen of buffers, and of textures that shaders can write). a buffer has a tile
-  // past its end for this (BufferAllocation), mapped to a tile of the queue's own. a texture's mapped tile, copied
-  // onto itself, is such a mapping and changes none; with none mapped, its first tile is mapped to the queue's tile
-  // and unmapped again, which leaves that one tile reading the queue's
-  WMT::Reference<WMT::Heap> spare_tile_;
-  WMT::Heap
-  SpareTile() {
-    if (!spare_tile_) {
-      WMTHeapInfo info{};
-      info.sparse_page_size = device_->GetSparsePageSize();
-      info.size = device_->GetMTLDevice().sparseTileSizeInBytes(info.sparse_page_size);
-      info.type = WMTHeapTypePlacement;
-      spare_tile_ = device_->GetMTLDevice().newHeap(info);
-      device_->RegisterResidency(spare_tile_);
-    }
-    return spare_tile_;
-  }
+  // past its end for this (BufferAllocation), mapped to the device's spare tile. a texture's mapped tile, copied onto
+  // itself, is such a mapping and changes none; with none mapped, its first tile is mapped to the spare tile and
+  // unmapped again, which leaves that one tile reading the spare one
   std::function<void(WMT::MTL4CommandQueue)>
   Settle(const Tiling &tiling, MTLD3D12Resource *resource) {
     if (!tiling.texture)
       return [this, res = Com(resource)](WMT::MTL4CommandQueue queue) {
         auto buffer = res->buffer->current();
-        queue.updateMappings(buffer->buffer(), false, SpareTile(), std::vector<WMTSparseBufferMapping>{
+        queue.updateMappings(buffer->buffer(), false, device_->SpareTile(), std::vector<WMTSparseBufferMapping>{
             {WMTSparseMappingModeMap, buffer->sparse_tile_count, 1, 0}});
       };
     auto &mapped = resource->mapped_tiles;
@@ -664,7 +651,7 @@ private:
     return [this, res = Com(resource), at](WMT::MTL4CommandQueue queue) mutable {
       for (auto mode : {WMTSparseMappingModeMap, WMTSparseMappingModeUnmap}) {
         at.mode = mode;
-        queue.updateMappings(res->texture->current()->texture(), true, SpareTile(), std::vector{at});
+        queue.updateMappings(res->texture->current()->texture(), true, device_->SpareTile(), std::vector{at});
       }
     };
   }

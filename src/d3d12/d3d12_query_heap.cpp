@@ -27,6 +27,11 @@ class MTLD3D12QueryHeapImpl : public MTLD3D12Pageable<MTLD3D12QueryHeap> {
 public:
   MTLD3D12QueryHeapImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12QueryHeap>(pDevice) {}
 
+  ~MTLD3D12QueryHeapImpl() {
+    if (results && desc.Type == D3D12_QUERY_HEAP_TYPE_SO_STATISTICS)
+      this->device_->UnregisterResidency(results);
+  }
+
   HRESULT
   Initialize(const D3D12_QUERY_HEAP_DESC *pDesc) {
     desc = *pDesc;
