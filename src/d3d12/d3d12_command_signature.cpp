@@ -380,6 +380,7 @@ public:
       source << "if (i == 0) command_data.most[" << std::size(of) << "] = count;\n";
     };
     CommandType = side_effect;
+    ByteStride = pDesc->ByteStride;
     UpdateIndexBuffer = ib_index != ~0u;
 
     // an indexed signature's resolver is this, then what it does once all its threads have (below)

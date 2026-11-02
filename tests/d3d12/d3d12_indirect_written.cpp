@@ -25,7 +25,9 @@
 //   one call a buffer written as an unordered access view needs its barrier before it is an indirect argument);
 // - dispatches: a dispatch writes the commands of an indirect dispatch (none to ROWS + 1 groups along x, one or two
 //   along y and z) of a kernel of THREADS threads a group, in which every thread counts itself in at its place in
-//   the grid; each place is held to the number of commands that reach it. a culling pass sizes the next so;
+//   the grid; each place is held to the number of commands that reach it. a culling pass sizes the next so. run by
+//   one ExecuteIndirect with the count buffer, by one of all the commands with none, and by one a command with none,
+//   as Unreal dispatches what it sized;
 // - written by the pixel shader of a draw into the render targets that stay bound, drawn, written by a second such
 //   draw and drawn indexed; and drawn, replaced by CopyBufferRegion and drawn again indexed. an indirect draw has
 //   the arguments that what came before it in the list left, whatever kind of command wrote them and whatever pass
@@ -352,46 +354,53 @@ main(int argc, char **argv) {
         holds({made});
     }
   }
-  if (chosen("one list: the commands of an indirect dispatch written by a dispatch") && begins(0)) {
-    const UINT seed = 1, tally_bytes = places * sizeof(UINT);
-    auto zeros = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, tally_bytes, D3D12_RESOURCE_STATE_GENERIC_READ);
-    auto tally = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, tally_bytes, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    auto tallied = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, tally_bytes, D3D12_RESOURCE_STATE_COPY_DEST);
-    void *nothing;
-    const UINT *got;
-    auto list = lists[0].Get();
-    if (expect(SUCCEEDED(zeros->Map(0, nullptr, &nothing)), "no zeros")) {
-      memset(nothing, 0, tally_bytes);
-      list->CopyBufferRegion(tally.Get(), 0, zeros.Get(), 0, tally_bytes);
-      transition(list, tally.Get(), D3D12_RESOURCE_STATE_COPY_DEST, writing);
-      transition(list, written.Get(), common, writing);
-      list->SetPipelineState(sizes.Get());
-      list->SetComputeRootSignature(rs.Get());
-      list->SetComputeRoot32BitConstants(0, 1, &seed, 0);
-      list->SetComputeRootUnorderedAccessView(1, written->GetGPUVirtualAddress());
-      list->Dispatch(commands, 1, 1);
-      transition(list, written.Get(), writing, reading);
-      list->SetPipelineState(counted_in.Get());
-      list->SetComputeRootUnorderedAccessView(2, tally->GetGPUVirtualAddress());
-      list->ExecuteIndirect(signatures[2].Get(), commands, written.Get(), 0, written.Get(), commands * stride);
-      transition(list, written.Get(), reading, common);
-      transition(list, tally.Get(), writing, D3D12_RESOURCE_STATE_COPY_SOURCE);
-      list->CopyResource(tallied.Get(), tally.Get());
-      HRESULT ran = run(list);
-      if (expect(ran == S_OK, "the device after the list: %08lx", ran) && SUCCEEDED(tallied->Map(0, nullptr, (void **)&got))) {
-        std::vector<UINT> want(places);
-        for (UINT i = 0; i < counted; i++)
-          for (UINT z = 0; z < 1 + (i + seed) / 2 % 2; z++)
-            for (UINT y = 0; y < 1 + i % 2; y++)
-              for (UINT x = 0; x < threads * ((i + seed) % (rows + 2)); x++)
-                want[x + grid * (y + 2 * z)]++;
-        for (UINT place = 0; place < places; place++)
-          expect(got[place] == want[place], "%u threads counted themselves in at x %u, y %u, z %u, want %u", got[place], place % grid,
-                 place / grid % 2, place / grid / 2, want[place]);
-        tallied->Unmap(0, nullptr);
+  if (chosen("one list: the commands of an indirect dispatch written by a dispatch"))
+    for (const char *ways[] = {"the count buffer", "no count buffer", "a call a command"}; auto way : {0u, 1u, 2u}) {
+      if (!begins(0))
+        break;
+      const UINT seed = 1, tally_bytes = places * sizeof(UINT);
+      auto zeros = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, tally_bytes, D3D12_RESOURCE_STATE_GENERIC_READ);
+      auto tally = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, tally_bytes, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+      auto tallied = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, tally_bytes, D3D12_RESOURCE_STATE_COPY_DEST);
+      void *nothing;
+      const UINT *got;
+      auto list = lists[0].Get();
+      if (expect(SUCCEEDED(zeros->Map(0, nullptr, &nothing)), "no zeros")) {
+        memset(nothing, 0, tally_bytes);
+        list->CopyBufferRegion(tally.Get(), 0, zeros.Get(), 0, tally_bytes);
+        transition(list, tally.Get(), D3D12_RESOURCE_STATE_COPY_DEST, writing);
+        transition(list, written.Get(), common, writing);
+        list->SetPipelineState(sizes.Get());
+        list->SetComputeRootSignature(rs.Get());
+        list->SetComputeRoot32BitConstants(0, 1, &seed, 0);
+        list->SetComputeRootUnorderedAccessView(1, written->GetGPUVirtualAddress());
+        list->Dispatch(commands, 1, 1);
+        transition(list, written.Get(), writing, reading);
+        list->SetPipelineState(counted_in.Get());
+        list->SetComputeRootUnorderedAccessView(2, tally->GetGPUVirtualAddress());
+        if (way < 2)
+          list->ExecuteIndirect(signatures[2].Get(), commands, written.Get(), 0, way ? nullptr : written.Get(), commands * stride);
+        for (UINT i = 0; way == 2 && i < commands; i++)
+          list->ExecuteIndirect(signatures[2].Get(), 1, written.Get(), i * stride, nullptr, 0);
+        transition(list, written.Get(), reading, common);
+        transition(list, tally.Get(), writing, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        list->CopyResource(tallied.Get(), tally.Get());
+        HRESULT ran = run(list);
+        if (expect(ran == S_OK, "the device after the list: %08lx", ran) && SUCCEEDED(tallied->Map(0, nullptr, (void **)&got))) {
+          std::vector<UINT> want(places);
+          for (UINT i = 0; i < (way ? commands : counted); i++)
+            for (UINT z = 0; z < 1 + (i + seed) / 2 % 2; z++)
+              for (UINT y = 0; y < 1 + i % 2; y++)
+                for (UINT x = 0; x < threads * ((i + seed) % (rows + 2)); x++)
+                  want[x + grid * (y + 2 * z)]++;
+          for (UINT place = 0; place < places; place++)
+            expect(got[place] == want[place], "%s: %u threads counted themselves in at x %u, y %u, z %u, want %u",
+                   ways[way], got[place], place % grid, place / grid % 2, place / grid / 2,
+                   want[place]);
+          tallied->Unmap(0, nullptr);
+        }
       }
     }
-  }
   if (chosen("one list, the target bound throughout: commands written by a draw, drawn, written by a draw again and drawn indexed") && begins(0)) {
     const Made first{4, 1, 0, 1, commands}, second{5, 2, 1, 1, commands};
     pass(lists[0].Get(), first, true);

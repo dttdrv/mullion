@@ -3773,6 +3773,19 @@ public:
       } else {
         if (!PreDispatch(sig->UpdateRootArguments))
           return;
+        // commands that only dispatch, all of them, are Metal's own indirect dispatches of the arguments where they
+        // are: no resolver writing an indirect command buffer, and no barrier between the two
+        if (!parts && !sig->UpdateRootArguments && !CountBufferAddress && !predication_region_ &&
+            active_statistics_.empty()) {
+          for (UINT i = 0; i < MaxCommandCount; i++) {
+            auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
+            dispatch.type = WMTComputeCommandDispatchIndirect;
+            dispatch.indirect_args_buffer = arg_buffer->buffer->current()->buffer();
+            dispatch.indirect_args_offset = ArgBufferOffset + uint64_t(i) * sig->ByteStride;
+          }
+          Isolate(0, 0, 0);
+          return;
+        }
         cmd = parts ? allocator_->EncodeComputeResolver(sig, MaxCommandCount)
                     : allocator_->EncodeIndirectComputeCommand(sig, pso_compute_.ptr(), MaxCommandCount);
         if (!active_statistics_.empty()) {
