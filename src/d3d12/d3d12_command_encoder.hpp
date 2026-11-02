@@ -199,9 +199,6 @@ struct PredicateEncoderData : EncoderData {
   EncoderData *end;
 };
 
-// a command on acceleration structures that cannot be recorded when the application records it: a deserializing
-// copy, whose source is in memory only once the work before has run, or a command on a structure that such a copy
-// makes. the queue records it when it gets there, on a list of its own
 // MetalFX temporal upscaling (`temporal`), or temporal denoised upscaling (`denoised`, its inputs in `denoise`)
 struct UpscaleEncoderData : EncoderData {
   Rc<TemporalScaler> temporal;
@@ -211,6 +208,9 @@ struct UpscaleEncoderData : EncoderData {
   WMTFXDenoisedScaleArgs denoise;
 };
 
+// a command on acceleration structures that cannot be recorded when the application records it: a deserializing
+// copy, whose source is in memory only once the work before has run, or a command on a structure that such a copy
+// makes. the queue records it when it gets there, on a list of its own
 struct LaterEncoderData : EncoderData {
   enum { Copy, Information, Build } command;
   // CopyRaytracingAccelerationStructure

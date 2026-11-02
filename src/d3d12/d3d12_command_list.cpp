@@ -5076,40 +5076,31 @@ public:
     return texture->view(texture->createView({.format = format, .type = WMTTextureType2D})).texture;
   }
 
-  // the float format MetalFX reads motion vectors of a typeless or integer resource as
-  // depth and exposure as MetalFX reads them: a 32- or 16-bit texture a game created typeless is viewed as
+  // depth and exposure as MetalFX reads them: a 32- or 16-bit texture a game created typeless is held as unsigned
   // integers, and MetalFX reads those bits as the float they hold (Starfield's depth and exposure are R32_TYPELESS)
   static WMTPixelFormat
   ScalarFloatFormat(WMTPixelFormat format) {
     switch (format) {
     case WMTPixelFormatR32Uint:
-    case WMTPixelFormatR32Sint:
       return WMTPixelFormatR32Float;
     case WMTPixelFormatR16Uint:
-    case WMTPixelFormatR16Sint:
       return WMTPixelFormatR16Float;
     default:
       return format;
     }
   }
 
+  // the float format MetalFX reads motion vectors as: DLSS takes them as floats, held as such or, in a typeless
+  // resource, as unsigned integers. normalized or signed integer motion vectors hold no float to read
   static WMTPixelFormat
   MotionVectorFormat(WMTPixelFormat format) {
     switch (format) {
     case WMTPixelFormatRG16Uint:
     case WMTPixelFormatRG16Float:
-    case WMTPixelFormatRG16Sint:
-    case WMTPixelFormatRG16Snorm:
-    case WMTPixelFormatRG16Unorm:
       return WMTPixelFormatRG16Float;
     case WMTPixelFormatRG32Uint:
     case WMTPixelFormatRG32Float:
-    case WMTPixelFormatRG32Sint:
       return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Sint:
-    case WMTPixelFormatRGBA16Snorm:
-    case WMTPixelFormatRGBA16Uint:
-    case WMTPixelFormatRGBA16Unorm:
     case WMTPixelFormatRGBA16Float:
       return WMTPixelFormatRGBA16Float;
     default:
