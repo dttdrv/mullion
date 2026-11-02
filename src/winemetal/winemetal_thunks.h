@@ -280,6 +280,20 @@ struct unixcall_mtlcommandbuffer_spatial_scale {
   obj_handle_t fence;
 };
 
+struct unixcall_mtldevice_newfxdenoisedscaler {
+  obj_handle_t device;
+  struct WMTConstMemoryPointer info;
+  obj_handle_t ret;
+  bool metal4;
+};
+
+struct unixcall_mtlcommandbuffer_denoised_scale {
+  obj_handle_t cmdbuf;
+  obj_handle_t scaler;
+  struct WMTConstMemoryPointer args;
+  bool metal4;
+};
+
 struct unixcall_nsstring_string {
   struct WMTConstMemoryPointer buffer_ptr;
   enum WMTStringEncoding encoding;

@@ -195,6 +195,9 @@ MTLD3D12CommandAllocatorImpl::Discard(EncoderData *Root) {
     case EncoderType::Later:
     case EncoderType::Settle:
       break;
+    case EncoderType::Upscale:
+      reinterpret_cast<UpscaleEncoderData *>(pass)->~UpscaleEncoderData();
+      break;
     case EncoderType::Clear:
     case EncoderType::Render:
       reinterpret_cast<RenderEncoderData *>(pass)->~RenderEncoderData();

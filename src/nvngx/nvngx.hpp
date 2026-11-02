@@ -16,6 +16,7 @@ enum NVNGX_RESULT : unsigned int {
 
 enum NVNGX_FEATURE : unsigned int {
   NVNGX_FEATURE_SUPERSAMPLING = 1,
+  NVNGX_FEATURE_RAYRECONSTRUCTION = 13,
 };
 
 enum NVNGX_DLSS_FLAG: unsigned int {
