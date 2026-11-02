@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 96
+#define AIRCONV_VERSION 97
 
 #ifdef __cplusplus
 #include <string>
@@ -532,6 +532,9 @@ enum SM50_SHADER_FLAG {
   /* an amplification shader builds its payload in groupshared memory and DispatchMesh copies it to Metal's payload, as
      before the payload was built in place (MULLION_D3D12_FAST_MESH=0, for A/B runs) */
   SM50_SHADER_FLAG_STAGED_PAYLOAD = 1 << 8,
+  /* no sampler reduces where Metal cannot (SM50_SAMPLER_REDUCTION): samples leave out the minimum and maximum filters'
+     emulation */
+  SM50_SHADER_FLAG_NO_MINMAX_FILTER = 1 << 9,
 };
 
 struct SM50_SHADER_COMMON_DATA {

@@ -909,6 +909,7 @@ llvm::Error convert_dxbc_pixel_shader(
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
           .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
           .noCustomBorder = bool(shader_flags & SM50_SHADER_FLAG_NO_CUSTOM_BORDER),
+          .noMinMaxFilter = bool(shader_flags & SM50_SHADER_FLAG_NO_MINMAX_FILTER),
       },
       builder, nulldbg
   );
@@ -1291,6 +1292,7 @@ llvm::Error convert_dxbc_compute_shader(
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
           .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
           .noCustomBorder = bool(shader_flags & SM50_SHADER_FLAG_NO_CUSTOM_BORDER),
+          .noMinMaxFilter = bool(shader_flags & SM50_SHADER_FLAG_NO_MINMAX_FILTER),
       },
       builder, nulldbg
   );
@@ -1452,6 +1454,7 @@ llvm::Error convert_dxbc_vertex_shader(
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
           .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
           .noCustomBorder = bool(shader_flags & SM50_SHADER_FLAG_NO_CUSTOM_BORDER),
+          .noMinMaxFilter = bool(shader_flags & SM50_SHADER_FLAG_NO_MINMAX_FILTER),
       },
       builder, nulldbg
   );

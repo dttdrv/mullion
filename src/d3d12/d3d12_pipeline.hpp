@@ -29,6 +29,7 @@
 namespace mullion {
 
 class MTLD3D12Device;
+class MTLD3D12PipelineState;
 
 // library references must survive the last public reference without retaining the device (test_pipeline_library)
 template <typename Base> class MTLD3D12PipelineObject : public MTLD3D12Object<ComObject<Base, ID3DDestructionNotifier>> {
@@ -89,9 +90,9 @@ struct PipelineStateStream {
   Create(MTLD3D12Device *device, REFIID iid, void **pipeline, const PipelineShaderCache *cached = nullptr) const;
 };
 
-// a pipeline's description with everything it points to, which the application may free once the pipeline is made;
-// null while pipelines made now emulate custom borders (MTLD3D12PipelineState::borderless)
-std::shared_ptr<const PipelineStateStream> Borderless(MTLD3D12Device *device, const PipelineStateStream &stream);
+// the sampler emulations a pipeline made now leaves out, and its description with everything it points to, which the
+// application may free once the pipeline is made (MTLD3D12PipelineState::left_out)
+void Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStream &stream);
 
 class SM50Shader {
   sm50_shader_t sm50_shader_{};

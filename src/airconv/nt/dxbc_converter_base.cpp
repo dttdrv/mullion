@@ -2482,8 +2482,10 @@ Converter::MinMaxFilter(
   if (!Emulates || !Filtered.first || Tex.Logical == Texture::texture_buffer || Info.is_ms)
     return Filtered;
   // a static sampler is known when the pipeline is made. one that reduces still asks its metadata, which says whether
-  // Metal's sampler reduces for it (mullion::Sampler)
-  if (auto Known = KnownReductions.find(SamplerMetadata); Known != KnownReductions.end() && !Known->second)
+  // Metal's sampler reduces for it (mullion::Sampler). a descriptor's emulates only once a sampler of the device
+  // reduces where Metal cannot (SM50_SHADER_FLAG_NO_MINMAX_FILTER)
+  auto Static = KnownReductions.find(SamplerMetadata);
+  if (Static != KnownReductions.end() ? !Static->second : air.noMinMaxFilter())
     return Filtered;
   auto Field = [&](unsigned Shift, unsigned Bits) {
     return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(SamplerMetadata, Shift), ir.getInt32Ty()), (1u << Bits) - 1);

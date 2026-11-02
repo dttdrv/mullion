@@ -1084,9 +1084,9 @@ public:
 
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false) {
-    // a sampler with a custom border may have come since the pipeline was set (MTLD3D12PipelineState::borderless)
-    if (pso_graphics_ && pso_graphics_->borderless && device_->custom_borders) {
-      pso_graphics_ = static_cast<MTLD3D12GraphicsPipelineState *>(pso_graphics_->Bordered(device_));
+    // a sampler that needs what the pipeline leaves out may have come since it was set (MTLD3D12PipelineState::left_out)
+    while (pso_graphics_ && (pso_graphics_->left_out & device_->sampler_emulations)) {
+      pso_graphics_ = static_cast<MTLD3D12GraphicsPipelineState *>(pso_graphics_->Fuller(device_));
       dirty_state_.set(DirtyState::GraphicsPipelineState);
     }
     if (!pso_graphics_)
@@ -1963,8 +1963,8 @@ public:
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute)
       Overlap(StartComputePass(), {});
 
-    if (pso_compute_ && pso_compute_->borderless && device_->custom_borders) {
-      pso_compute_ = static_cast<MTLD3D12ComputePipelineState *>(pso_compute_->Bordered(device_));
+    while (pso_compute_ && (pso_compute_->left_out & device_->sampler_emulations)) {
+      pso_compute_ = static_cast<MTLD3D12ComputePipelineState *>(pso_compute_->Fuller(device_));
       dirty_state_.set(DirtyState::ComputePipelineState);
     }
     if (!pso_compute_)

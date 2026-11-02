@@ -112,6 +112,7 @@ public:
   bool defuseFma = false;
   bool noAtomicMinMax64 = false;
   bool noCustomBorder = false;
+  bool noMinMaxFilter = false;
 };
 
 struct TextureOperationInfo {
@@ -604,6 +605,11 @@ public:
   bool
   noCustomBorder() const {
     return options.noCustomBorder;
+  }
+
+  bool
+  noMinMaxFilter() const {
+    return options.noMinMaxFilter;
   }
 
   // a comparison takes a denormal reference as its sign's zero (D3D11.3 22.4.3); Metal compares it as it is

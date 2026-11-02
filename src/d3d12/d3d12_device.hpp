@@ -477,12 +477,13 @@ public:
   Sha1Digest library_key;
   mullion::mutex shader_mutex;
   PipelineShaderCache cached_shaders;
-  // made while no sampler had a border color Metal lacks (MTLD3D12Device::custom_borders), its shaders leave out the
-  // emulation of one (SM50_SHADER_FLAG_NO_CUSTOM_BORDER): what it is made of, to make it again with the emulation
-  // once a draw or dispatch can read such a sampler
-  std::shared_ptr<const PipelineStateStream> borderless;
-  Com<ID3D12PipelineState> bordered;
-  ID3D12PipelineState *Bordered(MTLD3D12Device *Device);
+  // the sampler emulations its shaders leave out, as no sampler of the device needed them when it was made
+  // (MTLD3D12Device::sampler_emulations), and what it is made of, to make it again with them once a draw or dispatch
+  // can read a sampler that does
+  unsigned left_out = 0;
+  std::shared_ptr<const PipelineStateStream> lean;
+  Com<ID3D12PipelineState> fuller;
+  ID3D12PipelineState *Fuller(MTLD3D12Device *Device);
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
@@ -613,9 +614,16 @@ public:
     std::unordered_set<std::shared_ptr<Reached>> values;
   } fences;
 
-  // a sampler has a border color Metal lacks (PopulateWMTSamplerInfo), so pipelines made from now on emulate it
-  // (MTLD3D12PipelineState::borderless)
-  std::atomic<bool> custom_borders{false};
+  // what the device's samplers have needed of kSamplerEmulations: a border color Metal lacks (PopulateWMTSamplerInfo),
+  // a minimum or maximum filter Metal's sampler does not apply (mullion::Sampler). pipelines made from now on emulate
+  // it (MTLD3D12PipelineState::left_out)
+  static constexpr unsigned kSamplerEmulations = SM50_SHADER_FLAG_NO_CUSTOM_BORDER | SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+  std::atomic<unsigned> sampler_emulations{0};
+  // the bytecode lean pipelines keep, once per shader however many pipelines share it
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<const std::string>> bytes;
+  } lean_shaders;
 
   // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
   // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so

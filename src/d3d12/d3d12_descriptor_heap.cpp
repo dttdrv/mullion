@@ -668,12 +668,14 @@ public:
     WMTSamplerInfo info;
     bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
     if (custom)
-      device_->custom_borders = true;
+      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
     auto sampler = Sampler::createSampler(
         device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
         SamplerReduction(pDesc->Filter)
     );
 
+    if (sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
+      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
       auto &gpu_storage = mapped_argument_buffer_[Index];
