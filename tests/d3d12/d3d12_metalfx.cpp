@@ -4,7 +4,9 @@
 // output must be the input's color in every texel, within one unit of the 8-bit output. the inputs are cleared by the
 // same list right before the upscale, and the output is copied right after it, so a pass out of order reads or leaves
 // the bytes of the frame before. depth and exposure are R32_TYPELESS and motion vectors R16G16_TYPELESS, as games
-// create them; DLSS takes motion vectors as floats only, so normalized ones are refused rather than misread
+// create them; DLSS takes motion vectors as floats only, so normalized ones are refused rather than misread. motion
+// vectors at the output resolution (DLSS without NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) are taken too: frames of one
+// color, the second not in reset, come out that color with them
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -73,12 +75,14 @@ main(int argc, char **argv) {
   auto color = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, width, height, target, input);
   auto depth = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, width, height, target, input);
   auto motion = texture(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_FLOAT, width, height, target, input);
+  auto display_motion =
+      texture(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_FLOAT, out_width, out_height, target, input);
   auto exposure = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, 1, 1, target, input);
   auto normalized = texture(DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_UNKNOWN, width, height, target, input);
   auto output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, out_width, out_height,
                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   CHECK(color.resource && depth.resource && motion.resource && exposure.resource && normalized.resource &&
-                output.resource
+                output.resource && display_motion.resource
             ? S_OK
             : E_FAIL);
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
@@ -99,8 +103,10 @@ main(int argc, char **argv) {
     for (UINT y = 0; square && y < height; y += square)
       for (UINT x = (y / square % 2) * square; x < width; x += 2 * square)
         squares.push_back({LONG(x), LONG(y), LONG(x + square), LONG(y + square)});
-    const float half[] = {0.5f, 0, 0, 0}, zero[] = {0, 0, 0, 0}, one[] = {1, 0, 0, 0};
-    std::pair<Texture *, const float *> clears[] = {{&color, fb.data()}, {&depth, half}, {&motion, zero}, {&exposure, one}};
+    // the output-resolution motion vectors: some pixels' worth of motion, which a uniform image does not show
+    const float half[] = {0.5f, 0, 0, 0}, zero[] = {0, 0, 0, 0}, one[] = {1, 0, 0, 0}, moved[] = {6, -4, 0, 0};
+    std::pair<Texture *, const float *> clears[] = {
+        {&color, fb.data()}, {&depth, half}, {&motion, zero}, {&exposure, one}, {&display_motion, moved}};
     for (auto [t, value] : clears) {
       transition(list.Get(), t->resource.Get(), input, D3D12_RESOURCE_STATE_RENDER_TARGET);
       list->ClearRenderTargetView(t->rtv, value, 0, nullptr);
@@ -131,13 +137,15 @@ main(int argc, char **argv) {
     return texels;
   };
   // through the extension, as the NGX bridge records it
-  auto frame = [&](const BYTE *a, const BYTE *b, UINT square, BOOL reset, IMTLD3D12Upscaler *&scaler) {
+  auto frame = [&](const BYTE *a, const BYTE *b, UINT square, BOOL reset, IMTLD3D12Upscaler *&scaler,
+                   bool at_output = false) {
     return upscaled(a, b, square, [&] {
       MTL_TEMPORAL_UPSCALE_D3D12_DESC desc{};
       desc.InReset = reset;
       desc.Color = color.resource.Get();
       desc.Depth = depth.resource.Get();
-      desc.MotionVector = motion.resource.Get();
+      desc.MotionVector = (at_output ? display_motion : motion).resource.Get();
+      desc.MotionVectorInDisplayRes = at_output;
       desc.ExposureTexture = exposure.resource.Get();
       desc.Output = output.resource.Get();
       desc.MotionVectorScaleX = desc.MotionVectorScaleY = 1;
@@ -196,6 +204,15 @@ main(int argc, char **argv) {
   for (auto scaler : {fresh, continued})
     if (scaler)
       scaler->Destroy();
+
+  IMTLD3D12Upscaler *display = nullptr;
+  for (BOOL reset : {TRUE, FALSE}) {
+    step("a frame of one color with motion vectors at the output resolution, %s", reset ? "in reset" : "not in reset");
+    if (!uniform(frame(frames[0], frames[0], 0, reset, display, true), frames[0]))
+      return verdict();
+  }
+  if (display)
+    display->Destroy();
 
   step("normalized motion vectors, which hold no float to read");
   CHECK(allocator->Reset());
