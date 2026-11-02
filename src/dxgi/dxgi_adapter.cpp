@@ -48,23 +48,7 @@ LUID GetAdapterLuid(WMT::Device device) {
 class MTLDXGIAdapter : public MTLDXGIObject<IMTLDXGIAdapter> {
 public:
   MTLDXGIAdapter(WMT::Device device, IDXGIFactory *factory, Config &config)
-      : device_(device), adapter_luid_(GetAdapterLuid(device)), factory_(factory), options_(config) {
-    D3DKMT_OPENADAPTERFROMLUID open = {};
-    open.AdapterLuid = adapter_luid_;
-    if (D3DKMTOpenAdapterFromLuid(&open))
-      WARN("Failed to open D3DKMT adapter");
-    else
-      local_kmt_ = open.hAdapter;
-  };
-
-  ~MTLDXGIAdapter() {
-    if (local_kmt_) {
-      D3DKMT_CLOSEADAPTER close = {};
-      close.hAdapter = local_kmt_;
-      if (D3DKMTCloseAdapter(&close))
-        WARN("Failed to close D3DKMT adapter");
-    }
-  }
+      : device_(device), adapter_luid_(GetAdapterLuid(device)), factory_(factory), options_(config) {};
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
@@ -322,11 +306,9 @@ public:
   }
 
   WMT::Device STDMETHODCALLTYPE GetMTLDevice() final { return device_; }
-  D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
 
 private:
   WMT::Reference<WMT::Device> device_;
-  D3DKMT_HANDLE local_kmt_ = 0;
   const LUID adapter_luid_;
   Com<IDXGIFactory> factory_;
   DxgiOptions options_;

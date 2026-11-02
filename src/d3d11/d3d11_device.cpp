@@ -1374,10 +1374,6 @@ public:
     return container_->GetMTLDevice();
   }
 
-  D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() override {
-    return container_->GetLocalD3DKMT();
-  }
-
   HRESULT
   CreateGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC *pDesc,
                          MTLCompiledGraphicsPipeline **ppPipeline) override {
@@ -1545,16 +1541,7 @@ public:
       : adapter_(adapter), device(std::move(device)),
         cmd_queue_(this->device->queue()),
         d3d11_device_(this, adapter, feature_level, feature_flags,
-                      *this->device.get()) {
-    if (adapter_->GetLocalD3DKMT()) {
-      D3DKMT_CREATEDEVICE create = {};
-      create.hAdapter = adapter_->GetLocalD3DKMT();
-      if (D3DKMTCreateDevice(&create))
-        WARN("Failed to create D3DKMT device");
-      else
-        local_kmt_ = create.hDevice;
-    }
-  }
+                      *this->device.get()) {}
 
   ~MTLD3D11DXGIDevice() {
     // submitted work can still be consumed through the D3D12 device
@@ -1562,11 +1549,6 @@ public:
       cmd_queue_.Drain();
     // queued command lists must release their private references before their pool is destroyed
     cmd_queue_.Shutdown();
-    if (local_kmt_) {
-      D3DKMT_DESTROYDEVICE destroy = {};
-      destroy.hDevice = local_kmt_;
-      D3DKMTDestroyDevice(&destroy);
-    }
   }
 
   HRESULT
@@ -1756,8 +1738,6 @@ public:
                                  ppSwapChain);
   }
 
-  D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
-
   // makes this a device D3D11On12CreateDevice made on a D3D12 device
   void
   AttachD3D11On12(IMTLD3D11On12Source *source, ID3D12Device *d3d12, ID3D12CommandQueue *queue) {
@@ -1769,7 +1749,6 @@ public:
 
 private:
   Com<IMTLDXGIAdapter> adapter_;
-  D3DKMT_HANDLE local_kmt_ = 0;
   std::unique_ptr<Device> device;
   CommandQueue &cmd_queue_;
   MTLD3D11DeviceImpl d3d11_device_;
