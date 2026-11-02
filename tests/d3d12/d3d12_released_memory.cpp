@@ -5,13 +5,29 @@
 // three times more: each of those must leave usage where it was, or the kind keeps memory of every one released.
 // the kinds: committed buffers and textures, a heap with a buffer and a texture placed on it, a reserved buffer with
 // a tile mapped and unmapped, shader-visible descriptor heaps, each kind of query heap, a local root signature with a static
-// sampler, and a queue of its own that mapped and unmapped a tile
+// sampler, a queue of its own that mapped and unmapped a tile, and a compute and a graphics pipeline with a command
+// allocator whose list ran each through ExecuteIndirect, with a root constant per command (which the signature's
+// resolver and an indirect command buffer carry)
 #include "d3d12_test.hpp"
 #include <dxgi1_4.h>
 #include <functional>
 
+static const char hlsl[] = R"hlsl(
+cbuffer Constants : register(b0) { uint k; };
+RWStructuredBuffer<uint> b : register(u0);
+[numthreads(64, 1, 1)] void cs(uint i : SV_DispatchThreadID) { b[i] = i + k; }
+float4 vs(uint id : SV_VertexID) : SV_Position { return float4(float2(id & 1, id >> 1) * 4 - 1, 0, 1); }
+float4 ps() : SV_Target { return k; }
+)hlsl";
+
 int
-main() {
+main(int argc, char **argv) {
+  Compiler compiler;
+  if (!front_end(argc, argv, compiler))
+    return 77;
+  auto cs = compiler.compile(hlsl, "cs", "cs"), vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps");
+  if (!expect(!cs.empty() && !vs.empty() && !ps.empty(), "the shaders do not compile"))
+    return verdict();
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<IDXGIFactory4> factory;
@@ -61,6 +77,70 @@ main() {
     on->UpdateTileMappings(reserved.Get(), 1, &at, &one, nullptr, 1, &null, nullptr, nullptr,
                            D3D12_TILE_MAPPING_FLAG_NONE);
     expect(usage(on) != ~0ull, "the mapping's queue did not finish");
+  };
+  D3D12_ROOT_PARAMETER params[2] = {{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}, {D3D12_ROOT_PARAMETER_TYPE_UAV}};
+  params[0].Constants = {0, 0, 1};
+  auto root = root_signature(device.Get(), {2, params});
+  CHECK(root ? S_OK : E_FAIL);
+  // the pipelines, each run once through ExecuteIndirect on a list of an allocator of their own
+  auto pipelines = [&] {
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute_desc{root.Get(), bytecode(cs)};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_desc{};
+    graphics_desc.pRootSignature = root.Get();
+    graphics_desc.VS = bytecode(vs), graphics_desc.PS = bytecode(ps);
+    graphics_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    graphics_desc.SampleMask = ~0u;
+    graphics_desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
+    graphics_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    graphics_desc.NumRenderTargets = 1, graphics_desc.RTVFormats[0] = texture_desc.Format;
+    graphics_desc.SampleDesc = {1, 0};
+    D3D12_INDIRECT_ARGUMENT_DESC dispatch_args[2] = {{D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT}, {D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH}},
+                                 draw_args[2] = {{D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT}, {D3D12_INDIRECT_ARGUMENT_TYPE_DRAW}};
+    dispatch_args[0].Constant = draw_args[0].Constant = {0, 0, 1};
+    const UINT dispatch_stride = sizeof(UINT) + sizeof(D3D12_DISPATCH_ARGUMENTS), draw_stride = sizeof(UINT) + sizeof(D3D12_DRAW_ARGUMENTS);
+    D3D12_COMMAND_SIGNATURE_DESC dispatch_desc{dispatch_stride, 2, dispatch_args}, draw_desc{draw_stride, 2, draw_args};
+    D3D12_RESOURCE_DESC target_desc = texture_desc;
+    target_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+    ComPtr<ID3D12PipelineState> compute, graphics;
+    ComPtr<ID3D12CommandSignature> dispatches, draws;
+    ComPtr<ID3D12CommandAllocator> own;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ComPtr<ID3D12Resource> target;
+    ComPtr<ID3D12DescriptorHeap> rtv;
+    auto out = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, 64 * sizeof(UINT), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    auto arguments = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, dispatch_stride + draw_stride, D3D12_RESOURCE_STATE_GENERIC_READ);
+    UINT *words;
+    if (!out || !arguments || FAILED(arguments->Map(0, nullptr, (void **)&words)) ||
+        FAILED(device->CreateComputePipelineState(&compute_desc, IID_PPV_ARGS(&compute))) ||
+        FAILED(device->CreateGraphicsPipelineState(&graphics_desc, IID_PPV_ARGS(&graphics))) ||
+        FAILED(device->CreateCommandSignature(&dispatch_desc, root.Get(), IID_PPV_ARGS(&dispatches))) ||
+        FAILED(device->CreateCommandSignature(&draw_desc, root.Get(), IID_PPV_ARGS(&draws))) ||
+        FAILED(device->CreateCommandAllocator(queue_desc.Type, IID_PPV_ARGS(&own))) ||
+        FAILED(device->CreateCommandList(0, queue_desc.Type, own.Get(), nullptr, IID_PPV_ARGS(&list))) ||
+        FAILED(device->CreateCommittedResource(&gpu, D3D12_HEAP_FLAG_NONE, &target_desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                               nullptr, IID_PPV_ARGS(&target))) ||
+        FAILED(device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&rtv))))
+      return false;
+    const UINT filled[] = {7, 1, 1, 1, 7, 3, 1, 0, 0};
+    memcpy(words, filled, sizeof(filled));
+    list->SetComputeRootSignature(root.Get());
+    list->SetPipelineState(compute.Get());
+    list->SetComputeRootUnorderedAccessView(1, out->GetGPUVirtualAddress());
+    list->ExecuteIndirect(dispatches.Get(), 1, arguments.Get(), 0, nullptr, 0);
+    device->CreateRenderTargetView(target.Get(), nullptr, rtv->GetCPUDescriptorHandleForHeapStart());
+    auto handle = rtv->GetCPUDescriptorHandleForHeapStart();
+    D3D12_VIEWPORT viewport{0, 0, float(texture_desc.Width), float(texture_desc.Height), 0, 1};
+    D3D12_RECT scissor{0, 0, LONG(texture_desc.Width), LONG(texture_desc.Height)};
+    list->SetGraphicsRootSignature(root.Get());
+    list->SetPipelineState(graphics.Get());
+    list->OMSetRenderTargets(1, &handle, FALSE, nullptr);
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->ExecuteIndirect(draws.Get(), 1, arguments.Get(), dispatch_stride, nullptr, 0);
+    return expect(submit(device.Get(), queue.Get(), list.Get()) == S_OK, "the pipelines' list did not run");
   };
   struct Kind {
     const char *name;
@@ -123,6 +203,7 @@ main() {
                                            D3D12_FLOAT32_MAX, 0, 0, D3D12_SHADER_VISIBILITY_ALL};
          return bool(root_signature(device.Get(), {0, nullptr, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE}));
        }},
+      {"a compute and a graphics pipeline run through ExecuteIndirect on an allocator of their own", true, pipelines},
   };
   for (auto &kind : kinds) {
     if (!kind.supported) {
