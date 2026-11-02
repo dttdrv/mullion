@@ -1982,6 +1982,10 @@ public:
     }
     if (!pso_compute_)
         return false;
+    // a pipeline whose Metal compile failed on a compile thread dispatches nothing
+    pso_compute_->WaitPipeline();
+    if (!pso_compute_->pso)
+      return false;
 
     if (dirty_state_.test(DirtyState::ComputePipelineState)) {
       auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();

@@ -630,6 +630,13 @@ public:
 class MTLD3D12ComputePipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::ComputePipelineState> pso;
+  // `pso` while a compile thread makes it (DeferredPipeline): a dispatch reads it after WaitPipeline
+  std::shared_ptr<DeferredPipeline> deferred;
+  void
+  WaitPipeline() {
+    if (deferred)
+      deferred->Wait();
+  }
   WMTSize threadgroup_size;
   // see MTL_SHADER_REFLECTION::GroupsWorkTogether and DeviceAtomics64
   bool groups_work_together = false;
