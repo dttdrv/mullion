@@ -21,6 +21,12 @@ test('d3d12_shared_names', exe, is_parallel: false, timeout: 600)
 # a GPU capture of a frame, which Metal takes only with MTL_CAPTURE_ENABLED in the process's environment
 exe = executable('d3d12_capture', ['d3d12_capture.cpp'], dependencies: d3d12_test_deps)
 test('d3d12_capture', exe, env: ['MTL_CAPTURE_ENABLED=1'], suite: 'window', timeout: 300)
+# MetalFX through Mullion's own command list extension (src/d3d12/d3d12_interfaces.hpp)
+exe = executable('d3d12_metalfx', ['d3d12_metalfx.cpp'], dependencies: d3d12_test_deps,
+                 include_directories: include_directories('../../src/util'))
+# and through Mullion's NGX core where the build has it, which loads with NVEXT on only
+test('d3d12_metalfx', exe, args: get_option('enable_nvngx') ? ['ngx'] : [],
+     env: get_option('enable_nvngx') ? ['MULLION_ENABLE_NVEXT=1'] : [], timeout: 600)
 exe = executable('d3d12_trace_log', ['d3d12_trace_log.cpp'], dependencies: d3d12_test_deps + [cpp.find_library('d3d11')])
 test('d3d12_trace_log', exe, timeout: 600)
 exe = executable('d3d12_xrbias', ['d3d12_xrbias.cpp'], dependencies: d3d12_test_deps)
@@ -35,6 +41,11 @@ foreach t : [['d3d12_sdk_configuration', []], ['d3d12_metal4_passes', []], ['d3d
          timeout: 600)
     if t[0] == 'd3d12_persistent'
       test(t[0] + '_allocate_' + front_end, exe, args: [front_end, 'ALLOCATE=1'], timeout: 600)
+    endif
+    # the window shows the same when MetalFX upscales the shown buffer (d3d12.metalSpatialUpscale)
+    if t[0] == 'd3d12_presented' and front_end == 'dxil'
+      test(t[0] + '_metalfx', exe, args: [front_end], env: ['MULLION_METALFX_SPATIAL_SWAPCHAIN=1'], suite: t[1],
+           timeout: 600)
     endif
     if t[0] == 'd3d12_streamout_arguments'
       test(t[0] + '_zero_' + front_end, exe, args: [front_end, 'zero'], timeout: 600)

@@ -136,7 +136,10 @@ main(int argc, char **argv) {
     if (FAILED(hr = submit(device.Get(), queue.Get(), list.Get())) || FAILED(hr = to.swapchain->Present(1, 0)))
       return hr;
     // pixels across the window and along its diagonal, where a picture's last pixel and the first one past it are.
-    // a channel is within two steps of its value: one for the buffer's rounding, one for the window's
+    // a channel is within two steps of its value: one for the buffer's rounding, one for the window's, and two more
+    // when MetalFX upscales the buffer (MULLION_METALFX_SPATIAL_SWAPCHAIN): its scaler sharpens, by up to 3.3 steps
+    // on this gradient
+    const int steps = GetEnvironmentVariableA("MULLION_METALFX_SPATIAL_SWAPCHAIN", nullptr, 0) ? 4 : 2;
     RECT area;
     GetClientRect(to.window, &area);
     const UINT size = area.right, across = 16, step = size / across;
@@ -156,7 +159,7 @@ main(int argc, char **argv) {
         const int channels[3] = {GetRValue(got), GetGValue(got), GetBValue(got)};
         bool same = true;
         for (int c = 0; c < 3; c++)
-          same &= std::fabs(channels[c] - want[c] * 255) <= 2;
+          same &= std::fabs(channels[c] - want[c] * 255) <= steps;
         if (!same && wrong++ < 2 && attempt == 249)
           printf("%s: the window's pixel %u,%u is %d %d %d, want %.1f %.1f %.1f\n", what, x, y, channels[0],
                  channels[1], channels[2], want[0] * 255, want[1] * 255, want[2] * 255);

@@ -10,6 +10,9 @@ test('dxgi_adapter_memory', dxgi_adapter, args : ['-', '1002', 'no-file', '256']
 # times its calls against the display's refresh, so it runs alone
 test('dxgi_vblank', executable('dxgi_vblank', ['dxgi_vblank.cpp'], dependencies : dxgi_test_deps),
      suite : 'timing', is_parallel : false, timeout : 300)
+# the prefix's trust in the NGX core's certificate, and where NGX finds the core (nvngx.dll where the build has it)
+test('dxgi_ngx_trust', executable('dxgi_ngx_trust', ['dxgi_ngx_trust.cpp'], dependencies : dxgi_test_deps + [cpp.find_library('crypt32')]),
+     args : get_option('enable_nvngx') ? ['ngx'] : [], is_parallel : false, timeout : 300)
 # these present to a real window
 foreach name : ['buffers', 'color_space', 'composition', 'factory', 'formats', 'gamma', 'latency', 'object', 'output', 'present', 'present_regions', 'resize_queues', 'swapchain_flags']
   test('dxgi_' + name, executable('dxgi_' + name, ['dxgi_' + name + '.cpp'], dependencies : dxgi_test_deps),

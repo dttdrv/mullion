@@ -1,0 +1,12 @@
+diff --git a/src/dxgi/dxgi.cpp b/src/dxgi/dxgi.cpp
+index d87c767c..13700612 100644
+--- a/src/dxgi/dxgi.cpp
++++ b/src/dxgi/dxgi.cpp
+@@ -100,6 +100,7 @@ static void InitializeVendorExtensionNV() {
+     RegSetValueExW(key2, name1, 0, REG_DWORD, (const BYTE *)&_1, sizeof(_1));
+     RegSetValueExW(key3, L"FullPath", 0, REG_SZ, (const BYTE *)folder, size);
+     RegSetValueExW(key4, L"NGXPath", 0, REG_SZ, (const BYTE *)folder, size);
++    TrustNGXCertificate();
+     Logger::info("Vendor extension enabled: NVEXT");
+     g_extension_enabled = VendorExtension::Nvidia;
+   }

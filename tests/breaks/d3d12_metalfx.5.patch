@@ -1,0 +1,13 @@
+diff --git a/src/nvngx/nvngx_d3d12.cpp b/src/nvngx/nvngx_d3d12.cpp
+index 0ee65522..7157c02c 100644
+--- a/src/nvngx/nvngx_d3d12.cpp
++++ b/src/nvngx/nvngx_d3d12.cpp
+@@ -161,7 +161,7 @@ NVSDK_NGX_D3D12_GetCapabilityParameters(NVNGXParameter **out_params) {
+   void *optimal = nullptr, *stats = nullptr;
+   params->Get(NVNGX_Parameter_DLSSOptimalSettingsCallback, &optimal);
+   params->Get("DLSSGetStatsCallback", &stats);
+-  params->Set("SuperSamplingDenoising.Available", unsigned(denoising.load()));
++  params->Set("SuperSamplingDenoising.Available", 0u);
+   params->Set("SuperSamplingDenoising.NeedsUpdatedDriver", 0);
+   params->Set("SuperSamplingDenoising.MinDriverVersionMajor", 0);
+   params->Set("SuperSamplingDenoising.MinDriverVersionMinor", 0);

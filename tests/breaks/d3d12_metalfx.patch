@@ -1,0 +1,12 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 647ff468..20eb8dce 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -5097,6 +5097,7 @@ public:
+     switch (format) {
+     case WMTPixelFormatRG16Uint:
+     case WMTPixelFormatRG16Float:
++    case WMTPixelFormatRG16Unorm:
+       return WMTPixelFormatRG16Float;
+     case WMTPixelFormatRG32Uint:
+     case WMTPixelFormatRG32Float:

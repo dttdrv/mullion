@@ -1,0 +1,12 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 73d26b79..d6532072 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1616,7 +1616,6 @@ public:
+             cmdbuf.encodeDenoisedScale(data->denoised->scaler(), args);
+           }
+           auto end = cmdbuf.blitCommandEncoder();
+-          end.waitForFence(scaler_fence);
+           end.updateFence(WMT::Fence(fence_));
+           end.endEncoding();
+           break;
