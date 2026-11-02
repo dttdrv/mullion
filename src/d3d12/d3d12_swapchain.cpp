@@ -735,11 +735,9 @@ public:
         desc_.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : colorspace_,
         LayerSupportEDR()
     );
-    double width = settings_.target_width * scale_factor, height = settings_.target_height * scale_factor;
-    if (upscaled_) {
-      width = upscaled_.width();
-      height = upscaled_.height();
-    }
+    // the target scaled as MetalFX scales the buffer: a window the picture keeps its size in has its own size
+    double width = settings_.target_width * (upscaled_ ? double(upscaled_.width()) / desc_.Width : scale_factor),
+           height = settings_.target_height * (upscaled_ ? double(upscaled_.height()) / desc_.Height : scale_factor);
     if (presenter->changeLayerProperties(desc_.Format, target_color_space, width, height, desc_.SampleDesc.Count)) {
       // TODO(d3d12): flush command queue
     }

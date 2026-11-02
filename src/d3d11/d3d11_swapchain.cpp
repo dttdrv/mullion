@@ -640,10 +640,11 @@ public:
                               : colorspace_,
                           LayerSupportEDR());
     double width = settings_.target_width * scale_factor, height = settings_.target_height * scale_factor;
+    // the target scaled as MetalFX scales the buffer: a window the picture keeps its size in has its own size
     if constexpr (EnableMetalFX) {
       if (upscaled_backbuffer_) {
-        width = upscaled_backbuffer_->texture()->width();
-        height = upscaled_backbuffer_->texture()->height();
+        width = settings_.target_width * double(upscaled_backbuffer_->texture()->width()) / desc_.Width;
+        height = settings_.target_height * double(upscaled_backbuffer_->texture()->height()) / desc_.Height;
       }
     }
     if (presenter->changeLayerProperties(desc_.Format, target_color_space, width, height, desc_.SampleDesc.Count))
