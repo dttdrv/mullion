@@ -1637,6 +1637,7 @@ public:
   // for each that only counts
   WMT::RenderPipelineState
   Pipeline(bool counting = false) {
+    pso_graphics_->WaitPipeline();
     bool strip = Strip(topology_);
     if (PassesAdjacency() || pso_graphics_->patches)
       return RenderTargets(pso_graphics_->TopologyPipeline(topology_, counting));
