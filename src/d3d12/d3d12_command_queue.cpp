@@ -1756,9 +1756,9 @@ public:
       }
     };
     // lists whose every pass encodes on any thread, as many as follow each other: their passes, and what they cost.
-    // not with what keeps state of a slot's own (profiles, GPU records, debug groups, encoder counts)
+    // not with what keeps state of a slot's own (profiles, GPU records, encoder counts)
     std::vector<std::pair<EncoderData *, uint64_t>> passes;
-    bool parallel = EncodeThreads() > 1 && !profile_ && !record_totals_ && !isolate && !diag::events &&
+    bool parallel = EncodeThreads() > 1 && !profile_ && !record_totals_ && !isolate &&
                     !diag::trace_encoders;
     for (size_t i = 0; i < recorded.size();) {
       size_t j = i;
@@ -2124,12 +2124,19 @@ public:
     // the parts the encoding threads have yet to finish, under the lock
     unsigned left = parts - 1;
     std::atomic<bool> lost = false;
+    // the application's events open on each part's command buffer: the first part's are the slot's, and each later
+    // part's become the slot's with its command buffer
+    std::vector<diag::DebugGroups> groups(parts);
     auto part = [&](unsigned k) {
       InflightCommandBuffer unused;
       WMTSampleBufferAttachmentInfo unsampled{};
-      for (auto i = bounds[k]; i < bounds[k + 1] && !lost; i++)
+      auto &open = k ? groups[k] : scope.inflight->groups;
+      for (auto i = bounds[k]; i < bounds[k + 1] && !lost; i++) {
+        if (diag::events)
+          open.Enter(buffers[k], queue_events_ + (passes[i].first->event_path ? passes[i].first->event_path : ""));
         if (!EncodePass(buffers[k], passes[i].first, unsampled, sparse_mappings, unused, nullptr, syncs[i]))
           lost = true;
+      }
     };
     {
       std::lock_guard<mullion::mutex> lock(encode_mutex_);
@@ -2160,6 +2167,7 @@ public:
       if (k + 1 < parts) {
         scope.End();
         scope.Start(std::move(buffers[k + 1]));
+        scope.inflight->groups = std::move(groups[k + 1]);
       }
     }
     return !lost;

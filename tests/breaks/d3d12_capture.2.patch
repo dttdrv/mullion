@@ -1,0 +1,13 @@
+# the passes encoded in parts on several threads open none of the application's events.
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -2103,8 +2103,6 @@
+       WMTSampleBufferAttachmentInfo unsampled{};
+       auto &open = k ? groups[k] : scope.inflight->groups;
+       for (auto i = bounds[k]; i < bounds[k + 1] && !lost; i++) {
+-        if (diag::events)
+-          open.Enter(buffers[k], queue_events_ + (passes[i].first->event_path ? passes[i].first->event_path : ""));
+         if (!EncodePass(buffers[k], passes[i].first, unsampled, sparse_mappings, unused, nullptr, syncs[i]))
+           lost = true;
+       }

@@ -1,5 +1,6 @@
 #pragma once
 #include "Metal.hpp"
+#include "thread.hpp"
 #include <cstdint>
 
 namespace mullion {
@@ -11,6 +12,8 @@ public:
   void frame(WMT::Device device, uint64_t frame);
 
   CaptureState();
+  // waits for a stop: the queue it belongs to submits nothing more by then
+  ~CaptureState();
 
 private:
   enum class NextAction {
@@ -31,6 +34,7 @@ private:
   State state = State::Freezed;
   uint64_t next_capture_frame = 0;
   bool capture_key_pressed_ = false;
+  mullion::thread stopping_;
 };
 
 } // namespace mullion

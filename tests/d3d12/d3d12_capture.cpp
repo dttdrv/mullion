@@ -2,12 +2,39 @@
 // src/mullion/mullion_capture.cpp) ends, and leaves its trace where the logs go (MULLION_LOG_PATH). frame n is the work
 // after the nth Present, so the capture of frame 1 starts at the first Present and stops at the second. in frame 1 a
 // compute queue waits for a fence the direct queue signals after that second Present, and its work is encoded ahead
-// and committed once the fence is there (as Starfield's is): Metal's stop of a capture waits for every command
-// buffer of the capture, so a stop on the thread that would go on to that Signal never returns
+// and committed once the fence is there: Metal's stop of a capture waits for every command buffer of the capture,
+// so a stop on the thread that would go on to that Signal never returns. frame 1's two passes are in events of
+// their own, which the trace holds as debug groups around them, with each pass encoded on a thread of its own
+// (MULLION_D3D12_PARALLEL_COMMANDS=1)
 #include "d3d12_test.hpp"
 #include <dxgi1_4.h>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
+
+// whether a file under `path` holds `text`
+static bool
+holds(const std::string &path, const std::string &text) {
+  WIN32_FIND_DATAA found;
+  HANDLE find = FindFirstFileA((path + "\\*").c_str(), &found);
+  bool held = false;
+  for (BOOL more = find != INVALID_HANDLE_VALUE; more && !held; more = FindNextFileA(find, &found)) {
+    std::string name = found.cFileName, at = path + "\\" + name;
+    if (name == "." || name == "..")
+      continue;
+    if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+      held = holds(at, text);
+    else {
+      std::ifstream file(at, std::ios::binary);
+      std::string bytes{std::istreambuf_iterator<char>(file), {}};
+      held = bytes.find(text) != bytes.npos;
+    }
+  }
+  if (find != INVALID_HANDLE_VALUE)
+    FindClose(find);
+  return held;
+}
 
 static void
 remove_tree(const std::string &path) {
@@ -79,6 +106,8 @@ main() {
   const UINT64 size = 1 << 16;
   auto from = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_COMMON);
   auto to = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_COMMON);
+  auto copy = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_COMMON);
+  const char *events[] = {"mullion capture clear", "mullion capture copy"};
   compute_list->CopyBufferRegion(to.Get(), 0, from.Get(), 0, size);
   CHECK(compute_list->Close());
   ComPtr<ID3D12Fence> held, idle;
@@ -92,7 +121,12 @@ main() {
     CHECK(list->Reset(allocator.Get(), nullptr));
     transition(list.Get(), back.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
     const float color[] = {frame / float(frames), 0.5f, 0.25f, 1};
+    list->BeginEvent(1, events[0], UINT(strlen(events[0]) + 1));
     list->ClearRenderTargetView(rtv, color, 0, nullptr);
+    list->EndEvent();
+    list->BeginEvent(1, events[1], UINT(strlen(events[1]) + 1));
+    list->CopyBufferRegion(copy.Get(), 0, from.Get(), 0, size);
+    list->EndEvent();
     transition(list.Get(), back.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     CHECK(list->Close());
     if (frame == 1) {
@@ -110,13 +144,18 @@ main() {
     CHECK(queue->Signal(idle.Get(), frame + 1));
     CHECK(idle->SetEventOnCompletion(frame + 1, nullptr));
   }
+  // the queue's release waits for its capture to stop
+  swapchain.Reset();
+  queue.Reset();
   step("the trace of frame 1");
   WIN32_FIND_DATAA found;
   HANDLE trace = FindFirstFileA((std::string(directory) + "\\*_F.1_*.gputrace").c_str(), &found);
   expect(trace != INVALID_HANDLE_VALUE, "no trace of frame 1 in %s", directory);
-  if (trace != INVALID_HANDLE_VALUE)
+  if (trace != INVALID_HANDLE_VALUE) {
     FindClose(trace);
-  swapchain.Reset();
+    for (auto event : events)
+      expect(holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
+  }
   remove_tree(directory);
   return verdict();
 }
