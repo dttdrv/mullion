@@ -2231,6 +2231,7 @@ WINEMETAL_API uint64_t MTLComputePipelineState_threadExecutionWidth(obj_handle_t
 WINEMETAL_API uint64_t MTLComputePipelineState_maxTotalThreadsPerThreadgroup(obj_handle_t pipeline);
 WINEMETAL_API uint64_t MTLComputePipelineState_staticThreadgroupMemoryLength(obj_handle_t pipeline);
 WINEMETAL_API uint64_t MTLDevice_maxThreadgroupMemoryLength(obj_handle_t device);
+WINEMETAL_API uint64_t MTLDevice_maxThreadsPerThreadgroup(obj_handle_t device);
 
 WINEMETAL_API uint64_t MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid(obj_handle_t pipeline);
 
@@ -2594,7 +2595,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferWaitSignal, WMTUnixDeviceNewSpatialScaler4, WMTUnixMetal4SpatialScale,
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
-       WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory, WMTUnixCallCount };
+       WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

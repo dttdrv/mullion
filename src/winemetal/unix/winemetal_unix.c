@@ -4035,6 +4035,13 @@ _MTLDevice_maxThreadgroupMemoryLength(void *obj) {
 }
 
 static NTSTATUS
+_MTLDevice_maxThreadsPerThreadgroup(void *obj) {
+  struct unixcall_generic_obj_uint64_ret *params = obj;
+  params->ret = [(id<MTLDevice>)params->handle maxThreadsPerThreadgroup].width;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = [(id<MTLRenderPipelineState>)params->handle maxTotalThreadgroupsPerMeshGrid];
@@ -6973,6 +6980,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_supportsFXDenoisedScaler,
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
+    &_MTLDevice_maxThreadsPerThreadgroup,
 };
 
 #ifndef MULLION_NATIVE
@@ -7185,6 +7193,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_supportsFXDenoisedScaler,
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
+    &_MTLDevice_maxThreadsPerThreadgroup,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

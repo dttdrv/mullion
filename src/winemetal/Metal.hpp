@@ -1219,6 +1219,11 @@ public:
     return MTLDevice_maxThreadgroupMemoryLength(handle);
   }
 
+  uint64_t
+  maxThreadsPerThreadgroup() const {
+    return MTLDevice_maxThreadsPerThreadgroup(handle);
+  }
+
   bool
   supportsPlacementSparse() const {
     return MTLDevice_supportsPlacementSparse(handle);

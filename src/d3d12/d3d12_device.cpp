@@ -448,10 +448,13 @@ public:
     static const uint64_t given = strtoull(env::getEnvVar("MULLION_D3D12_THREADS_AT_ONCE").c_str(), nullptr, 10);
     if (given || !kept)
       return std::max<uint64_t>((given ? given : total_lanes_) / threads, 1);
-    // a core keeps a threadgroup of the most threads the pipeline takes, whose barriers need them all at once, so as
-    // many of these as fit in those threads and in the core's threadgroup memory
-    uint64_t per_core = pipeline.maxTotalThreadsPerThreadgroup() / threads;
-    if (auto memory = pipeline.staticThreadgroupMemoryLength())
+    // a core keeps a threadgroup of the most threads the device takes in one, whose barriers need them all at once, so
+    // as many of these groups as fit in those threads (not the pipeline's own most: the converter declares it as its
+    // group's size), and in the core's threadgroup memory where that is fixed: dynamic caching (Apple9 on) gives
+    // threadgroups their memory from the core's cache, where groups that took the most each still kept that many
+    uint64_t per_core = GetMTLDevice().maxThreadsPerThreadgroup() / threads;
+    auto memory = pipeline.staticThreadgroupMemoryLength();
+    if (memory && !GetMTLDevice().supportsFamily(WMTGPUFamilyApple9))
       per_core = std::min<uint64_t>(per_core, GetMTLDevice().maxThreadgroupMemoryLength() / memory);
     return std::max<uint64_t>(per_core, 1) * GetMTLDevice().gpuCoreCount();
   }
