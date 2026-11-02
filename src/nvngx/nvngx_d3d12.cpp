@@ -7,6 +7,7 @@
 #include "nvngx_feature.hpp"
 #include "nvngx_parameter.hpp"
 #include "../d3d12/d3d12_interfaces.hpp"
+#include <atomic>
 #include <cstring>
 #include <memory>
 
@@ -32,6 +33,25 @@ GetExt(ID3D12GraphicsCommandList *list) {
   if (!list || FAILED(list->QueryInterface(IID_PPV_ARGS(&ext))))
     return nullptr;
   return ext;
+}
+
+// whether the device NGX started with has MetalFX's denoiser, which Ray Reconstruction is offered by: a command list
+// of its own says
+static std::atomic<bool> denoising = false;
+
+static NVNGX_RESULT
+Start(ID3D12Device *device) {
+  Com<ID3D12CommandAllocator> allocator;
+  Com<ID3D12GraphicsCommandList> list;
+  if (!device || FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+      FAILED(device->CreateCommandList(
+          0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.ptr(), nullptr, IID_PPV_ARGS(&list)
+      )))
+    return NVNGX_RESULT_INVALID_PARAMETER;
+  auto ext = GetExt(list.ptr());
+  denoising = ext && ext->SupportsDenoisedUpscale();
+  list->Close();
+  return NVNGX_RESULT_OK;
 }
 
 static ID3D12Resource *
@@ -67,7 +87,7 @@ NVSDK_NGX_D3D12_Init(
     unsigned long long id, const wchar_t *path, ID3D12Device *device, const void *feature_info, unsigned int sdk_version
 ) {
   Logger::debug("NGX: NVSDK_NGX_D3D12_Init");
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -75,7 +95,7 @@ NVSDK_NGX_D3D12_Init_Ext(
     unsigned long long id, const wchar_t *path, ID3D12Device *device, unsigned int sdk_version, const void *parameters
 ) {
   Logger::debug("NGX: NVSDK_NGX_D3D12_Init_Ext");
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -84,7 +104,7 @@ NVSDK_NGX_D3D12_Init_ProjectID(
     ID3D12Device *device, unsigned int sdk_version, const void *feature_info
 ) {
   Logger::debug("NGX: NVSDK_NGX_D3D12_Init_ProjectID");
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -93,7 +113,7 @@ NVSDK_NGX_D3D12_Init_with_ProjectID(
     ID3D12Device *device, const void *feature_info, unsigned int sdk_version
 ) {
   Logger::debug("NGX: NVSDK_NGX_D3D12_Init_with_ProjectID");
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -141,7 +161,7 @@ NVSDK_NGX_D3D12_GetCapabilityParameters(NVNGXParameter **out_params) {
   void *optimal = nullptr, *stats = nullptr;
   params->Get(NVNGX_Parameter_DLSSOptimalSettingsCallback, &optimal);
   params->Get("DLSSGetStatsCallback", &stats);
-  params->Set("SuperSamplingDenoising.Available", 1u);
+  params->Set("SuperSamplingDenoising.Available", unsigned(denoising.load()));
   params->Set("SuperSamplingDenoising.NeedsUpdatedDriver", 0);
   params->Set("SuperSamplingDenoising.MinDriverVersionMajor", 0);
   params->Set("SuperSamplingDenoising.MinDriverVersionMinor", 0);
