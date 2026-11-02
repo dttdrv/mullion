@@ -41,6 +41,8 @@ enum class EncoderType {
   // MetalFX (IMTLD3D12CommandListExt)
   Upscale,
 };
+// how many kinds there are: the last one's number and one
+constexpr size_t kEncoderTypes = size_t(EncoderType::Upscale) + 1;
 
 class MTLD3D12QueryHeap;
 

@@ -637,7 +637,7 @@ private:
     // MULLION_D3D12_GPU_ERRORS: the passes with indirect commands and where their resolvers keep their largest numbers
     std::vector<std::pair<std::string, const RenderEncoderData::Most *>> most{};
     // how many encoders of each kind it has, and whether it presents: what a report of one that does not complete says
-    std::array<uint16_t, size_t(EncoderType::AccelerationStructure) + 1> encoders{};
+    std::array<uint16_t, kEncoderTypes> encoders{};
     bool presents = false;
     // Metal 3: the buffer signals its slot's event after its work (EventWait); and whether what the completion thread
     // reads of it needs Metal to have completed it, not only the GPU its work (a dumped frame reads its status)
