@@ -6,6 +6,7 @@
 #include "log/log.hpp"
 #include "log/trace.hpp"
 #include <algorithm>
+#include <atomic>
 #include <string_view>
 #include <vector>
 #include <type_traits>
@@ -128,8 +129,10 @@ Write(const std::string &lines) {
     auto given = env::getEnvVar("MULLION_DIAG_PATH");
     return given.empty() && trace::On(trace::Cpu) ? trace::Directory() : given;
   }();
-  if (!WMTDiagWrite(directory.c_str(), lines.data(), lines.size()))
-    ERR("Mullion profile: record could not be written");
+  // a record that could not be written ends the profile, said once: a directory that is not there fails them all
+  static std::atomic<bool> failed = false;
+  if (!failed && !WMTDiagWrite(directory.c_str(), lines.data(), lines.size()) && !failed.exchange(true))
+    ERR("Mullion profile: a record could not be written in ", directory, ", so the profile stops");
 }
 
 // the bridge's calls since the frame before: a 'call' line naming each code once, then 'unix' with code:count:time

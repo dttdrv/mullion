@@ -4828,7 +4828,8 @@ _WMTDiagWrite(void *obj) {
   }
   if (!file || fwrite(params->lines.ptr, 1, params->length, file) != params->length || fflush(file)) {
     params->ret = 0;
-    perror("mullion-diag: write record");
+    if (file)
+      perror("mullion-diag: write record");
   }
   pthread_mutex_unlock(&lock);
   return STATUS_SUCCESS;

@@ -432,9 +432,12 @@ main(int argc, char **argv) {
   if (!expect(unix_name != nullptr, "Wine path conversion unavailable"))
     return verdict();
   std::string baseline;
-  const char *settings[] = {nullptr, nullptr, "profiles", "profile", "profile"};
+  // the last run's records go to a directory that is not there: the profile says so once, in the log, and the
+  // pictures stay the same
+  const char *settings[] = {nullptr, nullptr, "profiles", "profile", "profile", "profile"};
   for (UINT run = 0; run < std::size(settings); run++) {
     auto setting = settings[run];
+    const bool unwritable = run == std::size(settings) - 1;
     const bool profiling = setting && !strcmp(setting, "profile");
     step("child MULLION_DIAG=%s, run %u", setting ? setting : "unset", run);
     if (!expect(temporary_directory(temporary, "prf", directory), "no temporary directory"))
@@ -444,11 +447,11 @@ main(int argc, char **argv) {
     char *path = unix_name(wide);
     if (!expect(path != nullptr, "Wine path conversion failed"))
       return verdict();
-    SetEnvironmentVariableA("MULLION_DIAG_PATH", path);
+    SetEnvironmentVariableA("MULLION_DIAG_PATH", (std::string(path) + (unwritable ? "/missing" : "")).c_str());
     HeapFree(GetProcessHeap(), 0, path);
     SetEnvironmentVariableA("MULLION_DIAG", setting);
-    SetEnvironmentVariableA("MULLION_LOG_PATH", "none");
-    SetEnvironmentVariableA("MULLION_D3D12_GPU_ERRORS", run == std::size(settings) - 1 ? "1" : nullptr);
+    SetEnvironmentVariableA("MULLION_LOG_PATH", unwritable ? directory : "none");
+    SetEnvironmentVariableA("MULLION_D3D12_GPU_ERRORS", run == std::size(settings) - 2 ? "1" : nullptr);
     SetEnvironmentVariableA("MULLION_D3D12_ISOLATE", nullptr);
     std::string command =
         std::string("\"") + exe + "\" " + (argc > 1 ? argv[1] : "dxil") + " child \"" + directory + "\"";
@@ -476,6 +479,15 @@ main(int argc, char **argv) {
       baseline = output;
     expect(!output.empty() && output == baseline, "profile changed pixels or buffers");
     pixels.close();
+    if (unwritable) {
+      std::ifstream log(std::string(directory) + "\\d3d12_profile_d3d12.log");
+      std::string text((std::istreambuf_iterator<char>(log)), {});
+      size_t said = 0;
+      for (size_t at = text.find("could not be written"); at != std::string::npos; at = text.find("could not be written", at + 1))
+        said++;
+      expect(said == 1, "a profile that cannot write its records said so %zu times, want once", said);
+      continue;
+    }
     std::ifstream facts(std::string(directory) + "\\facts");
     std::string names[4];
     for (auto &name : names)
