@@ -772,7 +772,12 @@ ExtractEntireResourceViewDescription(MTLD3D11Device *pDevice, const RESOURCE_DES
         // a family's parent qualifies no view; the formats of a depth stencil texture's planes carry the name and do
         ((view_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && DXGIFormatType(pViewDescOut->Format) == pViewDescOut->Format))
       return E_INVALIDARG;
-    if (!(resource_format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) &&
+    // and an unordered access view of a 32-bit typeless texture can be R32 of any type (D3D11.3 5.3.9.5, as D3D12's
+    // CastsToR32UnorderedAccess)
+    constexpr bool uav = !srv && !rtv && !dsv;
+    const bool r32 = pViewDescOut->Format == DXGI_FORMAT_R32_UINT || pViewDescOut->Format == DXGI_FORMAT_R32_SINT ||
+                     pViewDescOut->Format == DXGI_FORMAT_R32_FLOAT;
+    if (!(resource_format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) && !(uav && r32 && CastsToR32UnorderedAccess(pResourceDesc->Format)) &&
         (DXGIFormatType(pResourceDesc->Format) != DXGIFormatType(pViewDescOut->Format) ||
          (pViewDescOut->Format != pResourceDesc->Format && !(resource_format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
           !((srv || rtv) && (Usage & DXGI_USAGE_BACK_BUFFER)))))
