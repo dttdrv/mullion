@@ -762,17 +762,61 @@ NvAPI_Stereo_SetDriverMode(NV_STEREO_DRIVER_MODE mode) {
   return NVAPI_STEREO_NOT_INITIALIZED;
 }
 
+// driver settings (DRS) as a driver that has none for any program: a session with its base and global profile, no
+// application profiles, and no setting anywhere, so what asks (Streamline, which needs a session for Frame Generation)
+// uses its defaults
+static int drs_session, drs_base_profile;
+
 NVAPI_INTERFACE
 NvAPI_DRS_CreateSession(NvDRSSessionHandle *phSession) {
   if (!phSession)
     return NVAPI_INVALID_ARGUMENT;
+  *phSession = reinterpret_cast<NvDRSSessionHandle>(&drs_session);
+  return NVAPI_OK;
+}
 
-  return NVAPI_NOT_SUPPORTED;
+NVAPI_INTERFACE
+NvAPI_DRS_DestroySession(NvDRSSessionHandle hSession) {
+  return hSession == reinterpret_cast<NvDRSSessionHandle>(&drs_session) ? NVAPI_OK : NVAPI_INVALID_HANDLE;
 }
 
 NVAPI_INTERFACE
 NvAPI_DRS_LoadSettings(NvDRSSessionHandle hSession) {
-  return NVAPI_NOT_SUPPORTED;
+  return hSession == reinterpret_cast<NvDRSSessionHandle>(&drs_session) ? NVAPI_OK : NVAPI_INVALID_HANDLE;
+}
+
+NVAPI_INTERFACE
+NvAPI_DRS_GetBaseProfile(NvDRSSessionHandle hSession, NvDRSProfileHandle *phProfile) {
+  if (!phProfile)
+    return NVAPI_INVALID_ARGUMENT;
+  *phProfile = reinterpret_cast<NvDRSProfileHandle>(&drs_base_profile);
+  return NVAPI_OK;
+}
+
+NVAPI_INTERFACE
+NvAPI_DRS_GetCurrentGlobalProfile(NvDRSSessionHandle hSession, NvDRSProfileHandle *phProfile) {
+  if (!phProfile)
+    return NVAPI_INVALID_ARGUMENT;
+  *phProfile = reinterpret_cast<NvDRSProfileHandle>(&drs_base_profile);
+  return NVAPI_OK;
+}
+
+NVAPI_INTERFACE
+NvAPI_DRS_FindProfileByName(NvDRSSessionHandle hSession, NvAPI_UnicodeString profileName, NvDRSProfileHandle *phProfile) {
+  return NVAPI_PROFILE_NOT_FOUND;
+}
+
+NVAPI_INTERFACE
+NvAPI_DRS_FindApplicationByName(
+    NvDRSSessionHandle hSession, NvAPI_UnicodeString appName, NvDRSProfileHandle *phProfile,
+    NVDRS_APPLICATION *pApplication
+) {
+  return NVAPI_EXECUTABLE_NOT_FOUND;
+}
+
+NVAPI_INTERFACE
+NvAPI_DRS_GetSetting(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvU32 settingId, NVDRS_SETTING *pSetting) {
+  return pSetting ? NVAPI_SETTING_NOT_FOUND : NVAPI_INVALID_ARGUMENT;
 }
 
 // the adapter's LUID as DXGI reports it (dxgi_adapter.cpp): Wine's for the primary display where there is one Metal
@@ -972,6 +1016,18 @@ static void *QueryInterfaceImpl(NvU32 id) {
     return (void *)&NvAPI_DRS_CreateSession;
   case 0x375dbd6b:
     return (void *)&NvAPI_DRS_LoadSettings;
+  case 0xdad9cff8:
+    return (void *)&NvAPI_DRS_DestroySession;
+  case 0xda8466a0:
+    return (void *)&NvAPI_DRS_GetBaseProfile;
+  case 0x617bff9f:
+    return (void *)&NvAPI_DRS_GetCurrentGlobalProfile;
+  case 0x7e4a9a0b:
+    return (void *)&NvAPI_DRS_FindProfileByName;
+  case 0xeee566b2:
+    return (void *)&NvAPI_DRS_FindApplicationByName;
+  case 0x73bf8338:
+    return (void *)&NvAPI_DRS_GetSetting;
   case 0x0ff07fde:
     return (void *)&NvAPI_GPU_GetAdapterIdFromPhysicalGpu;
   case 0x842b066e:
