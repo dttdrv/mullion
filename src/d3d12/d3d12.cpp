@@ -28,6 +28,9 @@
 #include "util_string.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <map>
+#include <optional>
 
 // ID3D12SDKConfiguration (d3d12.idl), which include/native/directx/d3d12.h only forward-declares (mingw's d3d12.h,
 // which some targets build with, defines it). "Sets the SDK version and the path to the Direct3D 12 runtime"
@@ -158,12 +161,52 @@ ExperimentalShaderModelsEnabled() {
   return experimental_shader_models;
 }
 
+// the SHA1s of the containers that held, by their own hash and size: once a container's hash is checked against its
+// bytes it names them, so pipelines that share shaders hash each with SHA1 once in the process. every creation still
+// checks the hash (Direct3D refuses a container whose bytes it does not match). a hash of one byte value 0, 1 or 2 is
+// none (md5::checkDxbcHash) and tells containers apart by nothing, so theirs are hashed each time
+using OwnHash = std::pair<decltype(md5::Digest::data), size_t>;
+static mullion::shared_mutex known_lock;
+static std::map<OwnHash, Sha1Digest> known;
+
+static std::optional<OwnHash>
+Own(const void *container, size_t size) {
+  OwnHash own{{}, size};
+  auto &[hash, length] = own;
+  if (!container || size < sizeof(uint32_t) + hash.size())
+    return {};
+  std::memcpy(hash.data(), static_cast<const uint8_t *>(container) + sizeof(uint32_t), hash.size());
+  if (hash[0] <= 2 && std::ranges::all_of(hash, [&](uint8_t byte) { return byte == hash[0]; }))
+    return {};
+  return own;
+}
+
 bool
 ShaderContainerHolds(const void *container, size_t size) {
   if (FAILED(microsoft::CDXBCParser().ReadDXBC(container, size)))
     return false;
   auto hash = md5::checkDxbcHash(container, size);
+  if (auto own = Own(container, size); hash == md5::DxbcHash::Holds && own) {
+    {
+      std::shared_lock lock(known_lock);
+      if (known.contains(*own))
+        return true;
+    }
+    auto digest = Sha1HashState::compute(container, size);
+    std::lock_guard lock(known_lock);
+    known.emplace(*own, digest);
+  }
   return hash == md5::DxbcHash::Holds || (hash == md5::DxbcHash::None && experimental_shader_models);
+}
+
+Sha1Digest
+ShaderDigest(const void *code, size_t size) {
+  if (auto own = Own(code, size)) {
+    std::shared_lock lock(known_lock);
+    if (auto found = known.find(*own); found != known.end())
+      return found->second;
+  }
+  return Sha1HashState::compute(code, size);
 }
 
 bool
