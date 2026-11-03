@@ -7,52 +7,10 @@
 // their own, which the trace holds as debug groups around them, with each pass encoded on a thread of its own
 // (MULLION_D3D12_PARALLEL_COMMANDS=1)
 #include "d3d12_test.hpp"
+#include "d3d12_capture.hpp"
 #include <dxgi1_4.h>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <thread>
-
-// whether a file under `path` holds `text`
-static bool
-holds(const std::string &path, const std::string &text) {
-  WIN32_FIND_DATAA found;
-  HANDLE find = FindFirstFileA((path + "\\*").c_str(), &found);
-  bool held = false;
-  for (BOOL more = find != INVALID_HANDLE_VALUE; more && !held; more = FindNextFileA(find, &found)) {
-    std::string name = found.cFileName, at = path + "\\" + name;
-    if (name == "." || name == "..")
-      continue;
-    if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-      held = holds(at, text);
-    else {
-      std::ifstream file(at, std::ios::binary);
-      std::string bytes{std::istreambuf_iterator<char>(file), {}};
-      held = bytes.find(text) != bytes.npos;
-    }
-  }
-  if (find != INVALID_HANDLE_VALUE)
-    FindClose(find);
-  return held;
-}
-
-static void
-remove_tree(const std::string &path) {
-  WIN32_FIND_DATAA found;
-  HANDLE find = FindFirstFileA((path + "\\*").c_str(), &found);
-  for (BOOL more = find != INVALID_HANDLE_VALUE; more; more = FindNextFileA(find, &found)) {
-    std::string name = found.cFileName, at = path + "\\" + name;
-    if (name == "." || name == "..")
-      continue;
-    if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-      remove_tree(at);
-    else
-      DeleteFileA(at.c_str());
-  }
-  if (find != INVALID_HANDLE_VALUE)
-    FindClose(find);
-  RemoveDirectoryA(path.c_str());
-}
 
 int
 main() {
@@ -156,6 +114,6 @@ main() {
     for (auto event : events)
       expect(holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
   }
-  remove_tree(directory);
+  expect(remove_tree(directory), "%s was not removed", directory);
   return verdict();
 }

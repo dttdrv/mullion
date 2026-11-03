@@ -1,0 +1,12 @@
+# the last queue's release leaves a capture under way.
+diff --git a/src/mullion/mullion_capture.cpp b/src/mullion/mullion_capture.cpp
+--- a/src/mullion/mullion_capture.cpp
++++ b/src/mullion/mullion_capture.cpp
+@@ -120,7 +120,6 @@
+   if (capture.state == State::Capturing) {
+     capture.state = State::Idle;
+     capture.next_capture_frame = 0;
+-    WMT::CaptureManager::sharedCaptureManager().stopCapture();
+   }
+   if (capture.stopping_.joinable())
+     capture.stopping_.join();

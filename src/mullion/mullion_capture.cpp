@@ -1,6 +1,8 @@
 #include "mullion_capture.hpp"
 #include "log/log.hpp"
+#include "thread.hpp"
 #include "util_env.hpp"
+#include <atomic>
 #include <ctime>
 
 #ifdef __WIN32
@@ -9,32 +11,137 @@
 
 namespace mullion {
 
-CaptureState::CaptureState() {
-  if (env::getEnvVar("MTL_CAPTURE_ENABLED") != "1")
-    return;
-  if (env::getExeBaseName() != env::getEnvVar("MULLION_CAPTURE_EXECUTABLE"))
-    return;
-  WARN("Mullion capture enabled");
-  state = State::Idle;
-  try {
-    if (auto frame = env::getEnvVar("MULLION_CAPTURE_FRAME"); !frame.empty())
-      scheduleNextFrameCapture(std::stoull(frame));
-  } catch (const std::exception &) {
+namespace {
+
+enum class NextAction {
+  StartCapture,
+  StopCapture,
+  Nothing,
+};
+
+enum class State {
+  Idle,
+  WillCapture,
+  Capturing,
+};
+
+struct Capture {
+  const bool enabled = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1" &&
+                       env::getExeBaseName() == env::getEnvVar("MULLION_CAPTURE_EXECUTABLE");
+  mullion::mutex mutex;
+  State state = State::Idle;
+  uint64_t next_capture_frame = 0;
+  bool capture_key_pressed_ = false;
+  unsigned holds = 0;
+  mullion::thread stopping_;
+  std::atomic<bool> stopped_ = true;
+
+  Capture() {
+    if (!enabled)
+      return;
+    WARN("Mullion capture enabled");
+    try {
+      if (auto frame = env::getEnvVar("MULLION_CAPTURE_FRAME"); !frame.empty())
+        scheduleNextFrameCapture(std::stoull(frame));
+    } catch (const std::exception &) {
+    }
   }
+
+  NextAction
+  getNextAction(uint64_t frame) {
+    switch (state) {
+    case State::Idle:
+      break;
+    case State::WillCapture:
+      if (frame == next_capture_frame) {
+        state = State::Capturing;
+        return NextAction::StartCapture;
+      }
+      break;
+    case State::Capturing:
+      if (frame > next_capture_frame) {
+        next_capture_frame = 0;
+        state = State::Idle;
+        return NextAction::StopCapture;
+      }
+      break;
+    }
+    return NextAction::Nothing;
+  }
+
+  void
+  scheduleNextFrameCapture(uint64_t next = 0) {
+    if (state != State::Idle)
+      return;
+    state = State::WillCapture;
+    next_capture_frame = next;
+  }
+
+  bool
+  shouldCaptureNextFrame() {
+#ifdef _WIN32
+    if (state != State::Idle)
+      return false;
+    SHORT state_ = GetAsyncKeyState(VK_F10);
+    if (state_ & 0x8000 && !capture_key_pressed_) {
+      capture_key_pressed_ = true;
+      return true;
+    }
+    capture_key_pressed_ = state_ & 0x8000;
+#endif
+    return false;
+  }
+};
+
+// never destroyed: a hold the process never released must not meet a destroyed capture at its exit
+Capture &
+capture() {
+  static auto &capture = *new Capture;
+  return capture;
+}
+
+} // namespace
+
+CaptureState::CaptureState() {
+  auto &capture = mullion::capture();
+  if (!capture.enabled)
+    return;
+  std::lock_guard lock(capture.mutex);
+  capture.holds++;
 }
 
 CaptureState::~CaptureState() {
-  if (stopping_.joinable())
-    stopping_.join();
+  auto &capture = mullion::capture();
+  if (!capture.enabled)
+    return;
+  std::lock_guard lock(capture.mutex);
+  if (--capture.holds)
+    return;
+  if (capture.state == State::Capturing) {
+    capture.state = State::Idle;
+    capture.next_capture_frame = 0;
+    WMT::CaptureManager::sharedCaptureManager().stopCapture();
+  }
+  if (capture.stopping_.joinable())
+    capture.stopping_.join();
 }
 
 void
 CaptureState::frame(WMT::Device device, uint64_t frame) {
-  switch (getNextAction(frame)) {
+  auto &capture = mullion::capture();
+  if (!capture.enabled)
+    return;
+  std::lock_guard lock(capture.mutex);
+  switch (capture.getNextAction(frame)) {
   case NextAction::StartCapture: {
-    // Metal takes one capture at a time
-    if (stopping_.joinable())
-      stopping_.join();
+    // Metal takes one capture at a time, and the stop of the last one may wait for what this thread commits next
+    if (!capture.stopped_) {
+      capture.state = State::WillCapture;
+      capture.next_capture_frame = frame + 1;
+      break;
+    }
+    if (capture.stopping_.joinable())
+      capture.stopping_.join();
     WMTCaptureInfo info;
     info.capture_object = device;
     info.destination = WMTCaptureDestinationGPUTraceDocument;
@@ -56,60 +163,17 @@ CaptureState::frame(WMT::Device device, uint64_t frame) {
   }
   case NextAction::StopCapture:
     // Metal's stop waits for the device's work, which can wait for what the calling thread submits next
-    stopping_ = mullion::thread([] { WMT::CaptureManager::sharedCaptureManager().stopCapture(); });
+    capture.stopped_ = false;
+    capture.stopping_ = mullion::thread([&capture] {
+      WMT::CaptureManager::sharedCaptureManager().stopCapture();
+      capture.stopped_ = true;
+    });
     break;
   case NextAction::Nothing:
-    if (shouldCaptureNextFrame())
-      scheduleNextFrameCapture(frame + 1);
+    if (capture.shouldCaptureNextFrame())
+      capture.scheduleNextFrameCapture(frame + 1);
     break;
   }
 }
-
-CaptureState::NextAction
-CaptureState::getNextAction(uint64_t frame) {
-  switch (state) {
-  case State::Freezed:
-    return NextAction::Nothing;
-  case State::Idle:
-    break;
-  case State::WillCapture:
-    if (frame == next_capture_frame) {
-      state = State::Capturing;
-      return NextAction::StartCapture;
-    }
-    break;
-  case State::Capturing:
-    if (frame > next_capture_frame) {
-      next_capture_frame = 0;
-      state = State::Idle;
-      return NextAction::StopCapture;
-    }
-    break;
-  }
-  return NextAction::Nothing;
-};
-
-void
-CaptureState::scheduleNextFrameCapture(uint64_t next) {
-  if (state != State::Idle)
-    return;
-  state = State::WillCapture;
-  next_capture_frame = next;
-}
-
-bool
-CaptureState::shouldCaptureNextFrame() {
-#ifdef _WIN32
-  if (state != State::Idle)
-    return false;
-  SHORT state_ = GetAsyncKeyState(VK_F10);
-  if (state_ & 0x8000 && !capture_key_pressed_) {
-    capture_key_pressed_ = true;
-    return true;
-  }
-  capture_key_pressed_ = state_ & 0x8000;
-#endif
-  return false;
-};
 
 } // namespace mullion
