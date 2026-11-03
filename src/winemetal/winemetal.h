@@ -889,9 +889,7 @@ struct WMTMeshRenderPipelineInfo {
   uint8_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  // every target's format, write mask and blending left to MTLDevice_newSpecializedRenderPipelineState
-  bool unspecialized_colors;
-  uint8_t padding[4];
+  uint8_t padding[5];
 };
 
 WINEMETAL_API obj_handle_t
@@ -903,8 +901,7 @@ WINEMETAL_API obj_handle_t MTLDevice_newMeshRenderPipelineState(
 
 /* a pipeline of `colors` made from one of unspecialized_colors, by the device's MTL4Compiler (macOS 26) */
 WINEMETAL_API obj_handle_t MTLDevice_newSpecializedRenderPipelineState(
-    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], bool mesh,
-    obj_handle_t *err_out
+    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], obj_handle_t *err_out
 );
 
 struct WMTSize {

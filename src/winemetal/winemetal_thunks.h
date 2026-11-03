@@ -206,7 +206,6 @@ struct unixcall_mtldevice_newspecializedpso {
   obj_handle_t device;
   obj_handle_t pipeline;
   struct WMTConstMemoryPointer colors;
-  uint64_t mesh;
   obj_handle_t ret_error;
   obj_handle_t ret_pso;
 };

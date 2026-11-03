@@ -613,14 +613,12 @@ MTLDevice_newMeshRenderPipelineState(
 
 WINEMETAL_API obj_handle_t
 MTLDevice_newSpecializedRenderPipelineState(
-    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], bool mesh,
-    obj_handle_t *err_out
+    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], obj_handle_t *err_out
 ) {
   struct unixcall_mtldevice_newspecializedpso params;
   params.device = device;
   params.pipeline = pipeline;
   WMT_MEMPTR_SET(params.colors, colors);
-  params.mesh = mesh;
   params.ret_error = 0;
   params.ret_pso = 0;
   UNIX_CALL(WMTUnixDeviceNewSpecializedRenderPipeline, &params);

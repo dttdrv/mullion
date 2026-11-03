@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <string>
 #include <cstring>
-#include <type_traits>
 #include <vector>
 
 namespace WMT {
@@ -1361,12 +1360,12 @@ public:
     return Reference<RenderPipelineState>(MTLDevice_newMeshRenderPipelineState(handle, &info, error.out()));
   }
 
-  template <typename Info>
   Reference<RenderPipelineState>
-  newSpecializedRenderPipelineState(RenderPipelineState pipeline, const Info &info, Reference<Error> &error) {
-    return Reference<RenderPipelineState>(MTLDevice_newSpecializedRenderPipelineState(
-        handle, pipeline.handle, info.colors, std::is_same_v<Info, WMTMeshRenderPipelineInfo>, error.out()
-    ));
+  newSpecializedRenderPipelineState(RenderPipelineState pipeline, const WMTRenderPipelineInfo &info,
+                                    Reference<Error> &error) {
+    return Reference<RenderPipelineState>(
+        MTLDevice_newSpecializedRenderPipelineState(handle, pipeline.handle, info.colors, error.out())
+    );
   }
 
   Reference<RenderPipelineState>
@@ -1754,7 +1753,6 @@ InitializeMeshRenderPipelineInfo(WMTMeshRenderPipelineInfo &info) {
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
   info.support_indirect_command_buffers = false;
-  info.unspecialized_colors = false;
 }
 
 inline void

@@ -753,11 +753,9 @@ CREATES(_MTLDevice_newSpecializedRenderPipeline)(void *obj) {
   params->ret_pso = 0;
   params->ret_error = 0;
   if (@available(macOS 26.0, *)) {
-    MTL4MeshRenderPipelineDescriptor *mesh = params->mesh ? [[MTL4MeshRenderPipelineDescriptor alloc] init] : nil;
-    MTL4RenderPipelineDescriptor *render = mesh ? nil : [[MTL4RenderPipelineDescriptor alloc] init];
-    MTL4PipelineDescriptor *descriptor = mesh ? (MTL4PipelineDescriptor *)mesh : render;
+    MTL4RenderPipelineDescriptor *descriptor = [[MTL4RenderPipelineDescriptor alloc] init];
     for (unsigned i = 0; i < 8; i++) {
-      MTL4RenderPipelineColorAttachmentDescriptor *color = (mesh ? mesh.colorAttachments : render.colorAttachments)[i];
+      MTL4RenderPipelineColorAttachmentDescriptor *color = descriptor.colorAttachments[i];
       color.pixelFormat = to_metal_pixel_format(colors[i].pixel_format);
       color.writeMask = (MTLColorWriteMask)colors[i].write_mask;
       color.blendingState = colors[i].blending_enabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
@@ -845,8 +843,6 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
   [descriptor setLogicOperationEnabled:info->logic_operation_enabled];
   [descriptor setLogicOperation:(MTLLogicOperation)info->logic_operation];
 #endif
-  if (info->unspecialized_colors)
-    unspecialize(descriptor.colorAttachments);
   descriptor.depthAttachmentPixelFormat = to_metal_pixel_format(info->depth_pixel_format);
   descriptor.stencilAttachmentPixelFormat = to_metal_pixel_format(info->stencil_pixel_format);
   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;

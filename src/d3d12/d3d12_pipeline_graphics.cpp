@@ -678,12 +678,20 @@ protected:
   // the targets the pixel shader blends itself (ShaderBlend)
   uint32_t blend_mask_ = 0;
 
+  // a mesh pipeline is made whole: its specialization gives the fragment stage zeros for the mesh stage's
+  // per-primitive outputs (d3d12_mesh)
+  WMT::Reference<WMT::RenderPipelineState>
+  MetalPipeline(const WMTMeshRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
+    return device_->Archived(info, error, [&](auto &info, auto &error) {
+      return device_->GetMTLDevice().newRenderPipelineState(info, error);
+    });
+  }
+
   // the Metal pipeline of `info`: on Metal 4, specialized from the device's flexible pipeline of the rest of its state
   // (MTLD3D12Device::flexible), which this pipeline holds from then on. that state is in the key whole, as
   // GetPipelineKey binds it, all but the archives it is looked up in
-  template <typename Info>
   WMT::Reference<WMT::RenderPipelineState>
-  MetalPipeline(const Info &info, WMT::Reference<WMT::Error> &error) {
+  MetalPipeline(const WMTRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
     auto &flexible = device_->flexible;
     std::call_once(flexible.checked, [&] {
       flexible.enabled = env::getEnvVar("MULLION_D3D12_FLEXIBLE") != "0" && device_->UsesMetal4();
@@ -696,19 +704,11 @@ protected:
     auto hash = [](Sha1HashState &h, const auto &...values) { (h.update(values), ...); };
     for (auto &[format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending] : info.colors)
       hash(colors, format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending);
-    if constexpr (std::is_same_v<Info, WMTRenderPipelineInfo>) {
-      auto &[targets, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment, immutable_vertex,
-             immutable_fragment, topology, partition, factor, winding, step, serialization, lookup, lookups, fail, icb,
-             unspecialized, padding] = info;
-      hash(fixed, false, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment,
-           immutable_vertex, immutable_fragment, topology, partition, factor, winding, step, icb);
-    } else {
-      auto &[targets, coverage, logic, logic_op, rasterized, samples, depth, stencil, object, mesh, fragment,
-             immutable_object, immutable_mesh, immutable_fragment, payload, mesh_simd, object_simd, serialization,
-             lookup, lookups, fail, icb, unspecialized, padding] = info;
-      hash(fixed, true, coverage, logic, logic_op, rasterized, samples, depth, stencil, object, mesh, fragment,
-           immutable_object, immutable_mesh, immutable_fragment, payload, mesh_simd, object_simd, icb);
-    }
+    auto &[targets, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment, immutable_vertex,
+           immutable_fragment, topology, partition, factor, winding, step, serialization, lookup, lookups, fail, icb,
+           unspecialized, padding] = info;
+    hash(fixed, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment, immutable_vertex,
+         immutable_fragment, topology, partition, factor, winding, step, icb);
     auto key = fixed.final(), colors_key = colors.final();
     std::shared_ptr<MTLD3D12Device::Flexible> held;
     {
