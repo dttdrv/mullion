@@ -704,6 +704,33 @@ NvAPI_D3D_SetLatencyMarker(IUnknown *pDev, NV_LATENCY_MARKER_PARAMS *pSetLatency
   return NVAPI_OK;
 }
 
+// Reflex Sync, which Streamline's Frame Generation pacing (RSYNC) hands its queue timing to every frame: the timing is
+// for the driver's present metering, and Streamline paces the frames itself, as it does on GPUs without metering
+NVAPI_INTERFACE
+NvAPI_D3D_SetReflexSync(IUnknown *pDev, NV_SET_REFLEX_SYNC_PARAMS *pSetReflexSyncParams) {
+  if (!pDev || !pSetReflexSyncParams)
+    return NVAPI_INVALID_ARGUMENT;
+  if (pSetReflexSyncParams->version != NV_SET_REFLEX_SYNC_PARAMS_VER1)
+    return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+  return NVAPI_OK;
+}
+
+// the frame markers of a queue whose work is not the frame's (Frame Generation's), and which queues those are: for
+// Reflex's latency reports, which have no figures here (NvAPI_D3D_GetLatency)
+NVAPI_INTERFACE
+NvAPI_D3D12_SetAsyncFrameMarker(ID3D12CommandQueue *pCommandQueue, NV_ASYNC_FRAME_MARKER_PARAMS *pSetAsyncFrameMarkerParams) {
+  if (!pCommandQueue || !pSetAsyncFrameMarkerParams)
+    return NVAPI_INVALID_ARGUMENT;
+  if (pSetAsyncFrameMarkerParams->version != NV_ASYNC_FRAME_MARKER_PARAMS_VER1)
+    return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+  return NVAPI_OK;
+}
+
+NVAPI_INTERFACE
+NvAPI_D3D12_NotifyOutOfBandCommandQueue(ID3D12CommandQueue *pCommandQueue, NV_OUT_OF_BAND_CQ_TYPE cqType) {
+  return pCommandQueue ? NVAPI_OK : NVAPI_INVALID_ARGUMENT;
+}
+
 NVAPI_INTERFACE
 NvAPI_D3D_Sleep(IUnknown *pDev) {
   if (!pDev)
@@ -1002,6 +1029,12 @@ static void *QueryInterfaceImpl(NvU32 id) {
     return (void *)&NvAPI_D3D_SetLatencyMarker;
   case 0x852cd1d2:
     return (void *)&NvAPI_D3D_Sleep;
+  case 0xb9f6faff:
+    return (void *)&NvAPI_D3D_SetReflexSync;
+  case 0x13c98f73:
+    return (void *)&NvAPI_D3D12_SetAsyncFrameMarker;
+  case 0x03d6e8cb:
+    return (void *)&NvAPI_D3D12_NotifyOutOfBandCommandQueue;
   case 0x1a587f9c:
     return (void *)&NvAPI_D3D_GetLatency;
   case 0x5526cfd1:
