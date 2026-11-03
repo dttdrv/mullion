@@ -729,15 +729,15 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
   return STATUS_SUCCESS;
 }
 
-// the device's compiler of Metal 4 pipelines, made once
+// the device's compiler of Metal 4 pipelines, made once; `error` says why there is none
 static id<MTL4Compiler>
-API_AVAILABLE(macos(26.0)) device_compiler(id<MTLDevice> device) {
+API_AVAILABLE(macos(26.0)) device_compiler(id<MTLDevice> device, NSError **error) {
   static char key;
   @synchronized(device) {
     id<MTL4Compiler> compiler = objc_getAssociatedObject(device, &key);
     if (!compiler) {
       MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor alloc] init];
-      compiler = [device newCompilerWithDescriptor:desc error:nil];
+      compiler = [device newCompilerWithDescriptor:desc error:error];
       objc_setAssociatedObject(device, &key, compiler, OBJC_ASSOCIATION_RETAIN);
       [compiler release];
       [desc release];
@@ -769,7 +769,7 @@ CREATES(_MTLDevice_newSpecializedRenderPipeline)(void *obj) {
       color.destinationAlphaBlendFactor = (MTLBlendFactor)colors[i].dst_alpha_blend_factor;
     }
     NSError *err = NULL;
-    params->ret_pso = (obj_handle_t)[device_compiler((id<MTLDevice>)params->device)
+    params->ret_pso = (obj_handle_t)[device_compiler((id<MTLDevice>)params->device, &err)
         newRenderPipelineStateBySpecializationWithDescriptor:descriptor
                                                     pipeline:(id<MTLRenderPipelineState>)params->pipeline
                                                        error:&err];
