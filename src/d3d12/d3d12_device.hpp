@@ -659,6 +659,33 @@ public:
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const SharedFunction>> made;
   } functions;
+  // the program's pipelines kept across launches as their GPU binaries (MTLBinaryArchive): a pipeline is looked up
+  // there before Metal compiles it, and one that is not there is added once it is compiled
+  template <typename Info, typename Make>
+  auto
+  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
+    std::shared_lock lock(archive_lock);
+    obj_handle_t archive = PipelineArchive();
+    if (!archive)
+      return make(info, error);
+    info.binary_archives_for_lookup.set(&archive);
+    info.num_binary_archives_for_lookup = 1;
+    info.fail_on_binary_archive_miss = true;
+    if (auto found = make(info, error))
+      return found;
+    info.fail_on_binary_archive_miss = false;
+    info.binary_archive_for_serialization = archive;
+    error = {};
+    auto made = make(info, error);
+    if (made)
+      PipelineArchived();
+    return made;
+  }
+  // the device's archive, opened when the first pipeline is made; none without a shader cache (ShaderCacheDirectory)
+  virtual obj_handle_t PipelineArchive() = 0;
+  virtual void PipelineArchived() = 0;
+  // pipelines are made under it shared, and the archive is written under it whole
+  mullion::shared_mutex archive_lock;
 
   // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
   // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so

@@ -682,7 +682,9 @@ protected:
   WMT::Reference<WMT::RenderPipelineState>
   CreatePipeline(const Info &info, WMT::Reference<WMT::Error> &error,
                  std::function<WMT::Reference<WMT::Function>()> statistics_geometry_shader = {}) {
-    auto pipeline = device_->GetMTLDevice().newRenderPipelineState(info, error);
+    auto pipeline = device_->Archived(info, error, [&](auto &info, auto &error) {
+      return device_->GetMTLDevice().newRenderPipelineState(info, error);
+    });
     if (!pipeline || (!rtv_mask && !dsv_mask && !pixel_shader && !statistics_geometry_shader))
       return pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
@@ -1934,7 +1936,9 @@ public:
             info.stencil_pixel_format = WMTPixelFormatInvalid;
           else if (any_format)
             info.stencil_pixel_format = DSVFormat;
-          return device_->GetMTLDevice().newRenderPipelineState(info, error);
+          return device_->Archived(info, error, [&](auto &info, auto &error) {
+            return device_->GetMTLDevice().newRenderPipelineState(info, error);
+          });
         },
         descriptor.info
     );

@@ -1,6 +1,7 @@
 // contract: a pipeline made of what a held pipeline already has (shaders, depth stencil state) makes no Metal
 // library and no depth stencil state, and asks the system nothing (the bridge's call counts); another depth test does
-// make one, which shows the counts see the calls
+// make one, which shows the counts see the calls. a device made after the first one ended finds its pipelines in the
+// program's archive (MULLION_SHADER_CACHE_PATH): one Metal pipeline creation each, where a miss takes a second
 #include "d3d12_test.hpp"
 #include "../../src/winemetal/winemetal.h"
 #include <map>
@@ -16,6 +17,14 @@ main(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return printf("skipped: dxcompiler.dll not found\n"), 77;
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps");
+  char temporary[MAX_PATH], directory[MAX_PATH];
+  WCHAR wide[MAX_PATH];
+  GetTempPathA(sizeof(temporary), temporary);
+  auto unix_name = (char *(__cdecl *)(const WCHAR *))GetProcAddress(GetModuleHandleA("kernel32"), "wine_get_unix_file_name");
+  if (!temporary_directory(temporary, "pa", directory) || !MultiByteToWideChar(CP_ACP, 0, directory, -1, wide, MAX_PATH))
+    return printf("failed: no temporary directory\n"), 1;
+  SetEnvironmentVariableA("MULLION_SHADER_CACHE", "1");
+  SetEnvironmentVariableA("MULLION_SHADER_CACHE_PATH", unix_name(wide));
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");
@@ -61,5 +70,21 @@ main(int argc, char **argv) {
   }
   step("another depth test");
   expect(make(deeper)["MTLDevice_newDepthStencilState"] > 0, "no depth stencil state made");
+
+  step("a device after the first one ended");
+  held.clear(), rs.Reset(), device.Reset();
+  WIN32_FIND_DATAA found;
+  auto archive = FindFirstFileA((std::string(directory) + "\\pipelines_*.metallib").c_str(), &found);
+  expect(archive != INVALID_HANDLE_VALUE && found.nFileSizeLow, "no archive written");
+  FindClose(archive);
+  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  desc.pRootSignature = (rs = root_signature(device.Get(), {})).Get();
+  auto made = make(desc)["MTLDevice_newRenderPipelineState"];
+  expect(made == 1, "%llu Metal pipeline creations, want the archive's one", (unsigned long long)made);
+  step("a pipeline the archive lacks");
+  auto unseen = desc;
+  unseen.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  made = make(unseen)["MTLDevice_newRenderPipelineState"];
+  expect(made == 2, "%llu Metal pipeline creations, want the lookup and the compile", (unsigned long long)made);
   return verdict();
 }

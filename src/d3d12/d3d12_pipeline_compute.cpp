@@ -87,7 +87,7 @@ public:
       info.compute_function = cs_func;
       info.support_indirect_command_buffers = true;
 
-      pso = metal.newComputePipelineState(info, err);
+      pso = device_->Archived(info, err, [&](auto &info, auto &error) { return metal.newComputePipelineState(info, error); });
       if (!pso) {
         ERR("Failed to create compute PSO of shader ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->CS});
