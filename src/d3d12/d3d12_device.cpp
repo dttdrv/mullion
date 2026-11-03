@@ -860,7 +860,10 @@ public:
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS5 *>(pFeatureData);
       out->SRVOnlyTiledResourceTier3 = FALSE;
       out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
-      out->RaytracingTier = D3D12_RAYTRACING_TIER_1_1;
+      // MULLION_D3D12_RAYTRACING=0: none, for an application whose ray tracing is its own choice (DXR spec,
+      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest
+      static const bool rays = env::getEnvVar("MULLION_D3D12_RAYTRACING") != "0";
+      out->RaytracingTier = rays ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS7: {
