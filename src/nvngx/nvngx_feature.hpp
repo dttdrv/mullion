@@ -29,4 +29,13 @@ struct DLSSDFeature : DLSSFeature {
   unsigned int hw_depth;       // 0: linear depth, which MetalFX does not take
 };
 
+// DLSS Frame Generation (D3D12), on MetalFX's frame interpolator
+struct DLSSGFeature : CommonFeature {
+  uint32_t width;
+  uint32_t height;
+  // when the last frame was interpolated to, for the time between frames
+  int64_t last_counter = 0;
+  IMTLD3D12Upscaler *interpolator = nullptr;
+};
+
 }
