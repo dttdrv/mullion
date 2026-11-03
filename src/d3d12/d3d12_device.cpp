@@ -2321,6 +2321,11 @@ public:
   PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
     auto end = std::chrono::steady_clock::now(), present = first_present.load();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    // the profile's pipeline time (tools/mullion-diag), on the thread that made it
+    if (diag::profile) {
+      uint64_t took = std::chrono::nanoseconds(end - start).count();
+      diag::Write(diag::Line("span", "pipeline", str::format(kind, " ", name), GetCurrentThreadId(), diag::Now() - took, took));
+    }
     bool late = present != std::chrono::steady_clock::time_point() && end >= present;
     // MULLION_TRACE_SHADER: 1 has the pipelines that take 20 ms or more or are made after the first present (a
     // stutter), heavy every one
