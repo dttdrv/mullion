@@ -657,6 +657,66 @@ RWBuffer<uint> result : register(u1);
     }
   }
 
+  // D3D11.3 5.3.9.5: a texture of these 32-bit typeless formats takes R32_UINT, R32_SINT and R32_FLOAT unordered
+  // access views, and only those views, though R32 is not of its type group; a typed texture of the group takes none
+  for (DXGI_FORMAT parent : {DXGI_FORMAT_R10G10B10A2_TYPELESS, DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                             DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8X8_TYPELESS, DXGI_FORMAT_R16G16_TYPELESS,
+                             DXGI_FORMAT_R8G8B8A8_UNORM}) {
+    D3D11_TEXTURE2D_DESC desc{4, 4, 1, 1, parent, {1, 0}, D3D11_USAGE_DEFAULT,
+                              D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS};
+    ComPtr<ID3D11Texture2D> texture;
+    // Mullion gives B8G8R8A8 and B8G8R8X8 no unordered access, so no texture of theirs is made for it
+    const bool bgr = parent == DXGI_FORMAT_B8G8R8A8_TYPELESS || parent == DXGI_FORMAT_B8G8R8X8_TYPELESS;
+    if (bgr && FAILED(device->CreateTexture2D(&desc, nullptr, &texture)))
+      continue;
+    if (!bgr)
+      CHECK(device->CreateTexture2D(&desc, nullptr, &texture));
+    const bool typeless = parent != DXGI_FORMAT_R8G8B8A8_UNORM;
+    for (DXGI_FORMAT child : {DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32_FLOAT}) {
+      step("R32 views parent=%u child=%u", parent, child);
+      D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+      uav_desc.Format = child;
+      uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+      creation(device.Get(), texture.Get(), &uav_desc, typeless ? &uav_desc : nullptr);
+      D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+      srv_desc.Format = child;
+      srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+      srv_desc.Texture2D = {0, 1};
+      creation(device.Get(), texture.Get(), &srv_desc, static_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC *>(nullptr));
+      D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
+      rtv_desc.Format = child;
+      rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+      creation(device.Get(), texture.Get(), &rtv_desc, static_cast<const D3D11_RENDER_TARGET_VIEW_DESC *>(nullptr));
+    }
+    if (!typeless)
+      continue;
+    // the view writes the texture's bits as they are: a uint clear through it reads back as the same bytes
+    step("R32 view bits parent=%u", parent);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+    uav_desc.Format = DXGI_FORMAT_R32_UINT;
+    uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    CHECK(device->CreateUnorderedAccessView(texture.Get(), &uav_desc, &uav));
+    const UINT bits[4] = {0x80402010u, 0, 0, 0};
+    context->ClearUnorderedAccessViewUint(uav.Get(), bits);
+    D3D11_TEXTURE2D_DESC staging_desc = desc;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.BindFlags = 0;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    CHECK(device->CreateTexture2D(&staging_desc, nullptr, &staging));
+    context->CopyResource(staging.Get(), texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    CHECK(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+    bool same = true;
+    for (UINT y = 0; y < desc.Height; y++)
+      for (UINT x = 0; x < desc.Width; x++)
+        same &= reinterpret_cast<const UINT *>(static_cast<const char *>(mapped.pData) + y * mapped.RowPitch)[x] ==
+                bits[0];
+    context->Unmap(staging.Get(), 0);
+    expect(same, "an R32_UINT view of format %u does not write its bits", parent);
+  }
+
   for (DXGI_FORMAT parent : {DXGI_FORMAT_R24G8_TYPELESS, DXGI_FORMAT_D24_UNORM_S8_UINT}) {
     D3D11_TEXTURE2D_DESC desc{width, height, mips, 3, parent, {1, 0}, D3D11_USAGE_DEFAULT, D3D11_BIND_DEPTH_STENCIL};
     ComPtr<ID3D11Texture2D> texture;

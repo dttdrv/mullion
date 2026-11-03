@@ -1,0 +1,13 @@
+# an R32 unordered access view of a 32-bit typeless D3D11 texture of another type group is refused
+# family native
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -777,7 +777,7 @@
+     constexpr bool uav = !srv && !rtv && !dsv;
+     const bool r32 = pViewDescOut->Format == DXGI_FORMAT_R32_UINT || pViewDescOut->Format == DXGI_FORMAT_R32_SINT ||
+                      pViewDescOut->Format == DXGI_FORMAT_R32_FLOAT;
+-    if (!(resource_format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) && !(uav && r32 && CastsToR32UnorderedAccess(pResourceDesc->Format)) &&
++    if (!(resource_format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR) && !(uav && r32 && false) &&
+         (DXGIFormatType(pResourceDesc->Format) != DXGIFormatType(pViewDescOut->Format) ||
+          (pViewDescOut->Format != pResourceDesc->Format && !(resource_format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
+           !((srv || rtv) && (Usage & DXGI_USAGE_BACK_BUFFER)))))
