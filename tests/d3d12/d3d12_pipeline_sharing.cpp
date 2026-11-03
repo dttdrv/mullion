@@ -1,6 +1,7 @@
 // contract: a pipeline made of what a held pipeline already has (shaders, depth stencil state) makes no Metal
 // library and no depth stencil state, and asks the system nothing (the bridge's call counts); another depth test does
-// make one, which shows the counts see the calls
+// make one, which shows the counts see the calls. the shader store is on, in a directory of the test's
+// (MULLION_SHADER_CACHE_PATH): functions are shared only while it is
 #include "d3d12_test.hpp"
 #include "../../src/winemetal/winemetal.h"
 #include <map>
@@ -16,6 +17,14 @@ main(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return printf("skipped: dxcompiler.dll not found\n"), 77;
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps");
+  char temporary[MAX_PATH], directory[MAX_PATH];
+  WCHAR wide[MAX_PATH];
+  GetTempPathA(sizeof(temporary), temporary);
+  auto unix_name = (char *(__cdecl *)(const WCHAR *))GetProcAddress(GetModuleHandleA("kernel32"), "wine_get_unix_file_name");
+  if (!temporary_directory(temporary, "pa", directory) || !MultiByteToWideChar(CP_ACP, 0, directory, -1, wide, MAX_PATH))
+    return printf("failed: no temporary directory\n"), 1;
+  SetEnvironmentVariableA("MULLION_SHADER_CACHE", "1");
+  SetEnvironmentVariableA("MULLION_SHADER_CACHE_PATH", unix_name(wide));
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");
