@@ -425,16 +425,10 @@ EvaluateFrameGeneration(
           !desc.Output ? "an output" : "");
       result = NVNGX_RESULT_INVALID_PARAMETER;
     } else {
-      // motion vectors Streamline's scale takes to the screen's [-1, 1]: in pixels of their own resource
-      auto motion = desc.MotionVector->GetDesc();
-      unsigned motion_width = GetOr(params, "DLSSG.MVecsSubrectWidth", 0u),
-               motion_height = GetOr(params, "DLSSG.MVecsSubrectHeight", 0u);
-      if (!motion_width || motion_width > motion.Width)
-        motion_width = unsigned(motion.Width);
-      if (!motion_height || motion_height > motion.Height)
-        motion_height = motion.Height;
-      desc.MotionVectorScaleX = GetOr(params, "DLSSG.MvecScaleX", 1.0f) * motion_width;
-      desc.MotionVectorScaleY = GetOr(params, "DLSSG.MvecScaleY", 1.0f) * motion_height;
+      // NGX's scale takes the motion vectors to pixels, as DLSS's MV.Scale (Streamline's normalizing scale times
+      // the render size)
+      desc.MotionVectorScaleX = GetOr(params, "DLSSG.MvecScaleX", 1.0f);
+      desc.MotionVectorScaleY = GetOr(params, "DLSSG.MvecScaleY", 1.0f);
       desc.JitterOffsetX = GetOr(params, "DLSSG.JitterOffsetX", 0.0f);
       desc.JitterOffsetY = GetOr(params, "DLSSG.JitterOffsetY", 0.0f);
       desc.DepthReversed = GetOr(params, "DLSSG.DepthInverted", 0u) != 0;
