@@ -36,6 +36,10 @@ static_assert(D3D12_REQ_MIP_LEVELS <= (1u << SM50_TEXTURE_VIEW_METADATA_FIRST_MI
 
 using UAVTextureGPUStorage = SRVTextureGPUStorage;
 
+// a typed buffer view: its texture, then (element count << 32) | its first element in the texture. padding[1] is
+// the view's first byte in memory, for a shader that declares the slot structured or raw, as games give a typed
+// R32 view to a StructuredBuffer<uint> (Hogwarts Legacy's tile lists; dxbc_binding_rootsig's GetBufferDescriptor
+// tells the two apart by the upper half of the metadata, which a structured or raw view's byte length leaves 0)
 struct UAVTexelBufferGPUStorage {
   uint64_t resource_id;
   uint64_t metadata;
@@ -284,10 +288,12 @@ public:
         gpu_storage.UAVTexelBuffer.resource_id = buffer_view.gpu_resource_id;
         gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | first;
         gpu_storage.UAVTexelBuffer.padding[0] = UAVBuffer->current()->gpuAddress();
+        gpu_storage.UAVTexelBuffer.padding[1] = UAVBuffer->current()->gpuAddress() + Slice.byteOffset;
       } else {
         gpu_storage.UAVTexelBuffer.resource_id = 0;
         gpu_storage.UAVTexelBuffer.metadata = 0;
         gpu_storage.UAVTexelBuffer.padding[0] = 0;
+        gpu_storage.UAVTexelBuffer.padding[1] = 0;
       }
     }
     return S_OK;
@@ -330,9 +336,11 @@ public:
         auto [buffer_view, first] = Buffer->view_(View, Buffer->current(), Slice.firstElement);
         gpu_storage.UAVTexelBuffer.resource_id = buffer_view.gpu_resource_id;
         gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | first;
+        gpu_storage.UAVTexelBuffer.padding[1] = Buffer->current()->gpuAddress() + Slice.byteOffset;
       } else {
         gpu_storage.UAVTexelBuffer.resource_id = 0;
         gpu_storage.UAVTexelBuffer.metadata = 0;
+        gpu_storage.UAVTexelBuffer.padding[1] = 0;
       }
     }
     return S_OK;

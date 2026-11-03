@@ -53,10 +53,15 @@ public:
     return B.CreateLoad(TyStruct->getElementType(Index), B.CreateStructGEP(TyStruct, Arg, Index));
   };
 
+  // a constant, structured or raw buffer's pointer and metadata (its byte length). `typed`, for a structured or raw
+  // SRV or UAV: the descriptor may be a typed view's, which games give to such slots (Hogwarts Legacy reads tile
+  // lists written as RWBuffer<uint> through a typed R32_UINT view as StructuredBuffer<uint>), and drivers read it as
+  // the memory it views: one is told by the upper half of its metadata, its element count where a byte length leaves
+  // 0, and read from the first byte it keeps in its last qword, 4 bytes an element
   std::pair<llvm::Value *, llvm::Value *>
   GetBufferDescriptor(
       llvm::air::AIRBuilder &AIR, llvm::Value *IntPtr, llvm::Value *Index, llvm::Type *HandleType, RangeId RangeId,
-      uint32_t DescriptorOffset
+      uint32_t DescriptorOffset, bool typed = false
   ) {
     auto TyBufferDescriptor = llvm::StructType::get(
         AIR.getContext(), {HandleType, llvm::Type::getInt64Ty(AIR.getContext()),
@@ -67,14 +72,23 @@ public:
         IntPtr, TyBufferDescriptor->getPointerTo(IntPtr->getType()->getPointerAddressSpace())
     );
     auto IdxDescriptor = B.CreateAdd(B.CreateSub(Index, AIR.getInt(RangeId)), AIR.getInt(DescriptorOffset));
+    auto Handle =
+        B.CreateLoad(HandleType, B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(0) /* pointer */}));
+    auto Metadata = B.CreateLoad(
+        llvm::Type::getInt64Ty(AIR.getContext()),
+        B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(1) /* metadata */})
+    );
+    if (!typed)
+      return {Handle, Metadata};
+    auto Elements = B.CreateLShr(Metadata, 32);
+    auto Typed = B.CreateICmpNE(Elements, B.getInt64(0));
+    auto First = B.CreateLoad(
+        llvm::Type::getInt64Ty(AIR.getContext()),
+        B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(3) /* a typed view's first byte */})
+    );
     return {
-        B.CreateLoad(
-            HandleType, B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(0) /* pointer */})
-        ),
-        B.CreateLoad(
-            llvm::Type::getInt64Ty(AIR.getContext()),
-            B.CreateGEP(TyBufferDescriptor, Pointer, {IdxDescriptor, AIR.getInt(1) /* metadata */})
-        )
+        B.CreateSelect(Typed, B.CreateIntToPtr(First, HandleType), Handle),
+        B.CreateSelect(Typed, B.CreateMul(Elements, B.getInt64(4)), Metadata)
     };
   }
 
@@ -296,7 +310,7 @@ public:
       return BufferDescriptor{HeapPointer, Builder.builder.getInt64(0xffffffff), SRV.structure_stride, false, false};
     }
     auto [Pointer, Metadata] = GetBufferDescriptor(
-        Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), SRV.range.lower_bound, DescriptorOffset
+        Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), SRV.range.lower_bound, DescriptorOffset, true
     );
 
     return BufferDescriptor{
@@ -322,7 +336,7 @@ public:
       };
     }
     auto [Pointer, Metadata] = GetBufferDescriptor(
-        Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), UAV.range.lower_bound, DescriptorOffset
+        Builder, HeapPointer, Index, Builder.getIntTy()->getPointerTo(1), UAV.range.lower_bound, DescriptorOffset, true
     );
 
     return BufferDescriptor{
