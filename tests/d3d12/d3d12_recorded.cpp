@@ -287,7 +287,8 @@ child(int argc, char **argv) {
     list->SetComputeRootSignature(rs.Get());
     list->SetComputeRoot32BitConstant(0, 7, 0);
     list->SetComputeRootUnorderedAccessView(1, data->GetGPUVirtualAddress());
-    list->ExecuteIndirect(dispatch_sig.Get(), 1, dispatch.Get(), 0, nullptr, 0);
+    // a count buffer keeps the dispatch on the resolver, whose arguments are recorded: without one it is Metal's own
+    list->ExecuteIndirect(dispatch_sig.Get(), 1, dispatch.Get(), 0, count.Get(), 0);
     D3D12_WRITEBUFFERIMMEDIATE_PARAMETER immediate{data->GetGPUVirtualAddress(), 7};
     transition(list.Get(), data.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
     list->WriteBufferImmediate(1, &immediate, nullptr);
