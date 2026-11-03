@@ -2,7 +2,8 @@
 // once; each other one is a specialization of that compile ("Flexible render pipeline states: compile most of the
 // shader ahead of time and optionally compile other parts once your app knows those details", Apple, Using the
 // Metal 4 compilation API). control: an integer target changes what the pixel shader outputs (D3D11.3 16.6), so it is
-// a pipeline of its own and compiles as the first did. the counts are the bridge's (WMTDiagCallTotals); the shader
+// a pipeline of its own and compiles as the first did, as does a float target with dual-source blending, which the
+// pixel shader blends itself with Metal's blending off (D3D11.3 17.5 keeps NaNs Metal's blender loses). the counts are the bridge's (WMTDiagCallTotals); the shader
 // store is on, in a directory of the test's own, as pipelines share their functions only through it
 #include "d3d12_test.hpp"
 #include "../../src/winemetal/winemetal.h"
@@ -11,6 +12,8 @@
 static const char hlsl[] = R"hlsl(
 float4 vs(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 3 : -1, id == 2 ? -3 : 1, 0.5, 1); }
 float4 ps() : SV_Target { return 0.5; }
+struct Dual { float4 color : SV_Target0; float4 weight : SV_Target1; };
+Dual dual() { Dual o = {(float4)0.5, (float4)0.25}; return o; }
 )hlsl";
 
 int
@@ -18,7 +21,8 @@ main(int argc, char **argv) {
   Compiler compiler;
   if (!front_end(argc, argv, compiler))
     return printf("skipped: dxcompiler.dll not found\n"), 77;
-  auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps");
+  auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"),
+       dual = compiler.compile(hlsl, "dual", "ps");
   char metal4[2] = "";
   if (GetEnvironmentVariableA("MULLION_D3D12_METAL4", metal4, sizeof(metal4)) && !strcmp(metal4, "0"))
     return printf("skipped: Direct3D 12 is kept off Metal 4\n"), 77;
@@ -80,5 +84,12 @@ main(int argc, char **argv) {
   other = desc;
   other.RTVFormats[0] = DXGI_FORMAT_R32_UINT;
   made("an integer target", other, true);
+  other = desc;
+  other.PS = bytecode(dual);
+  other.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  other.BlendState.RenderTarget[0] = {TRUE, FALSE, D3D12_BLEND_ONE, D3D12_BLEND_SRC1_COLOR, D3D12_BLEND_OP_ADD,
+                                      D3D12_BLEND_ONE, D3D12_BLEND_SRC1_ALPHA, D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP,
+                                      D3D12_COLOR_WRITE_ENABLE_ALL};
+  made("a float target blended from both outputs", other, true);
   return verdict();
 }
