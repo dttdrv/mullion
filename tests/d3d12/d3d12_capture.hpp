@@ -1,6 +1,7 @@
 // what the GPU capture tests read of the traces they make, and how they remove them
 #pragma once
 #include <windows.h>
+#include <d3dcommon.h>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -47,4 +48,16 @@ remove_tree(const std::string &path) {
   bool removed = spawn(args, TRUE) == 0;
   HeapFree(GetProcessHeap(), 0, name);
   return removed && GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+}
+
+// sets `gone` once `object` is destroyed (ID3DDestructionNotifier). a release that returns can leave a queue to a thread
+// that still holds it, and a queue's capture is whole only once the queue is gone
+inline bool
+on_destruction(IUnknown *object, HANDLE gone) {
+  ID3DDestructionNotifier *notifier;
+  if (FAILED(object->QueryInterface(IID_PPV_ARGS(&notifier))))
+    return false;
+  HRESULT hr = notifier->RegisterDestructionCallback([](void *gone) { SetEvent(gone); }, gone, nullptr);
+  notifier->Release();
+  return SUCCEEDED(hr);
 }

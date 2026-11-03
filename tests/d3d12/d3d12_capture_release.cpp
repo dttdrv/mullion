@@ -1,6 +1,6 @@
 // contract: Metal takes one GPU capture at a time in a process (MTLCaptureManager), so Mullion keeps one: a queue
-// released during the frame it captures ends that capture, whose trace is whole once the release returns, and a
-// queue made later starts no other (MULLION_CAPTURE_FRAME names one frame of the process). queue A presents once,
+// released during the frame it captures ends that capture, whose trace is whole once the queue is gone, and a queue
+// made later starts no other (MULLION_CAPTURE_FRAME names one frame of the process). queue A presents once,
 // which starts the capture of frame 1, puts frame 1's work in an event and is released before a second Present;
 // queue B then presents frames of its own. the bridge's call counts see each start
 #include "d3d12_test.hpp"
@@ -11,13 +11,14 @@
 
 static const char event[] = "mullion capture release";
 
-// `presents` frames on a queue of its own, and the work of frame `presents` after them; frame 1's in `event`.
-// nonzero when a call failed
+// `presents` frames on a queue of its own, and the work of frame `presents` after them; frame 1's in `event`. `gone`
+// is set once the queue is destroyed. nonzero when a call failed
 static int
-frames(ID3D12Device *device, IDXGIFactory4 *factory, HWND window, UINT presents) {
+frames(ID3D12Device *device, IDXGIFactory4 *factory, HWND window, UINT presents, HANDLE gone) {
   D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   ComPtr<ID3D12CommandQueue> queue;
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+  CHECK(on_destruction(queue.Get(), gone) ? S_OK : E_FAIL);
   DXGI_SWAP_CHAIN_DESC1 desc{64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT,
                              2, DXGI_SCALING_STRETCH, DXGI_SWAP_EFFECT_FLIP_DISCARD};
   ComPtr<IDXGISwapChain1> sc1;
@@ -88,8 +89,10 @@ main() {
   totals(calls);
 
   step("queue A, released during frame 1");
-  if (frames(device.Get(), factory.Get(), window, 1))
+  HANDLE gone = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  if (!gone || frames(device.Get(), factory.Get(), window, 1, gone))
     return 1;
+  expect(WaitForSingleObject(gone, 60000) == WAIT_OBJECT_0, "queue A was not destroyed");
   WIN32_FIND_DATAA found;
   HANDLE trace = FindFirstFileA((std::string(directory) + "\\*_F.1_*.gputrace").c_str(), &found);
   if (expect(trace != INVALID_HANDLE_VALUE, "no trace of frame 1 in %s", directory)) {
@@ -97,7 +100,8 @@ main() {
     expect(holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
   }
   step("queue B, presenting after it");
-  if (frames(device.Get(), factory.Get(), window, 3))
+  ResetEvent(gone);
+  if (frames(device.Get(), factory.Get(), window, 3, gone))
     return 1;
   totals(calls);
   uint64_t starts = 0;

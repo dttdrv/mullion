@@ -102,9 +102,13 @@ main() {
     CHECK(queue->Signal(idle.Get(), frame + 1));
     CHECK(idle->SetEventOnCompletion(frame + 1, nullptr));
   }
-  // the queue's release waits for its capture to stop
+  // the queue's destruction waits for its capture to stop
+  HANDLE gone = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  CHECK(gone && on_destruction(queue.Get(), gone) ? S_OK : E_FAIL);
+  sc1.Reset();
   swapchain.Reset();
   queue.Reset();
+  expect(WaitForSingleObject(gone, 60000) == WAIT_OBJECT_0, "the queue was not destroyed");
   step("the trace of frame 1");
   WIN32_FIND_DATAA found;
   HANDLE trace = FindFirstFileA((std::string(directory) + "\\*_F.1_*.gputrace").c_str(), &found);
