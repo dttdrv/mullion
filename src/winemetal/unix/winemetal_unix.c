@@ -648,6 +648,20 @@ MTLMeshRenderPipelineDescriptor ()
 
 #endif
 
+// leaves every target's format, write mask and blending to a specialization (_MTLDevice_newSpecializedRenderPipeline)
+static void
+unspecialize(MTLRenderPipelineColorAttachmentDescriptorArray *colors) {
+  if (@available(macOS 26.0, *))
+    for (unsigned i = 0; i < 8; i++) {
+      colors[i].pixelFormat = MTLPixelFormatUnspecialized;
+      colors[i].writeMask = MTLColorWriteMaskUnspecialized;
+      colors[i].blendingEnabled = YES;
+      colors[i].sourceRGBBlendFactor = colors[i].sourceAlphaBlendFactor = MTLBlendFactorUnspecialized;
+      colors[i].destinationRGBBlendFactor = colors[i].destinationAlphaBlendFactor = MTLBlendFactorUnspecialized;
+      colors[i].rgbBlendOperation = colors[i].alphaBlendOperation = MTLBlendOperationUnspecialized;
+    }
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
   struct unixcall_mtldevice_newrenderpso *params = obj;
@@ -679,6 +693,8 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
   [descriptor setLogicOperationEnabled:info->logic_operation_enabled];
   [descriptor setLogicOperation:(MTLLogicOperation)info->logic_operation];
 #endif
+  if (info->unspecialized_colors)
+    unspecialize(descriptor.colorAttachments);
   descriptor.depthAttachmentPixelFormat = to_metal_pixel_format(info->depth_pixel_format);
   descriptor.stencilAttachmentPixelFormat = to_metal_pixel_format(info->stencil_pixel_format);
   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;
@@ -710,6 +726,56 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
                                                                                                      error:&err];
   }
   [descriptor release];
+  return STATUS_SUCCESS;
+}
+
+// the device's compiler of Metal 4 pipelines, made once
+static id<MTL4Compiler>
+API_AVAILABLE(macos(26.0)) device_compiler(id<MTLDevice> device) {
+  static char key;
+  @synchronized(device) {
+    id<MTL4Compiler> compiler = objc_getAssociatedObject(device, &key);
+    if (!compiler) {
+      MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor alloc] init];
+      compiler = [device newCompilerWithDescriptor:desc error:nil];
+      objc_setAssociatedObject(device, &key, compiler, OBJC_ASSOCIATION_RETAIN);
+      [compiler release];
+      [desc release];
+    }
+    return compiler;
+  }
+}
+
+static NTSTATUS
+CREATES(_MTLDevice_newSpecializedRenderPipeline)(void *obj) {
+  struct unixcall_mtldevice_newspecializedpso *params = obj;
+  const struct WMTColorAttachmentBlendInfo *colors = params->colors.ptr;
+  params->ret_pso = 0;
+  params->ret_error = 0;
+  if (@available(macOS 26.0, *)) {
+    MTL4MeshRenderPipelineDescriptor *mesh = params->mesh ? [[MTL4MeshRenderPipelineDescriptor alloc] init] : nil;
+    MTL4RenderPipelineDescriptor *render = mesh ? nil : [[MTL4RenderPipelineDescriptor alloc] init];
+    MTL4PipelineDescriptor *descriptor = mesh ? (MTL4PipelineDescriptor *)mesh : render;
+    for (unsigned i = 0; i < 8; i++) {
+      MTL4RenderPipelineColorAttachmentDescriptor *color = (mesh ? mesh.colorAttachments : render.colorAttachments)[i];
+      color.pixelFormat = to_metal_pixel_format(colors[i].pixel_format);
+      color.writeMask = (MTLColorWriteMask)colors[i].write_mask;
+      color.blendingState = colors[i].blending_enabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
+      color.rgbBlendOperation = (MTLBlendOperation)colors[i].rgb_blend_operation;
+      color.alphaBlendOperation = (MTLBlendOperation)colors[i].alpha_blend_operation;
+      color.sourceRGBBlendFactor = (MTLBlendFactor)colors[i].src_rgb_blend_factor;
+      color.sourceAlphaBlendFactor = (MTLBlendFactor)colors[i].src_alpha_blend_factor;
+      color.destinationRGBBlendFactor = (MTLBlendFactor)colors[i].dst_rgb_blend_factor;
+      color.destinationAlphaBlendFactor = (MTLBlendFactor)colors[i].dst_alpha_blend_factor;
+    }
+    NSError *err = NULL;
+    params->ret_pso = (obj_handle_t)[device_compiler((id<MTLDevice>)params->device)
+        newRenderPipelineStateBySpecializationWithDescriptor:descriptor
+                                                    pipeline:(id<MTLRenderPipelineState>)params->pipeline
+                                                       error:&err];
+    params->ret_error = (obj_handle_t)[err retain];
+    [descriptor release];
+  }
   return STATUS_SUCCESS;
 }
 
@@ -775,6 +841,8 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
   [descriptor setLogicOperationEnabled:info->logic_operation_enabled];
   [descriptor setLogicOperation:(MTLLogicOperation)info->logic_operation];
 #endif
+  if (info->unspecialized_colors)
+    unspecialize(descriptor.colorAttachments);
   descriptor.depthAttachmentPixelFormat = to_metal_pixel_format(info->depth_pixel_format);
   descriptor.stencilAttachmentPixelFormat = to_metal_pixel_format(info->stencil_pixel_format);
   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;
@@ -6990,6 +7058,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_MTLDevice_newSpecializedRenderPipeline,
 };
 
 #ifndef MULLION_NATIVE
@@ -7203,6 +7272,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_MTLDevice_newSpecializedRenderPipeline,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

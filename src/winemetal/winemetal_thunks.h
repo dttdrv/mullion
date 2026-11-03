@@ -202,6 +202,15 @@ struct unixcall_mtldevice_newmeshrenderpso {
   obj_handle_t ret_pso;
 };
 
+struct unixcall_mtldevice_newspecializedpso {
+  obj_handle_t device;
+  obj_handle_t pipeline;
+  struct WMTConstMemoryPointer colors;
+  uint64_t mesh;
+  obj_handle_t ret_error;
+  obj_handle_t ret_pso;
+};
+
 struct unixcall_generic_obj_cmd_noret {
   obj_handle_t encoder;
   struct WMTConstMemoryPointer cmd_head;

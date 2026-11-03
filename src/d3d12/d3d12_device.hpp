@@ -498,7 +498,7 @@ public:
   Sha1Digest library_key;
   mullion::mutex shader_mutex;
   PipelineShaderCache cached_shaders;
-  // the device's functions it is made of (MTLD3D12Device::functions)
+  // what of the device's it is made of: functions (MTLD3D12Device::functions), flexible pipelines (::flexible)
   std::vector<std::shared_ptr<const void>> functions;
   // the sampler emulations its shaders leave out, as no sampler of the device needed them when it was made
   // (MTLD3D12Device::sampler_emulations), and what it is made of, to make it again with them once a draw or dispatch
@@ -686,6 +686,18 @@ public:
   virtual void PipelineArchived() = 0;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
+  // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=0 turns them off): one pipeline of each state but its targets'
+  // formats, write masks and blending, compiled once while a pipeline holds it, and its specializations to those
+  struct Flexible {
+    WMT::Reference<WMT::RenderPipelineState> unspecialized;
+    std::unordered_map<Sha1Digest, WMT::Reference<WMT::RenderPipelineState>> specialized;
+  };
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<Flexible>> made;
+    std::once_flag checked;
+    bool enabled;
+  } flexible;
 
   // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
   // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so
