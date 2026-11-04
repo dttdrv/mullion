@@ -280,6 +280,9 @@ matches(const Format &f, const uint8_t *image, unsigned width, unsigned x, unsig
   auto d = decode(f, block, (y % side) * side + x % side);
   for (unsigned c = 0; c < d.value.size(); c++) {
     double want = d.value[c], got = have[c];
+    // M3 decodes reserved BC7 as opaque
+    if (f.bc == 7 && !block[0] && c == 3 && have[c] == 1)
+      continue;
     if (f.bc >= 6 && !(f.srgb && c < 3)) {
       if (std::bit_cast<uint32_t>(have[c]) != std::bit_cast<uint32_t>(float(want)))
         return false;
@@ -292,7 +295,9 @@ matches(const Format &f, const uint8_t *image, unsigned width, unsigned x, unsig
         return false;
       continue;
     }
-    if (want == 0 || want == 1 || want == -1) {
+    // Apple's fixed-point SNORM interpolator misses by up to an 8-bit step, even where the weights land on zero
+    const bool snorm_weighted = f.signed_values && f.bc <= 5 && d.span[c] > 0;
+    if (!(snorm_weighted && want == 0) && (want == 0 || want == 1 || want == -1)) {
       if (got != want)
         return false;
       continue;
@@ -303,7 +308,7 @@ matches(const Format &f, const uint8_t *image, unsigned width, unsigned x, unsig
       got = format_values::srgb(got);
       d.error[c] += (f.bc == 7 ? 0.5 : 1.0) / UINT8_MAX;
     }
-    if (std::fabs(got - want) >= d.error[c] + 0.03 * d.span[c])
+    if (std::fabs(got - want) >= std::max(d.error[c] + 0.03 * d.span[c], snorm_weighted ? 1.0 / INT8_MAX : 0.0))
       return false;
   }
   return true;
