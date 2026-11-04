@@ -328,7 +328,8 @@ public:
 
   // where in an arena `Length` bytes are: after the cursor, or in a new run of the arena's when the cursor's has no
   // room. an arena without room ends the list (EndRecord, and Close cuts what it recorded off): what it records from
-  // then on goes to memory of the allocator's own, which no list holds, written over again and again
+  // then on goes to memory of the allocator's own, which no list holds, each allocation its own until Reset: a pass's
+  // commands are linked into the pass as they come, so one in the pass's memory would overwrite it
   std::optional<size_t>
   Allocate(RecordingArena &arena, Cursor &cursor, size_t Length, size_t Alignment) {
     auto aligned = cursor.offset + align_forward_adjustment((void *)cursor.offset, Alignment);
@@ -338,8 +339,7 @@ public:
       if (!run) {
         if (!std::exchange(exhausted_, true))
           ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
-        if (spill_.empty() || spill_.back().size() < Length + Alignment)
-          spill_.emplace_back(Length + Alignment);
+        spill_.emplace_back(Length + Alignment);
         auto at = (size_t)spill_.back().data();
         return at + align_forward_adjustment((void *)at, Alignment) - (size_t)arena.base;
       }
