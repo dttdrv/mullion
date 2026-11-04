@@ -7,6 +7,7 @@
 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm
 #include "d3d11_test.hpp"
 #include "../om_samples.hpp"
+#include "../metal_samples.hpp"
 
 int main() {
   auto defines = om::sample_defines();
@@ -59,7 +60,7 @@ int main() {
     HRESULT hr = device->CheckMultisampleQualityLevels(DXGI_FORMAT_R32_FLOAT,
                                                        samples, &qualities);
     if (!expect(
-            (samples != 1 && samples != 4 && samples != 8) ||
+            (samples != 1 && samples != 4 && (samples != 8 || !metal_has_8x_samples())) ||
                 (hr == S_OK && qualities),
             "required R32_FLOAT sample count %u returned %08lx, %u qualities",
             samples, hr, qualities))

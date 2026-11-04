@@ -13,6 +13,7 @@
 // ForcedSampleCount: "Valid values are 0, 1, 2, 4, 8, and optionally 16." (D3D11_RASTERIZER_DESC1, Microsoft Learn).
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/ns-d3d11_1-d3d11_rasterizer_desc1
 #include "d3d11_test.hpp"
+#include "../metal_samples.hpp"
 #include <d3d11_3.h>
 #include <algorithm>
 #include <array>
@@ -242,6 +243,8 @@ int main() {
   }
   step("forced sample count validation");
   for (UINT count : {0u, 1u, 2u, 4u, 8u}) {
+    if (count == 8 && !metal_has_8x_samples())
+      continue;
     D3D11_RASTERIZER_DESC2 desc{};
     desc.FillMode = D3D11_FILL_SOLID;
     desc.CullMode = D3D11_CULL_NONE;

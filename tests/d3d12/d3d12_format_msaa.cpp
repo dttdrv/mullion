@@ -8,6 +8,7 @@
 #include <d3d11.h>
 #include "../depth_formats.hpp"
 #include "../format_msaa.hpp"
+#include "../metal_samples.hpp"
 
 int
 main(int argc, char **argv) {
@@ -113,7 +114,7 @@ main(int argc, char **argv) {
       D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality{f.id, samples};
       CHECK(device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &quality, sizeof(quality)));
       constexpr UINT optional_8x_bits = 128; // D3D11.3 19.2.5 makes 8x optional at 128 bits, and 4x required
-      if (samples == 1 || (!optional && (samples == 4 || (samples == 8 && f.bytes * CHAR_BIT < optional_8x_bits))))
+      if (samples == 1 || (!optional && (samples == 4 || (samples == 8 && metal_has_8x_samples() && f.bytes * CHAR_BIT < optional_8x_bits))))
         expect(quality.NumQualityLevels != 0, "%s has no required %ux quality levels", f.name.c_str(), samples);
       if (!quality.NumQualityLevels) {
         refused(samples, 0);

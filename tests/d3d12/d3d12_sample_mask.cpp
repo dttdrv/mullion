@@ -7,6 +7,7 @@
 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm
 #include "d3d12_test.hpp"
 #include "../om_samples.hpp"
+#include "../metal_samples.hpp"
 
 int
 main(int argc, char **argv) {
@@ -73,7 +74,7 @@ main(int argc, char **argv) {
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS support{DXGI_FORMAT_R32_FLOAT, samples};
     HRESULT hr = device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &support, sizeof(support));
     if (!expect(
-            (samples != 1 && samples != 4 && samples != 8) || (hr == S_OK && support.NumQualityLevels),
+            (samples != 1 && samples != 4 && (samples != 8 || !metal_has_8x_samples())) || (hr == S_OK && support.NumQualityLevels),
             "required R32_FLOAT sample count %u returned %08lx, %u qualities", samples, hr, support.NumQualityLevels
         ))
       return verdict();
