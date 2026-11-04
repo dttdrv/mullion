@@ -77,6 +77,16 @@ inline float bias(const Format &f, const Case &c) {
     value = std::max(c.clamp, value);
   return value;
 }
+// Metal's bias: D24 is Depth32Float, whose unit follows z's exponent, and D16 takes one more unit whenever any is set
+inline float metal_bias(Format f, const Case &c) {
+  f.floating = f.floating || f.depth == 24;
+  float value = bias(f, c);
+  if (f.depth == 16 && c.shape == raster::Triangle && (c.bias || c.scale != 0)) {
+    const bool down = c.bias ? c.bias < 0 : std::signbit(c.scale) && std::isnormal(c.scale);
+    value += (down ? -1 : 1) / float((uint64_t(1) << f.depth) - 1);
+  }
+  return value;
+}
 inline std::vector<Case> cases() {
   std::vector<Case> out;
   for (float z : {0.0f, 0.25f, 0.5f, 0.75f})
@@ -169,7 +179,12 @@ inline void compare(const Format &f, const Case &c, const char *rows, size_t pit
   auto flushed = c;
   if (std::fpclassify(c.clamp) == FP_SUBNORMAL)
     flushed.clamp = 0;
-  const float offsets[] = {bias(f, c), bias(f, flushed)};
+  const float offsets[] = {bias(f, c), bias(f, flushed), metal_bias(f, c), metal_bias(f, flushed)};
+  // past a narrower depth range Metal clamps to [0, 1]. a NaN slope product writes 1, and an unclipped z below the
+  // range stays at its near end whatever the bias
+  const float low = c.depth_clip ? 0 : c.low, high = c.depth_clip ? 1 : c.high;
+  const bool slope_nan = !c.clamp && std::isnan(c.scale * std::max(std::abs(c.dx), std::abs(c.dy)));
+  const bool pinned = slope_nan || (!c.depth_clip && c.z < 0);
   unsigned wrong = 0;
   const unsigned bytes = pixel_bytes ? pixel_bytes : (f.depth + f.stencil + f.unused) / CHAR_BIT;
   // three interpolator products, their sum, and the bias add bound the float32 rounding error.
@@ -180,13 +195,17 @@ inline void compare(const Format &f, const Case &c, const char *rows, size_t pit
       const char *at = rows + y * pitch + x * bytes;
       bool equal = false;
       double actual = 0, want = 0;
-      for (size_t i = 0; i < std::size(offsets) && !equal; i++) {
+      for (size_t i = 0; i < 2 * std::size(offsets) + pinned && !equal; i++) {
+        const bool metal = i >= std::size(offsets);
+        const float offset = offsets[i % std::size(offsets)];
         float depth = covered[y * raster::width + x][0]
-                          ? std::fmin(c.high, std::fmax(c.low, c.low +
-                                                                   (c.z + c.dx * (x + 0.5f) + c.dy * (y + 0.5f)) *
-                                                                       (c.high - c.low) +
-                                                                   offsets[i]))
+                          ? std::fmin(metal ? high : c.high,
+                                      std::fmax(metal ? low : c.low,
+                                                c.low + (c.z + c.dx * (x + 0.5f) + c.dy * (y + 0.5f)) * (c.high - c.low) +
+                                                    offset))
                           : 1;
+        if (i == 2 * std::size(offsets) && covered[y * raster::width + x][0])
+          depth = slope_nan ? 1 : c.low;
         double expected;
         if (f.floating) {
           float got;
