@@ -3901,8 +3901,11 @@ public:
       auto [first, step] = get_primitive_vertex_count(topology_);
       statistics_cuts = step != first && pso_graphics_->strip_cut != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
     }
+    // a count buffer and predication change the count on the GPU, and an indexed signature's extras add to it
+    bool runs_max_count =
+        !CountBufferAddress && !predication_region_ && sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
     auto cmd = allocator_->EncodeIndirectRenderCommand(sig, pso_graphics_.ptr(), Pipeline(), MaxCommandCount,
-                                                       tessellation, statistics_cuts);
+                                                       tessellation, statistics_cuts, runs_max_count);
     ForgetBuffers();
     cmd->statistics = statistics;
     cmd->pixel_statistics = pixel_statistics;
