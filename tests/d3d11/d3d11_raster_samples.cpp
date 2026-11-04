@@ -210,10 +210,18 @@ int main() {
         for (unsigned flags = 0; flags < (forced ? 1u : std::size(states)); flags++) {
           rd.MultisampleEnable = flags & 1;
           rd.AntialiasedLineEnable = flags >> 1;
-          // D3D11.3 3.5.6.1 requires every forced count up to 16: a refused state is a wrong result, and its mode is
-          // not drawn
+          // D3D11.3 3.5.6.1 requires every forced count up to 16, but only those the GPU has are implemented: the
+          // others are refused, and their mode is not drawn
           step("forced %ux rasterizer state %u", rd.ForcedSampleCount, flags);
-          if ((refused = !expect(SUCCEEDED(device1->CreateRasterizerState1(&rd, &states[flags])), "it was refused")))
+          UINT levels = 0;
+          CHECK(device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, std::max(rd.ForcedSampleCount, 1u), &levels));
+          const HRESULT created = device1->CreateRasterizerState1(&rd, &states[flags]);
+          if (!levels) {
+            expect(created == E_INVALIDARG, "a forced count this GPU lacks gave HRESULT %#lx", created);
+            refused = true;
+            break;
+          }
+          if ((refused = !expect(SUCCEEDED(created), "it was refused")))
             break;
           D3D11_RASTERIZER_DESC1 got{};
           states[flags]->GetDesc1(&got);

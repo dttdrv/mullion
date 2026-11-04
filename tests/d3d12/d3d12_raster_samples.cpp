@@ -278,13 +278,16 @@ int main(int argc, char **argv) {
               pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
               HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
               // D3D12_RASTERIZER_DESC: ForcedSampleCount is 0, 1, 4, 8 or, optionally, 16, independently of texture
-              // sample counts. a refused pipeline is a wrong result, and its mode's other cases are not drawn
-              if (FAILED(hr)) {
-                if (forced && !forced_msaa && count == 16 && n == 0 &&
-                    (hr == E_INVALIDARG || hr == DXGI_ERROR_UNSUPPORTED))
-                  printf("unsupported: forced 16x rasterization (HRESULT %#lx)\n", hr);
-                else
-                  expect(false, "pipeline was refused (HRESULT %#lx)", hr);
+              // sample counts, but only those the GPU has are implemented: the others are refused, and their mode's
+              // other cases are not drawn
+              D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{format, count};
+              CHECK(device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof(levels)));
+              const bool lacking = forced && !forced_msaa && !levels.NumQualityLevels;
+              if (lacking)
+                expect(hr == E_INVALIDARG, "a forced count this GPU lacks gave HRESULT %#lx", hr);
+              else if (FAILED(hr))
+                expect(false, "pipeline was refused (HRESULT %#lx)", hr);
+              if (FAILED(hr) || lacking) {
                 refused = true;
                 break;
               }

@@ -231,7 +231,8 @@ inline std::vector<Job> forced_jobs(unsigned storage = 1) {
   return out;
 }
 inline void compare(const Color *got, const Case &c, unsigned count, unsigned mask, Pass pass, bool centered = false) {
-  auto positions = pattern(pass == ForcedMsaa ? 1 : count);
+  // a forced count with a bound 1x render target isn't implemented: Metal rasterizes at the attachment's one sample
+  auto positions = pattern(pass == ForcedMsaa || pass == Forced ? 1 : count);
   if (centered)
     positions.assign(count, {0, 0});
   std::vector<std::vector<Color>> coverage;
