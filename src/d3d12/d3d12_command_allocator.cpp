@@ -244,11 +244,7 @@ MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevi
     records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
-    clear_rtv_(device_->GetMTLDevice(), *this),
-    copy_temp_allocator_(
-        {device_->GetMTLDevice(), WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate}
-    ),
-    copy_temp_version_(0) {}
+    clear_rtv_(device_->GetMTLDevice(), *this) {}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
@@ -318,7 +314,13 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   acceleration_structures_.clear();
   acceleration_structure_inputs_.clear();
 
-  copy_temp_allocator_.free_blocks(copy_temp_version_++);
+  // the next lists copy in the last buffer while the last lists took half of it: an allocator keeps at most twice what
+  // its last lists copied
+  if (!temp_buffers_.empty() && 2 * temp_used_ >= temp_buffers_.back().length)
+    temp_buffers_.erase(temp_buffers_.begin(), temp_buffers_.end() - 1);
+  else
+    temp_buffers_.clear();
+  temp_offset_ = temp_used_ = 0;
 
   return S_OK;
 }

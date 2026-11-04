@@ -29,6 +29,8 @@ test('d3d12_metalfx', exe, args: get_option('enable_nvngx') ? ['ngx'] : [],
      env: get_option('enable_nvngx') ? ['MULLION_ENABLE_NVEXT=1'] : [], timeout: 600)
 exe = executable('d3d12_trace_log', ['d3d12_trace_log.cpp'], dependencies: d3d12_test_deps + [cpp.find_library('d3d11')])
 test('d3d12_trace_log', exe, timeout: 600)
+exe = executable('d3d12_copy_memory', ['d3d12_copy_memory.cpp'], dependencies: d3d12_test_deps)
+test('d3d12_copy_memory_dxbc', exe, args: ['dxbc'], timeout: 600)
 exe = executable('d3d12_xrbias', ['d3d12_xrbias.cpp'], dependencies: d3d12_test_deps)
 foreach front_end : ['dxil', 'dxbc']
   test('d3d12_xrbias_' + front_end, exe, args: [ front_end ], suite: 'window', timeout: 600)
