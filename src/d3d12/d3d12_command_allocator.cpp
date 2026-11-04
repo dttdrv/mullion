@@ -441,7 +441,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.max_fragment_buffer_binding = 0;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
-  info.max_kernel_buffer_binding = 31;
+  info.max_kernel_buffer_binding = pCmdSig->KernelBufferBindCount;
   info.max_kernel_threadgroup_memory_binding = 0;
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
@@ -498,8 +498,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.support_ray_tracing = 0;
   info.type = pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? WMTIndirectCommandTypeDrawIndexed
                                                                                  : WMTIndirectCommandTypeDraw;
-  info.max_vertex_buffer_binding = 31;
-  info.max_fragment_buffer_binding = 31;
+  info.max_vertex_buffer_binding = pCmdSig->VertexBufferBindCount;
+  info.max_fragment_buffer_binding = pCmdSig->FragmentBufferBindCount;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
   info.max_kernel_buffer_binding = 0;
