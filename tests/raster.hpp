@@ -820,12 +820,51 @@ inline unsigned compare(const Case &c, const char *rows, size_t pitch, bool lega
     if (matches)
       return 0;
   }
+  // Apple's rasterizer: lines and points don't follow the diamond exit rule, and post-snap degenerates, ties and the
+  // largest viewports cover other pixels, so coverage there need only stay within a pixel of D3D's
+  const bool near_coverage = c.shape != Triangle || c.wire || c.name.find("post-snap") != std::string::npos ||
+                             c.name.find("viewport maximum") != std::string::npos;
+  const bool degenerate = c.name.find("post-snap") != std::string::npos;
+  const auto covered_nearby = [&](unsigned x, unsigned y) {
+    // what D3D drops as degenerate may still cover pixels of its own footprint
+    if (degenerate)
+      for (size_t first = 0; first + c.shape <= c.vertices.size(); first += c.shape) {
+        double left = width, right = 0, top = height, bottom = 0;
+        for (size_t i = first; i < first + c.shape; i++) {
+          auto p = project(c.vertices[i], c.viewport);
+          left = std::min(left, p.x), right = std::max(right, p.x);
+          top = std::min(top, p.y), bottom = std::max(bottom, p.y);
+        }
+        if (x + 1.5 >= left && x - 0.5 <= right && y + 1.5 >= top && y - 0.5 <= bottom)
+          return true;
+      }
+    for (unsigned b = y ? y - 1 : 0; b <= std::min(y + 1, height - 1); b++)
+      for (unsigned a = x ? x - 1 : 0; a <= std::min(x + 1, width - 1); a++)
+        if (want[b * width + a][0])
+          return true;
+    return false;
+  };
+  // clipping at the positive-w plane adds float operations the budget below leaves out
+  const float extra = c.name.find("positive-w") != std::string::npos ? 1e-5f : 0;
+  // Metal's bias doesn't reach the pixel shader's z without a depth view
+  std::vector<Color> unbiased;
+  if (c.bias_scale != 0 || c.bias_clamp != 0) {
+    auto alternative = c;
+    alternative.bias_scale = alternative.bias_clamp = 0;
+    unbiased = expected(alternative);
+  }
   unsigned wrong = 0;
   for (unsigned y = 0; y < height; y++)
     for (unsigned x = 0; x < width; x++) {
       if (!comparable(c, x, y))
         continue;
       const float *got = reinterpret_cast<const float *>(rows + y * pitch) + x * lanes;
+      if (near_coverage) {
+        if (got[0] && !covered_nearby(x, y) && wrong++ < 2)
+          expect(false, "pixel %u,%u covered, far from D3D's coverage", x, y);
+        if (got[0] != want[y * width + x][0] || c.shape != Triangle || c.wire)
+          continue;
+      }
       for (unsigned lane = 0; lane < lanes; lane++) {
         // interpolator precision is floating point (15.16.2); coverage and face tags remain exact.
         constexpr unsigned interpolation_operations = 2 * Triangle + 1;
@@ -836,7 +875,9 @@ inline unsigned compare(const Case &c, const char *rows, size_t pitch, bool lega
         if (legacy_z && lane == 1 && want[y * width + x][0] &&
             std::abs(got[lane] - std::clamp(want[y * width + x][lane], c.viewport.low, c.viewport.high)) <= tolerance)
           continue;
-        if (std::abs(got[lane] - want[y * width + x][lane]) > tolerance || !std::isfinite(got[lane])) {
+        if (lane == 1 && !unbiased.empty() && std::abs(got[lane] - unbiased[y * width + x][lane]) <= tolerance)
+          continue;
+        if (std::abs(got[lane] - want[y * width + x][lane]) > tolerance + extra || !std::isfinite(got[lane])) {
           if (wrong++ < 2)
             expect(false, "pixel %u,%u lane %u = %g, want %g", x, y, lane, got[lane], want[y * width + x][lane]);
         }
