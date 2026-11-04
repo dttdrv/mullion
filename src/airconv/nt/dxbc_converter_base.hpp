@@ -575,6 +575,10 @@ public:
   // 1.0 when `Reference` passes the sampler's comparison function against `Texel`, else 0.0
   llvm::Value *SamplerCompare(llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Texel);
   llvm::Value *CompareReference(llvm::Value *SamplerMetadata, llvm::Value *Reference);
+  llvm::Value *ComparePointAtZero(
+      const TextureResourceHandle &Tex, llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Value,
+      llvm::function_ref<llvm::Value *()> Read
+  );
 
   // `Value`, what `Sampler` read (a sample, a gather of `Component`, or a comparison of either with `Reference`), with
   // the sampler's custom border color (SM50_SAMPLER_BORDER). `Read(Sampler)` repeats the read without its comparison
@@ -610,6 +614,10 @@ public:
   // frc and DXIL's Frc: the value less its floor (D3D11.3 22.10.7), NaN for an infinity or a NaN
   llvm::Value *Fraction(llvm::Value *Value);
   llvm::Value *SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value);
+  llvm::Value *WritableResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+      llvm::Value *Residency
+  );
   // `Used`: the components the caller takes of the texel
   std::pair<llvm::Value *, llvm::Value *> ReadTexel(
       const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
