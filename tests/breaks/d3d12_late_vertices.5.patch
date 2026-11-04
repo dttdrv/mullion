@@ -1,0 +1,14 @@
+# a draw after a vertex barrier in a late pass leaves the pass late
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1237,7 +1237,7 @@ public:
+         CountVisibility();
+     } else if (vertex_order_) {
+       // a draw whose vertices may read what the pass's own work since it began did not
+-      allocator_->encoder_current->late = false;
++      (void)0;
+     }
+ 
+     // the conservative rasterizer's viewports and state, bound again when they or the pipeline change

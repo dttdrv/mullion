@@ -135,8 +135,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   // updated it, which waited for every pass (WaitAll). a group has at most kGroupPasses passes
   static constexpr unsigned kGroupPasses = 8;
   std::array<WMT::Reference<WMT::Fence>, 2 * kGroupPasses> group_fences_;
-  // the half of group_fences_ the current group's passes update, how many have, and how many of the group before did
-  unsigned group_half_ = 0, group_count_ = 0, previous_count_ = 0;
+  // the half of group_fences_ the current group's passes update, how many have, how many of the group before did, and
+  // how many of the one before that, whose fences the current half holds until its passes update them
+  unsigned group_half_ = 0, group_count_ = 0, previous_count_ = 0, older_count_ = 0;
   // a pass that orders itself after all before it encoded nothing (a list's first, which is no pass of Metal's): the
   // next that does is ordered in its place
   bool order_next_ = false;
@@ -196,7 +197,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       order_next_ |= pass->overlap == PassOverlap::Ordered;
       return sync;
     }
-    auto overlap = std::exchange(order_next_, false) ? PassOverlap::Ordered : pass->overlap;
+    bool ordered_next = std::exchange(order_next_, false);
+    auto overlap = ordered_next ? PassOverlap::Ordered : pass->overlap;
     if (segment && (overlap == PassOverlap::Ordered || !group_count_ || group_count_ == kGroupPasses)) {
       WaitAll([&](WMT::Fence fence) { sync.waits[sync.wait_count++] = fence; });
       return sync;
@@ -204,12 +206,19 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     sync.waits[sync.wait_count++] = fence_;
     if (overlap == PassOverlap::Ordered || !group_count_ || group_count_ == kGroupPasses) {
       overlap = PassOverlap::Ordered;
-      previous_count_ = group_count_;
+      older_count_ = std::exchange(previous_count_, group_count_);
       group_half_ ^= 1;
       group_count_ = 0;
     }
+    // a late pass's vertices wait for the group before the last, whose passes each waited for all before them; work
+    // it does before its own (before_head) may read what the last group wrote
+    bool late = pass->late && pass->overlap == PassOverlap::Ordered && !ordered_next &&
+                !static_cast<const RenderEncoderData *>(pass)->before_head.next.ptr;
     for (unsigned i = 0; i < previous_count_; i++)
-      sync.waits[sync.wait_count++] = group_fences_[(group_half_ ^ 1) * kGroupPasses + i];
+      (late ? sync.pixels[sync.pixel_count++] : sync.waits[sync.wait_count++]) =
+          group_fences_[(group_half_ ^ 1) * kGroupPasses + i];
+    for (unsigned i = 0; late && i < older_count_; i++)
+      sync.waits[sync.wait_count++] = group_fences_[group_half_ * kGroupPasses + i];
     if (overlap == PassOverlap::Shared)
       for (unsigned i = 0; i < group_count_; i++)
         sync.pixels[sync.pixel_count++] = group_fences_[group_half_ * kGroupPasses + i];
@@ -225,7 +234,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     wait(WMT::Fence(fence_));
     for (unsigned i = 0; i < group_count_; i++)
       wait(WMT::Fence(group_fences_[group_half_ * kGroupPasses + i]));
-    group_count_ = previous_count_ = 0;
+    group_count_ = previous_count_ = older_count_ = 0;
   }
   CaptureState capture_;
   // a Signal and a timestamp resolve wait here for a command buffer the completion thread is done with

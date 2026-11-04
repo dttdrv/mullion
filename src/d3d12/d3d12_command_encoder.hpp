@@ -74,6 +74,10 @@ struct EncoderData {
   // the commands recorded in a pass of draws, copies or dispatches, counted as they are recorded: what encoding it
   // costs (MTLD3D12CommandQueue's Commands)
   uint32_t commands = 0;
+  // an Ordered render pass whose vertex stages need nothing the group of passes just before it wrote: only its
+  // fragments wait for that group, and its vertices for the one before ("a GPU can run the vertex stage of a pass
+  // while the fragment stage waits until another pass updates a fence", MTLFence)
+  bool late = false;
 };
 
 struct RenderEncoderColorAttachmentData {
