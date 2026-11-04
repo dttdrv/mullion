@@ -1104,7 +1104,8 @@ public:
             )](ArgumentEncodingContext &enc) mutable {
       TextureViewDescriptor src_desc;
       src_desc.format = format;
-      src_desc.type = src->textureType();
+      // the draw reads a texture2d_ms, which an array's own type reads as zeros
+      src_desc.type = native ? src->textureType() : WMTTextureType2DMultisample;
       src_desc.arraySize = 1;
       src_desc.firstArraySlice = SrcSubresource; // src must be a MS(Array) texture which has exactly 1 mipmap level
       src_desc.miplevelCount = 1;
