@@ -1631,3 +1631,24 @@ struct DepthBounds {
   }
   samples[pos.y * bounds.pitch + pos.x] = kept;
 }
+
+struct blit_rect {
+  float2 origin;
+  float2 size;
+};
+
+[[fragment]] float4 fs_blit_nearest(
+    present_data input [[stage_in]], texture2d<float, access::sample> source [[texture(0)]],
+    constant blit_rect &rect [[buffer(kCustomBufferArgumentIndex0)]]
+) {
+  constexpr sampler s(filter::nearest, address::clamp_to_edge);
+  return source.sample(s, rect.origin + input.uv * rect.size);
+}
+
+[[fragment]] float4 fs_blit_linear(
+    present_data input [[stage_in]], texture2d<float, access::sample> source [[texture(0)]],
+    constant blit_rect &rect [[buffer(kCustomBufferArgumentIndex0)]]
+) {
+  constexpr sampler s(filter::linear, address::clamp_to_edge);
+  return source.sample(s, rect.origin + input.uv * rect.size);
+}

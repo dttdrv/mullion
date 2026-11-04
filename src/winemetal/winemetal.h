@@ -463,6 +463,9 @@ enum WMTPixelFormat : uint32_t {
   WMTPixelFormatGBARSwizzle = 0b001001001011u << 12,
   WMTPixelFormatAGBASwizzle = 0b011000000000u << 12,
   WMTPixelFormatRGB1Swizzle = WMTPixelFormatAlphaIsOne,
+  WMTPixelFormatRRR1Swizzle = 0b000101100010u << 12,
+  WMTPixelFormatRRRGSwizzle = 0b000101100100u << 12,
+  WMTPixelFormatGBA1Swizzle = 0b001001001010u << 12,
 
   WMTPixelFormatBGRX8Unorm = WMTPixelFormatAlphaIsOne | WMTPixelFormatBGRA8Unorm,
   WMTPixelFormatBGRX8Unorm_sRGB = WMTPixelFormatAlphaIsOne | WMTPixelFormatBGRA8Unorm_sRGB,
@@ -695,6 +698,9 @@ struct WMTDepthAttachmentInfo {
   uint16_t slice;
   uint32_t depth_plane;
   float clear_depth;
+  obj_handle_t resolve_texture;
+  uint16_t resolve_level;
+  uint16_t resolve_slice;
 };
 
 struct WMTStencilAttachmentInfo {

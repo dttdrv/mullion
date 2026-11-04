@@ -555,6 +555,12 @@ renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *samp
     descriptor.depthAttachment.texture = (id<MTLTexture>)info->depth.texture;
     descriptor.depthAttachment.loadAction = (MTLLoadAction)info->depth.load_action;
     descriptor.depthAttachment.storeAction = (MTLStoreAction)info->depth.store_action;
+    if (info->depth.resolve_texture) {
+      descriptor.depthAttachment.resolveTexture = (id<MTLTexture>)info->depth.resolve_texture;
+      descriptor.depthAttachment.resolveLevel = info->depth.resolve_level;
+      descriptor.depthAttachment.resolveSlice = info->depth.resolve_slice;
+      descriptor.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
   }
 
   if (info->stencil.texture) {
@@ -2386,6 +2392,12 @@ _CreateMetalViewFromHWND(void *obj) {
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
+    if (!win_data || !win_data->client_cocoa_view) {
+      /* A window this process did not create (or one the driver refused): no view to attach a
+         layer to. Report it instead of dereferencing NULL; the caller fails the swapchain. */
+      if (win_data) pfn_release_win_data(win_data);
+      return STATUS_SUCCESS;
+    }
     macdrv_metal_view view =
         pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
     params->ret_view = (obj_handle_t)view;
