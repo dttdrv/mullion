@@ -637,8 +637,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd_use_icb.usage = WMTResourceUsageRead;
   cmd_use_icb.resource = icb;
 
-  // Metal 4's shader validation loses a render pass's commands run with a range the GPU reads (#165): a range known now
-  // needs none
+  // Metal 4's shader validation zeroes the loads of a render pass's commands run with a range the GPU reads (#165): a
+  // range known now needs none
   if (runs_max_count) {
     auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
     cmd.type = WMTRenderCommandExecuteCommandsInBuffer;
