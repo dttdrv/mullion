@@ -278,9 +278,11 @@ inline DepthResult depth_result(DepthFormat f, const DepthCase &k, UINT x,
   bool spass = !stenciled ||
                comparison(face.StencilFunc, reference & k.state.StencilReadMask,
                           UINT(saved & k.state.StencilReadMask));
+  // Apple GPUs have no 24-bit depth: D24 is Depth32Float, and an incoming depth compares before any rounding
+  const bool unrounded = f.depth_bits == 24;
   bool dpass = !k.state.DepthEnable || k.absent ||
-               comparison(k.state.DepthFunc, depth_value(f, incoming),
-                          depth_value(f, old));
+               comparison(k.state.DepthFunc, unrounded ? double(clamped) : depth_value(f, incoming),
+                          unrounded ? double(float(depth_value(f, old))) : depth_value(f, old));
   UINT8 updated = saved;
   if (stenciled && !(k.flags & D3D11_DSV_READ_ONLY_STENCIL)) {
     auto op = !spass   ? face.StencilFailOp
