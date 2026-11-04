@@ -2743,9 +2743,15 @@ convert_dxil(
                                 : ir.CreateICmpEQ(ballot(ir.CreateNot(a(1))), ir.getInt64(0));
       break;
     case WaveActiveAllEqual: {
-      auto first = move("simd_broadcast_first", a(1), {});
+      // "all active non-helper lanes": the first lane may be a helper, whose value says nothing
+      auto ctz = ctx.module.getOrInsertFunction(
+          "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
+      );
+      auto first = ctx.shader_type == D3D10_SB_PIXEL_SHADER
+                       ? move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {ballot(ir.getTrue()), ir.getFalse()}))})
+                       : move("simd_broadcast_first", a(1), {});
       auto equal = a(1)->getType()->isFPOrFPVectorTy() ? ir.CreateFCmpOEQ(a(1), first) : ir.CreateICmpEQ(a(1), first);
-      ret = simd("simd_all", ir.getInt1Ty(), {equal});
+      ret = ir.CreateICmpEQ(ballot(ir.CreateNot(equal)), ir.getInt64(0));
       break;
     }
     case WaveActiveBallot:
