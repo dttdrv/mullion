@@ -2149,6 +2149,15 @@ Converter::operator()(const InstSampleCompare &sample) {
     std::tie(Value, Residency) = SamplingResidency(
         *Tex, SamplerHandle, Sampler->Metadata, Coord, ArrayIndex, sample.offsets, {Value, Residency}, Read,
         sample.level_zero ? ClampMinLOD(Tex->Metadata, Sampler->Bias) : nullptr, Sampler->Bias, MinLODClamp);
+  if (sample.level_zero)
+    Value = ComparePointAtZero(*Tex, Sampler->Metadata, Reference, Value, [&] {
+      return air
+          .CreateSample(
+              Tex->Texture, Tex->Handle, SamplerHandle, Coord, ArrayIndex, sample.offsets,
+              sample_level{ClampMinLOD(Tex->Metadata, Sampler->Bias)}
+          )
+          .first;
+    });
   Value = CustomBorder(
       *Tex, SamplerHandle, Sampler->Border, Sampler->Metadata, Value,
       [&](llvm::Value *S) {
@@ -3053,6 +3062,46 @@ Converter::SamplerCompare(llvm::Value *SamplerMetadata, llvm::Value *Reference, 
       ir.CreateZExt(ir.CreateICmpEQ(ir.CreateAnd(Function, Outcome), Outcome), air.getIntTy()),
       llvm::air::Signedness::Unsigned
   );
+}
+
+llvm::Value *
+Converter::ComparePointAtZero(
+    const TextureResourceHandle &Tex, llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Value,
+    llvm::function_ref<llvm::Value *()> Read
+) {
+  using namespace llvm;
+  if (Value->getType()->isVectorTy())
+    return Value;
+  // CompareReference leaves a zero only for Equal and NotEqual, which no reference makes Metal flush a denormal texel
+  // for (D3D11.3 22.4.3). a point read has one texel, which is compared here
+  auto Filters = ir.CreateAnd(
+      SamplerMetadata, (1ull << SM50_SAMPLER_METADATA_MIN_LINEAR) | (1ull << SM50_SAMPLER_METADATA_MAG_LINEAR)
+  );
+  auto Head = ir.GetInsertBlock();
+  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
+  if (auto Branch = Head->getTerminator())
+    Branch->eraseFromParent();
+  auto Exact = llvm::BasicBlock::Create(ctx.llvm, "sample_compare_zero", Head->getParent(), Tail);
+  ir.SetInsertPoint(Head);
+  ir.CreateCondBr(
+      ir.CreateAnd(
+          ir.CreateFCmpOEQ(Reference, ConstantFP::get(air.getFloatTy(), 0)), ir.CreateICmpEQ(Filters, ir.getInt64(0))
+      ),
+      Exact, Tail
+  );
+  ir.SetInsertPoint(Exact);
+  auto Compared = SamplerCompare(SamplerMetadata, Reference, air.getDenormToZero(Read()));
+  // an unbound resource returns 0 (D3D11.3 22.4.3), and has no width
+  auto Width = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::width, ir.getInt32(0));
+  Compared = ir.CreateSelect(ir.CreateICmpEQ(Width, ir.getInt32(0)), Constant::getNullValue(Compared->getType()), Compared);
+  auto Last = ir.GetInsertBlock();
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Tail, Tail->begin());
+  auto Result = ir.CreatePHI(Value->getType(), 2);
+  Result->addIncoming(Value, Head);
+  Result->addIncoming(Compared, Last);
+  return Result;
 }
 
 llvm::Value *

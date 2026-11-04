@@ -575,6 +575,10 @@ public:
   // 1.0 when `Reference` passes the sampler's comparison function against `Texel`, else 0.0
   llvm::Value *SamplerCompare(llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Texel);
   llvm::Value *CompareReference(llvm::Value *SamplerMetadata, llvm::Value *Reference);
+  llvm::Value *ComparePointAtZero(
+      const TextureResourceHandle &Tex, llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Value,
+      llvm::function_ref<llvm::Value *()> Read
+  );
 
   // `Value`, what `Sampler` read (a sample, a gather of `Component`, or a comparison of either with `Reference`), with
   // the sampler's custom border color (SM50_SAMPLER_BORDER). `Read(Sampler)` repeats the read without its comparison

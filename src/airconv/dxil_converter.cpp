@@ -3219,6 +3219,10 @@ convert_dxil(
             *tex.texture, sampler, smp.sampler->Metadata, coord, array, offset, {value, residency},
             [&](Value *s) { return read(s, reference); }, residency_level, residency_bias, residency_clamp,
             residency_dx, residency_dy);
+      if (op == SampleCmpLevelZero)
+        value = dxbc.ComparePointAtZero(*tex.texture, smp.sampler->Metadata, reference, value, [&] {
+          return read(sampler, nullptr).first;
+        });
       value = dxbc.CustomBorder(
           *tex.texture, sampler, smp.sampler->Border, smp.sampler->Metadata, value,
           [&](Value *s) { return read(s, nullptr).first; }, reference
