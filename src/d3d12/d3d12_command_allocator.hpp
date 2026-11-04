@@ -309,6 +309,9 @@ public:
     if (encoder_last)
       return FAIL(E_INVALIDARG);
     *pStartEncoder = encoder_last = &encoder_lists_.emplace_back(EncoderType::Null, nullptr);
+    // a list's start orders nothing: the lists of one ExecuteCommandLists may overlap, each call's work follows all of
+    // the call before (MTLD3D12CommandQueue's Commit), and a list ends with what orders the next where it must (Close)
+    encoder_last->overlap = PassOverlap::Independent;
     so_scratch_size_ = 0;
     event = nullptr;
     return S_OK;

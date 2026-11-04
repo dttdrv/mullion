@@ -264,10 +264,14 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // the overlap of a pass a draw or dispatch just began, after the passes before it are in the list
   void
   Overlap(EncoderData *pass, std::span<const Texture *const> targets) {
-    bool follows = plain_pass_ && allocator_->encoder_last == plain_pass_ && order_serial_ == plain_serial_;
+    // a list's first pass with nothing before it follows the last pass of the list before, whose targets it may share
+    // ("the second command list (D) may begin executing work before all work from the first (C) has finished",
+    // ID3D12CommandQueue::ExecuteCommandLists): Close orders it where that pass does not end its list
+    bool first = !plain_pass_ && allocator_->encoder_last == entry && !order_serial_;
+    bool follows = first || (plain_pass_ && allocator_->encoder_last == plain_pass_ && order_serial_ == plain_serial_);
     if (!follows)
       overlap_targets_.clear();
-    bool shared = std::ranges::any_of(targets, [&](auto texture) {
+    bool shared = first || std::ranges::any_of(targets, [&](auto texture) {
       return texture && std::ranges::find(overlap_targets_, texture) != overlap_targets_.end();
     });
     pass->overlap = !follows ? PassOverlap::Ordered : shared ? PassOverlap::Shared : PassOverlap::Independent;
@@ -782,6 +786,7 @@ public:
     clears_.clear();
     markers_.clear();
     plain_pass_ = nullptr;
+    order_serial_ = 0;
     overlap_targets_.clear();
     named_.clear();
     hoisted_ = nullptr;
@@ -851,6 +856,13 @@ public:
     SumOcclusion();
     SumStatistics();
     EndPredication();
+    // the next list of the call follows this one's last pass as a pass of this list would (Overlap), or a pass that
+    // encodes nothing orders it after all before
+    auto last = allocator_->encoder_current ? allocator_->encoder_current : allocator_->encoder_last;
+    if (!plain_pass_ || last != plain_pass_ || order_serial_ != plain_serial_) {
+      allocator_->InvalidateCurrentPass();
+      allocator_->AllocatePass<EncoderData>()->type = EncoderType::Null;
+    }
     HRESULT hr = allocator_->EndRecord(&encoder_count);
     recorded_on = allocator_.ptr();
     if (SUCCEEDED(recording_error_))
