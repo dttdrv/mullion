@@ -131,6 +131,10 @@ CI coverage}.
 **6.1 Run under validation.** Correctness runs enable Metal's [API
 validation](https://developer.apple.com/documentation/xcode/validating-your-apps-metal-api-usage).
 [DEBUGGING.md](DEBUGGING.md) describes captures and other tools for reading a failure.
+Tests that use `ExecuteIndirect` can hang under `--validate` on Metal 4, at 100% CPU with no error: Metal's shader
+validation faults while decoding a report ([#165](https://github.com/dttdrv/mullion/issues/165)). Such a test is not
+slow, and more time does not help. `--family native-metal3 --validate` validates its Metal 3 path, and
+`MTL_DEBUG_LAYER=1` alone validates API use on Metal 4.
 
 **6.2 Give every skip its reason.** A skip names what is missing and where. An optional capability the configuration
 lacks is a skip. Support that the API version, feature level or reported tier requires is never skipped: when it is
