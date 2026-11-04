@@ -749,6 +749,14 @@ auto FunctionSignatureBuilder::CreateFunction(
 
           return msl_float4.get_llvm_type(context);
         },
+        [&](const InputPointCoord &) {
+          metadata_field.string("air.point_coord")
+            ->string("air.arg_type_name")
+            ->string("float2")
+            ->string("air.arg_name")
+            ->string("mtl_point_coord");
+          return msl_float2.get_llvm_type(context);
+        },
         [&](const InputFrontFacing &) {
           metadata_field.string("air.front_facing")
             ->string("air.arg_type_name")
@@ -1073,6 +1081,14 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("air.arg_name")
             ->string("mtl_viewport_array_index");
           return (llvm::Type *)Type::getInt32Ty(context);
+        },
+        [&](const OutputPointSize) {
+          md.string("air.point_size")
+            ->string("air.arg_type_name")
+            ->string("float")
+            ->string("air.arg_name")
+            ->string("mtl_point_size");
+          return (llvm::Type *)Type::getFloatTy(context);
         },
         [](auto _) {
           assert(0 && "Unhandled output");

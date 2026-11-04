@@ -2,6 +2,7 @@
 #include <unordered_map>
 #include <mutex>
 #include "dxbc_converter.hpp"
+#include "d3d9_shader.hpp"
 #include "DXBCParser/BlobContainer.h"
 #include "DXBCParser/ShaderBinary.h"
 #include "airconv_error.hpp"
@@ -1610,6 +1611,9 @@ llvm::Error convertDXBC(
   using namespace microsoft;
 
   auto pShaderInternal = (SM50ShaderInternal *)pShader;
+
+  if (pShaderInternal->d3d9)
+    return d3d9::convert_shader(pShaderInternal, name, context, module, pArgs);
 
   switch (pShaderInternal->shader_type) {
   case microsoft::D3D10_SB_PIXEL_SHADER:

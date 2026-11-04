@@ -73,6 +73,15 @@ AirType::AirType(LLVMContext &context) : context(context) {
     "mullion_draw_arguments"
   );
 
+  _mullion_stream_output_buffer_entry = StructType::create(
+    context,
+    {
+      _int->getPointerTo((uint32_t)AddressSpace::device),
+      _int->getPointerTo((uint32_t)AddressSpace::device),
+    },
+    "mullion_stream_output_buffer_entry"
+  );
+
   _mullion_draw_indexed_arguments = StructType::create(
     context,
     {

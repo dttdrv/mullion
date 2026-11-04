@@ -61,6 +61,11 @@ static cl::opt<bool>
 static cl::opt<bool>
   EmitMetallib("A", cl::init(false), cl::desc("Write output as .metallib"));
 
+static cl::opt<std::string> ReflectionFilename(
+  "reflection", cl::desc("Write the binding layout as text lines: <cb|arg> <type> <slot> <struct offset>"),
+  cl::value_desc("filename"), cl::init("")
+);
+
 static cl::opt<bool> DisassembleDXBC(
   "disas-dxbc", cl::init(false), cl::desc("Disassemble dxbc shader")
 );
@@ -251,12 +256,31 @@ int main(int argc, char **argv) {
 
   sm50_shader_t sm50;
   sm50_error_t err;
-  if (SM50Initialize(
-        MemRef.getBufferStart(), MemRef.getBufferSize(), &sm50, nullptr, &err
+  bool is_dxbc = MemRef.getBufferSize() >= 4 && !memcmp(MemRef.getBufferStart(), "DXBC", 4);
+  auto initialize = is_dxbc ? SM50Initialize : SM30Initialize;
+  MTL_SHADER_REFLECTION reflection = {};
+  if (initialize(
+        MemRef.getBufferStart(), MemRef.getBufferSize(), &sm50, &reflection, &err
       )) {
     errs() << SM50GetErrorMessageString(err) << '\n';
     SM50FreeError(err);
     return 1;
+  }
+
+  if (!ReflectionFilename.getValue().empty()) {
+    std::vector<MTL_SM50_SHADER_ARGUMENT> cbuffers(reflection.NumConstantBuffers), arguments(reflection.NumArguments);
+    SM50GetArgumentsInfo(sm50, cbuffers.data(), arguments.data());
+    std::error_code EC;
+    raw_fd_ostream refl(ReflectionFilename, EC);
+    if (EC) {
+      errs() << EC.message() << '\n';
+      return 1;
+    }
+    for (auto &arg : cbuffers)
+      refl << "cb " << (uint32_t)arg.Type << " " << arg.SM50BindingSlot << " " << arg.StructurePtrOffset << "\n";
+    for (auto &arg : arguments)
+      refl << "arg " << (uint32_t)arg.Type << " " << arg.SM50BindingSlot << " " << arg.StructurePtrOffset << "\n";
+    refl << "qwords " << reflection.ArgumentTableQwords << "\n";
   }
 
   SM50_SHADER_COMMON_DATA data;

@@ -41,6 +41,7 @@ public:
   llvm::Type *_mullion_vertex_buffer_entry;
   llvm::Type *_mullion_draw_arguments;
   llvm::Type *_mullion_draw_indexed_arguments;
+  llvm::Type *_mullion_stream_output_buffer_entry;
 
   llvm::Type *_sampler;
 
