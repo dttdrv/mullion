@@ -3429,10 +3429,10 @@ convert_dxil(
           return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(place, shift), i32), ir.getInt32((1u << bits) - 1));
         };
         first_mip = part(0, SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS);
-        resource_mips = part(8, 8);
-        first_slice = part(16, 16);
-        resource_size[0] = part(32, 16);
-        resource_size[1] = part(48, 16);
+        resource_mips = part(8, 4);
+        first_slice = part(16, 12);
+        resource_size[0] = part(32, 15);
+        resource_size[1] = part(48, 15);
       }
       // derivatives in texels of the first mip: the operation's, or the pixel's. an explicit LOD has none
       auto texels = [&](Value *gradient) {

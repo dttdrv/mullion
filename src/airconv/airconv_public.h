@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 102
+#define AIRCONV_VERSION 103
 
 #ifdef __cplusplus
 #include <string>
@@ -475,6 +475,13 @@ enum SM50_SAMPLER_METADATA {
 enum SM50_TEXTURE_VIEW_METADATA : uint64_t {
   SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS = 7,
   SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE = 1ull << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS,
+  /* the spare bits above the other fields: log2 of the 16 KB page's tile width, height and depth, where Metal takes a
+     writable sparse texture's residency coordinates in such tiles. a width of 0 is no such GPU */
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH = 12,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT = 28,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0 = 15,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1 = 31,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2 = 47,
 };
 
 /* the low word of a multisample texture's metadata: a one-sample view, which reads a regular texture since Metal's

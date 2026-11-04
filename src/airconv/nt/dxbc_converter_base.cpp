@@ -1562,6 +1562,54 @@ Converter::operator()(const InstLoad &load) {
   StoreFeedback(load.feedback, Residency);
 }
 
+// Metal takes a writable sparse texture's residency coordinates in tiles of a 16 KB page
+llvm::Value *
+Converter::WritableResidency(
+    const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+    llvm::Value *Residency
+) {
+  auto Place = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Bits = [&](unsigned Shift, unsigned Mask) {
+    return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(Place, Shift), ir.getInt32Ty()), ir.getInt32(Mask));
+  };
+  auto Width = Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH, 7);
+  auto From = ir.GetInsertBlock();
+  auto Done = ir.GetInsertPoint() == From->end() ? llvm::BasicBlock::Create(ctx.llvm, "", From->getParent())
+                                                 : llvm::SplitBlock(From, &*ir.GetInsertPoint());
+  if (auto Branch = From->getTerminator())
+    Branch->eraseFromParent();
+  auto Tiles = llvm::BasicBlock::Create(ctx.llvm, "residency_tiles", From->getParent(), Done);
+  ir.SetInsertPoint(From);
+  auto Writable = ir.CreateICmpNE(ir.CreateAnd(Place, SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE), ir.getInt64(0));
+  ir.CreateCondBr(ir.CreateAnd(Writable, ir.CreateICmpNE(Width, ir.getInt32(0))), Tiles, Done);
+  ir.SetInsertPoint(Tiles);
+  auto Scaled = Address;
+  auto Count = llvm::cast<llvm::FixedVectorType>(Address->getType())->getNumElements();
+  Scaled = ir.CreateInsertElement(Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, uint64_t(0)), Width), uint64_t(0));
+  Scaled = ir.CreateInsertElement(
+      Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, 1), Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT, 7)), 1
+  );
+  if (Count > 2) {
+    auto Depth = ir.CreateOr(
+        Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0, 1),
+        ir.CreateOr(
+            ir.CreateShl(Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1, 1), 1),
+            ir.CreateShl(Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2, 1), 2)
+        )
+    );
+    Scaled = ir.CreateInsertElement(Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, 2), Depth), 2);
+  }
+  auto InTiles = air.CreateRead(Tex.Texture, Tex.Handle, Scaled, ArrayIndex, nullptr, Level, Tex.GlobalCoherent).second;
+  ir.CreateBr(Done);
+  auto Last = ir.GetInsertBlock();
+  ir.SetInsertPoint(Done, Done->begin());
+  auto Merged = ir.CreatePHI(Residency->getType(), 2);
+  Merged->addIncoming(Residency, From);
+  Merged->addIncoming(InTiles, Last);
+  ir.SetInsertPoint(Done, std::next(Done->begin()));
+  return Merged;
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::ReadTexel(
     const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
@@ -1569,6 +1617,8 @@ Converter::ReadTexel(
 ) {
   auto [Value, Residency] =
       air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+  if (Tex.Range && Residency && !Tex.IsUAV && !SampleIndex && Address->getType()->isVectorTy())
+    Residency = WritableResidency(Tex, Address, ArrayIndex, Level, Residency);
   if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV || !(Used & (kMaskComponentY | kMaskComponentZ)))
     return {Value, Residency};
   // an R32G32B32 element's green and blue are the next two R32 texels; its alpha is R32's 1, the default of a
