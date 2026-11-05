@@ -1,0 +1,12 @@
+# a vertex's edge is the first whose points hold it, which a shared edge's start makes a later edge's
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -823,7 +823,7 @@
+   // the workload's own points
+   tess_edge edge = no_edge;
+   int at = 0;
+-  for (int e = 0; e < 4; e++)
++  for (int e = 3; e >= 0; e--)
+     if (thread_index >= base[e] && thread_index <= base[e] + workload.edge[e].segments) {
+       edge = workload.edge[e];
+       at = thread_index - base[e];

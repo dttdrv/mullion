@@ -1437,6 +1437,9 @@ public:
 
   void
   Commit(const std::vector<EncoderData *> &recorded, std::vector<Com<MTLD3D12CommandAllocator>> &&allocators = {}) {
+    // "calling ExecuteCommandLists twice in succession ... guarantees that the first workload (A) finishes before the
+    // second workload (B)": the call's first pass waits for all before it
+    order_next_ = true;
     auto scope = StartCommitting();
     // the lists' allocators stay, and count the lists as pending, until the last command buffer of theirs completes
     struct Keeps {
@@ -1598,9 +1601,11 @@ public:
               taken.push_back({stamp->heap, stamp->query});
           }
         }
-        // what a pass of Metal's waits for and updates, in the order the passes are submitted
+        // what a pass of Metal's waits for and updates, in the order the passes are submitted. one of none orders the
+        // next where it is Ordered (a list's end, MTLD3D12GraphicsCommandList's Close)
         PassSync sync;
         switch (current->type) {
+        case EncoderType::Null:
         case EncoderType::Clear:
         case EncoderType::Render:
         case EncoderType::Blit:
