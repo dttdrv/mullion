@@ -1,15 +1,13 @@
 # a group takes workloads as long as their vertices fit, however many primitives they make
-diff --git a/src/airconv/shaders/air_tessellation.metal b/src/airconv/shaders/air_tessellation.metal
-index 479b730..2119221 100644
 --- a/src/airconv/shaders/air_tessellation.metal
 +++ b/src/airconv/shaders/air_tessellation.metal
-@@ -242,8 +242,7 @@ emit(tess_output out, tess_frame a, tess_frame b) {
-     tess_workload before = out.workloads[index - 1];
+@@ -251,8 +251,7 @@
      shared = shared_vertices(before, workload);
    }
+   // a group has fewer workloads than a SIMD group has lanes: one each, and one past them (get_group_layout)
 -  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff) &&
--      out.next[4] + added <= out.group_limit >> 16) {
-+  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff)) {
+-      out.next[4] + added <= out.group_limit >> 16 && index - out.next[3] < 31) {
++  if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff) && index - out.next[3] < 31) {
      out.next[2] += added - shared;
      out.next[4] += added;
    } else {
