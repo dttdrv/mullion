@@ -678,13 +678,77 @@ protected:
   // the targets the pixel shader blends itself (ShaderBlend)
   uint32_t blend_mask_ = 0;
 
+  // a mesh pipeline is made whole: its specialization gives the fragment stage zeros for the mesh stage's
+  // per-primitive outputs (d3d12_mesh)
+  WMT::Reference<WMT::RenderPipelineState>
+  MetalPipeline(const WMTMeshRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
+    return device_->Archived(info, error, [&](auto &info, auto &error) {
+      return device_->GetMTLDevice().newRenderPipelineState(info, error);
+    });
+  }
+
+  // the Metal pipeline of `info`: on Metal 4, specialized from the device's flexible pipeline of the rest of its state
+  // (MTLD3D12Device::flexible), which this pipeline holds from then on. that state is in the key whole, as
+  // GetPipelineKey binds it, all but the archives it is looked up in
+  WMT::Reference<WMT::RenderPipelineState>
+  MetalPipeline(const WMTRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
+    auto &flexible = device_->flexible;
+    std::call_once(flexible.checked, [&] {
+      flexible.enabled = env::getEnvVar("MULLION_D3D12_FLEXIBLE") != "0" && device_->UsesMetal4();
+    });
+    if (!flexible.enabled)
+      return device_->Archived(info, error, [&](auto &info, auto &error) {
+        return device_->GetMTLDevice().newRenderPipelineState(info, error);
+      });
+    Sha1HashState fixed, colors;
+    auto hash = [](Sha1HashState &h, const auto &...values) { (h.update(values), ...); };
+    for (auto &[format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending] : info.colors)
+      hash(colors, format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending);
+    auto &[targets, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment, immutable_vertex,
+           immutable_fragment, topology, partition, factor, winding, step, serialization, lookup, lookups, fail, icb,
+           unspecialized, padding] = info;
+    hash(fixed, coverage, logic, logic_op, rasterized, samples, depth, stencil, vertex, fragment, immutable_vertex,
+         immutable_fragment, topology, partition, factor, winding, step, icb);
+    auto key = fixed.final(), colors_key = colors.final();
+    std::shared_ptr<MTLD3D12Device::Flexible> held;
+    {
+      std::lock_guard lock(flexible.mutex);
+      held = flexible.made[key].lock();
+    }
+    if (!held) {
+      // not archived: MTLBinaryArchive's serializeToURL aborts on an unspecialized format (flex/probe/archive.m)
+      auto unspecialized = info;
+      unspecialized.unspecialized_colors = true;
+      auto made = std::make_shared<MTLD3D12Device::Flexible>(
+          device_->GetMTLDevice().newRenderPipelineState(unspecialized, error));
+      if (!made->unspecialized)
+        return {};
+      std::lock_guard lock(flexible.mutex);
+      auto &kept = flexible.made[key];
+      if (!(held = kept.lock()))
+        kept = held = made;
+    }
+    {
+      std::lock_guard lock(shader_mutex);
+      functions.push_back(held);
+    }
+    {
+      std::lock_guard lock(flexible.mutex);
+      if (auto found = held->specialized.find(colors_key); found != held->specialized.end())
+        return found->second;
+    }
+    auto specialized = device_->GetMTLDevice().newSpecializedRenderPipelineState(held->unspecialized, info, error);
+    if (!specialized)
+      return {};
+    std::lock_guard lock(flexible.mutex);
+    return held->specialized.emplace(colors_key, std::move(specialized)).first->second;
+  }
+
   template <typename Info>
   WMT::Reference<WMT::RenderPipelineState>
   CreatePipeline(const Info &info, WMT::Reference<WMT::Error> &error,
                  std::function<WMT::Reference<WMT::Function>()> statistics_geometry_shader = {}) {
-    auto pipeline = device_->Archived(info, error, [&](auto &info, auto &error) {
-      return device_->GetMTLDevice().newRenderPipelineState(info, error);
-    });
+    auto pipeline = MetalPipeline(info, error);
     if (!pipeline || (!rtv_mask && !dsv_mask && !pixel_shader && !statistics_geometry_shader))
       return pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
@@ -1936,9 +2000,7 @@ public:
             info.stencil_pixel_format = WMTPixelFormatInvalid;
           else if (any_format)
             info.stencil_pixel_format = DSVFormat;
-          return device_->Archived(info, error, [&](auto &info, auto &error) {
-            return device_->GetMTLDevice().newRenderPipelineState(info, error);
-          });
+          return MetalPipeline(info, error);
         },
         descriptor.info
     );
