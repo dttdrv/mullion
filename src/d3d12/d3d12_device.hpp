@@ -498,6 +498,8 @@ public:
   Sha1Digest library_key;
   mullion::mutex shader_mutex;
   PipelineShaderCache cached_shaders;
+  // the device's functions it is made of (MTLD3D12Device::functions)
+  std::vector<std::shared_ptr<const void>> functions;
   // the sampler emulations its shaders leave out, as no sampler of the device needed them when it was made
   // (MTLD3D12Device::sampler_emulations), and what it is made of, to make it again with them once a draw or dispatch
   // can read a sampler that does
@@ -647,6 +649,16 @@ public:
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const std::string>> bytes;
   } lean_shaders;
+  // the Metal functions pipelines are made of, with what they were loaded from, by their conversion's key
+  // (CompileFunction): made once while any pipeline holds them
+  struct SharedFunction {
+    WMT::Reference<WMT::Function> function;
+    WMT::Reference<WMT::DispatchData> data;
+  };
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<const SharedFunction>> made;
+  } functions;
 
   // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
   // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so
@@ -730,10 +742,9 @@ public:
   // the Metal language version the device's shaders are converted for (ShaderMetalVersion)
   virtual SM50_SHADER_METAL_VERSION GetMetalVersion() = 0;
   // the shader compiler's flags for what this GPU lacks (GPUShaderFlags)
-  SM50_SHADER_FLAG
-  GetShaderFlags() {
-    return GPUShaderFlags(GetMTLDevice());
-  }
+  virtual SM50_SHADER_FLAG GetShaderFlags() = 0;
+  // the device's one depth stencil state of this description: pipelines share them
+  virtual WMT::Reference<WMT::DepthStencilState> DepthStencilState(const WMTDepthStencilInfo &info) = 0;
 
   // the GPU address of the lock words of 64-bit atomics, which every root signature carries (AtomicLocksQword)
   virtual uint64_t GetAtomicLocks() = 0;
@@ -1072,6 +1083,8 @@ bool IsCpuVisibleHeap(const D3D12_HEAP_PROPERTIES *pHeapProps);
 // has none while experimental shader models are on (D3D12EnableExperimentalFeatures). Direct3D checks that before
 // it reads anything else of one, and refuses what is not with E_INVALIDARG
 bool ShaderContainerHolds(const void *container, size_t size);
+// the SHA1 of a shader's bytecode, which one that held (ShaderContainerHolds) does not compute again
+Sha1Digest ShaderDigest(const void *code, size_t size);
 
 // whether `device` has the features a shader container requires: the low bits of its feature info part (SFI0,
 // DxilContainer.h), which DxilConstants.h calls feature requirements

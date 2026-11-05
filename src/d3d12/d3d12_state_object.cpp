@@ -342,7 +342,7 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     libraries_.push_back(library);
     if (device_->NamesPasses())
       this->name +=
-          Sha1HashState::compute(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength).string() + " ";
+          ShaderDigest(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength).string() + " ";
     for (auto &subobject : ReadSubobjects(desc.DXILLibrary)) {
       if (!desc.NumExports)
         subobjects.push_back({library.get(), subobject});

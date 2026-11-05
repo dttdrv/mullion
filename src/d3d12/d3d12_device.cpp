@@ -286,11 +286,19 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
+  // what pipelines are converted for and with, read once: every pipeline asks
+  const SM50_SHADER_METAL_VERSION metal_version_;
+  const SM50_SHADER_FLAG shader_flags_;
+  mullion::mutex depth_stencil_lock_;
+  std::map<std::array<uint32_t, 16>, WMT::Reference<WMT::DepthStencilState>> depth_stencil_states_;
   std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
 
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter)
+      : adapter_(adapter), command_library(adapter_->GetMTLDevice()),
+        metal_version_(SM50_SHADER_METAL_VERSION(ShaderMetalVersion(adapter_->GetMTLDevice()))),
+        shader_flags_(GPUShaderFlags(adapter_->GetMTLDevice())) {
     mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
   }
 
@@ -466,7 +474,30 @@ public:
         SM50_SHADER_METAL_310 == uint32_t(WMTMetal310) && SM50_SHADER_METAL_320 == uint32_t(WMTMetal320) &&
         SM50_SHADER_METAL_400 == uint32_t(WMTMetal400)
     );
-    return SM50_SHADER_METAL_VERSION(ShaderMetalVersion(GetMTLDevice()));
+    return metal_version_;
+  }
+
+  SM50_SHADER_FLAG
+  GetShaderFlags() override {
+    return shader_flags_;
+  }
+
+  WMT::Reference<WMT::DepthStencilState>
+  DepthStencilState(const WMTDepthStencilInfo &info) override {
+    // whole bindings make header additions visible. a face without the test is one state whatever its operations
+    auto &[compare, write, front, back] = info;
+    std::array<uint32_t, 16> key{compare, write};
+    for (auto [i, stencil] : {std::pair(2, &front), std::pair(9, &back)}) {
+      auto &[enabled, pass, fail, depth_fail, function, write_mask, read_mask] = *stencil;
+      if (enabled)
+        std::ranges::copy(std::array<uint32_t, 7>{enabled, pass, fail, depth_fail, function, write_mask, read_mask},
+                          key.begin() + i);
+    }
+    std::lock_guard lock(depth_stencil_lock_);
+    auto &state = depth_stencil_states_[key];
+    if (!state)
+      state = GetMTLDevice().newDepthStencilState(info);
+    return state;
   }
 
   WMT::Device
@@ -2290,6 +2321,11 @@ public:
   PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
     auto end = std::chrono::steady_clock::now(), present = first_present.load();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    // the profile's pipeline time (tools/mullion-diag), on the thread that made it
+    if (diag::profile) {
+      uint64_t took = std::chrono::nanoseconds(end - start).count();
+      diag::Write(diag::Line("span", "pipeline", str::format(kind, " ", name), GetCurrentThreadId(), diag::Now() - took, took));
+    }
     bool late = present != std::chrono::steady_clock::time_point() && end >= present;
     // MULLION_TRACE_SHADER: 1 has the pipelines that take 20 ms or more or are made after the first present (a
     // stutter), heavy every one
