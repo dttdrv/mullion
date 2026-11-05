@@ -19,7 +19,7 @@
 }
 @end
 
-static inline NSString *
+NSString *
 resolve_cache_dir(NSString *path, bool path_is_file) {
   if (![path hasPrefix:@"/"]) {
     char buf[PATH_MAX];
