@@ -25,6 +25,8 @@ test('d3d12_descriptor_memory_dxbc', exe, args: ['dxbc'], timeout: 600)
 # a GPU capture of a frame, which Metal takes only with MTL_CAPTURE_ENABLED in the process's environment
 exe = executable('d3d12_capture', ['d3d12_capture.cpp'], dependencies: d3d12_test_deps)
 test('d3d12_capture', exe, env: ['MTL_CAPTURE_ENABLED=1', 'MULLION_D3D12_PARALLEL_COMMANDS=1'], suite: 'window', timeout: 300)
+exe = executable('d3d12_capture_release', ['d3d12_capture_release.cpp'], dependencies: d3d12_test_deps)
+test('d3d12_capture_release', exe, env: ['MTL_CAPTURE_ENABLED=1'], suite: 'window', timeout: 300)
 # MetalFX through Mullion's own command list extension (src/d3d12/d3d12_interfaces.hpp)
 exe = executable('d3d12_metalfx', ['d3d12_metalfx.cpp'], dependencies: d3d12_test_deps,
                  include_directories: include_directories('../../src/util'))
