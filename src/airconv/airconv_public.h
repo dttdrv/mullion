@@ -295,6 +295,7 @@ extern "C" {
 #endif
 
 enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE {
+  SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT = 1,
   SM50_SHADER_COMMON = 2,
   SM50_SHADER_PSO_PIXEL_SHADER = 3,
   SM50_SHADER_IA_INPUT_LAYOUT = 4,
@@ -307,6 +308,7 @@ enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE {
   SM50_SHADER_MESH_SHADER = 11,
   SM50_SHADER_RAY_SHADER = 12,
   SM50_SHADER_LIBRARIES = 13,
+  SM30_SHADER_D3D9 = 14,
   SM50_SHADER_ARGUMENT_TYPE_MAX = 0xffffffff,
 };
 
@@ -373,6 +375,22 @@ struct SM50_RAY_SHADER_INFO {
   uint32_t payload_size;   /* of its payload, or a callable shader's parameter */
   uint32_t attribute_size; /* of a hit's attributes */
   uint32_t calls;          /* SM50_RAY_SHADER_CALLS */
+};
+
+struct SM50_STREAM_OUTPUT_ELEMENT {
+  uint32_t reg_id;
+  uint32_t component;
+  uint32_t output_slot;
+  uint32_t offset;
+};
+
+struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA {
+  void *next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t num_output_slots;
+  uint32_t num_elements;
+  uint32_t strides[4];
+  struct SM50_STREAM_OUTPUT_ELEMENT *elements;
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA {
@@ -649,6 +667,69 @@ struct SM50_SHADING_RATE {
   uint32_t image_height;
 };
 
+enum SM30_FOG_MODE {
+  SM30_FOG_NONE = 0,
+  SM30_FOG_VERTEX = 1,
+  SM30_FOG_EXP = 2,
+  SM30_FOG_EXP2 = 3,
+  SM30_FOG_LINEAR = 4,
+};
+
+enum SM30_SHADER_FLAG {
+  SM30_SHADER_FLAG_FLAT_SHADING = 1 << 0,
+  SM30_SHADER_FLAG_POINT_SPRITE = 1 << 1,
+  SM30_SHADER_FLAG_POINT_SIZE = 1 << 2,
+  /* pixel shaders: vs_outputs lists what the vertex shader writes; other inputs read zero */
+  SM30_SHADER_FLAG_VS_OUTPUTS = 1 << 3,
+  /* pixel shader writes its depth plus depth_bias, unless it writes depth itself */
+  SM30_SHADER_FLAG_DEPTH_BIAS = 1 << 4,
+  /* table fog uses w (perspective projections) instead of z */
+  SM30_SHADER_FLAG_FOG_W = 1 << 5,
+};
+
+/*
+ * D3D9 fixed-function behaviour applied around a shader. The values it reads come from constant buffer 3,
+ * laid out as SM30_RUNTIME_CONSTANTS.
+ */
+struct SM30_SHADER_D3D9_DATA {
+  void *next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t alpha_func; /* D3DCMPFUNC; 0 or D3DCMP_ALWAYS disables the alpha test */
+  uint32_t fog_mode;   /* SM30_FOG_MODE; D3D9 leaves fog to ps_3_0 shaders, so callers pass NONE for those */
+  uint32_t clip_plane_mask;
+  uint32_t flags; /* SM30_SHADER_FLAG */
+  /* ps_1_x declares no samplers: 2 bits per stage, 0 2D, 1 cube, 2 volume */
+  uint32_t ps1_texture_types;
+  uint32_t vs_outputs[7]; /* bit usage * 16 + usage index */
+  /* pixel shaders: samplers bound to depth textures, which D3D9 samples as a depth comparison against z;
+     bit 16 + n marks sampler n as linearly filtered, which takes four comparisons (PCF) */
+  uint32_t shadow_samplers;
+  /* pixel shaders: AMD's FETCH4, samplers that return the 2x2 footprint's first channel instead of filtering */
+  uint32_t fetch4_samplers;
+  /* pixel shaders: samplers with no texture bound, which D3D9 samples as (0, 0, 0, 1) */
+  uint32_t unbound_samplers;
+};
+
+struct SM30_RUNTIME_CONSTANTS {
+  float alpha_ref, point_size, point_size_min, point_size_max;
+  float fog_color[4];
+  float fog_start, fog_end, fog_density, fog_scale; /* fog_scale = 1 / (end - start) */
+  float clip_planes[6][4];
+  float bump_env[8][4];       /* D3DTSS_BUMPENVMAT00, 01, 10, 11 */
+  float bump_luminance[8][4]; /* D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVLOFFSET, 0, 0 */
+  float projection[8][4];     /* one-hot component ps_1_x tex divides by, or zero */
+  float depth_bias[4];        /* D3DRS_DEPTHBIAS, 0, 0, 0 */
+};
+
+/* D3D9 vertex declaration types Metal can't fetch directly; or'd into SM50_IA_INPUT_ELEMENT.format << 16 */
+enum SM30_IA_FORMAT_FIXUP {
+  SM30_IA_FORMAT_FIXUP_NONE = 0,
+  SM30_IA_FORMAT_FIXUP_INT_TO_FLOAT = 1,
+  SM30_IA_FORMAT_FIXUP_UINT_TO_FLOAT = 2,
+  SM30_IA_FORMAT_FIXUP_UDEC3 = 3,
+  SM30_IA_FORMAT_FIXUP_DEC3N = 4,
+};
+
 struct SM50_IA_INPUT_ELEMENT {
   uint32_t reg;
   uint32_t slot;
@@ -833,6 +914,11 @@ struct SM50_SHADER_ROOT_SIGNATURE_DATA {
 };
 
 AIRCONV_API int SM50Initialize(
+  const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader,
+  struct MTL_SHADER_REFLECTION *pRefl, sm50_error_t *ppError
+);
+/* D3D9 shader model 1-3 bytecode. The result is compiled and released with the SM50 functions. */
+AIRCONV_API int SM30Initialize(
   const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader,
   struct MTL_SHADER_REFLECTION *pRefl, sm50_error_t *ppError
 );

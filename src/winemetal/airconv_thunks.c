@@ -20,6 +20,24 @@ SM50Initialize(
   return params.ret;
 }
 
+AIRCONV_API int
+SM30Initialize(
+    const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl,
+    sm50_error_t *ppError
+) {
+  struct sm50_initialize_params params;
+  params.bytecode = pBytecode;
+  params.bytecode_size = BytecodeSize;
+  params.shader = ppShader;
+  params.reflection = pRefl;
+  params.error = ppError;
+  NTSTATUS status;
+  status = UNIX_CALL(sm30_initialize, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}
+
 AIRCONV_API void
 SM50Destroy(sm50_shader_t pShader) {
   struct sm50_destroy_params params;

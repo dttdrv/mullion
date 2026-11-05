@@ -21,6 +21,7 @@
 #include "Metal.hpp"
 #include "mullion_buffer.hpp"
 #include "mullion_command.hpp"
+#include "mullion_command_blit.hpp"
 #include "mullion_command_clear.hpp"
 #include "mullion_counter.hpp"
 #include "mullion_deptrack.hpp"
@@ -242,6 +243,7 @@ struct RenderEncoderData : EncoderData {
   uint32_t scissors = 0, viewports = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
+  bool use_emulated_so = 0;
   TileBarrierPSOKey tile_barrier_pso_key = {};
   WMT::RenderPipelineState last_pso = {};
   bool statistics_separate_rasterization = false;
@@ -290,6 +292,7 @@ struct ClearEncoderData : EncoderData {
 struct ResolveEncoderData : EncoderData {
   TextureViewRef src;
   TextureViewRef dst;
+  bool depth;
 };
 
 class Presenter;
@@ -614,6 +617,9 @@ public:
       uint64_t argument_buffer_offset
   );
   // the targets' offset in the encoder's `so_targets`, and their GPU address
+  // D3D9 ProcessVertices: the vertex stage writes to slot 0 (SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT)
+  void encodeVertexStreamOutput(uint64_t offset);
+
   std::pair<uint64_t, uint64_t> encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations);
 
   // per stream, the primitives stream output has written and those it would have with room (D3D11_QUERY_DATA_SO_STATISTICS),
@@ -961,6 +967,7 @@ public:
   RGB32Copy<ArgumentEncodingContext> rgb32_copy_cmd{*this};
   EmulatedCommandContext emulated_cmd;
   ClearRTV<ArgumentEncodingContext> clear_rt_cmd;
+  BlitColor<ArgumentEncodingContext> blit_color_cmd;
   DepthStencilBlitContext blit_depth_stencil_cmd;
   ClearUAV<ArgumentEncodingContext> clear_uav_cmd;
   MTLFXMVScaleContext mv_scale_cmd;

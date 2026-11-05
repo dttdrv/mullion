@@ -539,6 +539,7 @@ struct InputRenderTargetArrayIndex {};
 
 struct InputPrimitiveID {};
 struct InputFrontFacing {};
+struct InputPointCoord {};
 struct InputInputCoverage {};
 struct InputSampleIndex {};
 // what a color attachment holds, read before the shader's output replaces it ([[color(index)]])
@@ -639,7 +640,7 @@ using FunctionInput = template_concat_t<
     InputVertexStageIn,
     /* fragment */
     InputPrimitiveID, InputViewportArrayIndex, InputRenderTargetArrayIndex,
-    InputFrontFacing, InputPosition, InputSampleIndex, //
+    InputFrontFacing, InputPointCoord, InputPosition, InputSampleIndex, //
     InputFragmentStageIn, InputInputCoverage, InputRenderTarget, InputBarycentricCoord,
     /* object & mesh */
     InputPayload, InputMeshGridProperties, InputMesh,
@@ -651,7 +652,7 @@ using FunctionInput = template_concat_t<
 
 using FunctionOutput = std::variant<
   /* vertex */
-  OutputVertex, OutputPosition, OutputClipDistance,
+  OutputVertex, OutputPosition, OutputClipDistance, OutputPointSize,
   OutputRenderTargetArrayIndex, OutputViewportArrayIndex,
   /* fragment */
   OutputRenderTarget, OutputDepth, OutputCoverageMask, OutputStencilRef>;

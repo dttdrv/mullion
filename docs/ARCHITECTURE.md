@@ -28,6 +28,7 @@ and presentation. Direct3D 10 is implemented on Direct3D 11
 |---|---|
 | [`src/dxgi`](../src/dxgi) | adapters, outputs, factories and swap chain creation |
 | [`src/d3d11`](../src/d3d11), [`src/d3d10`](../src/d3d10) | the Direct3D 11 and 10 interfaces, their contexts and D3D11On12 |
+| [`src/d3d9`](../src/d3d9) | the Direct3D 9 interfaces and fixed-function pipeline, built with the `enable_d3d9` option |
 | [`src/d3d12`](../src/d3d12) | the Direct3D 12 device, command lists, queues, descriptors, pipelines and resources |
 | [`src/mullion`](../src/mullion) | what the APIs share: the device, Direct3D 11's command encoding, buffers and textures, presentation, the shader cache |
 | [`src/airconv`](../src/airconv) | shader conversion from DXBC and DXIL to Metal IR |

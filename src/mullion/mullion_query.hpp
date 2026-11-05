@@ -75,6 +75,10 @@ private:
   uint64_t
   getNextWriteOffset(bool has_active_occlusion_queries) {
     if (has_active_occlusion_queries) {
+      // each draw counts into its own slot: one counter wraps at 2^32 samples on Apple GPUs (Wine's d3d9
+      // test_occlusion_query), and queries add up the slots between their begin and end
+      if (current_data_is_dirty)
+        next_offset++;
       current_data_is_dirty = true;
       return next_offset;
     }
@@ -257,7 +261,8 @@ public:
       WMT::Device device, WMT::CommandBuffer cmdbuf, diag::TimestampSamples &pool, uint64_t num_samples,
       TimestampQueryList &&queries
   ) :
-      queries_(std::move(queries)), pool_(pool), num_samples_(num_samples), cmdbuf_(cmdbuf) {
+      queries_(std::move(queries)), pool_(pool), num_samples_(num_samples), cmdbuf_(cmdbuf),
+      no_counters_(!device.supportsFamily(WMTGPUFamilyApple7)) {
     samples_.push_back(pool_.Take(device, false));
     if (!samples_.front())
       return;
@@ -275,6 +280,20 @@ public:
             source.start_of_encoder_sample_index, count, results.data() + index, count * sizeof(uint64_t)
         );
       }
+    // Metal writes no sample for a pass without work, and a virtual machine's GPU has no counters: such a query reads
+    // the time of the next sample, and a later query still may not read an earlier time. samples that ran out still
+    // fail the query
+    thread_local uint64_t latest_end = 0;
+    if (cmdbuf_.status() == WMTCommandBufferStatusCompleted && (samples_.front() || no_counters_)) {
+      latest_end = std::max(cmdbuf_.gpuEndTime(), latest_end);
+      auto next = latest_end;
+      for (auto result = results.rbegin(); result != results.rend(); ++result) {
+        if (!*result || (!samples_.front() && *result == TimestampQuery::kCounterErrorValue))
+          *result = next;
+        else
+          next = *result;
+      }
+    }
     for (const auto &[query, sample_index] : queries_)
       query->issue(results[sample_index]);
     for (auto &samples : samples_)
@@ -309,6 +328,7 @@ private:
   std::vector<std::pair<uint64_t, WMTSampleBufferAttachmentInfo>> ranges_;
   uint64_t num_samples_;
   WMT::CommandBuffer cmdbuf_;
+  bool no_counters_;
 };
 
 class TimestampQueryState {
