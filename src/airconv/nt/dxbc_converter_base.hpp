@@ -725,8 +725,10 @@ public:
   // a mesh threadgroup's group of workloads, `First` to `End`: its vertex `ThreadIndex`'s domain location, whether
   // the group has it, and whether every thread of the SIMD group has one; and its primitives, which all its threads
   // make together, `Lane` being each one's
-  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
-  DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *DataPtr);
+  llvm::Value *DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Value *Lane, llvm::Value *DataPtr);
+  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *> DomainGetGroupLocation(
+      llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *Layout, llvm::Value *DataPtr
+  );
   void DomainGenerateGroup(
       llvm::Value *First, llvm::Value *End, llvm::Value *DataPtr, TessellatorOutputPrimitive Primitive,
       llvm::Value *Behind, llvm::Value *Lane

@@ -3710,8 +3710,8 @@ Converter::DomainGetLocation(llvm::Value *WorkloadIndex, llvm::Value *ThreadInde
   };
 }
 
-std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
-Converter::DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *DataPtr) {
+llvm::Value *
+Converter::DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Value *Lane, llvm::Value *DataPtr) {
   using namespace llvm;
 
   auto &Context = air.getContext();
@@ -3722,7 +3722,31 @@ Converter::DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Va
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
   );
-  SmallVector<Value *> Ops{First, End, ThreadIndex, DataPtr};
+  SmallVector<Value *> Ops{First, End, Lane, DataPtr};
+  SmallVector<Type *> Tys;
+  for (auto Op : Ops)
+    Tys.push_back(Op->getType());
+  auto Fn = air.getModule()->getOrInsertFunction(
+      "mullion.get_group_layout", llvm::FunctionType::get(air.getIntTy(4), Tys, false), Attrs
+  );
+  return ir.CreateCall(Fn, Ops);
+}
+
+std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
+Converter::DomainGetGroupLocation(
+    llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *Layout, llvm::Value *DataPtr
+) {
+  using namespace llvm;
+
+  auto &Context = air.getContext();
+  auto Attrs = AttributeList::get(
+      Context, {{5U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
+                {5U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
+  );
+  SmallVector<Value *> Ops{First, End, ThreadIndex, Layout, DataPtr};
   SmallVector<Type *> Tys;
   for (auto Op : Ops)
     Tys.push_back(Op->getType());
