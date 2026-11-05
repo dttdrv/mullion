@@ -373,6 +373,9 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    downscale_motion = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
+    );
     if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
