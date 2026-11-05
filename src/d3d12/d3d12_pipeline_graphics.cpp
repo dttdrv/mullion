@@ -506,9 +506,9 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_TESSELLATOR: {
-      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics] =
+      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics, native] =
           *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
-      hash(factor, size, groups, bool(geometry), conservative, flat, noperspective, barycentrics);
+      hash(factor, size, groups, bool(geometry), conservative, flat, noperspective, barycentrics, native);
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:
@@ -1821,6 +1821,69 @@ public:
           DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
           return E_FAIL;
         }
+        // Metal's tessellator, where it tessellates as Direct3D does: a triangle or quad domain to triangles,
+        // partitioned to whole factors, which pow2 is once its hull shader rounds them (D3D11.3 11.7.7.1). Metal 4's
+        // encoders have none. the hull kernel runs before its pass, so its stages write no UAVs; a geometry shader,
+        // conservative rasterization, clip distances the pixel shader tests and cull distances, which a vertex
+        // function has none of, keep the mesh pipeline, which also takes the indirect draws and those under pipeline
+        // statistics
+        auto output = ref_hs.Tessellator.OutputPrimitive;
+        if (!pso_tess.max_mesh_threadgroups || device_->UsesMetal4() || geometry || conservative || clips ||
+            ref_ds.CullDistances ||
+            ref_vs.UAVSlotMask || ref_hs.UAVSlotMask ||
+            (domain != microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI && domain != microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD) ||
+            (partitioning != microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER &&
+             partitioning != microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_POW2) ||
+            (output != MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW && output != MTL_TESSELLATOR_TRIANGLE_CCW))
+          return S_OK;
+        pso_tess.native = true;
+        auto patch_func = CompileFunction(
+            device_, this, std::array{pDesc->HS, pDesc->DS}, args_ds, "ds_patch",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineDomain(shader_hs, shader_ds, args, name, bitcode, error);
+            }
+        );
+        auto hull_func = CompileFunction(
+            device_, this, std::array{pDesc->VS, pDesc->HS}, args_hs, "hull_patch",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineHull(shader_vs, shader_hs, args, name, bitcode, error);
+            }
+        );
+        pso_tess.native = false;
+        if (!patch_func || !hull_func)
+          return FAIL(E_INVALIDARG);
+        WMTComputePipelineInfo hull_info;
+        WMT::InitializeComputePipelineInfo(hull_info);
+        hull_info.compute_function = hull_func.handle;
+        hull_info.tgsize_is_multiple_of_sgwidth = true;
+        if (!(hull = device_->Archived(hull_info, err, [&](auto &info, auto &error) {
+                return device_->GetMTLDevice().newComputePipelineState(info, error);
+              }))) {
+          ERR("Failed to create hull kernel of shaders ", name, ": ", err.description().getUTF8String());
+          DumpShaders({pDesc->VS, pDesc->HS});
+          return E_FAIL;
+        }
+        bool dual = false;
+        SM50_SHADER_BLEND blends[8] = {};
+        if (FAILED(InitializePSO(pDesc, info, dual, blends)))
+          return E_FAIL;
+        info.vertex_function = patch_func.handle;
+        info.fragment_function = ps_func.handle;
+        info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+        info.tessellation_partition_mode = WMTTessellationPartitionModeInteger;
+        info.tessellation_factor_step = WMTTessellationFactorStepFunctionPerPatchAndPerInstance;
+        // Metal turns its triangles the other way round the domain's points from Direct3D's: the reference's
+        // clockwise triangles are Metal's counterclockwise ones (d3d12_tessellator, culling back faces)
+        info.tessellation_output_winding_order =
+            output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW ? WMTWindingCounterClockwise : WMTWindingClockwise;
+        info.max_tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
+        if (!(pso_patches = CreatePipeline(info, err))) {
+          ERR("Failed to create patch PSO of shaders ", name, ": ", err.description().getUTF8String());
+          DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->PS});
+          return E_FAIL;
+        }
+        patch_factor_size = domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD ? 12 : 8;
+        patch_group_size = ref_hs.Tessellator.PatchGroupSize;
         return S_OK;
       };
       if (FAILED(hr = build()))

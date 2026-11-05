@@ -2126,6 +2126,7 @@ static int SM50InitializeUncached(
         .OutputPrimitive = (MTL_TESSELLATOR_OUTPUT_PRIMITIVE
         )sm50_shader->tessellator_output_primitive,
         .Domain = sm50_shader->tessellation_domain,
+        .PatchGroupSize = native_patch_group_size(sm50_shader, patch_per_group),
       };
     }
     if (sm50_shader->shader_type == microsoft::D3D11_SB_DOMAIN_SHADER) {

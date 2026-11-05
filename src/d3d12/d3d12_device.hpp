@@ -535,6 +535,13 @@ public:
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
+  // with Metal's tessellator, `hull` runs its vertex and hull shaders before the pass, writing each group of patches'
+  // control points and constants (patch_group_size bytes) and each patch's factors (patch_factor_size bytes, Metal's
+  // MTL*TessellationFactorsHalf) for `pso_patches`, its domain and pixel shaders; `pso` stays the mesh pipeline, for the
+  // draws Metal's tessellator does not take
+  WMT::Reference<WMT::ComputePipelineState> hull;
+  WMT::Reference<WMT::RenderPipelineState> pso_patches;
+  uint32_t patch_group_size = 0, patch_factor_size = 0;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in `pso_strip` for strips (none for points)
   bool geometry_shader = false;

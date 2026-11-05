@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 101
+#define AIRCONV_VERSION 102
 
 #ifdef __cplusplus
 #include <string>
@@ -29,6 +29,10 @@ enum SM50_BINDING_INDEX: uint32_t {
   SM50_BINDING_INDEX_DRAW_ARGUMENTS = 4,
   SM50_BINDING_INDEX_INDIRECT_ARGUMENTS = 4,
   SM50_BINDING_INDEX_STREAM_OUTPUT0 = 5,
+  /* a native tessellation draw's patches (SM50_SHADER_PSO_TESSELLATOR_DATA's native), which its hull kernel writes and
+     its domain stage reads: SM50_TESSELLATION_HEADER bytes, the first word the groups of patches an instance has,
+     then each group's control points and patch constants. no stream output follows a native tessellator */
+  SM50_BINDING_INDEX_TESSELLATION_PATCHES = SM50_BINDING_INDEX_STREAM_OUTPUT0,
   /* For multiple stages in the same shader function */
   SM50_BINDING_INDEX_CONSTANT_BUFFER2 = 6,
   SM50_BINDING_INDEX_ARGUMENT_TABLE2 = 7,
@@ -36,6 +40,10 @@ enum SM50_BINDING_INDEX: uint32_t {
   SM50_BINDING_INDEX_PATCH_SIZE = 8,
   /* a geometry draw's first object threadgroup and instance (uint2): not zero where a draw runs in parts */
   SM50_BINDING_INDEX_DRAW_ORIGIN = 9,
+  /* and its factors, which the hull kernel writes as Metal's MTLTriangleTessellationFactorsHalf or
+     MTLQuadTessellationFactorsHalf, a patch's after the patches before it and those of the instances before it: a
+     native draw runs in one part */
+  SM50_BINDING_INDEX_TESSELLATION_FACTORS = SM50_BINDING_INDEX_DRAW_ORIGIN,
   SM50_BINDING_INDEX_PIPELINE_STATISTICS = SM50_BINDING_INDEX_DRAW_ORIGIN + 1,
   /* each of the SM50_VIEWPORTS viewports' MinDepth and MaxDepth (float2), for a pixel shader that writes depth, then
      the blend factor (float4), for one that blends with it (SM50_SHADER_BLEND) */
@@ -60,6 +68,8 @@ enum SM50_BINDING_INDEX: uint32_t {
   SM50_BINDING_INDEX_ROOT_ARGUMENTS = 0,
   SM50_BINDING_INDEX_STATIC_SAMPLERS = 1,
 };
+
+#define SM50_TESSELLATION_HEADER 16
 
 /* the viewports a primitive may choose from (D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE) */
 #define SM50_VIEWPORTS 16
@@ -120,6 +130,8 @@ struct MTL_TESSELLATOR_REFLECTION {
   float MaxFactor;
   enum MTL_TESSELLATOR_OUTPUT_PRIMITIVE OutputPrimitive;
   uint32_t Domain; /* D3D11_SB_TESSELLATOR_DOMAIN */
+  /* the bytes of a group of patches in a native draw's patch buffer (SM50_BINDING_INDEX_TESSELLATION_PATCHES) */
+  uint32_t PatchGroupSize;
 };
 
 struct MTL_GEOMETRY_SHADER_PASS_THROUGH {
@@ -812,6 +824,10 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA {
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
   bool barycentrics;
+  /* Metal's tessellator: the vertex and hull shaders as a kernel the draw dispatches before its render pass, the
+     domain shader as a post-tessellation vertex function. a triangle or quad domain of integer or pow2 partitioning
+     whose tessellator outputs triangles, with no geometry shader, conservative rasterization or cull distance */
+  bool native;
 };
 
 /* the libraries whose functions a library's shader may call: those of its state object */
