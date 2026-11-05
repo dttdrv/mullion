@@ -317,6 +317,9 @@ struct context {
   bool coherent_group_sync = false;
   // an amplification shader may build the payload it sends in Metal's payload itself (SM50_SHADER_FLAG_STAGED_PAYLOAD)
   bool direct_payload = false;
+  // a culled line of a mesh shader ends where it starts instead of being marked culled
+  // (SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES)
+  bool collapse_culled_lines = false;
   // the function is made from the shader's own signature, so it takes the SIMD-group inputs the shader defines; not
   // so for a domain shader run inside a geometry shader's function, nor for a ray shader's visible function
   bool own_signature = true;

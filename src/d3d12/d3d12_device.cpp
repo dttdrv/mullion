@@ -29,10 +29,13 @@
 #include "mullion_format.hpp"
 #include "util_env.hpp"
 #include "mullion_info.hpp"
+#include "mullion_shader_cache.hpp"
+#include "util_string.hpp"
 #include "log/log.hpp"
 #include "config/config.hpp"
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <map>
 #include <iomanip>
 #include <limits>
@@ -286,15 +289,40 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
+  // what pipelines are converted for and with, read once: every pipeline asks
+  const SM50_SHADER_METAL_VERSION metal_version_;
+  const SM50_SHADER_FLAG shader_flags_;
+  std::once_flag archive_opened_;
+  WMT::Reference<WMT::BinaryArchive> archive_;
+  std::string archive_path_;
+  mullion::mutex archive_mutex_;
+  mullion::condition_variable archive_changed_;
+  // pipelines added to the archive so far
+  uint64_t archived_ = 0;
+  bool archive_closing_ = false;
+  mullion::thread archive_writer_;
+  mullion::mutex depth_stencil_lock_;
+  std::map<std::array<uint32_t, 16>, WMT::Reference<WMT::DepthStencilState>> depth_stencil_states_;
   std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
 
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter)
+      : adapter_(adapter), command_library(adapter_->GetMTLDevice()),
+        metal_version_(SM50_SHADER_METAL_VERSION(ShaderMetalVersion(adapter_->GetMTLDevice()))),
+        shader_flags_(GPUShaderFlags(adapter_->GetMTLDevice())) {
     mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
   }
 
   ~MTLD3D12DeviceImpl() {
+    if (archive_writer_.joinable()) {
+      {
+        std::lock_guard lock(archive_mutex_);
+        archive_closing_ = true;
+      }
+      archive_changed_.notify_one();
+      archive_writer_.join();
+    }
     std::lock_guard lock(device_singletons_lock);
     std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
   }
@@ -466,7 +494,88 @@ public:
         SM50_SHADER_METAL_310 == uint32_t(WMTMetal310) && SM50_SHADER_METAL_320 == uint32_t(WMTMetal320) &&
         SM50_SHADER_METAL_400 == uint32_t(WMTMetal400)
     );
-    return SM50_SHADER_METAL_VERSION(ShaderMetalVersion(GetMTLDevice()));
+    return metal_version_;
+  }
+
+  SM50_SHADER_FLAG
+  GetShaderFlags() override {
+    return shader_flags_;
+  }
+
+  obj_handle_t
+  PipelineArchive() override {
+    std::call_once(archive_opened_, [this] {
+      auto directory = ShaderCacheDirectory();
+      if (directory.empty())
+        return;
+      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), ".metallib");
+      WMT::Reference<WMT::Error> error;
+      // a file Metal cannot read (none yet, or a damaged one) is started again
+      if (!(archive_ = GetMTLDevice().newBinaryArchive(archive_path_.c_str(), error)))
+        archive_ = GetMTLDevice().newBinaryArchive(nullptr, error);
+      if (archive_)
+        archive_writer_ = mullion::thread([this] { WriteArchive(); });
+    });
+    return archive_.handle;
+  }
+
+  void
+  PipelineArchived() override {
+    {
+      std::lock_guard lock(archive_mutex_);
+      archived_++;
+    }
+    archive_changed_.notify_one();
+  }
+
+  // writes the archive once additions stop for as long as its last write took: a burst of new pipelines is written
+  // once, and pipelines wait on a write (archive_lock) only between bursts. the device's end writes what is left
+  void
+  WriteArchive() {
+    env::setThreadName("mullion-archive-thread");
+    std::unique_lock lock(archive_mutex_);
+    uint64_t written = 0;
+    std::chrono::steady_clock::duration took{};
+    for (;;) {
+      archive_changed_.wait(lock, [&] { return archive_closing_ || archived_ != written; });
+      for (uint64_t seen = written; !archive_closing_ && seen != archived_;) {
+        seen = archived_;
+        archive_changed_.wait_for(lock, took, [&] { return archive_closing_; });
+      }
+      if (archived_ == written)
+        return;
+      auto target = archived_;
+      lock.unlock();
+      auto start = std::chrono::steady_clock::now();
+      WMT::Reference<WMT::Error> error;
+      {
+        std::lock_guard whole(archive_lock);
+        archive_.serialize(archive_path_.c_str(), error);
+      }
+      took = std::chrono::steady_clock::now() - start;
+      if (error)
+        ERR("Failed to write the pipeline archive ", archive_path_, ": ", error.description().getUTF8String());
+      lock.lock();
+      written = target;
+    }
+  }
+
+  WMT::Reference<WMT::DepthStencilState>
+  DepthStencilState(const WMTDepthStencilInfo &info) override {
+    // whole bindings make header additions visible. a face without the test is one state whatever its operations
+    auto &[compare, write, front, back] = info;
+    std::array<uint32_t, 16> key{compare, write};
+    for (auto [i, stencil] : {std::pair(2, &front), std::pair(9, &back)}) {
+      auto &[enabled, pass, fail, depth_fail, function, write_mask, read_mask] = *stencil;
+      if (enabled)
+        std::ranges::copy(std::array<uint32_t, 7>{enabled, pass, fail, depth_fail, function, write_mask, read_mask},
+                          key.begin() + i);
+    }
+    std::lock_guard lock(depth_stencil_lock_);
+    auto &state = depth_stencil_states_[key];
+    if (!state)
+      state = GetMTLDevice().newDepthStencilState(info);
+    return state;
   }
 
   WMT::Device
@@ -2290,6 +2399,11 @@ public:
   PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
     auto end = std::chrono::steady_clock::now(), present = first_present.load();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    // the profile's pipeline time (tools/mullion-diag), on the thread that made it
+    if (diag::profile) {
+      uint64_t took = std::chrono::nanoseconds(end - start).count();
+      diag::Write(diag::Line("span", "pipeline", str::format(kind, " ", name), GetCurrentThreadId(), diag::Now() - took, took));
+    }
     bool late = present != std::chrono::steady_clock::time_point() && end >= present;
     // MULLION_TRACE_SHADER: 1 has the pipelines that take 20 ms or more or are made after the first present (a
     // stutter), heavy every one
