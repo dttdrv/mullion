@@ -108,7 +108,9 @@ class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHea
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
-  std::vector<ShaderVisibleDescriptorCPUStorage> descriptors_;
+  // zero bytes are a null descriptor, so the system's zeroed pages hold them: a page becomes memory once one of its
+  // descriptors is written, which in a large heap of few used ones is a small part
+  std::span<ShaderVisibleDescriptorCPUStorage> descriptors_;
   Rc<Buffer> buffer_;
   ShaderVisibleDescriptorGPUStorage *mapped_argument_buffer_ = nullptr;
   uint64_t argument_buffer_gpu_address_ = 0;
@@ -128,7 +130,13 @@ public:
     default:
       return FAIL(E_INVALIDARG);
     }
-    descriptors_.resize(pDesc->NumDescriptors);
+    static_assert(ShaderVisibleDescriptorType::Null == ShaderVisibleDescriptorType{});
+    if (UINT count = pDesc->NumDescriptors) {
+      auto storage = VirtualAlloc(nullptr, count * sizeof(descriptors_[0]), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+      if (!storage)
+        return FAIL(E_OUTOFMEMORY);
+      descriptors_ = {(ShaderVisibleDescriptorCPUStorage *)storage, count};
+    }
 
     if (pDesc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) {
       buffer_ = new Buffer(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), device_->GetMTLDevice());
@@ -152,6 +160,8 @@ public:
   };
 
   ~MTLD3D12DescriptorHeapImpl() {
+    if (!descriptors_.empty())
+      VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
       device_->UnregisterResidencyAndVA(buffer_->current());
     } else {

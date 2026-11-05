@@ -219,8 +219,14 @@ private:
   TranscodeFeedback<MTLD3D12CommandAllocatorImpl> transcode_feedback_;
   ClearRTV<MTLD3D12CommandAllocatorImpl> clear_rtv_;
 
-  RingBumpState<GpuPrivateBufferBlockAllocator> copy_temp_allocator_;
-  uint64_t copy_temp_version_;
+  // the buffers of copies that go through bytes, the lists' in the last, after `temp_offset_`; and how much the lists
+  // took of them since the allocator's Reset (Initialize)
+  struct TempBuffer {
+    WMT::Reference<WMT::Buffer> buffer;
+    uint64_t length;
+  };
+  std::vector<TempBuffer> temp_buffers_;
+  uint64_t temp_offset_ = 0, temp_used_ = 0;
 
 public:
   bool
@@ -503,11 +509,26 @@ public:
     return {visibility_.back(), visibility_address_ + used, used};
   }
 
+  // a buffer without room is followed by one twice as large, or as large as asked: few for many copies
   std::tuple<WMT::Buffer, uint64_t>
   AllocateTempBuffer(size_t Size, size_t Alignment) {
-    assert(copy_temp_version_);
-    auto [block, offset] = copy_temp_allocator_.allocate(copy_temp_version_, copy_temp_version_ - 1, Size, Alignment);
-    return {block.buffer, offset};
+    uint64_t at = align(temp_offset_, Alignment);
+    if (temp_buffers_.empty() || at + Size > temp_buffers_.back().length) {
+      WMTBufferInfo info;
+      info.memory.set(nullptr);
+      info.length = std::max<uint64_t>(Size, temp_buffers_.empty() ? 0 : 2 * temp_buffers_.back().length);
+      info.options = WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate;
+      auto buffer = device_->GetMTLDevice().newBuffer(info);
+      if (!buffer) {
+        exhausted_ = true;
+        return {};
+      }
+      temp_buffers_.push_back({std::move(buffer), info.length});
+      at = 0;
+    }
+    temp_offset_ = at + Size;
+    temp_used_ += Size;
+    return {temp_buffers_.back().buffer, at};
   }
 
   IndirectComputeCommandData *EncodeComputeResolver(MTLD3D12CommandSignature *pCmdSig, size_t MaxCount);
