@@ -135,6 +135,9 @@ Tests that use `ExecuteIndirect` can hang under `--validate` on Metal 4, at 100%
 validation faults while decoding a report ([#165](https://github.com/dttdrv/mullion/issues/165)). Such a test is not
 slow, and more time does not help. `--family native-metal3 --validate` validates its Metal 3 path, and
 `MTL_DEBUG_LAYER=1` alone validates API use on Metal 4.
+On macOS 27.2, shader validation also zeroes a shader's program-scope constants in a pipeline that supports indirect
+command buffers, on either Metal version, so a test can fail only under validation: look for `Invalid load` at an
+address it never bound. `MTL_SHADER_VALIDATION_GLOBAL_MEMORY=0` avoids it, and turns off the checks of memory loads.
 
 **6.2 Give every skip its reason.** A skip names what is missing and where. An optional capability the configuration
 lacks is a skip. Support that the API version, feature level or reported tier requires is never skipped: when it is
