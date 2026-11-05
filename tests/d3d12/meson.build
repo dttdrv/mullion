@@ -9,6 +9,8 @@ adapters = executable('d3d12_adapters', 'd3d12_adapters.cpp', dependencies: d3d1
 foreach front_end : ['dxil', 'dxbc']
   test('d3d12_adapters_' + front_end, adapters, args: [front_end], timeout: 600)
 endforeach
+exe = executable('d3d12_indirect_memory', ['d3d12_indirect_memory.cpp'], dependencies: d3d12_test_deps)
+test('d3d12_indirect_memory_dxbc', exe, args: ['dxbc'], timeout: 600)
 # workloads tests/held.py profiles
 executable('d3d12_held', 'd3d12_held.cpp', dependencies: d3d12_test_deps)
 # runs tests/flight.py reads the flight recorder's dumps of
