@@ -294,6 +294,20 @@ struct unixcall_mtlcommandbuffer_denoised_scale {
   bool metal4;
 };
 
+struct unixcall_mtldevice_newfxframeinterpolator {
+  obj_handle_t device;
+  struct WMTConstMemoryPointer info;
+  obj_handle_t ret;
+  bool metal4;
+};
+
+struct unixcall_mtlcommandbuffer_frame_interpolate {
+  obj_handle_t cmdbuf;
+  obj_handle_t interpolator;
+  struct WMTConstMemoryPointer args;
+  bool metal4;
+};
+
 struct unixcall_nsstring_string {
   struct WMTConstMemoryPointer buffer_ptr;
   enum WMTStringEncoding encoding;
