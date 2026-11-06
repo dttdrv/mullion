@@ -2446,9 +2446,15 @@ public:
     std::vector<MTLD3D12Fence::Opener> due;
     {
       std::lock_guard<mullion::mutex> lock(fence->following_mutex);
-      // gates open on other threads, so a later Signal of this queue's may be followed first
-      if (fence->following.event.handle != event.handle || fence->following.seq <= seq)
-        fence->following = {Value, device, event, seq};
+      // gates open on other threads, so a later Signal of this queue's may be followed first: the Signals stay in the
+      // order of their values. those the CPU has seen reached need no GPU wait, and the oldest go past kFollowed
+      auto &followed = fence->following;
+      uint64_t reached = fence->completion->value.load();
+      std::erase_if(followed, [&](auto &signal) { return signal.value <= reached; });
+      auto at = std::find_if(followed.begin(), followed.end(), [&](auto &signal) { return signal.value > Value; });
+      followed.insert(at, {Value, device, event, seq});
+      while (followed.size() > MTLD3D12Fence::kFollowed)
+        followed.pop_front();
       std::erase_if(fence->openers, [&](auto &opener) {
         if (!*opener.closed)
           return true;
@@ -2498,14 +2504,21 @@ public:
     gate->closed = true;
     // a value a Signal of this device's has given, after work it has committed, is waited for on the GPU: what the
     // queue commits from here on waits for the Signal's command buffer, which can only take as long as its work. a
-    // value no such Signal has given yet closes the gate, which that Signal opens the same way once it is committed
-    if constexpr (Metal4) {
+    // value no such Signal has given yet closes the gate, which that Signal opens the same way once it is committed.
+    // only with MULLION_D3D12_GPU_WAITS=1 (read once): otherwise the CPU sees the value, as on Metal 3. Unreal's async
+    // compute (Subnautica 2) had a queue's GPU wait for the other's completion event stall the GPU 4 seconds in every
+    // 5 (Metal's limit on a wait, no error): about one frame in a hundred got through. waits on the CPU have none
+    static const bool gpu_waits = env::getEnvVar("MULLION_D3D12_GPU_WAITS") == "1";
+    if constexpr (Metal4) if (gpu_waits) {
       auto fence = static_cast<MTLD3D12Fence *>(pFence);
       auto open = [gate, queue = queue_](const WMT::Reference<WMT::SharedEvent> &event, uint64_t seq) mutable {
         gate->OpenOnGPU(event, seq, [&](auto &signal, uint64_t number) { queue.waitForEvent(signal, number); });
       };
       std::unique_lock<mullion::mutex> lock(fence->following_mutex);
-      auto following = fence->following;
+      // the first Signal to reach the value, not a later one (MTLD3D12Fence::following)
+      auto first = std::find_if(fence->following.begin(), fence->following.end(),
+                                [&](auto &signal) { return signal.value >= Value; });
+      MTLD3D12Fence::Following following = first != fence->following.end() ? *first : MTLD3D12Fence::Following{};
       if (fence->completion->value < Value && following.value >= Value && following.device == device_) {
         lock.unlock();
         open(following.event, following.seq);

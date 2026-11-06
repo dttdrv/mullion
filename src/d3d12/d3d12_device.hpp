@@ -410,7 +410,12 @@ public:
     std::function<void(const WMT::Reference<WMT::SharedEvent> &, uint64_t)> open;
   };
   mullion::mutex following_mutex;
-  Following following;
+  // the Signals of Metal 4 queues not yet seen reached, oldest first: a Wait follows the first that reaches its value.
+  // following the last alone made a Wait for an older value wait for a later Signal's command buffer, which can wait
+  // on the GPU for work behind that Wait: two queues that signal each other a frame apart (Unreal's async compute)
+  // then waited for each other until Metal gave up, some 4 seconds on, every few hundred frames (Subnautica 2)
+  std::deque<Following> following;
+  static constexpr size_t kFollowed = 64;
   std::vector<Opener> openers;
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
