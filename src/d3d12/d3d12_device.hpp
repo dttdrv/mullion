@@ -668,24 +668,25 @@ public:
   auto
   Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
     std::shared_lock lock(archive_lock);
-    obj_handle_t archive = PipelineArchive();
-    if (!archive)
+    auto archives = PipelineArchives();
+    if (archives.empty())
       return make(info, error);
-    info.binary_archives_for_lookup.set(&archive);
-    info.num_binary_archives_for_lookup = 1;
+    info.binary_archives_for_lookup.set(archives.data());
+    info.num_binary_archives_for_lookup = archives.size();
     info.fail_on_binary_archive_miss = true;
     if (auto found = make(info, error))
       return found;
     info.fail_on_binary_archive_miss = false;
-    info.binary_archive_for_serialization = archive;
+    info.binary_archive_for_serialization = archives.back();
     error = {};
     auto made = make(info, error);
     if (made)
       PipelineArchived();
     return made;
   }
-  // the device's archive, opened when the first pipeline is made; none without a shader cache (ShaderCacheDirectory)
-  virtual obj_handle_t PipelineArchive() = 0;
+  // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
+  // shader cache (ShaderCacheDirectory)
+  virtual std::span<const obj_handle_t> PipelineArchives() = 0;
   virtual void PipelineArchived() = 0;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
