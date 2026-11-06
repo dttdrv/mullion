@@ -636,11 +636,12 @@ struct WMTComputePipelineInfo {
   obj_handle_t compute_function;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   obj_handle_t binary_archive_for_serialization;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
   bool tgsize_is_multiple_of_sgwidth;
   uint32_t immutable_buffers;
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t MTLDevice_newComputePipelineState(
@@ -858,10 +859,10 @@ struct WMTRenderPipelineInfo {
   enum WMTTessellationFactorStepFunction tessellation_factor_step;
   obj_handle_t binary_archive_for_serialization;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  uint8_t padding[4];
 };
 
 struct WMTMeshRenderPipelineInfo {
@@ -884,10 +885,10 @@ struct WMTMeshRenderPipelineInfo {
   bool object_tgsize_is_multiple_of_sgwidth;
   obj_handle_t binary_archive_for_serialization;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t
