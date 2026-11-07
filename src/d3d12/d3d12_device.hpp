@@ -467,6 +467,9 @@ public:
   // views NULL), as (offset, count), and the vertex buffer slots it binds (NULL); the index buffer when it binds one
   std::vector<std::pair<uint32_t, uint32_t>> ResetRootDwords;
   uint32_t ResetVertexBuffers = 0;
+  // the buffers a command of its indirect command buffers sets, past the highest index, per stage: Metal reserves room
+  // for that many in each command (MTLIndirectCommandBufferDescriptor)
+  uint32_t VertexBufferBindCount = 0, FragmentBufferBindCount = 0, KernelBufferBindCount = 0;
 
   // both run as kernels: the one of draws in a compute pass before the render pass that runs its commands
   WMT::Reference<WMT::ComputePipelineState> render_resolver;

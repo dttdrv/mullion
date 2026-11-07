@@ -1,0 +1,12 @@
+# a direct zip turns its inner edge first in the slot past the half nearer the start too
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -642,7 +642,7 @@
+   short3 triangle(int t, short base_inner, short base_outer) const {
+     bool strip = inner.kind & stitch_strip;
+     int a = t - !strip, p = a >> 1, e = a & 1;
+-    bool turn = strip ? (inner.kind & stitch_turned) && p == (inner.segments + 1) / 2 - 1 : p < (inner.segments + 1) / 2;
++    bool turn = strip ? (inner.kind & stitch_turned) && p == (inner.segments + 1) / 2 - 1 : p <= (inner.segments + 1) / 2;
+     int i = p + (turn && e), o = p + !strip + (!turn && e);
+     return e != turn ? short3(base_inner + i, base_outer + o, base_inner + i + 1)
+                      : short3(base_outer + o, base_outer + o + 1, base_inner + i);
