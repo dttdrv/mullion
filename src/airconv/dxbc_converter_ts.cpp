@@ -425,6 +425,8 @@ convert_dxbc_vertex_hull_shader(
   args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
   // a kernel for Metal's tessellator, which writes the patches and their factors to buffers
   bool native = pso_tess && pso_tess->native;
+  // the compute tessellator's: the factors as floats, as the hull shader made them
+  bool compute = native && pso_tess->compute;
   // the most a grid has (tessellation_grids). left out while the pipeline is to tell what the device lets one have
   uint32_t grid_limit = pso_tess ? pso_tess->max_mesh_threadgroups : 0;
   if (!native && (!pso_tess || grid_limit)) {
@@ -455,7 +457,7 @@ convert_dxbc_vertex_hull_shader(
         .array_size = 0,
         .memory_access = air::MemoryAccess::read_write,
         .address_space = air::AddressSpace::device,
-        .type = air::MSLRepresentableType(air::MSLUshort{}),
+        .type = compute ? air::MSLRepresentableType(air::MSLFloat{}) : air::MSLRepresentableType(air::MSLUshort{}),
         .arg_name = "factors",
         .raster_order_group = {}
     });
@@ -892,7 +894,9 @@ convert_dxbc_vertex_hull_shader(
           builder.CreateAdd(builder.CreateMul(instance_id, builder.CreateMul(groups, builder.getInt32(patch_per_group))), patch_id),
           builder.getInt32(factor_count)
       );
-      return builder.CreateGEP(builder.getInt16Ty(), function->getArg(factors_idx), builder.CreateAdd(first, builder.getInt32(k)));
+      return builder.CreateGEP(
+          compute ? types._float : builder.getInt16Ty(), function->getArg(factors_idx), builder.CreateAdd(first, builder.getInt32(k))
+      );
     };
     auto unused = native ? llvm::BasicBlock::Create(context, "unused_patch", function) : nullptr;
     builder.CreateCondBr(
@@ -911,7 +915,7 @@ convert_dxbc_vertex_hull_shader(
       );
       builder.SetInsertPoint(cull);
       for (uint32_t k = 0; k < factor_count; k++)
-        builder.CreateStore(builder.getInt16(0), factor(k));
+        builder.CreateStore(compute ? (llvm::Value *)air.getFloat(0) : builder.getInt16(0), factor(k));
       builder.CreateBr(real_return);
     }
 
@@ -972,7 +976,12 @@ convert_dxbc_vertex_hull_shader(
     // too (11.7.7.1: rounding to a power of two is the hull shader's work): clamped to 1 and the largest factor, then
     // up to whole. an edge that is not above 0, or NaN, culls the patch (11.7.10), where every factor is 0. a patch's
     // factors follow those of the patches before it and of the instances before
-    if (native) {
+    if (compute) {
+      for (uint32_t k = 0; k < factor_count; k++)
+        builder.CreateStore(tess_factors[domain.second[k]], factor(k));
+      for (auto unused : {counted, write_workloads, dispatch_mesh})
+        unused->eraseFromParent();
+    } else if (native) {
       llvm::Value *culled = builder.getFalse();
       for (uint32_t k = 0; k < (quad ? 4u : 3u); k++)
         culled = builder.CreateOr(culled, builder.CreateNot(builder.CreateFCmpOGT(tess_factors[k], air.getFloat(0))));
@@ -1197,6 +1206,12 @@ convert_dxbc_domain_vertex_shader(
                       func_signature.DefineOutput(air::OutputVertex{.user = varying_name(reg, c), .type = varying_type(component_types[c])})
                   );
   }
+  // the compute tessellator's patch, for a pixel shader's SV_PrimitiveID (SM50_PATCH_VARYING)
+  SM50_SHADER_PSO_TESSELLATOR_DATA *tessellator = nullptr;
+  args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &tessellator);
+  uint32_t patch_out_idx = tessellator && tessellator->compute
+                               ? func_signature.DefineOutput(air::OutputVertex{.user = SM50_PATCH_VARYING, .type = air::msl_uint})
+                               : ~0u;
   uint32_t clip_distance_out_idx = pShaderInternal->clip_distance_scalars.size()
                                        ? func_signature.DefineOutput(air::OutputClipDistance{pShaderInternal->clip_distance_scalars.size()})
                                        : ~0u;
@@ -1210,9 +1225,28 @@ convert_dxbc_domain_vertex_shader(
     return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
 
   bool quad = pHullStage->tessellation_domain == D3D11_SB_TESSELLATOR_DOMAIN_QUAD;
-  uint32_t patch_idx = func_signature.DefineInput(air::InputPatchID{});
-  uint32_t location_idx = func_signature.DefineInput(air::InputPositionInPatch{quad ? 2u : 3u});
-  uint32_t instance_idx = func_signature.DefineInput(air::InputInstanceID{});
+  SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
+  args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
+  // the compute tessellator's: a vertex is one of its points, {patch, u, v}, the patch counted over the instances
+  bool compute = pso_tess && pso_tess->compute;
+  uint32_t patch_idx = 0, location_idx = 0, instance_idx = 0, vertex_idx = 0, points_idx = 0;
+  if (compute) {
+    vertex_idx = func_signature.DefineInput(air::InputVertexID{});
+    points_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_POINTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLRepresentableType(air::MSLUint{}),
+        .arg_name = "points",
+        .raster_order_group = {}
+    });
+  } else {
+    patch_idx = func_signature.DefineInput(air::InputPatchID{});
+    location_idx = func_signature.DefineInput(air::InputPositionInPatch{quad ? 2u : 3u});
+    instance_idx = func_signature.DefineInput(air::InputInstanceID{});
+  }
   uint32_t patches_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
       .location_index = SM50_BINDING_INDEX_TESSELLATION_PATCHES,
@@ -1224,7 +1258,8 @@ convert_dxbc_domain_vertex_shader(
       .raster_order_group = {}
   });
   auto raster_scale = DefineRasterScale(func_signature);
-  func_signature.UsePatch(quad ? "quad" : "triangle");
+  if (!compute)
+    func_signature.UsePatch(quad ? "quad" : "triangle");
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
 
   auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);
@@ -1263,18 +1298,40 @@ convert_dxbc_domain_vertex_shader(
   // the instance's groups of patches are the header's first word, each group as many patches as an object
   // threadgroup's (convert_dxbc_vertex_hull_shader)
   uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
-  auto patch = function->getArg(patch_idx);
   auto patches = function->getArg(patches_idx);
-  auto group = builder.CreateAdd(
-      builder.CreateMul(function->getArg(instance_idx), builder.CreateLoad(types._int, patches)),
-      builder.CreateUDiv(patch, builder.getInt32(patch_per_group))
-  );
   auto group_type = tessellation_payload_type(pHullStage, 0, types, context, 0, true);
-  setup_domain_patch(
-      pShaderInternal, pHullStage, group_type, native_patches(builder, patches, group_type, group),
-      builder.CreateURem(patch, builder.getInt32(patch_per_group)), patch, ctx
-  );
-  resource_map.domain = domain_location(function->getArg(location_idx), builder, air);
+  if (compute) {
+    // the instances' groups follow each other, so a patch counted over them is its group's place and its own in it;
+    // SV_PrimitiveID is its place in its instance's groups
+    auto point = builder.CreateGEP(
+        types._int, function->getArg(points_idx), builder.CreateMul(function->getArg(vertex_idx), builder.getInt32(3))
+    );
+    auto patch = builder.CreateLoad(types._int, point);
+    auto coordinate = [&](uint32_t k) {
+      return builder.CreateBitCast(builder.CreateLoad(types._int, builder.CreateConstGEP1_32(types._int, point, k)), types._float);
+    };
+    auto per_instance = builder.CreateMul(builder.CreateLoad(types._int, patches), builder.getInt32(patch_per_group));
+    setup_domain_patch(
+        pShaderInternal, pHullStage, group_type,
+        native_patches(builder, patches, group_type, builder.CreateUDiv(patch, builder.getInt32(patch_per_group))),
+        builder.CreateURem(patch, builder.getInt32(patch_per_group)), builder.CreateURem(patch, per_instance), ctx
+    );
+    llvm::Value *location = llvm::UndefValue::get(air.getFloatTy(2));
+    location = builder.CreateInsertElement(location, coordinate(1), 0ull);
+    location = builder.CreateInsertElement(location, coordinate(2), 1ull);
+    resource_map.domain = domain_location(location, builder, air);
+  } else {
+    auto patch = function->getArg(patch_idx);
+    auto group = builder.CreateAdd(
+        builder.CreateMul(function->getArg(instance_idx), builder.CreateLoad(types._int, patches)),
+        builder.CreateUDiv(patch, builder.getInt32(patch_per_group))
+    );
+    setup_domain_patch(
+        pShaderInternal, pHullStage, group_type, native_patches(builder, patches, group_type, group),
+        builder.CreateURem(patch, builder.getInt32(patch_per_group)), patch, ctx
+    );
+    resource_map.domain = domain_location(function->getArg(location_idx), builder, air);
+  }
 
   if (auto err = prologue.build(ctx).takeError())
     return err;
@@ -1304,6 +1361,8 @@ convert_dxbc_domain_vertex_shader(
       );
     result = builder.CreateInsertValue(result, distances, {clip_distance_out_idx});
   }
+  if (patch_out_idx != ~0u)
+    result = builder.CreateInsertValue(result, resource_map.patch_id, {patch_out_idx});
   builder.CreateRet(result);
 
   module.getOrInsertNamedMetadata("air.vertex")->addOperand(function_metadata);

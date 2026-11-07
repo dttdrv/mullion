@@ -20,6 +20,7 @@
 
 #include "mullion_texture.hpp"
 #include "mullion_scaler.hpp"
+#include "mullion_command_constants.hpp"
 #include <cstdint>
 
 namespace mullion {
@@ -107,6 +108,21 @@ struct RenderEncoderStencilAttachmentData {
   uint8_t clear_stencil;
 };
 
+// a render pass's compute-tessellated draws (TessellationPass), gathered while it is recorded: the records and where
+// each draw's indices are to be, each draw's patches after the draws' before it, the room an arena may have, and the
+// most the draws can need of it, which tells whether a draw needs a mesh draw where the arena has no room and sizes
+// the arena once the pass ends
+struct TessellationBatch {
+  struct Draw {
+    TessellationDraw record;
+    uint64_t *index_offset;
+    Draw *next;
+  } *first = nullptr, **last = &first;
+  uint32_t draws = 0, patches = 0;
+  uint32_t point_room = 0, index_room = 0;
+  uint64_t most_points = 0, most_indices = 0;
+};
+
 struct RenderEncoderData : EncoderData {
   EncoderData *previous;
   std::array<RenderEncoderColorAttachmentData, 8> colors;
@@ -128,6 +144,8 @@ struct RenderEncoderData : EncoderData {
   // compute commands that run before the pass: the resolvers of its indirect commands, whose commands it then runs
   wmtcmd_compute_nop before_head{WMTComputeCommandNop};
   wmtcmd_base *before_tail = (wmtcmd_base *)&before_head;
+  // its compute-tessellated draws, until the pass ends (FinishTessellation)
+  TessellationBatch *tessellation = nullptr;
   // MULLION_D3D12_GPU_ERRORS: where each of the pass's indirect commands' resolvers keeps its largest numbers
   struct Most {
     const uint32_t *words;

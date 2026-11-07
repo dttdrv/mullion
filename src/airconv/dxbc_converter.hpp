@@ -455,6 +455,8 @@ struct SignatureContext {
   bool pull_centroids;
   // barycentrics come in SM50_BARYCENTRIC_ROWS
   bool barycentric_rows = false;
+  // SV_PrimitiveID comes in SM50_PATCH_VARYING
+  bool patch_varying = false;
   uint32_t unorm_output_reg_mask;
   // it is considered optional (as a hint)
   air::MTLPixelFormat pixel_formats[8];
@@ -619,6 +621,7 @@ public:
   uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   // a pixel shader that runs per pixel or sample at any shading rate (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool ps_fine_shading = false;
+  bool ps_primitive_id = false;
   // a pixel shader that outputs depth (MTL_PIXEL_SHADER_REFLECTION's DepthOutput)
   bool ps_depth_output = false;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC

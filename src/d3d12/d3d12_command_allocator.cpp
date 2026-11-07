@@ -350,6 +350,17 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
   if (encoder_last)
     return FAIL(E_FAIL);
+  // the passes' compute tessellators ran: the next passes have room for what the largest needed, up to the most a
+  // pass takes of the heap all lists share; past it a draw takes its mesh draw
+  auto grow = [](std::atomic<uint32_t> &room, uint32_t need, uint32_t most) {
+    need = need > most ? most : std::bit_ceil(need);
+    for (auto now = room.load(); need > now && !room.compare_exchange_weak(now, need);)
+      ;
+  };
+  for (auto pass : std::exchange(tessellation_passes_, {})) {
+    grow(device_->tessellation_point_room, pass->need_points, device_->kTessellationMostPoints);
+    grow(device_->tessellation_index_room, pass->need_indices, device_->kTessellationMostIndices);
+  }
   // "the runtime will not allow a reset while a command list is still being executed": the lists' recording is what
   // the GPU still reads
   if (pending)
@@ -939,6 +950,71 @@ SimpleCommandContext<MTLD3D12CommandAllocatorImpl>::draw(
   draw.vertex_count = vertex_count;
   draw.base_instance = base_instance;
   draw.instance_count = instance_count;
+}
+
+// the pass's compute tessellation runs after its draws' hull kernels, before the pass: each patch counted, the counts
+// summed in the patches' order, each frame made. a barrier between each, as each reads what the one before wrote
+void
+MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
+  auto batch = std::exchange(Render->tessellation, nullptr);
+  auto [draws, draws_offset] = AllocateGPUHeap(sizeof(TessellationDraw) * batch->draws, 16);
+  auto [counts, counts_offset] = AllocateGPUHeap(sizeof(uint32_t) * 3 * (batch->patches + 1), 16);
+  auto [pass, pass_offset] = AllocateGPUHeap(sizeof(TessellationPass), 16);
+  // the arena: as much as the draws can need, up to the room. a point is {patch, u, v} (tess_point), at a whole point
+  // from the heap's start, as the indices number them
+  uint32_t point_room = std::min<uint64_t>(batch->point_room, batch->most_points),
+           index_room = std::min<uint64_t>(batch->index_room, batch->most_indices);
+  constexpr size_t point = 3 * sizeof(uint32_t);
+  auto points = std::get<1>(AllocateGPUHeap(uint64_t(point_room + 1) * point, 16));
+  points += (point - points % point) % point;
+  auto indices = std::get<1>(AllocateGPUHeap(uint64_t(index_room) * sizeof(uint32_t), 16));
+  auto record = static_cast<TessellationDraw *>(draws);
+  for (auto draw = batch->first; draw; draw = draw->next) {
+    *record++ = draw->record;
+    *draw->index_offset = indices;
+  }
+  auto words = [](size_t offset) { return uint32_t(offset / sizeof(uint32_t)); };
+  *static_cast<TessellationPass *>(pass) = {
+      words(draws_offset), batch->draws, batch->patches, words(counts_offset), words(points), words(indices),
+      point_room, index_room, {0, 0, 0}, 0, 0, 0
+  };
+  tessellation_passes_.push_back(static_cast<const TessellationPass *>(pass));
+
+  auto barrier = [&] {
+    auto &cmd = EncodeBeforeRender<wmtcmd_compute_memory_barrier>();
+    cmd.type = WMTComputeCommandMemoryBarrier;
+    cmd.scope = WMTBarrierScopeBuffers;
+  };
+  auto kernel = [&](const char *name, uint32_t threads) {
+    auto pipeline = device_->GetLib().ComputePipeline(name);
+    auto &set = EncodeBeforeRender<wmtcmd_compute_setpso>();
+    set.type = WMTComputeCommandSetPSO;
+    set.pso = pipeline;
+    set.threadgroup_size = {threads, 1, 1};
+    for (auto [offset, index] : {std::pair{size_t(0), 0}, std::pair{pass_offset, 1}}) {
+      auto &buffer = EncodeBeforeRender<wmtcmd_compute_setbuffer>();
+      buffer.type = WMTComputeCommandSetBuffer;
+      buffer.buffer = gpu_heap_buffer_;
+      buffer.offset = offset;
+      buffer.index = index;
+    }
+  };
+  barrier();
+  kernel("tessellation_count", kTessellationThreads);
+  auto &count = EncodeBeforeRender<wmtcmd_compute_dispatch>();
+  count.type = WMTComputeCommandDispatchThreads;
+  count.size = {batch->patches, 1, 1};
+  barrier();
+  kernel("tessellation_scan", 1024);
+  auto &scan = EncodeBeforeRender<wmtcmd_compute_dispatch>();
+  scan.type = WMTComputeCommandDispatch;
+  scan.size = {1, 1, 1};
+  barrier();
+  kernel("tessellation_emit", kTessellationThreads);
+  auto &emit = EncodeBeforeRender<wmtcmd_compute_dispatch_indirect>();
+  emit.type = WMTComputeCommandDispatchIndirect;
+  emit.indirect_args_buffer = gpu_heap_buffer_;
+  emit.indirect_args_offset = pass_offset + offsetof(TessellationPass, emit_groups);
 }
 
 }; // namespace mullion

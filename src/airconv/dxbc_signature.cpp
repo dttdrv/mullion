@@ -544,8 +544,16 @@ void handle_signature_ps(
       sm50_shader->ps_fine_shading = true;
       break;
     case microsoft::D3D10_SB_NAME_PRIMITIVE_ID:
-      assigned_index = func_signature.DefineInput(InputPrimitiveID{});
-      break;
+      sm50_shader->ps_primitive_id = true;
+      signature_handlers.push_back([=](SignatureContext &ctx) {
+        auto index = ctx.patch_varying ? ctx.func_signature.DefineInput(InputFragmentStageIn{
+                                             SM50_PATCH_VARYING, msl_uint, Interpolation::flat, false
+                                         })
+                                       : ctx.func_signature.DefineInput(InputPrimitiveID{});
+        ctx.prologue << init_input_reg(index, reg, mask);
+      });
+      max_input_register = std::max(reg + 1, max_input_register);
+      return;
     // the coarse pixel's rate, which the coarse shading variant finds (io_binding_map's shading_rate), 1x1 elsewhere
     case D3D12_SB_NAME_SHADING_RATE:
       signature_handlers.push_back([=](SignatureContext &ctx) {
