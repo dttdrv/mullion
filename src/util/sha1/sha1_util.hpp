@@ -11,7 +11,6 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <functional>
 #include "./sha1.h"
@@ -21,15 +20,7 @@ namespace mullion {
 struct Sha1Digest {
   uint8_t data[20];
 
-  bool
-  operator==(const Sha1Digest &other) const {
-    return !std::memcmp(data, other.data, sizeof(data));
-  }
-
-  bool
-  operator!=(const Sha1Digest &other) const {
-    return !this->operator==(other);
-  }
+  bool operator==(const Sha1Digest &) const = default;
 
   std::string string() const;
 };

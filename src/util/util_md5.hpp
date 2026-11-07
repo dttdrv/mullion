@@ -8,7 +8,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 namespace mullion::md5 {
 
@@ -16,12 +15,7 @@ namespace mullion::md5 {
 struct Digest {
   std::array<uint8_t, 16u> data = {};
 
-  bool operator==(const Digest &other) const {
-    return !std::memcmp(data.data(), other.data.data(), sizeof(data));
-  }
-  bool operator!=(const Digest &other) const {
-    return std::memcmp(data.data(), other.data.data(), sizeof(data));
-  }
+  bool operator==(const Digest &) const = default;
 };
 
 /** MD5 hash state */

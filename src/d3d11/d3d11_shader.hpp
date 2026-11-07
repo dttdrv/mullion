@@ -103,12 +103,7 @@ struct ShaderVariantVertex {
   uint32_t gs_passthrough;
   bool rasterization_disabled;
   bool clip_distance_varyings;
-  bool operator==(const this_type &rhs) const {
-    return input_layout_handle == rhs.input_layout_handle &&
-           gs_passthrough == rhs.gs_passthrough &&
-           rasterization_disabled == rhs.rasterization_disabled &&
-           clip_distance_varyings == rhs.clip_distance_varyings;
-  }
+  bool operator==(const this_type &) const = default;
 };
 
 struct ShaderVariantPixel {
@@ -190,7 +185,7 @@ struct ShaderVariantGeometry {
 
 struct ShaderVariantDefault {
   using this_type = ShaderVariantDefault;
-  bool operator==(const this_type &rhs) const { return true; }
+  bool operator==(const this_type &) const = default;
 };
 
 using ShaderVariant =

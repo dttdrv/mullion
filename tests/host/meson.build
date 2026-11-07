@@ -4,8 +4,11 @@ test('host_geometry_budget', executable('host_geometry_budget', 'geometry_budget
                                       override_options : ['cpp_std=c++23'], native : true), suite : 'host')
 test('host_format', executable('host_format', 'format.cpp', include_directories : mullion_native_include_path,
                              override_options : ['cpp_std=c++23'], native : true), suite : 'host')
+                             override_options : ['cpp_std=c++23'], native : true), suite : 'host')
 test('host_rc_self_move', executable('host_rc_self_move', 'rc.cpp',
                                     override_options : ['cpp_std=c++23'], native : true), suite : 'host')
+test('host_packed_variant_list', executable('host_packed_variant_list', 'packed_variant_list.cpp',
+                                           override_options : ['cpp_std=c++23'], native : true), suite : 'host')
 test('host_denorm', executable('host_denorm', 'denorm.cpp', include_directories : include_directories('metal'),
                              override_options : ['cpp_std=c++23'], native : true), suite : 'host')
 test('host_tessellator',

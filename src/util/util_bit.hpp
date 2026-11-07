@@ -493,8 +493,7 @@ public:
 #endif
     }
 
-    bool operator==(iterator other) const { return m_mask == other.m_mask; }
-    bool operator!=(iterator other) const { return m_mask != other.m_mask; }
+    bool operator==(const iterator &) const = default;
 
   private:
     uint32_t m_mask;

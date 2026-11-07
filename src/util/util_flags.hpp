@@ -61,9 +61,7 @@ public:
     return Flags(m_bits ^ other.m_bits);
   }
 
-  bool operator==(const Flags &other) const { return m_bits == other.m_bits; }
-
-  bool operator!=(const Flags &other) const { return m_bits != other.m_bits; }
+  bool operator==(const Flags &) const = default;
 
 private:
   IntType m_bits = 0;

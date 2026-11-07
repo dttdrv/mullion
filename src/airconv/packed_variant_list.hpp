@@ -1,6 +1,8 @@
 
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -92,10 +94,19 @@ public:
 
   PackedVariantList(const PackedVariantList &) = delete;
   PackedVariantList &operator=(const PackedVariantList &copy) {
-    data = static_cast<std::byte *>(std::malloc(copy.capacity));
+    if (this == &copy)
+      return *this;
+
+    auto *copy_data = static_cast<std::byte *>(std::malloc(copy.capacity));
+    if (copy.capacity && !copy_data)
+      std::terminate();
+    if (copy.size)
+      std::memcpy(copy_data, copy.data, copy.size);
+
+    std::free(data);
+    data = copy_data;
     capacity = copy.capacity;
     size = copy.size;
-    std::memcpy(data, copy.data, size);
     return *this;
   };
 
