@@ -10,18 +10,20 @@
 // when its predicate says so, leaving the clear color, and draws when it does not. a domain shader with cull
 // distances puts the first cell boundary's points and those left of it behind one, and the last boundary's and
 // those below it behind another, as NaN: the cells with all their points behind are discarded, their neighbours,
-// with some, drawn whole (D3D11.3 15.4.2).
+// with some, drawn whole (D3D11.3 15.4.2). an instanced draw puts instance i in the i'th of as many bands of rows,
+// tessellated at factor N (1 + i): each instance's patch has its own factors and points.
 #include "d3d12_test.hpp"
 #include <cmath>
 #include <functional>
 #include <optional>
 
 static const char hlsl[] = R"hlsl(
-cbuffer c : register(b0) { float factor; };
-struct CP { float2 corner : CORNER; };
-CP vs(uint id : SV_VertexID) {
+cbuffer c : register(b0) { float factor; float bands; };
+struct CP { float2 corner : CORNER; uint instance : INSTANCE; };
+CP vs(uint id : SV_VertexID, uint instance : SV_InstanceID) {
   CP o;
   o.corner = float2(id & 1, id >> 1);
+  o.instance = instance;
   return o;
 }
 struct HCP { float4 pos : POS; };
@@ -30,11 +32,11 @@ struct PC {
   float inside[2] : SV_InsideTessFactor;
   float scale : SCALE;
 };
-PC pc(OutputPatch<HCP, 4> p) {
+PC pc(InputPatch<CP, 4> ip, OutputPatch<HCP, 4> p) {
   PC o;
   [unroll] for (int i = 0; i < 4; i++)
-    o.edges[i] = factor;
-  o.inside[0] = o.inside[1] = factor;
+    o.edges[i] = factor * (1 + ip[0].instance);
+  o.inside[0] = o.inside[1] = factor * (1 + ip[0].instance);
   // the patch spans clip space: 1
   o.scale = abs(p[1].pos.x - p[0].pos.x) / 2;
   return o;
@@ -43,7 +45,7 @@ PC pc(OutputPatch<HCP, 4> p) {
 [patchconstantfunc("pc")]
 HCP hs(InputPatch<CP, 4> ip, uint i : SV_OutputControlPointID) {
   HCP o;
-  o.pos = float4(ip[i].corner * float2(2, -2) + float2(-1, 1), 0, 1);
+  o.pos = float4(ip[i].corner.x * 2 - 1, 1 - 2 * (ip[i].corner.y + ip[i].instance) / bands, 0, 1);
   return o;
 }
 struct DSO { float4 pos : SV_Position; float2 f : F; };
@@ -90,7 +92,7 @@ main(int argc, char **argv) {
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER param{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
-  param.Constants.Num32BitValues = 1;
+  param.Constants.Num32BitValues = 2;
   auto rs = root_signature(device.Get(), {1, &param});
   if (!rs) {
     printf("failed: root signature\n");
@@ -184,9 +186,9 @@ main(int argc, char **argv) {
   CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), pso.Get(), IID_PPV_ARGS(&list)));
   CHECK(list->Close());
 
-  // the interpolated u^2 at coordinate t of an axis cut into `factor` cells
-  auto expected = [&](float t) {
-    float u0 = std::floor(t * factor) / factor, u1 = u0 + 1.0f / factor;
+  // the interpolated u^2 at coordinate t of an axis cut into `cells` cells
+  auto expected = [](float t, float cells) {
+    float u0 = std::floor(t * cells) / cells, u1 = u0 + 1.0f / cells;
     return t * (u0 + u1) - u0 * u1;
   };
   struct Case {
@@ -197,6 +199,8 @@ main(int argc, char **argv) {
     std::optional<D3D12_PREDICATION_OP> predicate{};
     // through the domain shader with cull distances
     bool culls = false;
+    // the draw's instances, each in its band of rows
+    UINT instances = 1;
   };
   auto zeros = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, 8, D3D12_RESOURCE_STATE_GENERIC_READ);
   void *zero_bytes;
@@ -231,6 +235,8 @@ main(int argc, char **argv) {
          list->SetGraphicsRoot32BitConstants(0, 1, &none, 0);
          list->ExecuteIndirect(sigs[2].Get(), 1, args.Get(), 128, nullptr, 0);
        }},
+      // first a drawing one, whose list's memory the skipped ones that follow reuse
+      {"predicated, drawing", false, [&](auto list) { list->DrawInstanced(4, 1, 0, 0); }, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO},
       {"predicated away", false, [&](auto list) { list->DrawInstanced(4, 1, 0, 0); }, D3D12_PREDICATION_OP_EQUAL_ZERO},
       {"indexed, predicated away", true,
        [&](auto list) {
@@ -238,7 +244,6 @@ main(int argc, char **argv) {
          list->DrawIndexedInstanced(4, 1, 0, 0, 0);
        },
        D3D12_PREDICATION_OP_EQUAL_ZERO},
-      {"predicated, drawing", false, [&](auto list) { list->DrawInstanced(4, 1, 0, 0); }, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO},
       {"cull distances", false, [&](auto list) { list->DrawInstanced(4, 1, 0, 0); }, {}, true},
       {"cull distances, indexed", true,
        [&](auto list) {
@@ -246,6 +251,13 @@ main(int argc, char **argv) {
          list->DrawIndexedInstanced(4, 1, 0, 0, 0);
        },
        {}, true},
+      {"instanced", false, [&](auto list) { list->DrawInstanced(4, 2, 0, 0); }, {}, false, 2},
+      {"indexed, instanced", true,
+       [&](auto list) {
+         list->IASetIndexBuffer(&view16);
+         list->DrawIndexedInstanced(4, 3, 0, 0, 0);
+       },
+       {}, false, 3},
   };
   unsigned failures = 0;
   for (auto &c : cases) {
@@ -256,8 +268,8 @@ main(int argc, char **argv) {
     D3D12_VIEWPORT viewport{0, 0, size, size, 0, 1};
     D3D12_RECT scissor{0, 0, size, size};
     list->SetGraphicsRootSignature(rs.Get());
-    float root_factor = factor;
-    list->SetGraphicsRoot32BitConstants(0, 1, &root_factor, 0);
+    float root[2] = {float(factor), float(c.instances)};
+    list->SetGraphicsRoot32BitConstants(0, 2, root, 0);
     list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
@@ -280,14 +292,17 @@ main(int argc, char **argv) {
     for (UINT y = 0; y < size; y++)
       for (UINT x = 0; x < size; x++) {
         auto got = (const float *)(pixels + y * footprint.Footprint.RowPitch) + 2 * x;
-        float u = (x + 0.5f) / size, v = (y + 0.5f) / size;
+        // the instance whose band the pixel is in, and where in its patch
+        float band = (y + 0.5f) * c.instances / size, instance = std::floor(band);
+        float u = (x + 0.5f) / size, v = band - instance, cells = factor * (1 + instance);
+        // an indexed patch turns half a turn inside its band
         if (c.reversed)
           u = 1 - u, v = 1 - v;
         // the first column of cells and the last row are behind a cull distance
         bool behind = c.culls && (std::floor(u * factor) == 0 || std::floor(v * factor) == factor - 1);
         bool skipped = c.predicate == D3D12_PREDICATION_OP_EQUAL_ZERO || behind;
-        float want[2] = {skipped ? clear[0] : expected(u), skipped ? clear[1] : expected(v)};
-        linear = std::max(linear, std::abs(expected(u) - u * u));
+        float want[2] = {skipped ? clear[0] : expected(u, cells), skipped ? clear[1] : expected(v, cells)};
+        linear = std::max(linear, std::abs(expected(u, cells) - u * u));
         // written as a match, so a NaN pixel does not pass
         bool match = std::abs(got[0] - want[0]) <= tolerance && std::abs(got[1] - want[1]) <= tolerance;
         if (!match && mismatches++ < 4)

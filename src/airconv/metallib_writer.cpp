@@ -69,7 +69,9 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         while (fn->getNumOperands() > 3 && isa<MDTuple>(fn->getOperand(3).get())
         ) {
           auto maybe_patch_tuple = cast<MDTuple>(fn->getOperand(3).get());
-          if (maybe_patch_tuple->getNumOperands() != 4)
+          // !{"air.patch", domain}, and the control points, if any: !"air.patch_control_point", i32 count
+          auto operands = maybe_patch_tuple->getNumOperands();
+          if (operands != 2 && operands != 4)
             break;
           if (!isa<MDString>(maybe_patch_tuple->getOperand(0).get()))
             break;
@@ -81,13 +83,10 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
             break;
           auto air_patch_value =
             cast<MDString>(maybe_patch_tuple->getOperand(1).get());
-          if (air_patch_value->getString() == "triangle") {
-            function_def_stream
-              << value(MTLB_TESS_TAG{.patchType = 1, .controlPointCount = 0});
-          } else {
-            function_def_stream
-              << value(MTLB_TESS_TAG{.patchType = 2, .controlPointCount = 0});
-          }
+          uint8_t points = operands == 4 ? mdconst::extract<ConstantInt>(maybe_patch_tuple->getOperand(3))->getZExtValue() : 0;
+          function_def_stream << value(MTLB_TESS_TAG{
+            .patchType = uint8_t(air_patch_value->getString() == "triangle" ? 1 : 2), .controlPointCount = points
+          });
           break;
         }
         function_def_stream << "ENDT";

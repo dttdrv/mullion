@@ -96,9 +96,9 @@ main(int argc, char **argv) {
   D3D12_DRAW_ARGUMENTS *indirect_draw;
   CHECK(arguments->Map(0, nullptr, (void **)&indirect_draw));
 
-  // draws `count` patches with the pipeline, the log bound if there is one, and leaves the target readable in `pixels`;
-  // an indirect draw is the same draw from a buffer
-  auto draw = [&](ID3D12PipelineState *pso, UINT count, ID3D12Resource *log, bool indirect = false) {
+  // draws `count` patches with the pipeline `times` in one pass, the log bound if there is one, and leaves the target
+  // readable in `pixels`; an indirect draw is the same draw from a buffer
+  auto draw = [&](ID3D12PipelineState *pso, UINT count, ID3D12Resource *log, bool indirect = false, UINT times = 1) {
     if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), pso)))
       return E_FAIL;
     const float clear[4] = {};
@@ -114,10 +114,11 @@ main(int argc, char **argv) {
     list->RSSetScissorRects(1, &scissor);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST);
     *indirect_draw = {count, 1, 0, 0};
-    if (indirect)
-      list->ExecuteIndirect(signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
-    else
-      list->DrawInstanced(count, 1, 0, 0);
+    for (UINT k = 0; k < times; k++)
+      if (indirect)
+        list->ExecuteIndirect(signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
+      else
+        list->DrawInstanced(count, 1, 0, 0);
     transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION src{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
         dst{pixels.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprint}};
@@ -237,13 +238,18 @@ main(int argc, char **argv) {
           printf("failed: %s: no pipeline with triangle output\n", name.c_str());
           return 1;
         }
-        // every patch alone, then the fullest as many at once
+        // every patch alone, then the fullest as many at once; the first of them, without a geometry shader, drawn
+        // again in the pass until it has made more than 2^21 points: a pass draws all its patches however many there
+        // are, more than a pass is likely to hold
         for (size_t i = 0; i < std::size(alone) + fullest; i++) {
           auto &patch = alone[i % std::size(alone)];
           UINT count = i < std::size(alone) ? 1 : patches;
+          UINT times = i != std::size(alone) || instances
+                           ? 1
+                           : 1 + (1u << 21) / (count * expected_points(domain, partitioning, patch).size());
           std::fill_n(factors, count, patch);
           // the counter-clockwise ones through ExecuteIndirect
-          CHECK(draw(pso.Get(), count, nullptr, !clockwise));
+          CHECK(draw(pso.Get(), count, nullptr, !clockwise, times));
           char *read_pixels;
           CHECK(pixels->Map(0, nullptr, (void **)&read_pixels));
           unsigned wrong = 0;
@@ -257,21 +263,22 @@ main(int argc, char **argv) {
             for (UINT x = 0; x < width; x++) {
               float cover = expected_cover(domain, partitioning, patch, clockwise, x, y),
                     got = pixel(read_pixels, x, y)[0], want = weight(instances) * cover;
-              // and 64 times the numbers of the patches over the pixel, 0 to count - 1
-              float numbers = 64 * cover * (count * (count - 1) / 2);
+              // and 64 times the numbers of the patches over the pixel, 0 to count - 1, each draw
+              float numbers = times * 64 * cover * (count * (count - 1) / 2);
               float product = pixel(read_pixels, x, y)[1], want_product = products.empty() ? NAN : products[y * width + x];
-              if (want > 0 && !std::isnan(want_product) && !(std::abs(product - count * want_product) <= count * product_tolerance) &&
+              UINT drawn = times * count;
+              if (want > 0 && !std::isnan(want_product) && !(std::abs(product - drawn * want_product) <= drawn * product_tolerance) &&
                   wrong++ < 2)
                 printf(
                     "%s, %u of factors %g %g %g %g, inside %g %g: pixel %u,%u has product %g, want %g\n", name.c_str(),
-                    count, patch[0], patch[1], patch[2], patch[3], patch[4], patch[5], x, y, product, count * want_product
+                    drawn, patch[0], patch[1], patch[2], patch[3], patch[4], patch[5], x, y, product, drawn * want_product
                 );
-              if (want >= 0 && got != count * want + numbers && wrong++ < 2)
+              if (want >= 0 && got != drawn * want + numbers && wrong++ < 2)
                 printf(
-                    "%s, %s, %u of factors %g %g %g %g, inside %g %g: pixel %u,%u is covered %g times with the "
-                    "patches' numbers, want %g\n",
-                    name.c_str(), clockwise ? "clockwise" : "counter-clockwise", count, patch[0], patch[1], patch[2],
-                    patch[3], patch[4], patch[5], x, y, got, count * want + numbers
+                    "%s, %s, %u times %u of factors %g %g %g %g, inside %g %g: pixel %u,%u is covered %g times with "
+                    "the patches' numbers, want %g\n",
+                    name.c_str(), clockwise ? "clockwise" : "counter-clockwise", times, count, patch[0], patch[1],
+                    patch[2], patch[3], patch[4], patch[5], x, y, got, drawn * want + numbers
                 );
             }
           pixels->Unmap(0, nullptr);

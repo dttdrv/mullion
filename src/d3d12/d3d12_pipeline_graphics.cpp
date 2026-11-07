@@ -478,10 +478,10 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
       auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls,
-             cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull] =
+             cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull, patch] =
           *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
       hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls, cull_depth, blend,
-           bounds, late, conservative, coarse, rate, quads, hull);
+           bounds, late, conservative, coarse, rate, quads, hull, patch);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -506,9 +506,9 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_TESSELLATOR: {
-      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics] =
+      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics, native, compute] =
           *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
-      hash(factor, size, groups, bool(geometry), conservative, flat, noperspective, barycentrics);
+      hash(factor, size, groups, bool(geometry), conservative, flat, noperspective, barycentrics, native, compute);
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:
@@ -665,14 +665,17 @@ protected:
     // the geometry shader that counts pipeline statistics, made when first used
     std::function<WMT::Reference<WMT::Function>()> statistics_geometry_shader;
     WMT::Reference<WMT::Function> statistics_gs;
+    // its pixel shader takes SV_PrimitiveID from the compute tessellator's patch varying
+    bool patch_varying = false;
   };
   std::unordered_map<obj_handle_t, PipelineDescriptor> pipeline_descriptors_;
   mullion::mutex render_targets_mutex_;
   // the pixel shader made again when first needed: counting pipeline statistics, with its depth and stencil tests
   // after it (an occlusion query and the depth bounds test of a GPU without one), of coarse pixels (variable rate
   // shading), or blending only the targets a pass binds, as Metal refuses a pipeline whose shader reads a target it has
-  // no format for
-  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late, bool coarse, uint32_t blends, bool depth)>
+  // no format for; or after the compute tessellator, whose patch is SV_PrimitiveID
+  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late, bool coarse, uint32_t blends, bool depth,
+                                              bool patch)>
       pixel_shader_;
   std::unordered_map<uint32_t, WMT::Reference<WMT::Function>> pixel_shaders_;
   // the targets the pixel shader blends itself (ShaderBlend)
@@ -1555,6 +1558,7 @@ public:
       data_ps.conservative = conservative;
       data_ps.conservative_hull = conservative_hull;
       data_ps.quad_lines = quad_lines && ref_ps.PixelShader.Barycentrics;
+      data_ps.patch_varying = false;
       data_ps.coarse_shading = false;
       // the primitive's shading rate, from the stage before the rasterizer: a domain or mesh shader has none
       data_ps.shading_rate_varying = sm50_shader_t(shader_gs)      ? ref_gs.ShadingRateOutput
@@ -1575,7 +1579,7 @@ public:
       pixel_shader_ =
           [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
            signature = Com<ID3D12RootSignature>(pDesc->pRootSignature), data_ps, common,
-           ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth) mutable {
+           ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth, bool patch) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
             MTL_SHADER_REFLECTION reflection;
@@ -1585,6 +1589,7 @@ public:
             data.pipeline_statistics = statistics;
             data.late_tests = late;
             data.coarse_shading = coarse;
+            data.patch_varying = patch;
             // Metal refuses a pipeline whose shader outputs depth without a depth format: the shader's depth is kept
             // only for a variant that has one (RenderTargets)
             data.disable_depth_output &= !depth;
@@ -1595,7 +1600,8 @@ public:
             SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
             auto arguments = RootSignature(rootsig, signature.ptr(), &data);
             auto name =
-                ps_name + "_" + std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11);
+                ps_name + "_" +
+                std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11 | patch << 12);
             return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, name.c_str(),
                                    [&shader](auto args, auto name, auto bitcode, auto error) {
                                      return SM50Compile(shader, args, name, bitcode, error);
@@ -1821,6 +1827,92 @@ public:
           DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
           return E_FAIL;
         }
+        // Metal's tessellator, where it tessellates as Direct3D does: a triangle or quad domain to triangles,
+        // partitioned to whole factors, which pow2 is once its hull shader rounds them (D3D11.3 11.7.7.1). Metal 4's
+        // encoders have none. the hull kernel runs before its pass, so its stages write no UAVs; a geometry shader,
+        // conservative rasterization, clip distances the pixel shader tests and cull distances, which a vertex
+        // function has none of, keep the mesh pipeline, which also takes the indirect draws and those under pipeline
+        // statistics. with Metal 4 the tessellator is the compute tessellator, exact for every partitioning, whose
+        // draw's primitives are its triangles: a pixel shader that reads SV_PrimitiveID takes the patch from a varying
+        auto output = ref_hs.Tessellator.OutputPrimitive;
+        bool compute = device_->UsesMetal4();
+        if (!pso_tess.max_mesh_threadgroups || geometry || conservative || clips ||
+            ref_ds.CullDistances ||
+            ref_vs.UAVSlotMask || ref_hs.UAVSlotMask ||
+            (domain != microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI && domain != microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD) ||
+            (!compute && partitioning != microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER &&
+             partitioning != microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_POW2) ||
+            (output != MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW && output != MTL_TESSELLATOR_TRIANGLE_CCW))
+          return S_OK;
+        bool patch_varying = compute && pixel_shader && ref_ps.PixelShader.PrimitiveID;
+        pso_tess.native = true;
+        pso_tess.compute = compute;
+        auto patch_func = CompileFunction(
+            device_, this, std::array{pDesc->HS, pDesc->DS}, args_ds, "ds_patch",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineDomain(shader_hs, shader_ds, args, name, bitcode, error);
+            }
+        );
+        auto hull_func = CompileFunction(
+            device_, this, std::array{pDesc->VS, pDesc->HS}, args_hs, "hull_patch",
+            [&](auto args, auto name, auto bitcode, auto error) {
+              return SM50CompileTessellationPipelineHull(shader_vs, shader_hs, args, name, bitcode, error);
+            }
+        );
+        pso_tess.native = pso_tess.compute = false;
+        if (!patch_func || !hull_func)
+          return FAIL(E_INVALIDARG);
+        WMTComputePipelineInfo hull_info;
+        WMT::InitializeComputePipelineInfo(hull_info);
+        hull_info.compute_function = hull_func.handle;
+        hull_info.tgsize_is_multiple_of_sgwidth = true;
+        if (!(hull = device_->Archived(hull_info, err, [&](auto &info, auto &error) {
+                return device_->GetMTLDevice().newComputePipelineState(info, error);
+              }))) {
+          ERR("Failed to create hull kernel of shaders ", name, ": ", err.description().getUTF8String());
+          DumpShaders({pDesc->VS, pDesc->HS});
+          return E_FAIL;
+        }
+        bool dual = false;
+        SM50_SHADER_BLEND blends[8] = {};
+        if (FAILED(InitializePSO(pDesc, info, dual, blends)))
+          return E_FAIL;
+        info.vertex_function = patch_func.handle;
+        info.fragment_function = ps_func.handle;
+        WMT::Reference<WMT::Function> patch_ps;
+        if (patch_varying) {
+          if (!(patch_ps = pixel_shader_(false, false, false, blend_mask_, false, true)))
+            return FAIL(E_INVALIDARG);
+          info.fragment_function = patch_ps;
+        }
+        info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+        if (!compute) {
+          info.tessellation_partition_mode = WMTTessellationPartitionModeInteger;
+          info.tessellation_factor_step = WMTTessellationFactorStepFunctionPerPatchAndPerInstance;
+          // Metal turns its triangles the other way round the domain's points from Direct3D's: the reference's
+          // clockwise triangles are Metal's counterclockwise ones (d3d12_tessellator, culling back faces)
+          info.tessellation_output_winding_order =
+              output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW ? WMTWindingCounterClockwise : WMTWindingClockwise;
+          info.max_tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
+        }
+        if (!(pso_patches = CreatePipeline(info, err))) {
+          ERR("Failed to create patch PSO of shaders ", name, ": ", err.description().getUTF8String());
+          DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->PS});
+          return E_FAIL;
+        }
+        if (patch_varying) {
+          std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
+          if (auto described = pipeline_descriptors_.find(pso_patches.handle); described != pipeline_descriptors_.end())
+            described->second.patch_varying = true;
+        }
+        bool quad = domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD;
+        patch_factor_size = compute ? sizeof(float) * (quad ? 6 : 4) : quad ? 12 : 8;
+        patch_group_size = ref_hs.Tessellator.PatchGroupSize;
+        // the compute tessellator's TessellationDraw kind: domain, partitioning (the library's order), winding
+        compute_tessellation = compute;
+        tessellation_factor = factor;
+        tessellation_kind = quad | (partitioning - microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER) << 1 |
+                            (output == MTL_TESSELLATOR_TRIANGLE_CCW) << 3;
         return S_OK;
       };
       if (FAILED(hr = build()))
@@ -1913,8 +2005,9 @@ public:
           bool depth = any_format && (DSVPlanar & 1) && ref_ps.PixelShader.DepthOutput;
           if (auto blends = blend_mask_ & Mask;
               pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth)) {
-            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11];
-            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends, depth)))
+            bool patch = descriptor.patch_varying;
+            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11 | patch << 12];
+            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends, depth, patch)))
               return WMT::Reference<WMT::RenderPipelineState>{};
             info.fragment_function = ps;
           }

@@ -2041,6 +2041,15 @@ public:
           inflight.physical[WMTMetal4Compute]++;
         auto before = cmdbuf.computeCommandEncoder(true);
         wait(before);
+        // a hull kernel reads the pass's resources as its draws' vertex stages do
+        if (sparse_mappings) {
+          inflight.sparse_mappings = sparse_mappings;
+          wmtcmd_compute_setbuffer binding{};
+          binding.type = WMTComputeCommandSetBuffer;
+          binding.buffer = sparse_mappings;
+          binding.index = kSparseBufferArgumentIndex;
+          before.encodeCommands(reinterpret_cast<const wmtcmd_compute_nop *>(&binding));
+        }
         before.encodeCommands(&data->before_head);
         end(before);
         if (data->omitted) {
