@@ -13,6 +13,9 @@
 // more vertices and primitives than its limits, fewer workloads than the SIMD group has lanes, and the groups'
 // primitives are the reference's. the d3d11 and d3d12 tessellator tests check the same source as the GPU runs it, by
 // its points and what it covers.
+// the compute tessellator (Metal 4) makes the same patch's points and triangles into buffers: its counts size them,
+// every number below the point count is written, each with one location, nothing past them, and the triangles,
+// indices into the points, are the reference's.
 // listing work is the zip's attempted slots, including ones that make no triangle. D3D11.3 11.7.5 defines an epoch
 // as "a power of 2 number of vertices on one half of the domain (excluding corners)"; 11.7.6.2 omits "one segment
 // on each end of the inside". for H points on the larger half-edge, the smallest containing epoch E has E < 2H:
@@ -70,11 +73,81 @@ expected(Domain domain, Partitioning partitioning, const Factors &patch, int ver
   return out;
 }
 
+// the compute tessellator's buffers, which note what is written where: a point written twice must be the same
+struct Written {
+  std::vector<tess_point> points;
+  std::vector<int> point_writes, index_writes;
+  std::vector<uint> indices;
+  bool wrong = false;
+  struct PointSlot {
+    Written *w;
+    uint at;
+    void operator=(tess_point p) {
+      if (at >= w->points.size() || (w->point_writes[at]++ && memcmp(&w->points[at], &p, sizeof(p))))
+        w->wrong = true;
+      else
+        w->points[at] = p;
+    }
+  };
+  struct IndexSlot {
+    Written *w;
+    uint at;
+    void operator=(uint v) {
+      if (at >= w->indices.size() || w->index_writes[at]++)
+        w->wrong = true;
+      else
+        w->indices[at] = v;
+    }
+  };
+  struct Points {
+    Written *w;
+    PointSlot operator[](uint at) const { return {w, at}; }
+  };
+  struct Indices {
+    Written *w;
+    IndexSlot operator[](uint at) const { return {w, at}; }
+  };
+};
+
+// the triangles of a patch as the compute tessellator makes them, after `first` other points, or an empty set and
+// `wrong` when its buffers are not as the contract says
+template <typename Patch>
+static std::multiset<Primitive>
+compute_triangles(Patch patch, bool &wrong) {
+  constexpr uint first = 5, slot = 77;
+  tess_counts c = counts(patch);
+  Written w;
+  w.points.resize(first + c.points);
+  w.point_writes.resize(first + c.points);
+  w.indices.resize(3 * c.triangles);
+  w.index_writes.resize(3 * c.triangles);
+  for (int f = 0; f < c.frames; f++)
+    emit_frame(patch, f, slot, Written::Points{&w}, Written::Indices{&w}, first, 0);
+  for (uint i = 0; i < first; i++)
+    wrong = wrong || w.point_writes[i];
+  for (uint i = first; i < w.points.size(); i++)
+    wrong = wrong || !w.point_writes[i] || w.points[i].patch != slot;
+  std::multiset<Primitive> out;
+  for (int n = 0; n < c.triangles && !wrong; n++) {
+    Primitive p;
+    for (int corner_ = 0; corner_ < 3; corner_++) {
+      uint v = w.indices[3 * n + corner_];
+      wrong = wrong || !w.index_writes[3 * n + corner_] || v < first || v >= w.points.size();
+      if (!wrong)
+        p.push_back(corner(w.points[v].u, w.points[v].v));
+    }
+    if (!wrong)
+      out.insert(primitive(p));
+  }
+  wrong = wrong || w.wrong;
+  return wrong ? std::multiset<Primitive>{} : out;
+}
+
 int
 main() {
   using namespace mullion::dxbc;
   unsigned failures = 0, patches_checked = 0;
-  size_t primitives = 0, frames_checked = 0, zip_slots = 0, lanes_checked = 0;
+  size_t primitives = 0, frames_checked = 0, zip_slots = 0, lanes_checked = 0, compute_checked = 0;
   // the largest factors a hull shader may declare: the tessellator's, and lower ones whole and not, odd and even
   for (float declared : {64.0f, 17.5f, 8.0f, 3.0f, 1.0f})
   for (Domain domain : {reference::isoline, reference::triangle, reference::quad})
@@ -125,6 +198,27 @@ main() {
           else
             generate_workload_isoline(0, next, data, capacity, groups.data(), limit, partitioning, f[0], f[1]);
         };
+        if (domain != reference::isoline) {
+          bool wrong = false, made = true;
+          std::multiset<Primitive> got;
+          if (domain == reference::quad) {
+            quad_patch patch;
+            made = make_patch(patch, ::partitioning(int(partitioning)), f[4], f[5], f[0], f[1], f[2], f[3]);
+            if (made)
+              got = compute_triangles(patch, wrong);
+          } else {
+            tri_patch patch;
+            made = make_patch(patch, ::partitioning(int(partitioning)), f[4], f[0], f[1], f[2]);
+            if (made)
+              got = compute_triangles(patch, wrong);
+          }
+          auto want = expected(domain, partitioning, f, 3);
+          if (wrong)
+            fail("compute tessellator's buffers", f, 1, 0);
+          else if (got != want)
+            fail("compute tessellator's triangles", f, got.size(), want.size());
+          compute_checked += want.size();
+        }
         int count = 0;
         generate(&count, workloads.size(), 0);
         // one more than there is room for was not written
@@ -305,7 +399,7 @@ main() {
     return 1;
   }
   printf("passed: %zu primitives of %u patches as the reference's; %zu frames in %zu zip slots; %zu primitives made "
-         "alike by groups' threadgroups\n",
-         primitives, patches_checked, frames_checked, zip_slots, lanes_checked);
+         "alike by groups' threadgroups; %zu triangles by the compute tessellator\n",
+         primitives, patches_checked, frames_checked, zip_slots, lanes_checked, compute_checked);
   return 0;
 }
