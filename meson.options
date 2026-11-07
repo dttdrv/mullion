@@ -1,4 +1,4 @@
-option('native_llvm_path', type : 'string', value: '/usr/local/opt/llvm@15')
+option('native_llvm_path', type : 'string', value: '/opt/homebrew/opt/llvm')
 option('build_airconv_for_windows', type : 'boolean', value : false)
 option('mullion_debug', type : 'boolean', value : false)
 # a file that lists the source states built: a build of a changed tree shows its line there as its number

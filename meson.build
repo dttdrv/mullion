@@ -1,7 +1,7 @@
 project('mullion', ['c', 'cpp'], version : 'v0.1', meson_version: '>=1.3.0', default_options : [ 
-  'cpp_std=c++20', 
+  'cpp_std=c++23',
   'warning_level=2', 
-  'build.cpp_std=c++20',
+  'build.cpp_std=c++23',
   'b_ndebug=if-release',
 ])
 

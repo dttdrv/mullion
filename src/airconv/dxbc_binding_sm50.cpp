@@ -15,12 +15,11 @@ public:
   GetArgument(llvm::air::AIRBuilder &AIR, uint32_t TableIndex, uint32_t Index) {
     auto Fn = AIR.builder.GetInsertBlock()->getParent();
     auto Arg = Fn->getArg(TableIndex);
-    auto TyArg = llvm::cast<llvm::PointerType>(Arg->getType())->getNonOpaquePointerElementType();
-    auto TyStruct = llvm::cast<llvm::StructType>(TyArg);
+    auto TyStruct = TableIndex == BindingTableIndex ? BindingTableType : ConstantBufferTableType;
     return AIR.builder.CreateLoad(TyStruct->getElementType(Index), AIR.builder.CreateStructGEP(TyStruct, Arg, Index));
   };
 
-  virtual llvm::Optional<ConstantBufferDescriptor>
+  virtual std::optional<ConstantBufferDescriptor>
   GetConstantBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~ConstantBufferTableIndex == 0)
       return {};
@@ -32,7 +31,7 @@ public:
     return ConstantBufferDescriptor{Pointer, Metadata};
   }
 
-  virtual llvm::Optional<SamplerDescriptor>
+  virtual std::optional<SamplerDescriptor>
   GetSampler(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -45,7 +44,7 @@ public:
     return SamplerDescriptor{Sampler, CubeSampler, Metadata};
   }
 
-  virtual llvm::Optional<TextureDescirptor>
+  virtual std::optional<TextureDescirptor>
   GetSRVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -73,7 +72,7 @@ public:
     return TextureDescirptor{Handle, Metadata, false, ResourceKind, ResourceKindLogical, MemoryAccess, SampleType};
   }
 
-  virtual llvm::Optional<TextureDescirptor>
+  virtual std::optional<TextureDescirptor>
   GetUAVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -105,7 +104,7 @@ public:
     };
   }
 
-  virtual llvm::Optional<BufferDescriptor>
+  virtual std::optional<BufferDescriptor>
   GetSRVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -119,7 +118,7 @@ public:
     return BufferDescriptor{Handle, Metadata, Iter->second.structure_stride, false};
   }
 
-  virtual llvm::Optional<BufferDescriptor>
+  virtual std::optional<BufferDescriptor>
   GetUAVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -132,7 +131,7 @@ public:
     auto Metadata = GetArgument(Builder, BindingTableIndex, Iter->second.arg_metadata_index);
     return BufferDescriptor{Handle, Metadata, Iter->second.structure_stride, Iter->second.global_coherent};
   }
-  virtual llvm::Optional<CounterDescriptor>
+  virtual std::optional<CounterDescriptor>
   GetUAVCounter(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~BindingTableIndex == 0)
       return {};
@@ -147,6 +146,8 @@ public:
 
   uint32_t ConstantBufferTableIndex = ~0u;
   uint32_t BindingTableIndex = ~0u;
+  llvm::StructType *ConstantBufferTableType = nullptr;
+  llvm::StructType *BindingTableType = nullptr;
 
   std::map<RangeId, ConstantBufferInfo> ConstantBuffers;
   std::map<RangeId, SamplerInfo> Samplers;
@@ -163,6 +164,7 @@ setup_binding_table2(
 
   if (!shader_info->binding_table.Empty()) {
     auto [type, metadata] = shader_info->binding_table.Build(module.getContext(), module.getDataLayout());
+    binding_map->BindingTableType = type;
     std::string arg_name = "binding_table";
     if (argbuffer_slot != SM50_BINDING_INDEX_ARGUMENT_TABLE)
       arg_name += std::to_string(argbuffer_slot);
@@ -178,6 +180,7 @@ setup_binding_table2(
   }
   if (!shader_info->binding_table_cbuffer.Empty()) {
     auto [type, metadata] = shader_info->binding_table_cbuffer.Build(module.getContext(), module.getDataLayout());
+    binding_map->ConstantBufferTableType = type;
     std::string arg_name = "cbuffer_table";
     if (argbuffer_constant_slot != SM50_BINDING_INDEX_CONSTANT_BUFFER)
       arg_name += std::to_string(argbuffer_constant_slot);

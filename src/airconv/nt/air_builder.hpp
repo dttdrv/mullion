@@ -5,6 +5,8 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
+#include <optional>
+#include <string_view>
 
 namespace llvm::air {
 
@@ -494,7 +496,7 @@ public:
   };
 
   Type *
-  getOrCreateStructType(const StringRef &Name) {
+  getOrCreateStructType(std::string_view Name) {
     StructType *Ty = StructType::getTypeByName(getContext(), Name);
     if (Ty)
       return Ty;
@@ -635,7 +637,9 @@ public:
     return builder.CreateSelect(Flushed, builder.CreateBitCast(Sign, Operand->getType()), Operand);
   };
 
-  std::string getTypeOverloadSuffix(Type *Ty, Signedness Sign = Signedness::DontCare);
+  std::string getTypeOverloadSuffix(
+      Type *Ty, Signedness Sign = Signedness::DontCare, std::optional<uint32_t> PointerAddrSpace = std::nullopt
+  );
 
 protected:
   raw_ostream &debug;

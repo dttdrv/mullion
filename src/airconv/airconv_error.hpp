@@ -1,7 +1,8 @@
 #pragma once
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include <string>
+#include <string_view>
 namespace mullion {
 
 class UnsupportedFeature : public llvm::ErrorInfo<UnsupportedFeature> {
@@ -9,7 +10,7 @@ public:
   static char ID;
   std::string msg;
 
-  UnsupportedFeature(llvm::StringRef msg) : msg(msg.str()) {}
+  UnsupportedFeature(std::string_view msg) : msg(msg) {}
 
   void log(llvm::raw_ostream &OS) const override { OS << msg; }
 

@@ -31,7 +31,7 @@ main(int argc, char **argv) {
     };
     // DxilContainerHeader's parts; the DXIL one is a DxilProgramHeader, whose bitcode is at an offset from its
     // DxilBitcodeHeader (DxilContainer.h)
-    for (uint32_t part = 0; data.startswith("DXBC") && part < word(28); part++) {
+    for (uint32_t part = 0; data.starts_with("DXBC") && part < word(28); part++) {
       size_t at = word(32 + 4 * part), body = at + 8, header = body + 8;
       if (data.substr(at, 4) != "DXIL")
         continue;
@@ -52,7 +52,7 @@ main(int argc, char **argv) {
       for (auto &function : **module)
         for (auto &instruction : llvm::instructions(function))
           if (auto call = llvm::dyn_cast<llvm::CallInst>(&instruction))
-            if (auto callee = call->getCalledFunction(); callee && callee->getName().startswith("dx.op.") && call->arg_size())
+            if (auto callee = call->getCalledFunction(); callee && callee->getName().starts_with("dx.op.") && call->arg_size())
               if (auto op = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0)))
                 calls[{op->getZExtValue(), callee->getName().str()}]++;
       printf("%s kind %u", argv[i], word(body) >> 16);

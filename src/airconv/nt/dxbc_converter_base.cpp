@@ -37,9 +37,25 @@
 
 namespace mullion::dxbc {
 
-llvm::ArrayType *
+llvm::Type *
+GetPointedType(llvm::Value *Pointer) {
+  if (auto Alloca = llvm::dyn_cast<llvm::AllocaInst>(Pointer))
+    return Alloca->getAllocatedType();
+  if (auto Global = llvm::dyn_cast<llvm::GlobalVariable>(Pointer))
+    return Global->getValueType();
+  if (auto GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(Pointer))
+    return GEP->getResultElementType();
+  if (auto Cast = llvm::dyn_cast<llvm::BitCastInst>(Pointer))
+    return GetPointedType(Cast->getOperand(0));
+  for (auto *User : Pointer->users())
+    if (auto GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(User))
+      return GEP->getSourceElementType();
+  llvm::report_fatal_error("cannot infer opaque pointer's accessed type");
+}
+
+static llvm::ArrayType *
 GetArrayType(llvm::Value *Array) {
-  return llvm::cast<llvm::ArrayType>(llvm::cast<llvm::PointerType>(Array->getType())->getNonOpaquePointerElementType());
+  return llvm::cast<llvm::ArrayType>(GetPointedType(Array));
 }
 
 llvm::Value *
@@ -470,7 +486,7 @@ Converter::ApplySrcModifier(SrcOperandCommon C, llvm::Value *Value, mask_t Mask)
   return Value;
 }
 
-llvm::Optional<TextureResourceHandle>
+std::optional<TextureResourceHandle>
 Converter::LoadTexture(const SrcOperandResource &SrcOp) {
   using namespace llvm::air;
 
@@ -481,7 +497,7 @@ Converter::LoadTexture(const SrcOperandResource &SrcOp) {
   return MakeTextureHandle(*descriptor, SrcOp.read_swizzle);
 }
 
-llvm::Optional<TextureResourceHandle>
+std::optional<TextureResourceHandle>
 Converter::LoadTexture(const SrcOperandUAV &SrcOp) {
   using namespace llvm::air;
 
@@ -492,7 +508,7 @@ Converter::LoadTexture(const SrcOperandUAV &SrcOp) {
   return MakeTextureHandle(*descriptor, SrcOp.read_swizzle);
 }
 
-llvm::Optional<TextureResourceHandle>
+std::optional<TextureResourceHandle>
 Converter::LoadTexture(const AtomicDstOperandUAV &DstOp) {
   using namespace llvm::air;
 
@@ -503,7 +519,7 @@ Converter::LoadTexture(const AtomicDstOperandUAV &DstOp) {
   return MakeTextureHandle(*descriptor, swizzle_identity);
 }
 
-llvm::Optional<BufferResourceHandle>
+std::optional<BufferResourceHandle>
 Converter::LoadBuffer(const SrcOperandResource &SrcOp) {
   using namespace llvm::air;
 
@@ -515,7 +531,7 @@ Converter::LoadBuffer(const SrcOperandResource &SrcOp) {
   return MakeBufferHandle(*descriptor, SrcOp.read_swizzle);
 }
 
-llvm::Optional<BufferResourceHandle>
+std::optional<BufferResourceHandle>
 Converter::LoadBuffer(const SrcOperandUAV &SrcOp) {
   using namespace llvm::air;
 
@@ -526,7 +542,7 @@ Converter::LoadBuffer(const SrcOperandUAV &SrcOp) {
   return MakeBufferHandle(*descriptor, SrcOp.read_swizzle);
 }
 
-llvm::Optional<AtomicBufferResourceHandle>
+std::optional<AtomicBufferResourceHandle>
 Converter::LoadBuffer(const AtomicDstOperandUAV &DstOp) {
   using namespace llvm::air;
 
@@ -534,13 +550,13 @@ Converter::LoadBuffer(const AtomicDstOperandUAV &DstOp) {
   if (!descriptor)
     return {};
 
-  return llvm::Optional<AtomicBufferResourceHandle>(
+  return std::optional<AtomicBufferResourceHandle>(
       {descriptor->Pointer, descriptor->Metadata, descriptor->StructureStride, DstOp.mask,
        descriptor->GlobalCoherent && SupportsMemoryCoherency(), descriptor->Bounded}
   );
 }
 
-llvm::Optional<BufferResourceHandle>
+std::optional<BufferResourceHandle>
 Converter::LoadBuffer(const SrcOperandTGSM &SrcOp) {
   auto [stride, tgsm_h] = res.tgsm_map[SrcOp.id];
 
@@ -548,9 +564,9 @@ Converter::LoadBuffer(const SrcOperandTGSM &SrcOp) {
 
   IntPtr = ir.CreatePointerCast(IntPtr, ir.getInt32Ty()->getPointerTo(tgsm_h->getAddressSpace()));
 
-  return llvm::Optional<BufferResourceHandle>({IntPtr, nullptr, stride, SrcOp.read_swizzle, false});
+  return std::optional<BufferResourceHandle>({IntPtr, nullptr, stride, SrcOp.read_swizzle, false});
 }
-llvm::Optional<AtomicBufferResourceHandle>
+std::optional<AtomicBufferResourceHandle>
 Converter::LoadBuffer(const AtomicOperandTGSM &DstOp) {
   auto [stride, tgsm_h] = res.tgsm_map[DstOp.id];
 
@@ -558,10 +574,10 @@ Converter::LoadBuffer(const AtomicOperandTGSM &DstOp) {
 
   IntPtr = ir.CreatePointerCast(IntPtr, ir.getInt32Ty()->getPointerTo(tgsm_h->getAddressSpace()));
 
-  return llvm::Optional<AtomicBufferResourceHandle>({IntPtr, nullptr, stride, DstOp.mask, false});
+  return std::optional<AtomicBufferResourceHandle>({IntPtr, nullptr, stride, DstOp.mask, false});
 }
 
-llvm::Optional<UAVCounterHandle>
+std::optional<UAVCounterHandle>
 Converter::LoadCounter(const AtomicDstOperandUAV &SrcOp) {
   using namespace llvm::air;
 
@@ -569,10 +585,10 @@ Converter::LoadCounter(const AtomicDstOperandUAV &SrcOp) {
   if (!descriptor)
     return {};
 
-  return llvm::Optional<UAVCounterHandle>({descriptor->Pointer});
+  return std::optional<UAVCounterHandle>({descriptor->Pointer});
 }
 
-llvm::Optional<SamplerHandle>
+std::optional<SamplerHandle>
 Converter::LoadSampler(const SrcOperandSampler &SrcOp) {
   using namespace llvm::air;
 
@@ -582,7 +598,7 @@ Converter::LoadSampler(const SrcOperandSampler &SrcOp) {
 
   auto Bias = DecodeSamplerBias(descriptor->Metadata);
   NoteSampler(*descriptor);
-  return llvm::Optional<SamplerHandle>(
+  return std::optional<SamplerHandle>(
       {descriptor->SamplerHandle, descriptor->CubeSamplerHandle, Bias, descriptor->Metadata, descriptor->Border}
   );
 }
@@ -1671,7 +1687,7 @@ Converter::operator()(const InstLoadUAVTyped &load) {
 void
 Converter::operator()(const InstStoreUAVTyped &store) {
   auto Tex = LoadTexture(store.dst);
-  if (!Tex.hasValue())
+  if (!Tex.has_value())
     return;
   const int32_t NoOffset[3] = {};
   auto [Address, ArrayIndex] = TexelAddress(*Tex, LoadOperand(store.src_address, kMaskAll), NoOffset, nullptr);
@@ -3285,8 +3301,8 @@ void
 Converter::operator()(const InstSampleInfo &sample) {
   using namespace llvm::air;
 
-  llvm::Optional<TextureResourceHandle> Tex =
-      sample.src ? LoadTexture(sample.src.value()) : llvm::Optional<TextureResourceHandle>{};
+  std::optional<TextureResourceHandle> Tex =
+      sample.src ? LoadTexture(sample.src.value()) : std::optional<TextureResourceHandle>{};
 
   llvm::Value *SampleCount = nullptr;
 
@@ -3314,8 +3330,8 @@ void
 Converter::operator()(const InstSamplePos &sample) {
   using namespace llvm::air;
 
-  llvm::Optional<TextureResourceHandle> Tex =
-      sample.src ? LoadTexture(sample.src.value()) : llvm::Optional<TextureResourceHandle>{};
+  std::optional<TextureResourceHandle> Tex =
+      sample.src ? LoadTexture(sample.src.value()) : std::optional<TextureResourceHandle>{};
 
   llvm::Value *Index = LoadOperand(sample.src_sample_index, kMaskComponentX);
 
@@ -3557,7 +3573,7 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
   auto Buf = LoadBuffer(atomic.dst);
 
   if (Buf) {
-    auto IntPtrOffset = LoadAtomicOpAddress(Buf.getValue(), atomic.dst_address);
+    auto IntPtrOffset = LoadAtomicOpAddress(Buf.value(), atomic.dst_address);
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), IntPtrOffset);
     auto Value = air.CreateAtomicRMW(Op, Ptr, LoadOperand(atomic.src, kMaskComponentX));
     StoreOperand(atomic.dst_original, Value);
@@ -3584,7 +3600,7 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
   auto Buf = LoadBuffer(atomic.dst_resource);
 
   if (Buf) {
-    auto IntPtrOffset = LoadAtomicOpAddress(Buf.getValue(), atomic.dst_address);
+    auto IntPtrOffset = LoadAtomicOpAddress(Buf.value(), atomic.dst_address);
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), IntPtrOffset);
     if (air.DiscardWrites && Ptr->getType()->getPointerAddressSpace() != 3) {
       StoreOperand(atomic.dst, ir.CreateLoad(ir.getInt32Ty(), Ptr));
@@ -3638,7 +3654,7 @@ Converter::operator()(const InstAtomicImmDecrement &atomic) {
   StoreOperand(atomic.dst, ir.CreateSub(Value, ir.getInt32(1)));
 }
 
-llvm::Optional<InterpolantHandle>
+std::optional<InterpolantHandle>
 Converter::LoadInterpolant(uint32_t Index) {
   if (!res.interpolant_map.contains(Index))
     return {};
@@ -3791,7 +3807,7 @@ Converter::DomainGetPatchIndex(llvm::Value *WorkloadIndex, llvm::Value *DataPtr)
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{2U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {2U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {2U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -3817,7 +3833,7 @@ Converter::DomainGetLocation(llvm::Value *WorkloadIndex, llvm::Value *ThreadInde
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{3U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {3U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {3U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -3854,7 +3870,7 @@ Converter::DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Valu
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{4U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {4U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {4U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -3878,7 +3894,7 @@ Converter::DomainGetGroupLocation(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{5U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {5U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {5U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -3911,8 +3927,8 @@ Converter::DomainGenerateGroup(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{3U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {3U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
-                {5U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {3U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
+                {5U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
@@ -3944,7 +3960,7 @@ Converter::DomainGetPrimitiveLocation(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{6U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {6U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {6U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -3987,7 +4003,7 @@ Converter::DomainGetPieceLocation(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{6U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {6U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {6U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
@@ -4023,8 +4039,8 @@ Converter::DomainGeneratePiece(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{4U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {4U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
-                {6U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {4U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
+                {6U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
@@ -4051,8 +4067,8 @@ Converter::DomainGeneratePrimitives(
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
       Context, {{2U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)},
-                {2U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
-                {3U, Attribute::get(Context, Attribute::AttrKind::NoCapture)},
+                {2U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
+                {3U, Attribute::getWithCaptureInfo(Context, CaptureInfo::none())},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );

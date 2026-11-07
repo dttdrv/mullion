@@ -19,6 +19,7 @@
 // (x & 1)), and a quad's pixels are one primitive's and in one tile of the shading rate image: they share a rate
 
 #include "dxbc_converter.hpp"
+#include <string_view>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -271,7 +272,7 @@ CoarseShading::Leave(IRBuilder<> &ir, llvm::air::AIRBuilder &air, io_binding_map
   auto int4 = FixedVectorType::get(i32, 4);
   for (uint32_t reg = 0; reg < resource.output_element_count; reg++) {
     auto at = ir.CreateGEP(
-        resource.output.ptr_int4->getType()->getNonOpaquePointerElementType(), resource.output.ptr_int4,
+        llvm::ArrayType::get(int4, resource.output_element_count), resource.output.ptr_int4,
         {ir.getInt32(0), ir.getInt32(reg)}
     );
     auto value = ir.CreateLoad(int4, at);
@@ -351,7 +352,7 @@ CoarseShading::Finish() {
       if (&instruction == discard_)
         continue;
       auto call = dyn_cast<CallInst>(&instruction);
-      auto callee = call && call->getCalledFunction() ? call->getCalledFunction()->getName() : StringRef();
+      auto callee = call && call->getCalledFunction() ? std::string_view(call->getCalledFunction()->getName()) : std::string_view();
       if (callee == "air.discard_fragment") {
         discards.push_back(&instruction);
         continue;
@@ -368,7 +369,7 @@ CoarseShading::Finish() {
       else if (auto memory = dyn_cast<AnyMemIntrinsic>(&instruction))
         device = memory->getDestAddressSpace() == 1;
       else if (call)
-        device = callee.startswith("air.write_") ||
+        device = callee.starts_with("air.write_") ||
                  (callee.contains("atomic") && !callee.contains("fence") && !callee.contains("load"));
       if (device)
         writes.push_back(&instruction);

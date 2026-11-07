@@ -3,13 +3,14 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include <string_view>
 
 using namespace llvm;
 
 namespace mullion::air {
 
 llvm::StructType *
-get_or_create_struct(llvm::LLVMContext &Ctx, llvm::StringRef Name) {
+get_or_create_struct(llvm::LLVMContext &Ctx, std::string_view Name) {
   using namespace llvm;
   StructType *ST = StructType::getTypeByName(Ctx, Name);
   if (ST)

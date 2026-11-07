@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <variant>
 #include "nt/air_builder.hpp"
@@ -35,7 +36,7 @@
 namespace mullion::air {
 
 inline llvm::StructType *
-getOrCreateStructType(llvm::StringRef Name, llvm::LLVMContext &Ctx) {
+getOrCreateStructType(std::string_view Name, llvm::LLVMContext &Ctx) {
   using namespace llvm;
   StructType *ST = StructType::getTypeByName(Ctx, Name);
   if (ST)

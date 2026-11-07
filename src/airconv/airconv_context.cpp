@@ -1,12 +1,14 @@
 #include <mutex>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/VersionTuple.h"
@@ -52,7 +54,7 @@ namespace mullion {
 
 void initializeModule(llvm::Module &M) {
   M.setSourceFileName("airconv_generated.metal");
-  M.setTargetTriple("air64-apple-macosx14.0.0");
+  M.setTargetTriple(Triple("air64-apple-macosx14.0.0"));
   M.setDataLayout(
     "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:"
     "64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-"
@@ -143,7 +145,7 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
     // Compare/branch metadata may alter the behavior of passes like SimplifyCFG.
     EarlyFPM.addPass(LowerExpectIntrinsicPass());
     EarlyFPM.addPass(SimplifyCFGPass());
-    EarlyFPM.addPass(SROAPass());
+    EarlyFPM.addPass(SROAPass(SROAOptions()));
     EarlyFPM.addPass(EarlyCSEPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(EarlyFPM), true /* ? */));
   }
@@ -201,7 +203,7 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
 }
 
 void
-removeNamedMetadata(llvm::Module &M, StringRef Name) {
+removeNamedMetadata(llvm::Module &M, std::string_view Name) {
   if (auto MD = M.getNamedMetadata(Name)) {
     M.eraseNamedMetadata(MD);
   }

@@ -19,6 +19,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <bit>
 #include <memory>
@@ -160,7 +161,7 @@ llvm::Value *
 index_from_view(llvm::IRBuilder<> &builder, air::AirType &types, llvm::Value *view, llvm::Value *format, llvm::Value *position) {
   // an index is one or two ushorts of the view
   constexpr uint32_t kFormatR32Uint = 42; // DXGI_FORMAT_R32_UINT
-  auto view_ty = view->getType()->getNonOpaquePointerElementType();
+  auto view_ty = llvm::StructType::get(builder.getContext(), {types._long, types._int, types._int});
   auto ushort_ptr = builder.getInt16Ty()->getPointerTo((uint32_t)air::AddressSpace::device);
   auto wide = builder.CreateICmpEQ(format, builder.getInt32(kFormatR32Uint));
   auto shorts = builder.CreateSelect(wide, builder.getInt64(2), builder.getInt64(1));
@@ -264,7 +265,7 @@ void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_v
     airLangVersion->addOperand(MDTuple::get(
         context, {createString("Metal"), createUnsignedInteger(3), createUnsignedInteger(2), createUnsignedInteger(0)}
     ));
-    module.setTargetTriple("air64-apple-macosx15.0.0");
+    module.setTargetTriple(Triple("air64-apple-macosx15.0.0"));
     break;
   }
   case SM50_SHADER_METAL_400: {
@@ -274,7 +275,7 @@ void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_v
     airLangVersion->addOperand(MDTuple::get(
         context, {createString("Metal"), createUnsignedInteger(4), createUnsignedInteger(0), createUnsignedInteger(0)}
     ));
-    module.setTargetTriple("air64_v28-apple-macosx26.0.0");
+    module.setTargetTriple(Triple("air64_v28-apple-macosx26.0.0"));
     break;
   }
   default: {
@@ -380,8 +381,8 @@ gate_writes(llvm::Function &function, llvm::Value *live) {
       writes.push_back(store);
     if (auto call = llvm::dyn_cast<llvm::CallInst>(&i); call && call->getCalledFunction()) {
       auto name = call->getCalledFunction()->getName();
-      if (name.startswith("air.write_") || name.startswith("air.atomic_") ||
-          (name.startswith("air.atomic.global.") && !name.startswith("air.atomic.global.load.")))
+      if (name.starts_with("air.write_") || name.starts_with("air.atomic_") ||
+          (name.starts_with("air.atomic.global.") && !name.starts_with("air.atomic.global.load.")))
         writes.push_back(call);
     }
   }
@@ -666,7 +667,7 @@ llvm::Error convert_dxbc_pixel_shader(
           auto alpha = ctx.resource.coverage_alpha;
           if (!alpha) {
             auto output = ctx.resource.output.ptr_float4;
-            auto output_ty = llvm::cast<llvm::PointerType>(output->getType())->getNonOpaquePointerElementType();
+            auto output_ty = llvm::ArrayType::get(ctx.types._float4, ctx.resource.output_element_count);
             auto o0 = builder.CreateLoad(
               output_ty->getArrayElementType(), builder.CreateConstInBoundsGEP2_32(output_ty, output, 0, 0)
             );
@@ -1204,7 +1205,7 @@ llvm::Error convert_dxbc_pixel_shader(
     std::vector<llvm::CallInst *> evaluations;
     for (auto user : function->getArg(index)->users())
       if (auto call = llvm::dyn_cast<llvm::CallInst>(user);
-          call && call->getCalledFunction() && call->getCalledFunction()->getName().startswith("air.interpolate_"))
+          call && call->getCalledFunction() && call->getCalledFunction()->getName().starts_with("air.interpolate_"))
         evaluations.push_back(call);
     for (auto call : evaluations) {
       auto rcp_w = llvm::cast<llvm::CallInst>(call->clone());
@@ -1539,8 +1540,7 @@ llvm::Error convert_dxbc_vertex_shader(
     unsigned clip_distance_idx = 0;
     for (auto &scalar : pShaderInternal->clip_distance_scalars) {
       auto src_ptr = builder.CreateGEP(
-        resource_map.output.ptr_float4->getType()
-          ->getNonOpaquePointerElementType(),
+        llvm::ArrayType::get(types._float4, max_output_register),
         resource_map.output.ptr_float4,
         {builder.getInt32(0), builder.getInt32(scalar.reg),
          builder.getInt32(scalar.component)}
@@ -1560,7 +1560,7 @@ llvm::Error convert_dxbc_vertex_shader(
     auto &scalar = pShaderInternal->cull_distance_scalars[i];
     auto distance = builder.CreateLoad(
         types._float, builder.CreateGEP(
-                          resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(),
+                          llvm::ArrayType::get(types._float4, max_output_register),
                           resource_map.output.ptr_float4,
                           {builder.getInt32(0), builder.getInt32(scalar.reg), builder.getInt32(scalar.component)}
                       )
@@ -1578,8 +1578,7 @@ llvm::Error convert_dxbc_vertex_shader(
   } else {
     if (rta_idx_out != ~0u) {
       auto src_ptr = builder.CreateGEP(
-        resource_map.output.ptr_int4->getType()->getNonOpaquePointerElementType(
-        ),
+        llvm::ArrayType::get(types._int4, max_output_register),
         resource_map.output.ptr_int4,
         {builder.getInt32(0),
          builder.getInt32(gs_passthrough->Data.RenderTargetArrayIndexReg),
@@ -1591,8 +1590,7 @@ llvm::Error convert_dxbc_vertex_shader(
     }
     if (va_idx_out != ~0u) {
       auto src_ptr = builder.CreateGEP(
-        resource_map.output.ptr_int4->getType()->getNonOpaquePointerElementType(
-        ),
+        llvm::ArrayType::get(types._int4, max_output_register),
         resource_map.output.ptr_int4,
         {builder.getInt32(0),
          builder.getInt32(gs_passthrough->Data.ViewportArrayIndexReg),
@@ -2327,7 +2325,7 @@ AIRCONV_API int SM50Compile(
   // pArgs is ignored for now
   LLVMContext context;
 
-  context.setOpaquePointers(false); // I suspect Metal uses LLVM 14...
+
 
   auto &shader_info = ((mullion::dxbc::SM50ShaderInternal *)pShader)->shader_info;
 
@@ -2394,7 +2392,7 @@ AIRCONV_API int SM50CompileTessellationPipelineHull(
   // pArgs is ignored for now
   LLVMContext context;
 
-  context.setOpaquePointers(false); // I suspect Metal uses LLVM 14...
+
 
   auto &shader_info =
     ((mullion::dxbc::SM50ShaderInternal *)pHullShader)->shader_info;
@@ -2459,7 +2457,7 @@ AIRCONV_API int SM50CompileTessellationPipelineDomain(
   // pArgs is ignored for now
   LLVMContext context;
 
-  context.setOpaquePointers(false); // I suspect Metal uses LLVM 14...
+
 
   auto &shader_info =
     ((mullion::dxbc::SM50ShaderInternal *)pDomainShader)->shader_info;
@@ -2532,7 +2530,7 @@ AIRCONV_API int SM50CompileGeometryPipelineVertex(
   // pArgs is ignored for now
   LLVMContext context;
 
-  context.setOpaquePointers(false); // I suspect Metal uses LLVM 14...
+
 
   // the vertex shader's own operations; without a geometry shader the pipeline only streams output
   auto &shader_info = ((mullion::dxbc::SM50ShaderInternal *)pVertexShader)->shader_info;
@@ -2597,7 +2595,7 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
   // pArgs is ignored for now
   LLVMContext context;
 
-  context.setOpaquePointers(false); // I suspect Metal uses LLVM 14...
+
 
   auto &shader_info = ((mullion::dxbc::SM50ShaderInternal *)(pGeometryShader ? pGeometryShader : pVertexShader))->shader_info;
   SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *pso_data = nullptr;

@@ -136,6 +136,7 @@ using dxbc::Swizzle;
 using dxbc::swizzle_identity;
 
 struct context;
+llvm::Type *GetPointedType(llvm::Value *pointer);
 using IRValue = ReaderIO<context, pvalue>;
 using IREffect = ReaderIO<context, std::monostate>;
 using IndexedIRValue = std::function<IRValue(pvalue)>;

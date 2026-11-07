@@ -23,6 +23,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Error.h"
+#include <string_view>
 #include "llvm/Support/raw_ostream.h"
 #include <stack>
 
@@ -31,7 +32,7 @@ char mullion::UnsupportedFeature::ID;
 namespace mullion::dxbc {
 
 template <typename T = std::monostate>
-ReaderIO<context, T> throwUnsupported(llvm::StringRef ref) {
+ReaderIO<context, T> throwUnsupported(std::string_view ref) {
   return ReaderIO<context, T>(
     [msg = std::string(ref)](struct context ctx) mutable -> llvm::Expected<T> {
       // CAUTION: create llvm::Error as lazy as possible
@@ -92,7 +93,7 @@ auto to_desired_type_from_int_vec4(pvalue vec4, llvm::Type *desired, uint32_t ma
     std::function<pvalue(pvalue, llvm::Type *)> convert =
       [&ctx, &convert, mask](pvalue vec4, llvm::Type *desired) {
         auto masked = [mask](int i) {
-          return (mask & (1 << i)) ? i : llvm::UndefMaskElem;
+          return (mask & (1 << i)) ? i : -1;
         };
         if (desired == ctx.types._int4)
           return ctx.builder.CreateShuffleVector(
@@ -130,12 +131,9 @@ auto to_desired_type_from_int_vec4(pvalue vec4, llvm::Type *desired, uint32_t ma
   });
 };
 
-auto load_from_array_at(llvm::Value *array, pvalue index) -> IRValue {
+auto load_from_array_at(llvm::Value *array, llvm::Type *element_type, pvalue index) -> IRValue {
   return make_irvalue([=](context ctx) {
-    auto array_ty = llvm::cast<llvm::ArrayType>( // force line break
-      llvm::cast<llvm::PointerType>(array->getType())
-        ->getNonOpaquePointerElementType()
-    );
+    auto array_ty = llvm::ArrayType::get(element_type, 0);
     auto ptr = ctx.builder.CreateGEP(
       array_ty, array, {ctx.builder.getInt32(0), index}, "",
       llvm::isa<llvm::ConstantInt>(index)
@@ -146,12 +144,9 @@ auto load_from_array_at(llvm::Value *array, pvalue index) -> IRValue {
 
 IRValue
 load_from_vec4_array_masked(llvm::Value *array, pvalue index, uint32_t mask) {
-  if (mask == 0b1111) {
-    return load_from_array_at(array, index);
-  }
   return make_irvalue([=](context ctx) {
-    auto array_type = llvm::cast<llvm::PointerType>(array->getType())->getNonOpaquePointerElementType();
-    auto vec4_type = llvm::cast<llvm::ArrayType>(array_type)->getArrayElementType();
+    auto array_type = llvm::ArrayType::get(ctx.types._int4, 0);
+    auto vec4_type = ctx.types._int4;
     auto ele_type = llvm::cast<llvm::VectorType>(vec4_type)->getElementType();
     pvalue value = llvm::ConstantAggregateZero::get(vec4_type);
     for (unsigned i = 0; i < 4; i++) {
@@ -169,10 +164,9 @@ auto store_to_array_at(
   llvm::Value *array, pvalue index, pvalue vec4_type_matched
 ) -> IREffect {
   return make_effect([=](context ctx) {
+    auto array_type = llvm::ArrayType::get(vec4_type_matched->getType(), 0);
     auto ptr = ctx.builder.CreateInBoundsGEP(
-      llvm::cast<llvm::PointerType>(array->getType())
-        ->getNonOpaquePointerElementType(),
-      array, {ctx.builder.getInt32(0), index}
+      array_type, array, {ctx.builder.getInt32(0), index}
     );
     ctx.builder.CreateStore(vec4_type_matched, ptr);
     return std::monostate();
@@ -187,13 +181,12 @@ IREffect store_at_vec4_array_masked(
       return store_to_array_at(array, index, vec4);
     }
     return make_effect([=](context ctx) {
+      auto array_type = llvm::ArrayType::get(vec4->getType(), 0);
       for (unsigned i = 0; i < 4; i++) {
         if ((mask & (1 << i)) == 0)
           continue;
         auto component_ptr =  ctx.builder.CreateGEP(
-          llvm::cast<llvm::PointerType>(array->getType())
-            ->getNonOpaquePointerElementType(),
-          array, {ctx.builder.getInt32(0), index, ctx.builder.getInt32(i)}
+          array_type, array, {ctx.builder.getInt32(0), index, ctx.builder.getInt32(i)}
         );
         ctx.builder.CreateStore(
           ctx.builder.CreateExtractElement(vec4, i), component_ptr
@@ -331,7 +324,7 @@ pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element, std::array
       auto const_index =
         llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, from_reg, false});
       return load_from_array_at(
-               ctx.resource.output.ptr_int4, const_index
+               ctx.resource.output.ptr_int4, ctx.types._int4, const_index
              ) >>= [=, &ctx](auto ivec4) {
         auto desired_type =
           ctx.function->getReturnType()->getStructElementType(to_element);
@@ -352,7 +345,7 @@ std::function<IRValue(pvalue)> pop_output_reg_fix_unorm(uint32_t from_reg, uint3
   return [=](pvalue ret) {
     return make_irvalue_bind([=](context ctx) -> IRValue {
       auto const_index = llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, from_reg, false});
-      auto fvec4 = co_yield load_from_array_at(ctx.resource.output.ptr_float4, const_index);
+      auto fvec4 = co_yield load_from_array_at(ctx.resource.output.ptr_float4, ctx.types._float4, const_index);
       auto fixed = ctx.builder.CreateFSub(fvec4, co_yield get_float4_splat(1.0f / 127500.0f) /* magic delta ?! */);
       co_return ctx.builder.CreateInsertValue(ret, fixed, {to_element});
     });
@@ -363,7 +356,7 @@ std::function<IRValue(pvalue)> pop_output_reg_sanitize_pos(uint32_t from_reg, ui
   return [=](pvalue ret) {
     return make_irvalue_bind([=](context ctx) -> IRValue {
       auto const_index = llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, from_reg, false});
-      auto fvec4 = co_yield load_from_array_at(ctx.resource.output.ptr_float4, const_index);
+      auto fvec4 = co_yield load_from_array_at(ctx.resource.output.ptr_float4, ctx.types._float4, const_index);
       auto fixed = ctx.air.SanitizePosition(fvec4);
       co_return ctx.builder.CreateInsertValue(ret, fixed, {to_element});
     });
@@ -374,7 +367,7 @@ IREffect
 pop_mesh_output_render_target_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
   auto ctx = co_yield get_context();
   auto result = co_yield to_desired_type_from_int_vec4(
-      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
+      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.types._int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
   );
   ctx.air.CreateSetMeshRenderTargetArrayIndex(primitive_id, result);
   co_return {};
@@ -384,7 +377,7 @@ IREffect
 pop_mesh_output_primitive_id(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
   auto ctx = co_yield get_context();
   auto result = co_yield to_desired_type_from_int_vec4(
-      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
+      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.types._int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
   );
   ctx.air.CreateSetMeshPrimitiveID(primitive_id, result);
   co_return {};
@@ -402,7 +395,7 @@ IREffect
 pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
   auto ctx = co_yield get_context();
   auto result = co_yield to_desired_type_from_int_vec4(
-      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
+      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.types._int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
   );
   ctx.air.CreateSetMeshViewportArrayIndex(primitive_id, result);
   co_return {};
@@ -411,7 +404,7 @@ pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, pvalue pr
 IREffect
 pop_mesh_output_position(uint32_t from_reg, uint32_t mask, pvalue vertex_id) {
   auto ctx = co_yield get_context();
-  auto result = co_yield load_from_array_at(ctx.resource.output.ptr_float4, ctx.builder.getInt32(from_reg));
+  auto result = co_yield load_from_array_at(ctx.resource.output.ptr_float4, ctx.types._float4, ctx.builder.getInt32(from_reg));
   ctx.air.CreateSetMeshPosition(vertex_id, result);
   co_return {};
 }
@@ -651,15 +644,9 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
               );
               builder.SetInsertPoint(active);
 
-              auto src = ctx.resource.hull_cp_passthrough_src;
-              if (src->getType()->getNonOpaquePointerElementType() != ctx.resource.hull_cp_passthrough_type) {
-                src = builder.CreateBitCast(
-                    src, ctx.resource.hull_cp_passthrough_type->getPointerTo(src->getType()->getPointerAddressSpace())
-                );
-              }
-              assert(src->getType()->getNonOpaquePointerElementType() == ctx.resource.hull_cp_passthrough_type);
               builder.CreateStore(
-                  builder.CreateLoad(ctx.resource.hull_cp_passthrough_type, src), ctx.resource.hull_cp_passthrough_dst
+                  builder.CreateLoad(ctx.resource.hull_cp_passthrough_type, ctx.resource.hull_cp_passthrough_src),
+                  ctx.resource.hull_cp_passthrough_dst
               );
 
               builder.CreateBr(sync);

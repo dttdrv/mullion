@@ -20,6 +20,7 @@
 #include "airconv_error.hpp"
 #include "airconv_context.hpp"
 #include "dxbc_converter.hpp"
+#include <string_view>
 #include "nt/dxbc_converter_base.hpp"
 #include "airconv_ray.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -305,12 +306,13 @@ read_elements(const MDOperand &list) {
 }
 
 Entry
-read_entry(Module &M, StringRef function = {}) {
+read_entry(Module &M, std::string_view function = {}) {
   // a library's entry points are its shaders, after one without a function that holds its resources
   auto entries = M.getNamedMetadata("dx.entryPoints");
   auto entry = entries->getOperand(0);
   for (auto candidate : entries->operands())
-    if (auto f = mdconst::extract_or_null<Function>(candidate->getOperand(0)); f && f->getName() == function)
+    if (auto f = mdconst::extract_or_null<Function>(candidate->getOperand(0));
+        f && std::string_view(f->getName()) == function)
       entry = candidate;
   auto signatures = dyn_cast_or_null<MDNode>(entry->getOperand(2).get());
   return {
@@ -361,7 +363,7 @@ native_extreme(const CallInst *call) {
 bool
 is_dx_op(const Value *value) {
   auto call = dyn_cast<CallInst>(value);
-  return call && call->getCalledFunction() && call->getCalledFunction()->getName().startswith("dx.op.");
+  return call && call->getCalledFunction() && call->getCalledFunction()->getName().starts_with("dx.op.");
 }
 
 // the 64-bit atomics split64 does, as the op on 32-bit halves: a subtract is an add of the negated value
@@ -604,8 +606,11 @@ expand_constant_uses(Value *value) {
   for (auto user : make_early_inc_range(value->users()))
     if (auto expr = dyn_cast<ConstantExpr>(user)) {
       expand_constant_uses(expr);
-      for (auto &use : make_early_inc_range(expr->uses()))
-        use.set(expr->getAsInstruction(cast<llvm::Instruction>(use.getUser())));
+      for (auto &use : make_early_inc_range(expr->uses())) {
+        auto expanded = expr->getAsInstruction();
+        expanded->insertBefore(cast<llvm::Instruction>(use.getUser()));
+        use.set(expanded);
+      }
       expr->destroyConstant();
     }
 }
@@ -622,10 +627,9 @@ retarget(Value *from, Value *to) {
       if (auto err = retarget(gep, ir.CreateGEP(gep->getSourceElementType(), to, indices, "", gep->isInBounds())))
         return err;
     } else if (auto bitcast = dyn_cast<BitCastInst>(inst)) {
-      auto pointee = bitcast->getDestTy()->getNonOpaquePointerElementType();
-      if (auto err =
-              retarget(bitcast, ir.CreateBitCast(to, pointee->getPointerTo(to->getType()->getPointerAddressSpace()))))
+      if (auto err = retarget(bitcast, to))
         return err;
+      bitcast->eraseFromParent();
     } else if (auto load = dyn_cast<LoadInst>(inst)) {
       load->replaceAllUsesWith(ir.CreateAlignedLoad(load->getType(), to, load->getAlign()));
     } else if (auto store = dyn_cast<StoreInst>(inst); store && store->getPointerOperand() == from) {
@@ -667,7 +671,7 @@ lower_lib_handles(Module &M) {
   auto i32 = Type::getInt32Ty(M.getContext()), i8 = Type::getInt8Ty(M.getContext());
   auto lists = resources->getOperand(0);
   for (auto &F : make_early_inc_range(M)) {
-    if (!F.getName().startswith("dx.op.createHandleForLib"))
+    if (!F.getName().starts_with("dx.op.createHandleForLib"))
       continue;
     auto create = create_handle(M, F.getReturnType());
     for (auto user : make_early_inc_range(F.users())) {
@@ -768,7 +772,7 @@ ray_context_type(LLVMContext &ctx) {
   return StructType::create(
       ctx,
       {table->getPointerTo(1), i32->getPointerTo(2), i64->getPointerTo(2), i64->getPointerTo(2), i64,
-       Type::getInt8PtrTy(ctx), ArrayType::get(i32, 3), i32, vector, f32, vector, f32, vector, i32, vector, i32,
+       PointerType::get(ctx, 0), ArrayType::get(i32, 3), i32, vector, f32, vector, f32, vector, i32, vector, i32,
        matrix, matrix, i32, i32, i32, i32, f32, i32, i32, i32, i32, i32, i32, i32, ArrayType::get(i32, 8),
        i64->getPointerTo(2)},
       "mullion.ray_context"
@@ -869,7 +873,7 @@ if (auto resources = M.getNamedMetadata("dx.resources")) {
                : nullptr;
   };
   for (auto &F : M) {
-    if (!F.getName().startswith("dx.op."))
+    if (!F.getName().starts_with("dx.op."))
       continue;
     for (auto user : F.users()) {
       auto call = cast<CallInst>(user);
@@ -914,7 +918,7 @@ link_libraries(Module &M, StringRef entry, ArrayRef<SM50ShaderInternal *> librar
     std::vector<Function *> functions{M.getFunction(entry)};
     for (size_t i = 0; i < functions.size(); i++) {
       auto F = functions[i];
-      if (!F || !seen.insert(F).second || F->isIntrinsic() || F->getName().startswith("dx.op."))
+      if (!F || !seen.insert(F).second || F->isIntrinsic() || F->getName().starts_with("dx.op."))
         continue;
       if (F->isDeclaration())
         return F;
@@ -967,7 +971,7 @@ link_libraries(Module &M, StringRef entry, ArrayRef<SM50ShaderInternal *> librar
       }
       merged.push_back(records.empty() ? nullptr : MDNode::get(context, records));
       for (auto &F : *definition)
-        if (F.getName().startswith("dx.op.createHandle"))
+        if (F.getName().starts_with("dx.op.createHandle"))
           for (auto user : F.users())
             if (auto call = cast<CallInst>(user); cast<ConstantInt>(call->getArgOperand(1))->getZExtValue() == cls)
               call->setArgOperand(2, ConstantInt::get(i32, first + cast<ConstantInt>(call->getArgOperand(2))->getZExtValue()));
@@ -1009,7 +1013,7 @@ read_dxil(
 
   auto &info = shader->shader_info;
   LLVMContext context;
-  context.setOpaquePointers(false);
+
   auto module = parse(shader->dxil, context);
   if (!module)
     return module.takeError();
@@ -1030,7 +1034,7 @@ read_dxil(
   };
   std::set<uint32_t> used_ops, evaluated_barycentrics;
   for (auto &F : M) {
-    if (!F.getName().startswith("dx.op."))
+    if (!F.getName().starts_with("dx.op."))
       continue;
     for (auto user : F.users()) {
       auto call = cast<CallInst>(user);
@@ -1573,7 +1577,7 @@ convert_dxil(
               )
             : argument.getType()->isPointerTy()
                   ? (Value *)new AllocaInst(
-                        argument.getType()->getNonOpaquePointerElementType(), 0, "", &*entry_bb.getFirstInsertionPt()
+                        GetPointedType(&argument), 0, "", &*entry_bb.getFirstInsertionPt()
                     )
                   : UndefValue::get(argument.getType())
     );
@@ -1595,11 +1599,11 @@ convert_dxil(
   Converter dxbc(air, ctx, ctx.resource);
 
   struct Handle {
-    llvm::Optional<TextureResourceHandle> texture;
-    llvm::Optional<BufferResourceHandle> buffer;
-    llvm::Optional<ConstantBufferDescriptor> cbuffer;
-    llvm::Optional<SamplerDescriptor> sampler;
-    llvm::Optional<CounterDescriptor> counter;
+    std::optional<TextureResourceHandle> texture;
+    std::optional<BufferResourceHandle> buffer;
+    std::optional<ConstantBufferDescriptor> cbuffer;
+    std::optional<SamplerDescriptor> sampler;
+    std::optional<CounterDescriptor> counter;
   };
   DenseMap<Value *, Handle> handles;
 
@@ -1702,7 +1706,7 @@ convert_dxil(
   // a trace into the kernel (mullion_command.metal, kRayFCIndex_DirectCalls)
   auto ray_call = [&](uint32_t slot, Value *first, Value *second) {
     auto &b = ctx.builder;
-    auto i8p = b.getInt8PtrTy();
+    auto i8p = PointerType::get(ctx.module.getContext(), 0);
     auto ty = FunctionType::get(b.getVoidTy(), {ray->getType(), i8p, i8p}, false);
     auto untyped = [&](Value *v) -> Value * { return v ? b.CreateBitCast(v, i8p) : ConstantPointerNull::get(i8p); };
     const char *runtime = slot == SM50_RAY_FUNCTION_TRACE        ? "mullion_ray_trace"
@@ -2052,7 +2056,7 @@ convert_dxil(
     case CoverageOutput:
       return ctx.resource.coverage_mask_reg;
     }
-    auto ty = file.ptr_int4->getType()->getNonOpaquePointerElementType();
+    auto ty = cast<ArrayType>(GetPointedType(file.ptr_int4));
     SmallVector<Value *, 4> index = {ir.getInt32(0)};
     if (ty->getArrayElementType()->isArrayTy())
       index.push_back(point);
@@ -2185,7 +2189,7 @@ convert_dxil(
                  )
                : id;
   };
-  auto interpolant = [&](CallInst *call) -> llvm::Optional<InterpolantHandle> {
+  auto interpolant = [&](CallInst *call) -> std::optional<InterpolantHandle> {
     auto &e = entry.input[constant(arg(call, 1))];
     if (!isa<ConstantInt>(arg(call, 2)))
       return {};
@@ -2956,7 +2960,7 @@ convert_dxil(
       // the payload is the stage's, in its own address space: a mesh shader reads it in place, an amplification
       // shader copies its own there and sets how many mesh threadgroups follow
       auto local = op == DispatchMesh ? a(4) : call;
-      auto type = local->getType()->getNonOpaquePointerElementType();
+      auto type = GetPointedType(local);
       auto payload = ir.CreateBitCast(
           ctx.resource.payload, type->getPointerTo(ctx.resource.payload->getType()->getPointerAddressSpace())
       );
@@ -3107,7 +3111,7 @@ convert_dxil(
           ir.getInt8Ty(), ir.CreatePointerCast(buffer.Pointer, ir.getInt8Ty()->getPointerTo(space)), offset
       );
       if (buffer.Metadata) {
-        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedSize()));
+        auto end = ir.CreateAdd(offset, ir.getInt64(ctx.module.getDataLayout().getTypeStoreSize(ty).getFixedValue()));
         auto zero = ir.CreatePointerCast(dxbc.ZeroRow(), ir.getInt8Ty()->getPointerTo(space));
         pointer = ir.CreateSelect(ir.CreateICmpULE(end, buffer.Metadata), pointer, zero);
       }
@@ -4263,11 +4267,11 @@ convert_dxil(
       ray_verdict(call, SM50_RAY_VERDICT_END_SEARCH);
       break;
     case ReportHit: {
-      auto attributes = cast<PointerType>(a(3)->getType())->getNonOpaquePointerElementType();
+      auto attributes = GetPointedType(a(3));
       ir.CreateStore(a(1), ray_field(RayReportedT));
       ir.CreateStore(a(2), ray_field(RayReportedKind));
       ir.CreateStore(
-          ir.getInt32(ctx.module.getDataLayout().getTypeStoreSize(attributes).getFixedSize()),
+          ir.getInt32(ctx.module.getDataLayout().getTypeStoreSize(attributes).getFixedValue()),
           ray_field(RayReportedSize)
       );
       ray_call(SM50_RAY_FUNCTION_REPORT_HIT, a(3), nullptr);
@@ -4669,7 +4673,7 @@ convert_dxil(
   for (auto &[value, _] : handles)
     cast<llvm::Instruction>(value)->eraseFromParent();
   for (auto &F : make_early_inc_range(ctx.module))
-    if (F.getName().startswith("dx.op.") && F.use_empty())
+    if (F.getName().starts_with("dx.op.") && F.use_empty())
       F.eraseFromParent();
   // the caller continues in the entry block
   ir.SetInsertPoint(&entry_bb);
@@ -4996,7 +5000,7 @@ convert_dxil_ray_shader(
   io_binding_map resource_map;
   air::AirType types(context);
   auto context_ty = ray_context_type(context);
-  auto i8p = llvm::Type::getInt8PtrTy(context);
+  auto i8p = llvm::PointerType::get(context, 0);
   auto function = llvm::Function::Create(
       llvm::FunctionType::get(llvm::Type::getVoidTy(context), {context_ty->getPointerTo(), i8p, i8p}, false),
       llvm::GlobalValue::ExternalLinkage, name, module

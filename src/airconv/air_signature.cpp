@@ -458,7 +458,7 @@ FunctionSignatureBuilder::CenterCentroids() {
 
 uint32_t FunctionSignatureBuilder::DefineInput(const FunctionInput &input) {
   uint32_t index = inputs.size();
-  for (auto &element : enumerate(inputs)) {
+  for (auto element : enumerate(inputs)) {
     if (element.value().index() == input.index()) {
       if (std::visit(
             patterns{
@@ -577,7 +577,7 @@ auto FunctionSignatureBuilder::CreateFunction(
     }
   };
 
-  for (auto &item : enumerate(mesh_vertex_outputs)) {
+  for (auto item : enumerate(mesh_vertex_outputs)) {
     auto output = item.value();
     StreamMDHelper md;
     std::visit(
@@ -621,7 +621,7 @@ auto FunctionSignatureBuilder::CreateFunction(
     metadata_mesh_vertex_output.push_back(md.BuildTuple(context));
   }
 
-  for (auto &item : enumerate(mesh_primitive_outputs)) {
+  for (auto item : enumerate(mesh_primitive_outputs)) {
     auto output = item.value();
     StreamMDHelper md;
     std::visit(
@@ -669,7 +669,7 @@ auto FunctionSignatureBuilder::CreateFunction(
     metadata_mesh_primitive_output.push_back(md.BuildTuple(context));
   }
 
-  for (auto &item : enumerate(inputs)) {
+  for (auto item : enumerate(inputs)) {
     auto i = item.index();
     auto input = item.value();
     StreamMDHelper metadata_field;
@@ -972,7 +972,7 @@ auto FunctionSignatureBuilder::CreateFunction(
     metadata_input.push_back(metadata_field.BuildTuple(context));
     type_input.push_back(field_type);
   };
-  for (auto &item : enumerate(outputs)) {
+  for (auto item : enumerate(outputs)) {
     if (skip_output)
       continue;
     auto output = item.value();

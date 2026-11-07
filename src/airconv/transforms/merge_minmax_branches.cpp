@@ -33,7 +33,7 @@ bool
 Derivative(const Instruction &I) {
   auto Call = dyn_cast<CallInst>(&I);
   auto Callee = Call ? Call->getCalledFunction() : nullptr;
-  return Callee && (Callee->getName().startswith("air.dfdx") || Callee->getName().startswith("air.dfdy"));
+  return Callee && (Callee->getName().starts_with("air.dfdx") || Callee->getName().starts_with("air.dfdy"));
 }
 
 // whether `A` and `B` are the same value wherever both are: the same operations on the same values, reading only
@@ -113,7 +113,7 @@ Join(Diamond &First, const Diamond &Second) {
     I->moveBefore(At);
   // the first emulation runs on into the second, and both arms of the first branch go to the second join
   First.Reduce->getTerminator()->eraseFromParent();
-  First.Reduce->getInstList().splice(First.Reduce->end(), Second.Reduce->getInstList());
+  First.Reduce->splice(First.Reduce->end(), Second.Reduce);
   Second.Join->replacePhiUsesWith(Second.Reduce, First.Reduce);
   Second.Join->replacePhiUsesWith(Between, First.Head);
   First.Branch->setSuccessor(1, Second.Join);

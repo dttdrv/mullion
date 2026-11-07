@@ -563,7 +563,8 @@ convert_dxbc_vertex_hull_shader(
     llvm::Value *indexed = builder.getInt1(is_indexed_draw && !index_view), *view = nullptr, *format = nullptr;
     if (index_view) {
       view = function->getArg(index_buffer_idx);
-      format = builder.CreateLoad(types._int, builder.CreateStructGEP(view->getType()->getNonOpaquePointerElementType(), view, 2));
+      auto view_type = llvm::StructType::get(context, {types._long, types._int, types._int});
+      format = builder.CreateLoad(types._int, builder.CreateStructGEP(view_type, view, 2));
       indexed = builder.CreateICmpNE(format, builder.getInt32(0));
     }
     // a field of indexed arguments, which sits one field later than in arguments without indices
@@ -626,7 +627,8 @@ convert_dxbc_vertex_hull_shader(
     } else if (index_buffer_idx != ~0u) {
       auto start_index = builder.CreateLoad(types._int, argument(2));
       auto index_buffer = function->getArg(index_buffer_idx);
-      auto index_buffer_element_type = index_buffer->getType()->getNonOpaquePointerElementType();
+      auto index_buffer_element_type = ia_layout->index_buffer_format == 1
+          ? (llvm::Type *)builder.getInt16Ty() : builder.getInt32Ty();
       auto vertex_id = builder.CreateLoad(
           index_buffer_element_type,
           builder.CreateGEP(

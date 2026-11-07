@@ -1,6 +1,7 @@
 #include "hoist_loads.hpp"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 
 namespace llvm::air {
 

@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
   Context.setDiagnosticHandler(
     std::make_unique<LLVMDisDiagnosticHandler>(argv[0])
   );
-  Context.setOpaquePointers(false);
+
   cl::ParseCommandLineOptions(argc, argv, "DXBC to Metal AIR transpiler\n");
 
   // bool FastMath = true;
@@ -155,11 +155,11 @@ int main(int argc, char **argv) {
       OutputFilename = "-";
     } else {
       StringRef IFN = InputFilename;
-      OutputFilename = (IFN.endswith(".cso")    ? IFN.drop_back(4)
-                        : IFN.endswith(".fxc")  ? IFN.drop_back(4)
-                        : IFN.endswith(".obj")  ? IFN.drop_back(4)
-                        : IFN.endswith(".o")    ? IFN.drop_back(2)
-                        : IFN.endswith(".dxbc") ? IFN.drop_back(5)
+      OutputFilename = (IFN.ends_with(".cso")    ? IFN.drop_back(4)
+                        : IFN.ends_with(".fxc")  ? IFN.drop_back(4)
+                        : IFN.ends_with(".obj")  ? IFN.drop_back(4)
+                        : IFN.ends_with(".o")    ? IFN.drop_back(2)
+                        : IFN.ends_with(".dxbc") ? IFN.drop_back(5)
                                                 : IFN)
                          .str();
       OutputFilename += DisassembleDXBC ? ".txt"
@@ -181,7 +181,7 @@ int main(int argc, char **argv) {
   }
   auto MemRef = FileOrErr->get()->getMemBufferRef();
 
-  if (EmitLLVM && !MemRef.getBuffer().startswith("DXBC")) {
+  if (EmitLLVM && !MemRef.getBuffer().starts_with("DXBC")) {
     std::error_code EC;
     ToolOutputFile Out(OutputFilename, EC, sys::fs::OF_TextWithCRLF);
     if (EC) {

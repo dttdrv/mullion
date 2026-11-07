@@ -26,7 +26,7 @@ permissions:
   id-token: write
 
 env:
-  LLVM_VERSION: llvmorg-15.0.7
+  LLVM_VERSION: llvmorg-23.1.5
   WINE_VERSION: v8.16-3shain
   WINE_URL: https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz
   WINE_ARM64EC_VERSION: wine-11.2
@@ -521,7 +521,7 @@ jobs:
 
   # Mullion's tests. the host's run here. the ones that draw need an Apple GPU, which these runners do not have: they
   # run on a self-hosted Mac, once the repository's variables name its Wine (MULLION_WINE, an installation with
-  # bin/wine), its LLVM 15 (MULLION_LLVM) and a prefix with the shader compilers (MULLION_PREFIX)
+  # bin/wine), its LLVM 23 (MULLION_LLVM) and a prefix with the shader compilers (MULLION_PREFIX)
   test-host:
     if: github.event_name != 'schedule'
     runs-on: macos-26

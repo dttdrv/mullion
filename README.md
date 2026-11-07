@@ -115,7 +115,7 @@ does not.
 ## Building
 
 Building needs macOS, [Meson](https://mesonbuild.com) 1.3 or later, Xcode with the macOS 26.4 SDK and its Metal
-toolchain, [LLVM](https://github.com/llvm/llvm-project) 15 as static libraries for x86_64,
+toolchain, [LLVM](https://github.com/llvm/llvm-project) 23 as static libraries for the host architecture,
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) on `PATH`, and a Wine build tree.
 
 ```sh

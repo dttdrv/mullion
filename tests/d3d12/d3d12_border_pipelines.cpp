@@ -3,6 +3,7 @@
 // (ID3D12Device::CreateGraphicsPipelineState), and nothing in D3D12 orders it after the samplers it will read. a draw
 // through an input layout and a dispatch sample only the border, made of colors Metal's samplers lack
 #include "d3d12_test.hpp"
+#include <algorithm>
 #include <cmath>
 
 static const char hlsl[] = R"hlsl(

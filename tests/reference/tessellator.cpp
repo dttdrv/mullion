@@ -2,8 +2,8 @@
 #include <math.h> // ceil
 //#include <windows.h> // Just used for some commented out debug stat printing.
 //#include <strsafe.h> // Ditto.
-#define min(x,y) (x < y ? x : y)
-#define max(x,y) (x > y ? x : y)
+template <typename T> static T reference_min(T a, T b) { return a < b ? a : b; }
+template <typename T> static T reference_max(T a, T b) { return a > b ? a : b; }
 
 //=================================================================================================================================
 // Some D3D Compliant Float Math (reference rasterizer implements these in RefALU class)
@@ -670,7 +670,7 @@ void CHWTessellator::QuadProcessTessFactors( float tessFactor_Ueq0, float tessFa
         processedTessFactors.numPointsForInsideTessFactor[axis] = NumPointsForTessFactor(processedTessFactors.insideTessFactor[axis]);
         int pointCountMin = ( TESSELLATOR_PARITY_ODD == processedTessFactors.insideTessFactorParity[axis] ) ? 4 : 3;
         // max() allows degenerate transition regions when inside TessFactor == 1
-        processedTessFactors.numPointsForInsideTessFactor[axis] = max(pointCountMin,processedTessFactors.numPointsForInsideTessFactor[axis]);
+        processedTessFactors.numPointsForInsideTessFactor[axis] = reference_max(pointCountMin,processedTessFactors.numPointsForInsideTessFactor[axis]);
     }
 
     processedTessFactors.insideEdgePointBaseOffset = m_NumPoints;
@@ -716,7 +716,7 @@ void CHWTessellator::QuadGeneratePoints( const PROCESSED_TESS_FACTORS_QUAD& proc
 
     // Generate interior ring points, clockwise from (U==0,V==1) (bottom-left) spiralling toward center
     static const int startRing = 1;
-    int minNumPointsForTessFactor = min(processedTessFactors.numPointsForInsideTessFactor[U],processedTessFactors.numPointsForInsideTessFactor[V]);
+    int minNumPointsForTessFactor = reference_min(processedTessFactors.numPointsForInsideTessFactor[U],processedTessFactors.numPointsForInsideTessFactor[V]);
     int numRings = (minNumPointsForTessFactor >> 1);  // note for even tess we aren't counting center point here.
     for(int ring = startRing; ring < numRings; ring++)
     {
@@ -794,7 +794,7 @@ void CHWTessellator::QuadGenerateConnectivity( const PROCESSED_TESS_FACTORS_QUAD
     static const int startRing = 1;
     int numPointRowsToCenter[QUAD_AXES] = {((processedTessFactors.numPointsForInsideTessFactor[U]+1) >> 1),
                                             ((processedTessFactors.numPointsForInsideTessFactor[V]+1) >> 1)}; // +1 is so even tess includes the center point
-    int numRings = min(numPointRowsToCenter[U],numPointRowsToCenter[V]);
+    int numRings = reference_min(numPointRowsToCenter[U],numPointRowsToCenter[V]);
     int degeneratePointRing[QUAD_AXES] = { // Even partitioning causes degenerate row of points,
                                            // which results in exceptions to the point ordering conventions 
                                            // when travelling around the rings counterclockwise.
@@ -1164,7 +1164,7 @@ void CHWTessellator::TriProcessTessFactors( float tessFactor_Ueq0, float tessFac
     {
         int pointCountMin = Odd() ? 4 : 3;
         // max() allows degenerate transition regions when inside TessFactor == 1
-        processedTessFactors.numPointsForInsideTessFactor = max(pointCountMin,processedTessFactors.numPointsForInsideTessFactor);
+        processedTessFactors.numPointsForInsideTessFactor = reference_max(pointCountMin,processedTessFactors.numPointsForInsideTessFactor);
     }
 
     processedTessFactors.insideEdgePointBaseOffset = m_NumPoints;
@@ -1993,8 +1993,8 @@ void CHWTessellator::StitchTransition(int baseIndexOffset,
     int insidePoint = insideEdgePointBaseOffset; 
 
     // iStart,iEnd are a small optimization so the loop below doesn't have to go from 0 up to 31
-    int iStart = min(loopStart[insideNumHalfTessFactorPoints],loopStart[outsideNumHalfTessFactorPoints]);
-    int iEnd = max(loopEnd[insideNumHalfTessFactorPoints],loopEnd[outsideNumHalfTessFactorPoints]);
+    int iStart = reference_min(loopStart[insideNumHalfTessFactorPoints],loopStart[outsideNumHalfTessFactorPoints]);
+    int iEnd = reference_max(loopEnd[insideNumHalfTessFactorPoints],loopEnd[outsideNumHalfTessFactorPoints]);
 
     if( finalPointPositionTable[0] < outsideNumHalfTessFactorPoints ) // since we dont' start the loop at 0 below, we need a special case.
     {

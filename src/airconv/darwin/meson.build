@@ -16,10 +16,7 @@ llvm_ld_flags_darwin = [
 
 if native_llvm_path.startswith('/usr/local/opt') or native_llvm_path.startswith('/opt/homebrew/opt')
   homebrew_prefix = native_llvm_path.startswith('/opt/homebrew/opt') ? '/opt/homebrew' : '/usr/local'
-  llvm_ld_flags_darwin = [
-    llvm_ld_flags_darwin,
-    join_paths(homebrew_prefix, 'opt/zstd/lib/libzstd.a'), join_paths(native_llvm_path, 'lib/libunwind.a')
-  ]
+  llvm_ld_flags_darwin += [join_paths(homebrew_prefix, 'opt/zstd/lib/libzstd.a')]
 endif
 
 airconv_lib_darwin = static_library('airconv', airconv_src,

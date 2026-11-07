@@ -53,7 +53,9 @@ main(int argc, char **argv) {
   };
   std::vector<Copy> copies;
   auto run = [&](UINT target, UINT source, UINT64 dst, UINT64 src, UINT count, INT64 dst_step, INT64 src_step,
-                 UINT64 bytes = block) {
+                 UINT64 bytes = UINT64(-1)) {
+    if (bytes == UINT64(-1))
+      bytes = block;
     for (UINT i = 0; i < count; i++)
       copies.push_back({target, source, dst + i * dst_step, src + i * src_step, bytes});
   };

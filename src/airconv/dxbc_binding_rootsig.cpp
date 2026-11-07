@@ -48,8 +48,7 @@ public:
   GetArgument(llvm::air::AIRBuilder &AIR, uint32_t TableIndex, uint32_t Index) {
     auto &B = AIR.builder;
     auto Arg = Table(AIR, TableIndex);
-    auto TyArg = llvm::cast<llvm::PointerType>(Arg->getType())->getNonOpaquePointerElementType();
-    auto TyStruct = llvm::cast<llvm::StructType>(TyArg);
+    auto TyStruct = RootArgumentsType;
     return B.CreateLoad(TyStruct->getElementType(Index), B.CreateStructGEP(TyStruct, Arg, Index));
   };
 
@@ -115,14 +114,13 @@ public:
   GetRootConstantPointer(llvm::air::AIRBuilder &AIR, uint32_t TableIndex, uint32_t Index) {
     auto &B = AIR.builder;
     auto Arg = Table(AIR, TableIndex);
-    auto TyArg = llvm::cast<llvm::PointerType>(Arg->getType())->getNonOpaquePointerElementType();
-    auto TyStruct = llvm::cast<llvm::StructType>(TyArg);
+    auto TyStruct = RootArgumentsType;
     return B.CreatePointerCast(
         B.CreateStructGEP(TyStruct, Arg, Index), AIR.getIntTy(4)->getPointerTo(Arg->getType()->getPointerAddressSpace())
     );
   };
 
-  virtual llvm::Optional<ConstantBufferDescriptor>
+  virtual std::optional<ConstantBufferDescriptor>
   GetConstantBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -168,7 +166,7 @@ public:
     return {Field(TySampleHandler, 0), Field(TySampleHandler, 1), Field(TyInt64, 2), Field(TyInt64, 3)};
   }
 
-  virtual llvm::Optional<SamplerDescriptor>
+  virtual std::optional<SamplerDescriptor>
   GetSampler(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     auto Iter = Samplers.find(Range);
     if (Iter == Samplers.end()) {
@@ -229,7 +227,7 @@ public:
     };
   }
 
-  virtual llvm::Optional<TextureDescirptor>
+  virtual std::optional<TextureDescirptor>
   GetSRVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -260,7 +258,7 @@ public:
                              MemoryAccess, SampleType, FormatRange};
   }
 
-  virtual llvm::Optional<TextureDescirptor>
+  virtual std::optional<TextureDescirptor>
   GetUAVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -294,7 +292,7 @@ public:
     };
   }
 
-  virtual llvm::Optional<BufferDescriptor>
+  virtual std::optional<BufferDescriptor>
   GetSRVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -318,7 +316,7 @@ public:
     };
   }
 
-  virtual llvm::Optional<BufferDescriptor>
+  virtual std::optional<BufferDescriptor>
   GetUAVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -345,7 +343,7 @@ public:
     };
   }
 
-  virtual llvm::Optional<CounterDescriptor>
+  virtual std::optional<CounterDescriptor>
   GetUAVCounter(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) {
     if (~RootSignatureArgumentIndex == 0)
       return {};
@@ -807,31 +805,31 @@ public:
     return {};
   }
 
-  llvm::Optional<ConstantBufferDescriptor>
+  std::optional<ConstantBufferDescriptor>
   GetConstantBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetConstantBuffer(Builder, Range, Index); });
   }
-  llvm::Optional<SamplerDescriptor>
+  std::optional<SamplerDescriptor>
   GetSampler(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetSampler(Builder, Range, Index); });
   }
-  llvm::Optional<TextureDescirptor>
+  std::optional<TextureDescirptor>
   GetSRVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetSRVTexture(Builder, Range, Index); });
   }
-  llvm::Optional<TextureDescirptor>
+  std::optional<TextureDescirptor>
   GetUAVTexture(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetUAVTexture(Builder, Range, Index); });
   }
-  llvm::Optional<BufferDescriptor>
+  std::optional<BufferDescriptor>
   GetSRVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetSRVBuffer(Builder, Range, Index); });
   }
-  llvm::Optional<BufferDescriptor>
+  std::optional<BufferDescriptor>
   GetUAVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetUAVBuffer(Builder, Range, Index); });
   }
-  llvm::Optional<CounterDescriptor>
+  std::optional<CounterDescriptor>
   GetUAVCounter(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) override {
     return First([&](BindingMap &map) { return map.GetUAVCounter(Builder, Range, Index); });
   }
