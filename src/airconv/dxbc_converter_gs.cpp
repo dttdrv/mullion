@@ -595,7 +595,13 @@ convert_dxbc_geometry_shader(
       for (auto &p : pVertexStage->signature_handlers)
         p(domain_ctx);
   }
-  auto& gs_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto gs_output_handlers = pShaderInternal->mesh_output_handlers; // copy
+  if (pShaderInternal->mesh_layer_without_viewport()) {
+    func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
+    gs_output_handlers.push_back([](MeshOutputContext &output) -> IREffect {
+      return pop_mesh_output_default_viewport_array_index(output.primitive_id);
+    });
+  }
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_GEOMETRY_SHADER, rootsig->bytecode,

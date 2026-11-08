@@ -378,6 +378,7 @@ IREffect pull_vertex_input(
 
 IREffect pop_mesh_output_render_target_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id);
 IREffect pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id);
+IREffect pop_mesh_output_default_viewport_array_index(pvalue primitive_id);
 IREffect pop_mesh_output_primitive_id(uint32_t from_reg, uint32_t mask, pvalue primitive_id);
 IREffect pop_mesh_output_position(uint32_t from_reg, uint32_t mask, pvalue vertex_id);
 IREffect
@@ -609,6 +610,16 @@ public:
         if (element.reg() == reg && (element.mask() >> c & 1))
           types[c] = element.componentType();
     return types;
+  }
+  // whether the outputs have a layer and no viewport index
+  bool
+  mesh_layer_without_viewport() const {
+    bool layer = false, viewport = false;
+    for (auto &element : output_signature) {
+      layer |= element.systemValue() == microsoft::D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX;
+      viewport |= element.systemValue() == microsoft::D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX;
+    }
+    return layer && !viewport;
   }
   microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY gs_output_topology = {};
   uint32_t gs_max_vertex_output = 0;

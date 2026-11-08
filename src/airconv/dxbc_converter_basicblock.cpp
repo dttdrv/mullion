@@ -390,6 +390,15 @@ pop_mesh_output_primitive_id(uint32_t from_reg, uint32_t mask, pvalue primitive_
   co_return {};
 }
 
+// a primitive that names no viewport is drawn through viewport 0 (D3D11.3 15.8.1); without this write an M1 Pro loses
+// some of them to the empty scissors Mullion sets for viewports 1 to 15
+IREffect
+pop_mesh_output_default_viewport_array_index(pvalue primitive_id) {
+  auto ctx = co_yield get_context();
+  ctx.air.CreateSetMeshViewportArrayIndex(primitive_id, ctx.builder.getInt32(0));
+  co_return {};
+}
+
 IREffect
 pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
   auto ctx = co_yield get_context();
