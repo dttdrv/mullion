@@ -222,7 +222,7 @@ AccelerationStructureSize(uint64_t size) {
   );
 }
 
-// MTLIndirectAccelerationStructureInstanceDescriptor: a row-major 3x4 matrix, options, mask, intersection function
+// MTLIndirectAccelerationStructureInstanceDescriptor: a column-major 3x4 matrix, options, mask, intersection function
 // table offset, user ID and the structure's resource ID
 constexpr uint64_t kAccelerationStructureInstanceSize = 72;
 

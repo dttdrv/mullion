@@ -2452,7 +2452,8 @@ WINEMETAL_API void MTLTexture_getBytes(
     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
 );
 
-/* acceleration structures. matrices are row-major 3x4 (MTLMatrixLayoutRowMajor), as Direct3D's are */
+/* acceleration structures. instances' matrices are column-major 3x4, Metal's default; a geometry's transform is
+   row-major (MTLMatrixLayoutRowMajor, as Direct3D's are) unless transform_column_major */
 enum WMTAccelerationStructureUsage : uint32_t {
   WMTAccelerationStructureUsageRefit = 1 << 0,
   WMTAccelerationStructureUsagePreferFastBuild = 1 << 1,
@@ -2473,7 +2474,8 @@ struct WMTAccelerationStructureGeometry {
   enum WMTIndexType index_type;
   bool opaque;
   bool no_duplicate_any_hit;
-  uint8_t padding[5];
+  bool transform_column_major;
+  uint8_t padding[4];
 };
 
 STATIC_ASSERT(sizeof(WMTAccelerationStructureGeometry) == 72);
