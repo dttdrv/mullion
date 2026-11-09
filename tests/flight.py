@@ -6,7 +6,8 @@ lines), in time order. a run that fails nothing writes no dump.
 removed: a removed device dumps, and so does the exit after it; the first holds the list's execution, the Signal of the
 program's fence to 1, its command buffer's completion (Metal's MTLCommandBufferStatusCompleted, 4) and the removal
 with DXGI_ERROR_DEVICE_REMOVED (0x887a0005, winerror.h).
-exception: the first access violation dumps, the second does not; the exit's dump holds both.
+exception: the first access violation dumps, its heading naming the module of its address (kernelbase's RaiseException),
+the second does not; the exit's dump holds both.
 quiet: nothing failed: no dump.
 many: more signals than a ring holds: the dump keeps the last of them, consecutive up to the program's last, and
 counts the others overwritten.
@@ -52,7 +53,9 @@ def judge(mode, facts, dump):
         return [f"a line that is no record: {got[:120]!r}"]
     want = {"removed": ["a removed device", "exit"], "exception": ["exception", "exit"], "many": ["a removed device", "exit"],
             "d3d11": ["exit"], "busy": ["busy"] * int(facts["busy"][0][0]) + ["exit"] if "busy" in facts else []}[mode]
-    wrong = [] if [reason for reason, _, _ in got] == want else [f"dumps {[reason for reason, _, _ in got]}, want {want}"]
+    # an exception's dump names the module of its address: "exception in <module>+<offset>"
+    reasons = [re.sub(r"^exception in [^+ ]+\+0x[0-9a-f]+$", "exception", reason) for reason, _, _ in got]
+    wrong = [] if reasons == want else [f"dumps {[reason for reason, _, _ in got]}, want {want}"]
     for reason, _, records in got:
         times = [ms for ms, _, _ in records]
         if times != sorted(times, reverse=True) or any(ms < 0 for ms in times):
@@ -71,6 +74,9 @@ def judge(mode, facts, dump):
         if order[0] > order[1]:
             wrong.append("the removal is recorded before the Signal before it")
     elif mode == "exception":
+        # RaiseException raises at its own address, in kernelbase
+        if not re.fullmatch(r"exception in kernelbase\.dll\+0x[0-9a-f]+", got[0][0], re.IGNORECASE):
+            wrong.append(f"the exception's dump does not name its module: {got[0][0]!r}")
         raised = [record for record in first if record.startswith("exception 0xc0000005")]
         if len(raised) != 1 or not raised[0].endswith(f"information 0x1 {facts['exception'][0][0]}"):
             wrong.append(f"the first dump's exceptions: {raised}")
