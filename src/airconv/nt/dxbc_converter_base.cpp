@@ -3242,13 +3242,25 @@ Converter::operator()(const InstBufferInfo &bufinfo) {
 
 void
 Converter::LoadBufferWords(
-    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+    llvm::Value *Within
 ) {
   mask_t Mask = GetMask(Dst), Words = MemoryAccessMask(Mask, Buf.Swizzle);
   llvm::Value *Residency = ir.getInt32(0);
   auto At = [&](unsigned Word, llvm::Value *Index) {
     return ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Word));
   };
+  if (Within) {
+    llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
+    for (auto [DstComp, _] : EnumerateComponents(Words))
+      ValueVec = ir.CreateInsertElement(
+          ValueVec,
+          LoadBufferValue(Buf, ir.getInt32Ty(), CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), true), true),
+          DstComp
+      );
+    auto Value = ir.CreateSelect(Within, ValueVec, llvm::Constant::getNullValue(ValueVec->getType()));
+    return StoreOperand(Dst, MaskSwizzle(Value, Mask, Buf.Swizzle));
+  }
   if (auto Comp = ComponentFromScalarMask(Mask, Buf.Swizzle); Comp >= 0) {
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf, At(Comp, Index));
     if (Feedback)
@@ -3281,11 +3293,26 @@ Converter::operator()(const InstLoadStructured &load) {
   auto Buf = LoadBuffer(load.src);
   if (!Buf)
     return;
+  auto Element = LoadOperand(load.src_address, kMaskComponentX);
+  auto Inner = LoadOperand(load.src_byte_offset, kMaskComponentX);
+  // a load that a constant offset keeps inside its element is inside a bounded view where its element is (an offset
+  // past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every word, and the address
+  // in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping. a view without bounds
+  // may pass 4 GB and keeps the 64-bit address
+  auto Words = MemoryAccessMask(GetMask(load.dst), Buf->Swizzle);
+  if (auto Fixed = dyn_cast<llvm::ConstantInt>(Inner);
+      Fixed && !load.feedback && Words && Buf->Bounds() &&
+      Fixed->getZExtValue() + 4 * (llvm::Log2_32(Words) + 1) <= Buf->StructureStride) {
+    auto At = ir.CreateLShr(ir.CreateAdd(ir.CreateMul(Element, ir.getInt32(Buf->StructureStride)), Fixed), 2);
+    auto Within = ir.CreateICmpULT(
+        Element, ir.CreateUDiv(DecodeRawBufferByteLength(Buf->Metadata), ir.getInt32(Buf->StructureStride))
+    );
+    At = ir.CreateSelect(Within, At, ir.getInt32(0));
+    return LoadBufferWords(*Buf, ir.CreateZExt(At, ir.getInt64Ty()), load.dst, load.feedback, Within);
+  }
   // in 64 bits: an element index scaled by the stride can wrap 32 and pass the bounds check
-  auto IndexStruct = ir.CreateMul(
-      ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(LoadOperand(load.src_address, kMaskComponentX), ir.getInt64Ty())
-  );
-  auto Offset = ir.CreateZExt(ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2), ir.getInt64Ty());
+  auto IndexStruct = ir.CreateMul(ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(Element, ir.getInt64Ty()));
+  auto Offset = ir.CreateZExt(ir.CreateLShr(Inner, 2), ir.getInt64Ty());
   LoadBufferWords(*Buf, ir.CreateAdd(IndexStruct, Offset), load.dst, load.feedback);
 }
 

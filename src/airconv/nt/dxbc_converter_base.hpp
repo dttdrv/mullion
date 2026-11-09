@@ -770,8 +770,11 @@ public:
       BufferResourceHandle &Buffer, llvm::Value *Base, llvm::Value *Last, uint32_t UnitBytes,
       llvm::function_ref<llvm::Value *(llvm::Value *, bool)> Read
   );
+  // Within, when given, bounds the whole load in place of each word's own bound (InstLoadStructured), and Index is at
+  // the view's start where it fails
   void LoadBufferWords(
-      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+      llvm::Value *Within = nullptr
   );
 
   llvm::Value * CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm::Value* Index);
