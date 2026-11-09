@@ -2398,7 +2398,13 @@ Converter::SampleImplicit(
   // only 2D textures filter anisotropically (7.18.11), and only pixel shaders have derivatives
   bool Planar = Tex.Logical == Texture::texture2d || Tex.Logical == Texture::texture2d_array ||
                 Tex.Logical == Texture::depth2d || Tex.Logical == Texture::depth2d_array;
-  if (!Planar || ctx.shader_type != microsoft::D3D10_SB_PIXEL_SHADER)
+  // MULLION_AIRCONV_SKIP=anisotropic-gradients: every sample reads Metal's own LOD, whose bias Metal drops once the
+  // footprint passes the sampler's anisotropy, to measure what the gradients below cost
+  static const bool Exact = [] {
+    auto Skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return !Skip || !strstr(Skip, "anisotropic-gradients");
+  }();
+  if (!Planar || ctx.shader_type != microsoft::D3D10_SB_PIXEL_SHADER || !Exact)
     return Biased();
   // a static sampler is known when the pipeline is made: one that is not anisotropic, or a sample whose only bias is
   // the sampler's own and that is none, reads Metal's own LOD. Metal's gradient sample below costs about twice its

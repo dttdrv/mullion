@@ -129,6 +129,13 @@ while a game's come from the device and the configuration, so its output is not 
 Converted IR passes the LLVM verifier before optimization ([CODE.md 4.1](CODE.md#4-shaders)), except with `-O0`,
 whose output is unverified and is checked with the verifier before anything else reads it.
 
+**What the converter leaves out.** `MULLION_AIRCONV_SKIP` holds names, separated by commas, of paths the converter
+leaves out of every shader, to find which one a shader goes wrong with or what one costs; each name is described where
+it is read in the source. It is part of the shader cache's key. `custom-border` leaves out the path that samples a
+border color Metal lacks, so such a sampler reads a border Metal has, and `anisotropic-gradients` lets an anisotropic
+sampler with a bias read Metal's own level of detail, whose bias Metal drops once the footprint passes the sampler's
+anisotropy. `MULLION_TRACE_SHADER=1` names the samplers that need either path.
+
 **Caches.** Mullion keeps its converted shaders in a cache of its own
 ([`mullion_shader_cache.cpp`](../src/mullion/mullion_shader_cache.cpp)). `MULLION_SHADER_CACHE=0` turns it off, and
 `MULLION_SHADER_CACHE_PATH` moves it to another absolute macOS directory. Metal keeps a separate cache of compiled
