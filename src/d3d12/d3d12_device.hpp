@@ -596,7 +596,10 @@ public:
   // it rasterizes points or lines, which take no depth bias (D3D11.3 15.10); Metal gives them one with a stray slope
   // when an indirect command buffer draws them, so none is set
   bool unbiased = false;
+  // the samples a pass without targets rasterizes (RasterSampleCount of ForcedSampleCount), 0 for its targets'
   uint32_t forced_sample_count;
+  // each raster sample stands for two of the description's (RasterSampleCount)
+  bool paired_samples = false;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
   // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
   // depth_bounds); and whether the pipeline writes depth, which changes what passes

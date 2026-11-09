@@ -771,7 +771,7 @@ public:
           metal, out->Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
       );
       bool multisample = support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+      if (out->SampleCount == 1 || (!out->Flags && multisample && HasSampleCount(metal, format_desc, out->SampleCount, true)))
         out->NumQualityLevels = 1;
       return S_OK;
     }

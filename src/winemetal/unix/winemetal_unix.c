@@ -2647,6 +2647,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool alpha_to_coverage;
   bool centered_samples;
   bool single_raster_sample;
+  bool paired_samples;
   uint32_t clip_distances;
   uint32_t cull_distances;
   bool cull_depth;
@@ -2764,6 +2765,7 @@ sm50_compilation_argument32_convert(
       data->alpha_to_coverage = src->alpha_to_coverage;
       data->centered_samples = src->centered_samples;
       data->single_raster_sample = src->single_raster_sample;
+      data->paired_samples = src->paired_samples;
       data->clip_distances = src->clip_distances;
       data->cull_distances = src->cull_distances;
       data->cull_depth = src->cull_depth;

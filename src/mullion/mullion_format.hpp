@@ -139,4 +139,13 @@ std::array<float, 4> RenderTargetColor(WMTPixelFormat format, const float color[
 // clear colors clamp
 std::array<float, 2> BorderColorRange(const MTL_DXGI_FORMAT_DESC &description);
 
+// the samples Metal stores and rasterizes for a resource or pipeline of `count`: the count, or 4 for the 8 every feature
+// level 11_0 device has (CheckMultisampleQualityLevels) on a GPU of 4 (Apple GPUs before Apple10), each sample then
+// D3D's two (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED); 0 for a count it has no samples for
+uint32_t RasterSampleCount(WMT::Device device, uint32_t count);
+
+// whether a resource of the format has `count` samples: as Metal has them, or paired where D3D requires the count,
+// which 8x is of a feature level 11_0 device (`level_11`), and not of R32G32B32A32's 16-byte texels
+bool HasSampleCount(WMT::Device device, const MTL_DXGI_FORMAT_DESC &format, uint32_t count, bool level_11);
+
 } // namespace mullion

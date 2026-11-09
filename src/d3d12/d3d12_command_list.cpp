@@ -1140,6 +1140,7 @@ public:
       unsigned render_target_width = 16384, render_target_height = 16384, render_target_array_length = 0;
 
       unsigned effective_rtvs = 0, samples = 0;
+      bool paired = false;
       render_serial_ = barrier_serial_;
       targets_pass_ = render;
       targets_.fill(nullptr);
@@ -1153,6 +1154,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_[i] = AttachmentDesc.Texture;
         auto &rt = render->colors[i];
         rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
@@ -1169,6 +1171,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_.back() = AttachmentDesc.Texture;
         auto dsv_planar_flags =
             DepthStencilPlanarFlags(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View)) & pso_graphics_->dsv_mask;
@@ -1201,10 +1204,12 @@ public:
       render->render_target_width = render_target_width;
       render->render_target_height = render_target_height;
       render->render_target_array_length = render_target_array_length;
-      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined
-      if (programmed_samples_ && programmed_samples_ == samples) {
-        render->programmed_samples = programmed_samples_;
-        render->sample_positions = sample_positions_;
+      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined.
+      // paired samples lie where the even ones of their pairs do
+      if (programmed_samples_ && programmed_samples_ == samples << paired) {
+        render->programmed_samples = samples;
+        for (unsigned i = 0; i < samples; i++)
+          render->sample_positions[i] = sample_positions_[i << paired];
       }
       if (effective_rtvs == 0) {
         render->default_raster_sample_count = std::max(1u, pso_graphics_->forced_sample_count);

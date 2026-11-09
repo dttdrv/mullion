@@ -2893,7 +2893,8 @@ convert_dxil(
       auto ptr = element_ptr(ctx.resource.output, e, call, ctx.resource.thread_id_in_patch);
       auto v = widen(a(4), e.component == kComponentI16);
       auto slot = e.semantic >= Depth && e.semantic <= DepthGreaterEqual ? ir.getFloatTy() : ir.getInt32Ty();
-      ir.CreateStore(ir.CreateBitCast(v, slot), ptr);
+      v = ir.CreateBitCast(v, slot);
+      ir.CreateStore(e.semantic == CoverageOutput ? air.MetalCoverage(v) : v, ptr);
       break;
     }
     case SetMeshOutputCounts: {
@@ -3832,7 +3833,7 @@ convert_dxil(
       ret = attribute(shader::common::InputAttribute::InnerCoverage, 0);
       break;
     case SampleIndex:
-      ret = ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{}));
+      ret = air.D3DSampleIndex(ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{})));
       break;
     case EvalCentroid:
     case EvalSampleIndex:
@@ -3847,7 +3848,7 @@ convert_dxil(
           );
         };
         auto offset = op == EvalCentroid      ? b.centroid
-                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(a(4))
+                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(4)))
                                               : snapped();
         ret = ir.CreateExtractElement(b.At(ir, offset), a(3));
         break;
@@ -3861,7 +3862,7 @@ convert_dxil(
                                    : dxbc.Interpolate(*itp, [&](Value *handle) {
                                        return op == EvalCentroid
                                                   ? air.CreateInterpolateAtCentroid(handle, itp->Perspective)
-                                                  : air.CreateInterpolateAtSample(handle, a(4), itp->Perspective);
+                                                  : air.CreateInterpolateAtSample(handle, air.MetalSampleIndex(a(4)), itp->Perspective);
                                      });
       ret = narrow(interpolated_component(call, v), ty);
       break;
@@ -4133,13 +4134,14 @@ convert_dxil(
         auto &t = *handles[a(1)].texture;
         samples = air.CreateTextureQuery(t.Texture, t.Handle, Texture::num_samples, ir.getInt32(0));
       } else {
-        samples = air.CreateGetNumSamples();
+        samples = air.CreateD3DSampleCount();
       }
       if (op == RenderTargetGetSampleCount) {
         ret = samples;
         break;
       }
-      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2)) : air.CreateRasterizerSamplePos(a(1));
+      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2))
+                         : air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(1)));
       ret = UndefValue::get(ty);
       for (unsigned i = 0; i < 2; i++)
         ret = ir.CreateInsertValue(ret, ir.CreateExtractElement(pos, i), {i});
