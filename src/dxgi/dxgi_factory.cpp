@@ -204,8 +204,7 @@ public:
     descFs.Windowed = pDesc->Windowed;
 
     IDXGISwapChain1 *swapChain = nullptr;
-    HRESULT hr = CreateSwapChainForHwnd(pDevice, pDesc->OutputWindow, &desc,
-                                        &descFs, nullptr, &swapChain);
+    HRESULT hr = CreateSwapChainForWindow(pDevice, pDesc->OutputWindow, &desc, &descFs, &swapChain);
 
     *ppSwapChain = swapChain;
     return hr;
@@ -216,6 +215,18 @@ public:
       IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
+    return CreateSwapChainForWindow(pDevice, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
+  }
+
+  // what CreateSwapChain and CreateSwapChainForHwnd do, called by both. CreateSwapChain does not go through
+  // CreateSwapChainForHwnd, as DXGI's does not: on ARM64EC a hybrid-patchable function is entered through its patchable
+  // x64 entry even from inside the module, so a hook on both entries (the Steam overlay's) saw a swap chain made by
+  // CreateSwapChain twice, took two references to it and dropped one. Streamline's DLSS Frame Generation then could
+  // not replace it: the window stayed held, its second swap chain was refused, and CONTROL Resonant crashed
+  HRESULT
+  CreateSwapChainForWindow(
+      IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain) {
     InitReturnPtr(ppSwapChain);
 
     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
