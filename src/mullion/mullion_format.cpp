@@ -1516,6 +1516,8 @@ GetUIntClearWrite(WMTPixelFormat format) {
   case WMTPixelFormatRG32Float:
   case WMTPixelFormatRGBA32Float:
     return UIntClearWrite::Float;
+  case WMTPixelFormatRG11B10Float:
+    return UIntClearWrite::SmallFloat;
   default:
     return UIntClearWrite::IntegerView;
   }
