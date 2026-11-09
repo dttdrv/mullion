@@ -353,7 +353,8 @@ MTLD3D12CommandAllocatorImpl::Reset() {
   // the passes' compute tessellators ran: the next passes have room for what the largest needed, up to the most a
   // pass takes of the heap all lists share; past it a draw takes its mesh draw
   auto grow = [](std::atomic<uint32_t> &room, uint32_t need, uint32_t most) {
-    need = need > most ? most : std::bit_ceil(need);
+    // rounded up to a power of two, which stops at a cap that is not one (the indices' 3 << 20)
+    need = std::min(std::bit_ceil(std::min(need, most)), most);
     for (auto now = room.load(); need > now && !room.compare_exchange_weak(now, need);)
       ;
   };
