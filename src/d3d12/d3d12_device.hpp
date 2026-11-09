@@ -20,6 +20,7 @@
 #include "d3d12.h"
 #include "d3d12_command_encoder.hpp"
 #include "d3d12_descriptor_heap.hpp"
+#include "d3d12_device_interfaces.hpp"
 #include "d3d12_recording_arena.hpp"
 #include "dxgi1_2.h"
 #include "dxgi_interfaces.h"
@@ -636,7 +637,7 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
-class MTLD3D12Device : public ID3D12Device10 {
+class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
   TimestampSamples timestamp_samples;

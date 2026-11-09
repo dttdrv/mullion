@@ -619,7 +619,8 @@ public:
         riid == __uuidof(ID3D12Device1) || riid == __uuidof(ID3D12Device2) || riid == __uuidof(ID3D12Device3) ||
         riid == __uuidof(ID3D12Device4) || riid == __uuidof(ID3D12Device5) || riid == __uuidof(ID3D12Device6) ||
         riid == __uuidof(ID3D12Device7) || riid == __uuidof(ID3D12Device8) || riid == __uuidof(ID3D12Device9) ||
-        riid == __uuidof(ID3D12Device10)) {
+        riid == __uuidof(ID3D12Device10) || riid == __uuidof(ID3D12Device11) || riid == __uuidof(ID3D12Device12) ||
+        riid == __uuidof(ID3D12Device13) || riid == __uuidof(ID3D12Device14) || riid == __uuidof(ID3D12Device15)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -782,11 +783,12 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_ROOT_SIGNATURE))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_ROOT_SIGNATURE *>(pFeatureData);
-      /* the highest version both know: newer ones (1.2) come down to 1.1, as the runtime answers */
+      /* the highest version both know, up to 1.2: a device of ID3D12Device15 is one of an Agility SDK that has root
+         signature 1.2, whose static samplers' flags (UINT border colors, non-normalized coordinates) come down to
+         1.1's samplers (RootSignatureDeserializer), and applications that see ID3D12Device15 serialize 1.2 (NRI) */
       if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1 ||
           out->HighestVersion > sdk::D3D_ROOT_SIGNATURE_VERSION_1_2)
         return FAIL(E_INVALIDARG);
-      out->HighestVersion = std::min(out->HighestVersion, D3D_ROOT_SIGNATURE_VERSION_1_1);
       return S_OK;
     }
     case D3D12_FEATURE_FEATURE_LEVELS: {
@@ -1281,6 +1283,12 @@ public:
       Heap->AddConstantBufferView(Index, 0, 0);
   };
 
+  HRESULT STDMETHODCALLTYPE
+  TryCreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    CreateConstantBufferView(pDesc, Descriptor);
+    return S_OK;
+  };
+
   // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
   // before, whose resource may be gone. Direct3D leaves what such a slot holds undefined; the null view is of the
   // dimension and format asked for, or of the resource's when no description was given. without one, a multisampled
@@ -1313,20 +1321,31 @@ public:
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateShaderResourceView(pResource, pDesc, Descriptor);
+  };
+
+  // ID3D12Device15's TryCreate*: the view Create* makes, and E_INVALIDARG where the device refused it (the slot then
+  // holds a null view, as after Create*)
+  HRESULT STDMETHODCALLTYPE
+  TryCreateShaderResourceView(
+      ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource || (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       if (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)
         Heap->AddAccelerationStructureView(Index, pDesc->RaytracingAccelerationStructure.Location);
       else
         Heap->AddShaderResourceView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddShaderResourceView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
@@ -1334,55 +1353,113 @@ public:
       ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
       D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateUnorderedAccessView(pResource, pCounter, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateUnorderedAccessView(
+      ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+      D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       Heap->AddUnorderedAccessView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddUnorderedAccessView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateRenderTargetView(
       ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateRenderTargetView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateRenderTargetView(
+      ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateDepthStencilView(
       ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateDepthStencilView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateDepthStencilView(
+      ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateDepthStencilView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
     Heap->AddSampler(Index, pDesc);
+  };
+
+  // ID3D12Device11: a sampler of a uint border color takes the color of its values, each 0 or 1 as a float (the
+  // borders Metal has are transparent black, opaque black and opaque white). non-normalized coordinates are not one
+  // Metal's samplers of argument buffers take, and are sampled as normalized
+  void STDMETHODCALLTYPE
+  CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    if (!pDesc)
+      return;
+    D3D12_SAMPLER_DESC desc{pDesc->Filter,         pDesc->AddressU,      pDesc->AddressV, pDesc->AddressW,
+                            pDesc->MipLODBias,     pDesc->MaxAnisotropy, pDesc->ComparisonFunc, {},
+                            pDesc->MinLOD,         pDesc->MaxLOD};
+    for (unsigned i = 0; i < 4; i++)
+      desc.BorderColor[i] = (pDesc->Flags & D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR)
+                                ? FLOAT(std::min(pDesc->UintBorderColor[i], 1u))
+                                : pDesc->FloatBorderColor[i];
+    if (pDesc->Flags & D3D12_SAMPLER_FLAG_NON_NORMALIZED_COORDINATES) {
+      static std::atomic<bool> told{false};
+      if (!told.exchange(true))
+        WARN("CreateSampler2: non-normalized coordinates are sampled as normalized");
+    }
+    CreateSampler(&desc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    if (!pDesc)
+      return E_INVALIDARG;
+    CreateSampler2(pDesc, Descriptor);
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
@@ -1905,6 +1982,65 @@ public:
     return OpenHeap(this, pAddress, nullptr, riid, ppHeap);
   }
 
+  // ID3D12Device13: the address's allocation, whose size the heap takes as OpenExistingHeapFromAddress does
+  HRESULT STDMETHODCALLTYPE
+  OpenExistingHeapFromAddress1(const void *pAddress, SIZE_T size, REFIID riid, void **ppHeap) final {
+    return OpenExistingHeapFromAddress(pAddress, riid, ppHeap);
+  }
+
+  // ID3D12Device14: root signatures of DXIL libraries' subobjects are not read
+  HRESULT STDMETHODCALLTYPE
+  CreateRootSignatureFromSubobjectInLibrary(
+      UINT nodeMask, const void *pLibraryBlob, SIZE_T blobLengthInBytes, LPCWSTR subobjectName, REFIID riid,
+      void **ppvRootSignature
+  ) final {
+    InitReturnPtr(ppvRootSignature);
+    WARN("CreateRootSignatureFromSubobjectInLibrary: not supported");
+    return E_NOTIMPL;
+  }
+
+  // ID3D12Device15: no memory budget is trimmed, so a callback is registered and never called
+  HRESULT STDMETHODCALLTYPE
+  RegisterTrimNotificationCallback(D3D12_REGISTER_TRIM_NOTIFICATION *pData) final {
+    if (!pData || !pData->pfnCallback)
+      return E_INVALIDARG;
+    static std::atomic<DWORD> cookie{0};
+    pData->CallbackCookie = ++cookie;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  UnregisterTrimNotificationCallback(DWORD CallbackCookie) final {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSamplerFeedbackUnorderedAccessView(
+      ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
+  ) final {
+    CreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, DestDescriptor);
+    return S_OK;
+  }
+
+  // a query heap's results the CPU resolves (D3D12_QUERY_HEAP_FLAG_CPU_RESOLVE) are not kept: such a heap is refused,
+  // and ResolveQueryData has none to read
+  HRESULT STDMETHODCALLTYPE
+  CreateQueryHeap1(const D3D12_QUERY_HEAP_DESC *pDesc, D3D12_QUERY_HEAP_FLAGS Flags, REFIID riid, void **ppHeap) final {
+    if (Flags & ~D3D12_QUERY_HEAP_FLAG_NONE) {
+      InitReturnPtr(ppHeap);
+      WARN("CreateQueryHeap1: flags ", uint32_t(Flags), " not supported");
+      return E_NOTIMPL;
+    }
+    return CreateQueryHeap(pDesc, riid, ppHeap);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  ResolveQueryData(
+      ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT NumQueries, void *pResolvedQueryData
+  ) final {
+    return E_INVALIDARG;
+  }
+
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromFileMapping(HANDLE hFileMapping, REFIID riid, void **ppHeap) {
     return hFileMapping ? OpenHeap(this, nullptr, hFileMapping, riid, ppHeap) : FAIL(E_INVALIDARG);
@@ -2137,6 +2273,16 @@ public:
   ) {
     D3D12_RESOURCE_ALLOCATION_INFO ret;
     return *GetResourceAllocationInfo2(&ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
+  }
+
+  // ID3D12Device12: castable formats change no texture's size or alignment here
+  D3D12_RESOURCE_ALLOCATION_INFO *STDMETHODCALLTYPE
+  GetResourceAllocationInfo3(
+      D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescsCount,
+      const D3D12_RESOURCE_DESC1 *pResourceDescs, const UINT32 *pNumCastableFormats,
+      const DXGI_FORMAT *const *ppCastableFormats, D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
+  ) final {
+    return GetResourceAllocationInfo2(__ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
   }
 
   HRESULT STDMETHODCALLTYPE
