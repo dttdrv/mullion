@@ -508,6 +508,10 @@ public:
       auto directory = ShaderCacheDirectory();
       if (directory.empty())
         return;
+      // Metal captures no mesh pipeline made with a binary archive ("Capturing Mesh Shaders with Binary Archives is
+      // not supported"): a process that may be captured makes its pipelines without one
+      if (env::getEnvVar("MTL_CAPTURE_ENABLED") == "1")
+        return;
       archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), ".metallib");
       WMT::Reference<WMT::Error> error;
       // a file Metal cannot read (none yet, or a damaged one) is started again

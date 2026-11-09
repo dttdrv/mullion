@@ -101,8 +101,15 @@ Mullion has a path for writing a GPU trace that Xcode opens
   [describes](https://developer.apple.com/documentation/xcode/capturing-a-metal-workload-programmatically)
 - `MULLION_CAPTURE_EXECUTABLE` names the executable to capture, without `.exe`
 - `MULLION_CAPTURE_FRAME` names the frame to capture, or F10 captures the next one
-- the trace is written as a `.gputrace` in `MULLION_LOG_PATH`, or in the working directory when that is unset or
-  `none`
+- `MULLION_CAPTURE_TRIGGER` names a file (a Unix or a Windows path) whose appearance captures the next frames, from
+  outside the game (`echo 4 > /tmp/mullion-capture`); it may hold the number of frames, and Mullion deletes it
+- `MULLION_CAPTURE_FRAMES` is how many frames a capture holds, 1 by default (frame generation needs at least 2)
+- with `MTL_CAPTURE_ENABLED=1` a queue encodes on one thread (`MULLION_D3D12_ENCODE_THREADS` overrides it), because a
+  capture copies every buffer and heap the CPU writes for each command buffer that uses them. For the same reason the
+  D3D12 arguments the GPU reads are Metal buffers of 16 MB, then 32 MB and so on as a program uses more, rather than
+  one of 1 GB
+- the trace is written as a `.gputrace` in `MULLION_CAPTURE_PATH`, else in `MULLION_LOG_PATH`, or in the working
+  directory when both are unset (or `MULLION_LOG_PATH` is `none`)
 
 Both the D3D11 and the D3D12 queues take part. Metal captures only command buffers created and committed while the
 capture runs, and a message naming the trace file does not show that the capture succeeded: {logging: capture start

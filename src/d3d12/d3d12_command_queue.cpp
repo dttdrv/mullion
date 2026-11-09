@@ -382,8 +382,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     static const unsigned threads = [] {
       auto set = env::getEnvVar("MULLION_D3D12_ENCODE_THREADS");
       unsigned count = 0;
+      // a GPU capture keeps a copy of every buffer and heap the CPU writes for each command buffer that uses them, and
+      // each thread encodes into a command buffer of its own: a process that may be captured encodes on one
       if (std::from_chars(set.data(), set.data() + set.size(), count).ec != std::errc{} || !count)
-        count = std::clamp(mullion::thread::hardware_concurrency() / 2, 1u, 4u);
+        count = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1"
+                    ? 1u
+                    : std::clamp(mullion::thread::hardware_concurrency() / 2, 1u, 4u);
       return std::min(count, kMaxEncodeThreads);
     }();
     return threads;
@@ -676,7 +680,11 @@ private:
       if constexpr (Metal4)
         if (!scope.inflight->cmdbuf)
           return;
-      scope.inflight->cmdbuf.encodeWaitForEvent(mapped_->sharedEvent(), mapping_value_);
+      // a process that may be captured has only the CPU wait above: Metal's capture never sees the mapping queue's
+      // signal, so a captured command buffer waiting for it is never scheduled, and every queue stops behind it
+      static const bool capturable = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1";
+      if (!capturable)
+        scope.inflight->cmdbuf.encodeWaitForEvent(mapped_->sharedEvent(), mapping_value_);
       Trace("tile mappings: done");
     };
     if (!Hold(work))
