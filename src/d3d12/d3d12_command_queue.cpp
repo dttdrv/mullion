@@ -1387,7 +1387,8 @@ public:
       if (++region_tile == size.NumTiles)
         region++, region_tile = 0;
     }
-    if (operations.empty())
+    // a texture with all its memory has nothing to map in Metal (MTLD3D12Resource::dense_tiles)
+    if (operations.empty() || static_cast<MTLD3D12Resource *>(resource)->dense_tiles)
       return;
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (operations.back().mode == WMTSparseMappingModeUnmap)
@@ -1442,6 +1443,9 @@ public:
         destination.index(*dst_region_start_coordinate, *region_size, 0) >
             source.index(*src_region_start_coordinate, *region_size, 0))
       std::reverse(operations.begin(), operations.end());
+    // nor between textures of which either has all its memory: such a texture keeps its own
+    if (src->dense_tiles || dst->dense_tiles)
+      return;
     // a copy of a tile that is not mapped unmaps; which of a buffer's are is not kept here
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (unmaps || !source.texture)

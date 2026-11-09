@@ -4119,6 +4119,120 @@ _MTLTexture_sparseTail(void *obj) {
 }
 
 static NTSTATUS
+_MTLDevice_sparseTailHolds(void *obj) {
+  struct unixcall_sparse_tail_holds *params = obj;
+  params->ret = 1;
+  params->first_mip = 0;
+  params->bytes = 0;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)params->device;
+      struct WMTTextureInfo info = *(const struct WMTTextureInfo *)params->info.ptr;
+      MTLSparsePageSize page_size = (MTLSparsePageSize)info.placement_sparse_page_size;
+      if (!page_size || info.sample_count > 1 || !params->block_bytes || !params->block_width || !params->block_height)
+        return STATUS_SUCCESS;
+      MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
+      fill_texture_descriptor(desc, &info);
+      desc.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+      [desc release];
+      if (!texture)
+        return STATUS_SUCCESS;
+      NSUInteger first = texture.firstMipmapInTail, mips = texture.mipmapLevelCount;
+      params->first_mip = first;
+      params->bytes = texture.tailSizeInBytes;
+      NSUInteger page = [device sparseTileSizeInBytesForSparsePageSize:page_size];
+      if (first >= mips || !params->bytes || !page) {
+        [texture release];
+        return STATUS_SUCCESS;
+      }
+      // the tail's pages, along x, as the queue maps a texture's packed tiles (Tiling::place)
+      NSUInteger pages = (params->bytes + page - 1) / page;
+      MTLHeapDescriptor *heap_desc = [[MTLHeapDescriptor alloc] init];
+      heap_desc.type = MTLHeapTypePlacement;
+      heap_desc.storageMode = MTLStorageModePrivate;
+      heap_desc.maxCompatiblePlacementSparsePageSize = page_size;
+      heap_desc.size = pages * page;
+      id<MTLHeap> heap = [device newHeapWithDescriptor:heap_desc];
+      [heap_desc release];
+      MTLResidencySetDescriptor *set_desc = [[MTLResidencySetDescriptor alloc] init];
+      id<MTLResidencySet> set = heap ? [device newResidencySetWithDescriptor:set_desc error:nil] : nil;
+      [set_desc release];
+      id<MTL4CommandQueue> mapper = set ? [device newMTL4CommandQueue] : nil;
+      id<MTLCommandQueue> queue = mapper ? [device newCommandQueue] : nil;
+      id<MTLSharedEvent> mapped = queue ? [device newSharedEvent] : nil;
+      // each tail mip's blocks, one after the other, every byte of a mip its own value
+      NSUInteger offsets[32] = {0}, rows[32] = {0}, images[32] = {0}, total = 0;
+      for (NSUInteger m = first; m < mips && m < 32; m++) {
+        NSUInteger w = MAX(1, info.width >> m), h = MAX(1, info.height >> m);
+        NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+        rows[m] = (w + params->block_width - 1) / params->block_width * params->block_bytes;
+        images[m] = (h + params->block_height - 1) / params->block_height * rows[m];
+        offsets[m] = total;
+        total += images[m] * d;
+      }
+      id<MTLBuffer> upload = mapped ? [device newBufferWithLength:total options:MTLResourceStorageModeShared] : nil;
+      id<MTLBuffer> readback = upload ? [device newBufferWithLength:total options:MTLResourceStorageModeShared] : nil;
+      if (readback) {
+        [set addAllocation:heap];
+        [set commit];
+        MTL4UpdateSparseTextureMappingOperation op = {};
+        op.mode = MTLSparseTextureMappingModeMap;
+        op.textureRegion = MTLRegionMake3D(0, 0, 0, pages, 1, 1);
+        op.textureLevel = first;
+        op.textureSlice = 0;
+        op.heapOffset = 0;
+        [mapper updateTextureMappings:texture heap:heap operations:&op count:1];
+        [mapper signalEvent:mapped value:1];
+        id<MTLCommandBuffer> cmdbuf = [queue commandBuffer];
+        [cmdbuf useResidencySet:set];
+        [cmdbuf encodeWaitForEvent:mapped value:1];
+        for (int pass = 0; pass < 2; pass++) {
+          id<MTLBlitCommandEncoder> blit = [cmdbuf blitCommandEncoder];
+          for (NSUInteger m = first; m < mips && m < 32; m++) {
+            NSUInteger w = MAX(1, info.width >> m), h = MAX(1, info.height >> m);
+            NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+            if (!pass) {
+              memset((char *)upload.contents + offsets[m], 0x40 + (int)m, images[m] * d);
+              [blit copyFromBuffer:upload sourceOffset:offsets[m] sourceBytesPerRow:rows[m] sourceBytesPerImage:images[m]
+                        sourceSize:MTLSizeMake(w, h, d) toTexture:texture destinationSlice:0 destinationLevel:m
+                 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            } else {
+              [blit copyFromTexture:texture sourceSlice:0 sourceLevel:m sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(w, h, d) toBuffer:readback destinationOffset:offsets[m]
+             destinationBytesPerRow:rows[m] destinationBytesPerImage:images[m]];
+            }
+          }
+          [blit endEncoding];
+        }
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+        if (cmdbuf.status == MTLCommandBufferStatusCompleted) {
+          const unsigned char *bytes = readback.contents;
+          for (NSUInteger m = first; m < mips && m < 32 && params->ret; m++) {
+            NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+            for (NSUInteger i = 0; i < images[m] * d; i++)
+              if (bytes[offsets[m] + i] != (unsigned char)(0x40 + m)) {
+                params->ret = 0;
+                break;
+              }
+          }
+        }
+      }
+      [readback release];
+      [upload release];
+      [mapped release];
+      [queue release];
+      [mapper release];
+      [set release];
+      [heap release];
+      [texture release];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 CREATES(_MTLDevice_newMTL4CommandQueue)(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = 0;
@@ -6990,6 +7104,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_MTLDevice_sparseTailHolds,
 };
 
 #ifndef MULLION_NATIVE
@@ -7203,6 +7318,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_MTLDevice_sparseTailHolds,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

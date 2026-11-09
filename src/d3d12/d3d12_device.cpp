@@ -276,6 +276,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   uint32_t next_ray_function_ = SM50_RAY_FUNCTION_FIRST_SHADER;
   WMT::Reference<WMT::ResidencySet> residency_set_;
   WMT::Reference<WMT::Heap> spare_tile_;
+  // SparseTailHolds' answers, by texture type, pixel format, size, mips and page size
+  mullion::mutex sparse_tails_lock_;
+  std::map<std::array<uint64_t, 7>, std::pair<bool, std::pair<uint64_t, uint64_t>>> sparse_tails_;
   // allocations were added or removed since the set was last committed (CommitResidency)
   bool residency_dirty_ = false;
   // the buffers by GPU address and the sparse ones' mapped tiles, under a lock of their own: every index buffer, root
@@ -2627,6 +2630,28 @@ public:
       residency_dirty_ = true;
     }
     return spare_tile_;
+  }
+
+  bool
+  SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) final {
+    std::array<uint64_t, 7> key{uint64_t(Info.type), uint64_t(Info.pixel_format), Info.width, Info.height,
+                                uint64_t(Info.depth) << 32 | Info.array_length, Info.mipmap_level_count,
+                                uint64_t(Info.placement_sparse_page_size)};
+    std::unique_lock<mullion::mutex> lock(sparse_tails_lock_);
+    if (auto found = sparse_tails_.find(key); found != sparse_tails_.end()) {
+      Tail = found->second.second;
+      return found->second.first;
+    }
+    MTL_DXGI_FORMAT_DESC format{};
+    bool compressed = SUCCEEDED(MTLQueryDXGIFormat(GetMTLDevice(), Format, format)) && (format.Flag & MTL_DXGI_FORMAT_BC);
+    // a format with no size of its own, a planar one, tests nothing and holds
+    bool holds = GetMTLDevice().sparseTailHolds(Info, compressed ? 4 : 1, compressed ? 4 : 1, format.BytesPerTexel, Tail);
+    if (!holds)
+      WARN("D3D12Device: Metal keeps nothing in some mips of the sparse tail of a ", Info.width, "x", Info.height,
+           " texture of format ", uint32_t(Format), " with ", Info.mipmap_level_count, " mips, from mip ", Tail.first,
+           ": such reserved textures hold all their memory");
+    sparse_tails_[key] = {holds, Tail};
+    return holds;
   }
 
   virtual FormatCapability
