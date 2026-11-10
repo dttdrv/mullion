@@ -1,9 +1,10 @@
 // contract: the device answers ID3D12Device11 to ID3D12Device15 with their methods in Microsoft's slots (d3d12.idl of
 // microsoft/DirectX-Headers, SDK 620: declared below from it, not from Mullion's own copy), and ID3D12Device15's
-// TryCreate* return S_OK, or E_INVALIDARG for a view "out of range" (DirectX-Specs, D3D12 Revised Create Views). a view
-// made through a slot is then used as its kind: a clear through the render target view and through the unordered
-// access view must reach its texture, which a method in another's slot would not do.
-// https://microsoft.github.io/DirectX-Specs/d3d/D3D12RevisedCreateViews.html
+// TryCreate* return S_OK, or E_INVALIDARG (DirectX-Specs, D3D12 Revised Create Views) for a view the device refuses:
+// here views in a format their texture cannot be read as, and a depth view of a texture that allows none, the views
+// d3d12_refused_views holds Create* to. a view made through a slot is then used as its kind: a clear through the render
+// target view and through the unordered access view must reach its texture, which a method in another's slot would not
+// do. https://microsoft.github.io/DirectX-Specs/d3d/D3D12RevisedCreateViews.html
 #include "d3d12_test.hpp"
 
 #ifndef __ID3D12Device11_INTERFACE_DEFINED__
@@ -162,16 +163,15 @@ main() {
   auto constants = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_STATE_GENERIC_READ);
   CHECK(color && words && depth && constants ? S_OK : E_FAIL);
 
-  // every view of the textures' one mip, then a view of a mip they do not have
+  // each texture's own view, then a view the device refuses
   answers(
       device->TryCreateRenderTargetView(color.Get(), nullptr, slot(targets.Get(), 0)), S_OK,
       "TryCreateRenderTargetView refused a texture's own view"
   );
-  D3D12_RENDER_TARGET_VIEW_DESC far_target{DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RTV_DIMENSION_TEXTURE2D};
-  far_target.Texture2D.MipSlice = 3;
+  D3D12_RENDER_TARGET_VIEW_DESC refused_target{DXGI_FORMAT_R8G8_UNORM, D3D12_RTV_DIMENSION_TEXTURE2D};
   answers(
-      device->TryCreateRenderTargetView(color.Get(), &far_target, slot(targets.Get(), 1)), E_INVALIDARG,
-      "TryCreateRenderTargetView of mip 3 of 1 did not return E_INVALIDARG"
+      device->TryCreateRenderTargetView(color.Get(), &refused_target, slot(targets.Get(), 1)), E_INVALIDARG,
+      "TryCreateRenderTargetView in a format the texture cannot be read as did not return E_INVALIDARG"
   );
 
   answers(
@@ -182,35 +182,33 @@ main() {
       device->TryCreateUnorderedAccessView(words.Get(), nullptr, nullptr, slot(cpu_views.Get(), 0)), S_OK,
       "TryCreateUnorderedAccessView refused a texture's own view in a heap shaders do not see"
   );
-  D3D12_UNORDERED_ACCESS_VIEW_DESC far_words{DXGI_FORMAT_R32_UINT, D3D12_UAV_DIMENSION_TEXTURE2D};
-  far_words.Texture2D.MipSlice = 3;
+  D3D12_UNORDERED_ACCESS_VIEW_DESC refused_words{DXGI_FORMAT_R8G8_UNORM, D3D12_UAV_DIMENSION_TEXTURE2D};
   answers(
-      device->TryCreateUnorderedAccessView(words.Get(), nullptr, &far_words, slot(views.Get(), 1)), E_INVALIDARG,
-      "TryCreateUnorderedAccessView of mip 3 of 1 did not return E_INVALIDARG"
+      device->TryCreateUnorderedAccessView(words.Get(), nullptr, &refused_words, slot(views.Get(), 1)), E_INVALIDARG,
+      "TryCreateUnorderedAccessView in a format the texture cannot be read as did not return E_INVALIDARG"
   );
 
   answers(
       device->TryCreateShaderResourceView(color.Get(), nullptr, slot(views.Get(), 2)), S_OK,
       "TryCreateShaderResourceView refused a texture's own view"
   );
-  D3D12_SHADER_RESOURCE_VIEW_DESC far_color{
+  D3D12_SHADER_RESOURCE_VIEW_DESC refused_color{
       DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
   };
-  far_color.Texture2D = {3, 1};
+  refused_color.Format = DXGI_FORMAT_R8G8_UINT, refused_color.Texture2D = {0, 1};
   answers(
-      device->TryCreateShaderResourceView(color.Get(), &far_color, slot(views.Get(), 2)), E_INVALIDARG,
-      "TryCreateShaderResourceView of mip 3 of 1 did not return E_INVALIDARG"
+      device->TryCreateShaderResourceView(color.Get(), &refused_color, slot(views.Get(), 2)), E_INVALIDARG,
+      "TryCreateShaderResourceView in a format the texture cannot be read as did not return E_INVALIDARG"
   );
 
   answers(
       device->TryCreateDepthStencilView(depth.Get(), nullptr, slot(depths.Get(), 0)), S_OK,
       "TryCreateDepthStencilView refused a texture's own view"
   );
-  D3D12_DEPTH_STENCIL_VIEW_DESC far_depth{DXGI_FORMAT_D32_FLOAT, D3D12_DSV_DIMENSION_TEXTURE2D};
-  far_depth.Texture2D.MipSlice = 3;
+  D3D12_DEPTH_STENCIL_VIEW_DESC refused_depth{DXGI_FORMAT_D32_FLOAT, D3D12_DSV_DIMENSION_TEXTURE2D};
   answers(
-      device->TryCreateDepthStencilView(depth.Get(), &far_depth, slot(depths.Get(), 1)), E_INVALIDARG,
-      "TryCreateDepthStencilView of mip 3 of 1 did not return E_INVALIDARG"
+      device->TryCreateDepthStencilView(color.Get(), &refused_depth, slot(depths.Get(), 1)), E_INVALIDARG,
+      "TryCreateDepthStencilView of a texture that allows no depth did not return E_INVALIDARG"
   );
 
   const D3D12_CONSTANT_BUFFER_VIEW_DESC whole{constants->GetGPUVirtualAddress(), 256};
