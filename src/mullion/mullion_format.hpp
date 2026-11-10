@@ -104,9 +104,11 @@ bool TypedUnorderedAccess(FormatCapability texture, FormatCapability buffer);
 WMTPixelFormat MTLGetUnsignedIntegerFormat(WMTPixelFormat format);
 
 // how a uint clear's channel bits (D3D11.3 5.2.3.2) are written through a texture's own format to store bit for bit,
-// where the texture has no integer view: as the values unorm bits encode, as halves, or as floats. other formats lose
-// patterns that way (snorm's -128 has -127's value, a small float drops a NaN's payload) and need an integer view
-enum class UIntClearWrite { IntegerView, Unorm, Half, Float };
+// where the texture has no integer view (Metal's format view, which takes the texture's lossless compression): as the
+// values unorm bits encode, as halves, as floats, or as the floats RG11B10Float's bits stand for (SmallFloat, whose
+// NaNs Direct3D 12 writes with a blit: BlitNaNClear). other formats lose patterns that way (snorm's -128 has -127's
+// value) and need an integer view
+enum class UIntClearWrite { IntegerView, Unorm, Half, Float, SmallFloat };
 UIntClearWrite GetUIntClearWrite(WMTPixelFormat format);
 
 bool IsUnorm8RenderTargetFormat(WMTPixelFormat format);
@@ -138,5 +140,14 @@ std::array<float, 4> RenderTargetColor(WMTPixelFormat format, const float color[
 // the range a border color clamps to before filtering (D3D11.3 7.18.9.1): normalized formats' own, the rest as their
 // clear colors clamp
 std::array<float, 2> BorderColorRange(const MTL_DXGI_FORMAT_DESC &description);
+
+// the samples Metal stores and rasterizes for a resource or pipeline of `count`: the count, or 4 for the 8 every feature
+// level 11_0 device has (CheckMultisampleQualityLevels) on a GPU of 4 (Apple GPUs before Apple10), each sample then
+// D3D's two (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED); 0 for a count it has no samples for
+uint32_t RasterSampleCount(WMT::Device device, uint32_t count);
+
+// whether a resource of the format has `count` samples: as Metal has them, or paired where D3D requires the count,
+// which 8x is of a feature level 11_0 device (`level_11`), and not of R32G32B32A32's 16-byte texels
+bool HasSampleCount(WMT::Device device, const MTL_DXGI_FORMAT_DESC &format, uint32_t count, bool level_11);
 
 } // namespace mullion

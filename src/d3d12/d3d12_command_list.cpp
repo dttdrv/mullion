@@ -1140,6 +1140,7 @@ public:
       unsigned render_target_width = 16384, render_target_height = 16384, render_target_array_length = 0;
 
       unsigned effective_rtvs = 0, samples = 0;
+      bool paired = false;
       render_serial_ = barrier_serial_;
       targets_pass_ = render;
       targets_.fill(nullptr);
@@ -1153,6 +1154,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_[i] = AttachmentDesc.Texture;
         auto &rt = render->colors[i];
         rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
@@ -1169,6 +1171,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_.back() = AttachmentDesc.Texture;
         auto dsv_planar_flags =
             DepthStencilPlanarFlags(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View)) & pso_graphics_->dsv_mask;
@@ -1201,10 +1204,12 @@ public:
       render->render_target_width = render_target_width;
       render->render_target_height = render_target_height;
       render->render_target_array_length = render_target_array_length;
-      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined
-      if (programmed_samples_ && programmed_samples_ == samples) {
-        render->programmed_samples = programmed_samples_;
-        render->sample_positions = sample_positions_;
+      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined.
+      // paired samples lie where the even ones of their pairs do
+      if (programmed_samples_ && programmed_samples_ == samples << paired) {
+        render->programmed_samples = samples;
+        for (unsigned i = 0; i < samples; i++)
+          render->sample_positions[i] = sample_positions_[i << paired];
       }
       if (effective_rtvs == 0) {
         render->default_raster_sample_count = std::max(1u, pso_graphics_->forced_sample_count);
@@ -3302,6 +3307,64 @@ public:
     return true;
   }
 
+  // a uint clear that gives an RG11B10Float texture without an integer view (PopulateWMTTextureInfo) a NaN: Metal
+  // stores every NaN a kernel writes as one pattern (ClearUAV, UIntClearWrite::SmallFloat), and a blit from a buffer
+  // stores the clear's bits as they are. rows of the texel, as many as kBytes hold, go over each rectangle
+  bool
+  BlitNaNClear(
+      const UAVTextureCPUStorage &View, const std::array<uint32_t, 4> &Color, UINT RectCount, const D3D12_RECT *pRects
+  ) {
+    auto texture = View.texture;
+    auto nan = [](uint32_t bits, unsigned mantissa) {
+      return (bits >> mantissa & 31) == 31 && (bits & ((1u << mantissa) - 1));
+    };
+    if (texture->pixelFormat(View.view) != WMTPixelFormatRG11B10Float ||
+        (texture->usage() & WMTTextureUsagePixelFormatView) ||
+        !(nan(Color[0], 6) || nan(Color[1], 6) || nan(Color[2], 5)))
+      return false;
+    auto type = texture->textureType(View.view);
+    bool volume = type == WMTTextureType3D;
+    if (!volume && type != WMTTextureType2D && type != WMTTextureType2DArray)
+      return false;
+    const uint32_t texel = decltype(allocator_->clear_uav_)::clearColor(Color, WMTPixelFormatRG11B10Float)[0];
+    const int64_t width = texture->width(View.view), height = texture->height(View.view);
+    // a 3D texture's W slices, or the view's array slices
+    const uint32_t first = volume ? View.first_slice : uint32_t(View.view.array_start),
+                   count = !volume ? texture->arrayLength(View.view)
+                                   : View.slice_count ? View.slice_count : texture->depth(View.view);
+    constexpr int64_t kBytes = 65536;
+    D3D12_RECT whole{0, 0, LONG(width), LONG(height)};
+    for (auto &rect : RectCount ? std::span(pRects, RectCount) : std::span(&whole, 1)) {
+      const int64_t left = std::max<int64_t>(rect.left, 0), top = std::max<int64_t>(rect.top, 0),
+                    right = std::min<int64_t>(rect.right, width), bottom = std::min<int64_t>(rect.bottom, height);
+      if (right <= left || bottom <= top)
+        continue;
+      const int64_t wide = right - left, rows = std::min(bottom - top, std::max<int64_t>(kBytes / (wide * 4), 1));
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(wide * rows * sizeof(texel), alignof(uint32_t));
+      if (!mapped)
+        return false;
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, wide * rows * sizeof(texel), "NaN clear texels");
+      std::fill_n(static_cast<uint32_t *>(mapped), wide * rows, texel);
+      PreBlit();
+      for (uint32_t slice = first; slice < first + count; slice++)
+        for (int64_t y = top; y < bottom; y += rows) {
+          auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
+          copy.type = WMTBlitCommandCopyFromBufferToTexture;
+          copy.src = allocator_->gpu_heap_buffer_;
+          copy.src_offset = offset;
+          copy.bytes_per_row = wide * sizeof(texel);
+          copy.bytes_per_image = wide * rows * sizeof(texel);
+          copy.size = {uint64_t(wide), uint64_t(std::min(rows, bottom - y)), 1};
+          copy.dst = texture->current()->texture();
+          copy.level = View.view.mip_start;
+          copy.slice = volume ? 0 : slice;
+          copy.origin = {uint64_t(left), uint64_t(y), volume ? slice : 0};
+        }
+    }
+    return true;
+  }
+
   // the clear's kernel joins the open compute pass (share_compute_), and the list's next dispatch binds its own
   // pipeline and arguments again
   struct SharedComputePass {
@@ -3343,6 +3406,9 @@ public:
     }
     if (Descriptor.type == ShaderVisibleDescriptorType::UAVBuffer &&
         FillBufferClear(Descriptor.UAVBuffer, color[0], RectCount, pRects))
+      return;
+    if (Descriptor.type == ShaderVisibleDescriptorType::UAVTexture &&
+        BlitNaNClear(Descriptor.UAVTexture, color, RectCount, pRects))
       return;
     SharedComputePass shared(this);
     D3D12_RECT full_rect;
@@ -3913,8 +3979,11 @@ public:
       auto [first, step] = get_primitive_vertex_count(topology_);
       statistics_cuts = step != first && pso_graphics_->strip_cut != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
     }
+    // a count buffer and predication change the count on the GPU, and an indexed signature's extras add to it
+    bool runs_max_count =
+        !CountBufferAddress && !predication_region_ && sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
     auto cmd = allocator_->EncodeIndirectRenderCommand(sig, pso_graphics_.ptr(), Pipeline(), MaxCommandCount,
-                                                       tessellation, statistics_cuts);
+                                                       tessellation, statistics_cuts, runs_max_count);
     ForgetBuffers();
     cmd->statistics = statistics;
     cmd->pixel_statistics = pixel_statistics;
@@ -4036,6 +4105,10 @@ public:
           );
         EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       }
+      // a geometry stage adds its counts to its command's, as a direct draw's does (CountDraw)
+      if (cmd->statistics)
+        EncodeBuffer(WMTRenderCommandSetMeshBuffer, cmd->statistics - heap + i * sizeof(PipelineStatisticsResult),
+                     SM50_BINDING_INDEX_PIPELINE_STATISTICS);
       auto draw = [&] {
         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
         draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
@@ -4626,6 +4699,42 @@ public:
         );
       geometries[i].buffer = repeated.first;
       geometries[i].offset = repeated.second;
+    }
+    // a GPU that takes no row-major transforms builds from column-major copies of them, made before the build
+    uint32_t transforms = 0;
+    for (UINT i = 0; !top && !device_->row_major_transforms && i < inputs.NumDescs; i++)
+      transforms += geometries[i].transform_buffer != 0;
+    if (transforms) {
+      auto [sources, sources_offset] = allocator_->AllocateGPUHeap(transforms * sizeof(uint64_t), sizeof(uint64_t));
+      auto [transposed, transposed_offset] = allocator_->AllocateGPUHeap(
+          transforms * 12 * sizeof(float), D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT
+      );
+      for (UINT i = 0, k = 0; i < inputs.NumDescs; i++) {
+        if (!geometries[i].transform_buffer)
+          continue;
+        auto &desc = inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY ? inputs.pGeometryDescs[i] : *inputs.ppGeometryDescs[i];
+        static_cast<uint64_t *>(sources)[k] = desc.Triangles.Transform3x4;
+        geometries[i].transform_buffer = allocator_->gpu_heap_buffer_;
+        geometries[i].transform_offset = transposed_offset + k++ * 12 * sizeof(float);
+        geometries[i].transform_column_major = true;
+      }
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(sources, transforms * sizeof(uint64_t), "transform addresses");
+      StartComputePass();
+      auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+      pso.type = WMTComputeCommandSetPSO;
+      pso.pso = device_->acceleration_structure_transforms;
+      pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
+      for (auto [offset, index] : {std::pair{sources_offset, 0}, std::pair{transposed_offset, 1}}) {
+        auto &buffer = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        buffer.type = WMTComputeCommandSetBuffer;
+        buffer.buffer = allocator_->gpu_heap_buffer_;
+        buffer.offset = offset;
+        buffer.index = index;
+      }
+      auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+      dispatch.type = WMTComputeCommandDispatchThreads;
+      dispatch.size = {transforms, 1, 1};
     }
     uint64_t size = source ? source->size : 0;
     if (!source) {
