@@ -250,9 +250,9 @@ reason_module(char *reason, size_t size, const void *address) {
 
 // the dump's heading: "exception in <module>+<offset>", as the records give only an address and a module the loader
 // relocated could be any of them. code no module holds (a JIT's, an unpacker's) is named by its memory, and by the
-// modules of the return addresses on its stack, which say who called into it
+// modules of `callers`, the first return addresses on its stack (flight_exception's walk), which say who called into it
 static void
-flight_exception_reason(char *reason, size_t size, const void *address, const CONTEXT *context) {
+flight_exception_reason(char *reason, size_t size, const void *address, const uint64_t *callers, int count) {
   MEMORY_BASIC_INFORMATION memory;
   strcpy(reason, "exception in ");
   if (reason_module(reason, size, address))
@@ -269,23 +269,12 @@ flight_exception_reason(char *reason, size_t size, const void *address, const CO
   reason_hex(reason, size, memory.Type);
   reason_append(reason, size, " protect ");
   reason_hex(reason, size, memory.Protect);
-#if defined(__x86_64__) || defined(__arm64ec__)
-  MEMORY_BASIC_INFORMATION stack;
-  if (!VirtualQuery((const void *)context->Rsp, &stack, sizeof(stack)) || stack.State != MEM_COMMIT)
-    return;
-  const uint64_t *at = (const uint64_t *)(context->Rsp & ~7ull);
-  const uint64_t *end = (const uint64_t *)((uintptr_t)stack.BaseAddress + stack.RegionSize);
-  if (end - at > 8192)
-    end = at + 8192;
-  for (int found = 0; at < end && found < 8; at++) {
+  for (int i = 0; i < count; i++) {
     size_t used = strlen(reason);
     reason_append(reason, size, " from ");
-    if (reason_module(reason, size, (const void *)(uintptr_t)*at))
-      found++;
-    else
+    if (!reason_module(reason, size, (const void *)(uintptr_t)callers[i]))
       reason[used] = 0;
   }
-#endif
 }
 
 // the exceptions that end a process unless it catches them: the first dumps the records before its handlers run
@@ -308,6 +297,9 @@ flight_exception(EXCEPTION_POINTERS *pointers) {
   case EXCEPTION_INT_DIVIDE_BY_ZERO:
   case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
     if (!InterlockedExchange(&dumped, 1)) {
+      // the first of the stack's return addresses, for the dump's heading
+      uint64_t callers[8];
+      int called = 0;
 #if defined(__x86_64__) || defined(__arm64ec__)
       // the faulting thread's registers: what pointer it held when it faulted
       const CONTEXT *context = pointers->ContextRecord;
@@ -329,12 +321,14 @@ flight_exception(EXCEPTION_POINTERS *pointers) {
             continue;
           WMTFlightRecord(flight_stack_site, (uint64_t)((at - start) * 8), *at, (uint64_t)(uintptr_t)base,
                           *at - (uint64_t)(uintptr_t)base);
+          if (called < 8)
+            callers[called++] = *at;
           found++;
         }
       }
 #endif
       char reason[1024];
-      flight_exception_reason(reason, sizeof(reason), record->ExceptionAddress, pointers->ContextRecord);
+      flight_exception_reason(reason, sizeof(reason), record->ExceptionAddress, callers, called);
       WMTFlightDump(reason);
     }
   }
