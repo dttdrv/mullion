@@ -56,8 +56,6 @@ public:
   }
 
   Rc &operator=(const Rc &other) {
-    if (this == &other)
-      return *this;
     other.incRef();
     this->decRef();
     m_object = other.m_object;
@@ -65,8 +63,6 @@ public:
   }
 
   template <std::derived_from<T> Tx> Rc &operator=(const Rc<Tx> &other) {
-    if (static_cast<const void *>(this) == static_cast<const void *>(&other))
-      return *this;
     other.incRef();
     this->decRef();
     m_object = other.m_object;

@@ -1,6 +1,6 @@
 #include "../../src/util/rc/util_rc_ptr.hpp"
 
-#include <cassert>
+#include <cstdio>
 #include <utility>
 
 struct RefCounted {
@@ -10,16 +10,22 @@ struct RefCounted {
   void decRef() { --references; }
 };
 
+// assert is compiled out of a release build (b_ndebug=if-release), where the test then passed on any Rc
+#define CHECK(x)                                                                                                       \
+  if (!(x))                                                                                                            \
+    return std::printf("failed: %s\n", #x), 1
+
 int main() {
   RefCounted object;
   {
     mullion::Rc<RefCounted> owner(&object);
-    assert(object.references == 1);
+    CHECK(object.references == 1);
 
     auto *source = &owner;
     owner = std::move(*source);
-    assert(owner.ptr() == &object);
-    assert(object.references == 1);
+    CHECK(owner.ptr() == &object);
+    CHECK(object.references == 1);
   }
-  assert(object.references == 0);
+  CHECK(object.references == 0);
+  return 0;
 }
