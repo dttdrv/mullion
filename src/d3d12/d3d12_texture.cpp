@@ -128,7 +128,7 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
         InfoOut.type = WMTTextureType2DMultisampleArray;
       else
         InfoOut.type = WMTTextureType2DMultisample;
-      InfoOut.sample_count = Desc.SampleDesc.Count;
+      InfoOut.sample_count = RasterSampleCount(Device->GetMTLDevice(), Desc.SampleDesc.Count);
     } else {
       if (Desc.DepthOrArraySize > 1)
         InfoOut.type = WMTTextureType2DArray;
@@ -393,6 +393,7 @@ public:
       if (!pHeap)
         device_->RegisterResidency(storage->current()->texture());
       storage->centered = desc_.SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;
+      storage->paired = texture_info.sample_count < desc_.SampleDesc.Count;
       if (plane)
         texture->chroma = std::move(storage);
       else

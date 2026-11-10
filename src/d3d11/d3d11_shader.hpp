@@ -121,6 +121,7 @@ struct ShaderVariantPixel {
   bool alpha_to_coverage = false;
   bool centered_samples = false;
   bool single_raster_sample = false;
+  bool paired_samples = false;
   uint32_t clip_distances = 0;
   std::array<uint32_t, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats)> pixel_formats{};
   std::array<SM50_SHADER_BLEND, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.blend)> blend{};

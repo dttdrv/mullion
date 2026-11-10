@@ -296,12 +296,22 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   const SM50_SHADER_METAL_VERSION metal_version_;
   const SM50_SHADER_FLAG shader_flags_;
   std::once_flag archive_opened_;
-  WMT::Reference<WMT::BinaryArchive> archive_;
+  // Metal's copy of a loaded archive grows with the square of its pipelines (macOS 27.3, render pipelines: 3.5 MB a
+  // pipeline and 6 s to load in one archive of 4,000; 12 KB and 0.07 s for 4,096 in shards of 32, where a lookup that
+  // misses takes 0.021 ms against 0.013 ms in one archive)
+  static constexpr uint32_t kPipelinesPerArchive = 32;
+  // as many as a pipeline's lookup names
+  static constexpr size_t kMaxArchives =
+      std::numeric_limits<decltype(WMTRenderPipelineInfo::num_binary_archives_for_lookup)>::max();
+  // the archive's shards: those earlier launches wrote, then the one pipelines are added to (Archived)
+  std::vector<WMT::Reference<WMT::BinaryArchive>> archives_;
+  std::vector<obj_handle_t> archive_handles_;
   std::string archive_path_;
   mullion::mutex archive_mutex_;
   mullion::condition_variable archive_changed_;
-  // pipelines added to the archive so far
+  // pipelines added to the archive so far, and of them to its last shard
   uint64_t archived_ = 0;
+  uint32_t shard_archived_ = 0;
   bool archive_closing_ = false;
   mullion::thread archive_writer_;
   mullion::mutex depth_stencil_lock_;
@@ -376,7 +386,14 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
+    row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
+    if (!row_major_transforms)
+      acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
+          command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
+      );
     if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        (!row_major_transforms && !acceleration_structure_transforms) ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
@@ -505,21 +522,33 @@ public:
     return shader_flags_;
   }
 
-  obj_handle_t
-  PipelineArchive() override {
+  std::string
+  ShardPath(size_t shard) {
+    return str::format(archive_path_, shard, ".metallib");
+  }
+
+  std::span<const obj_handle_t>
+  PipelineArchives() override {
     std::call_once(archive_opened_, [this] {
       auto directory = ShaderCacheDirectory();
-      if (directory.empty())
-        return;
-      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), ".metallib");
       WMT::Reference<WMT::Error> error;
-      // a file Metal cannot read (none yet, or a damaged one) is started again
-      if (!(archive_ = GetMTLDevice().newBinaryArchive(archive_path_.c_str(), error)))
-        archive_ = GetMTLDevice().newBinaryArchive(nullptr, error);
-      if (archive_)
-        archive_writer_ = mullion::thread([this] { WriteArchive(); });
+      WMT::Reference<WMT::BinaryArchive> added;
+      if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
+        return;
+      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+      // shards are read in order up to the first one Metal cannot read (none yet, or a damaged one), where this
+      // launch's shards start
+      while (archives_.size() + 1 < kMaxArchives)
+        if (auto read = GetMTLDevice().newBinaryArchive(ShardPath(archives_.size()).c_str(), error))
+          archives_.push_back(std::move(read));
+        else
+          break;
+      archives_.push_back(std::move(added));
+      for (auto &archive : archives_)
+        archive_handles_.push_back(archive.handle);
+      archive_writer_ = mullion::thread([this] { WriteArchive(); });
     });
-    return archive_.handle;
+    return archive_handles_;
   }
 
   void
@@ -527,12 +556,14 @@ public:
     {
       std::lock_guard lock(archive_mutex_);
       archived_++;
+      shard_archived_++;
     }
     archive_changed_.notify_one();
   }
 
-  // writes the archive once additions stop for as long as its last write took: a burst of new pipelines is written
-  // once, and pipelines wait on a write (archive_lock) only between bursts. the device's end writes what is left
+  // writes the last shard once additions stop for as long as its last write took, or once it is full: a burst of new
+  // pipelines is written once, and pipelines wait on a write (archive_lock) only between bursts. the device's end
+  // writes what is left
   void
   WriteArchive() {
     env::setThreadName("mullion-archive-thread");
@@ -541,23 +572,38 @@ public:
     std::chrono::steady_clock::duration took{};
     for (;;) {
       archive_changed_.wait(lock, [&] { return archive_closing_ || archived_ != written; });
-      for (uint64_t seen = written; !archive_closing_ && seen != archived_;) {
+      auto full = [&] { return shard_archived_ >= kPipelinesPerArchive; };
+      for (uint64_t seen = written; !archive_closing_ && !full() && seen != archived_;) {
         seen = archived_;
-        archive_changed_.wait_for(lock, took, [&] { return archive_closing_; });
+        archive_changed_.wait_for(lock, took, [&] { return archive_closing_ || full(); });
       }
       if (archived_ == written)
         return;
-      auto target = archived_;
+      bool closing = archive_closing_;
       lock.unlock();
       auto start = std::chrono::steady_clock::now();
       WMT::Reference<WMT::Error> error;
+      auto path = ShardPath(archives_.size() - 1);
+      uint64_t target;
       {
         std::lock_guard whole(archive_lock);
-        archive_.serialize(archive_path_.c_str(), error);
+        archives_.back().serialize(path.c_str(), error);
+        // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
+        // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")
+        WMT::Reference<WMT::Error> unused;
+        if (!closing && archives_.size() < kMaxArchives)
+          if (auto next = GetMTLDevice().newBinaryArchive(nullptr, unused)) {
+            archive_handles_.push_back(next.handle);
+            archives_.push_back(std::move(next));
+          }
+        // no pipeline is added while the archive is written whole
+        std::lock_guard counts(archive_mutex_);
+        target = archived_;
+        shard_archived_ = 0;
       }
       took = std::chrono::steady_clock::now() - start;
       if (error)
-        ERR("Failed to write the pipeline archive ", archive_path_, ": ", error.description().getUTF8String());
+        ERR("Failed to write the pipeline archive ", path, ": ", error.description().getUTF8String());
       lock.lock();
       written = target;
     }
@@ -775,7 +821,7 @@ public:
           metal, out->Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
       );
       bool multisample = support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+      if (out->SampleCount == 1 || (!out->Flags && multisample && HasSampleCount(metal, format_desc, out->SampleCount, true)))
         out->NumQualityLevels = 1;
       return S_OK;
     }

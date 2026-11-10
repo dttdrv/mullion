@@ -182,6 +182,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.alpha_to_coverage);
   h.update(variant.centered_samples);
   h.update(variant.single_raster_sample);
+  h.update(variant.paired_samples);
   h.update(variant.clip_distances);
   h.update(variant.blend);
   auto variant_digest = h.final();
@@ -200,6 +201,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.alpha_to_coverage = variant.alpha_to_coverage;
     data.centered_samples = variant.centered_samples;
     data.single_raster_sample = variant.single_raster_sample;
+    data.paired_samples = variant.paired_samples;
     data.clip_distances = variant.clip_distances;
     data.cull_distances = 0;
     data.cull_depth = false;

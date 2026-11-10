@@ -481,7 +481,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
 IndirectRenderCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-    size_t MaxCount, bool tessellation, bool statistics_cuts
+    size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
 ) {
   // for a tessellated, geometry or mesh command (`tessellation`) the resolver leaves an IndirectMeshDraw, and the
   // caller draws each: mesh commands in indirect command buffers come only with Apple9 GPUs, and one way serves all
@@ -638,6 +638,17 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd_use_icb.stages = WMTRenderStageVertex;
   cmd_use_icb.usage = WMTResourceUsageRead;
   cmd_use_icb.resource = icb;
+
+  // Metal 4's shader validation zeroes the loads of a render pass's commands run with a range the GPU reads (#165): a
+  // range known now needs none
+  if (runs_max_count) {
+    auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
+    cmd.type = WMTRenderCommandExecuteCommandsInBuffer;
+    cmd.indirect_command_buffer = icb;
+    cmd.location = 0;
+    cmd.length = MaxCount;
+    return data;
+  }
 
   auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands_indirect>();
   cmd.type = WMTRenderCommandExecuteCommandsInBufferIndirect;

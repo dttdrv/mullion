@@ -6,7 +6,10 @@ lines), in time order. a run that fails nothing writes no dump.
 removed: a removed device dumps, and so does the exit after it; the first holds the list's execution, the Signal of the
 program's fence to 1, its command buffer's completion (Metal's MTLCommandBufferStatusCompleted, 4) and the removal
 with DXGI_ERROR_DEVICE_REMOVED (0x887a0005, winerror.h).
-exception: the first access violation dumps, the second does not; the exit's dump holds both.
+exception: the first access violation dumps, its heading naming the module of its address (kernelbase's RaiseException),
+the second does not; the exit's dump holds both.
+unhoused: an access violation in code no module holds (a page the program allocated): the dump's heading names the
+page, the offset in it and the modules of the first return addresses on the stack, the program's own first.
 quiet: nothing failed: no dump.
 many: more signals than a ring holds: the dump keeps the last of them, consecutive up to the program's last, and
 counts the others overwritten.
@@ -14,6 +17,8 @@ cost: not judged; how long a record takes its thread, printed.
 d3d11: MULLION_FLIGHT=exit dumps a run that failed nothing; it holds the context's command buffer committing and
 completing.
 busy: each dump made while other threads record holds the dumping thread's record from just before it.
+unloaded: tests/d3d12/d3d12_flight_unload.cpp frees winemetal.dll and raises an exception its own handler continues
+from: the run ends well and writes no dump, as the DLL's handler left with it.
 """
 import argparse
 import re
@@ -50,9 +55,13 @@ def judge(mode, facts, dump):
     got = sections(dump)
     if isinstance(got, str):
         return [f"a line that is no record: {got[:120]!r}"]
-    want = {"removed": ["a removed device", "exit"], "exception": ["exception", "exit"], "many": ["a removed device", "exit"],
+    want = {"removed": ["a removed device", "exit"], "exception": ["exception", "exit"],
+            "unhoused": ["exception", "exit"], "many": ["a removed device", "exit"],
             "d3d11": ["exit"], "busy": ["busy"] * int(facts["busy"][0][0]) + ["exit"] if "busy" in facts else []}[mode]
-    wrong = [] if [reason for reason, _, _ in got] == want else [f"dumps {[reason for reason, _, _ in got]}, want {want}"]
+    # an exception's dump names the module of its address, "exception in <module>+<offset>", or its memory
+    named = r"^exception in (memory )?[^+ ]+\+0x[0-9a-f]+( .*)?$"
+    reasons = [re.sub(named, "exception", reason) for reason, _, _ in got]
+    wrong = [] if reasons == want else [f"dumps {[reason for reason, _, _ in got]}, want {want}"]
     for reason, _, records in got:
         times = [ms for ms, _, _ in records]
         if times != sorted(times, reverse=True) or any(ms < 0 for ms in times):
@@ -70,7 +79,17 @@ def judge(mode, facts, dump):
                  for p in [f"Signal of fence {fence}", "is removed"]]
         if order[0] > order[1]:
             wrong.append("the removal is recorded before the Signal before it")
+    elif mode == "unhoused":
+        # the fault is the page's third byte, and what called the page is the program
+        page = facts["unhoused"][0][0] if "unhoused" in facts else "?"
+        heading = (rf"exception in memory {page}\+0x2 type 0x[0-9a-f]+ protect 0x[0-9a-f]+"
+                   r" from d3d12_flight\.exe\+0x[0-9a-f]+( from [^+ ]+\+0x[0-9a-f]+)*")
+        if not re.fullmatch(heading, got[0][0], re.IGNORECASE):
+            wrong.append(f"the exception's dump does not name its page and its callers: {got[0][0]!r}")
     elif mode == "exception":
+        # RaiseException raises at its own address, in kernelbase
+        if not re.fullmatch(r"exception in kernelbase\.dll\+0x[0-9a-f]+", got[0][0], re.IGNORECASE):
+            wrong.append(f"the exception's dump does not name its module: {got[0][0]!r}")
         raised = [record for record in first if record.startswith("exception 0xc0000005")]
         if len(raised) != 1 or not raised[0].endswith(f"information 0x1 {facts['exception'][0][0]}"):
             wrong.append(f"the first dump's exceptions: {raised}")
@@ -107,7 +126,7 @@ def main():
         base = run.as_family(base, args.family)
         exe = next(path for build in builds for path in build.glob("tests/*/d3d12_flight.exe"))
         failed = 0
-        for mode in ("removed", "exception", "quiet", "many", "d3d11", "busy"):
+        for mode in ("removed", "exception", "unhoused", "quiet", "many", "d3d11", "busy"):
             out = (args.out / mode).resolve()
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir(parents=True)
@@ -126,6 +145,19 @@ def main():
             failed += bool(wrong)
             print(f"{mode}: {'failed' if wrong else 'passed'}", *(f"  {line}" for line in wrong[:8]), sep="\n",
                   flush=True)
+        unload = next(path for build in builds for path in build.glob("tests/*/d3d12_flight_unload.exe"))
+        out = (args.out / "unloaded").resolve()
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir(parents=True)
+        status = run.finish([binary, unload], dict(base, MULLION_DIAG_PATH=str(out)), args.seconds, out / "log.txt")
+        text = (out / "log.txt").read_text(errors="replace")
+        wrong = [f"exit status {status}"] if status else []
+        if not re.search(r"^fact unloaded 1$", text, re.M):
+            wrong.append("the program's handler did not continue from its exception once")
+        if any(out.glob("*.flight")):
+            wrong.append("a dump, from a handler of a DLL that was freed")
+        failed += bool(wrong)
+        print(f"unloaded: {'failed' if wrong else 'passed'}", *(f"  {line}" for line in wrong[:8]), sep="\n", flush=True)
         out = (args.out / "cost").resolve()
         out.mkdir(parents=True, exist_ok=True)
         status = run.finish([binary, exe, "cost"], dict(base), args.seconds, out / "log.txt")

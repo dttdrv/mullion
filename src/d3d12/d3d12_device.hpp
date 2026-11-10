@@ -600,7 +600,10 @@ public:
   // it rasterizes points or lines, which take no depth bias (D3D11.3 15.10); Metal gives them one with a stray slope
   // when an indirect command buffer draws them, so none is set
   bool unbiased = false;
+  // the samples a pass without targets rasterizes (RasterSampleCount of ForcedSampleCount), 0 for its targets'
   uint32_t forced_sample_count;
+  // each raster sample stands for two of the description's (RasterSampleCount)
+  bool paired_samples = false;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
   // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
   // depth_bounds); and whether the pipeline writes depth, which changes what passes
@@ -672,24 +675,25 @@ public:
   auto
   Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
     std::shared_lock lock(archive_lock);
-    obj_handle_t archive = PipelineArchive();
-    if (!archive)
+    auto archives = PipelineArchives();
+    if (archives.empty())
       return make(info, error);
-    info.binary_archives_for_lookup.set(&archive);
-    info.num_binary_archives_for_lookup = 1;
+    info.binary_archives_for_lookup.set(archives.data());
+    info.num_binary_archives_for_lookup = archives.size();
     info.fail_on_binary_archive_miss = true;
     if (auto found = make(info, error))
       return found;
     info.fail_on_binary_archive_miss = false;
-    info.binary_archive_for_serialization = archive;
+    info.binary_archive_for_serialization = archives.back();
     error = {};
     auto made = make(info, error);
     if (made)
       PipelineArchived();
     return made;
   }
-  // the device's archive, opened when the first pipeline is made; none without a shader cache (ShaderCacheDirectory)
-  virtual obj_handle_t PipelineArchive() = 0;
+  // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
+  // shader cache (ShaderCacheDirectory)
+  virtual std::span<const obj_handle_t> PipelineArchives() = 0;
   virtual void PipelineArchived() = 0;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
@@ -873,6 +877,10 @@ public:
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
+  // a bottom-level structure's geometry transforms as column-major matrices (acceleration_structure_transforms), for
+  // a GPU that takes no row-major ones
+  WMT::Reference<WMT::ComputePipelineState> acceleration_structure_transforms;
+  bool row_major_transforms = false;
   // the samples of a depth attachment in the depth bounds, for a GPU without the test (depth_bounds_samples_*): of a
   // 2D, 2D array, multisampled and multisampled array view
   WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
