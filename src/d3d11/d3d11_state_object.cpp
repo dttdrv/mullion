@@ -17,6 +17,7 @@
  */
 
 
+#include "mullion_format.hpp"
 #include "Metal.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_state_object.hpp"
@@ -639,7 +640,7 @@ HRESULT StateObjectCache<D3D11_RASTERIZER_DESC2, IMTLD3D11RasterizerState>::
   // D3D11_RASTERIZER_DESC1::ForcedSampleCount permits 0, 1, 2, 4, 8 and optionally 16 (Microsoft Learn).
   const auto samples = pRasterizerDesc->ForcedSampleCount;
   if (samples &&
-      (!std::has_single_bit(samples) || samples > 16 || !device->GetMTLDevice().supportsTextureSampleCount(samples)))
+      (!std::has_single_bit(samples) || samples > 16 || !RasterSampleCount(device->GetMTLDevice(), samples)))
     return E_INVALIDARG;
 
   if (!ppRasterizerState)

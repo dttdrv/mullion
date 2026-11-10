@@ -300,6 +300,7 @@ Converter::LoadOperand(const SrcOperandAttribute &SrcOp, mask_t Mask) {
     Ret = ctx.pso_single_raster_sample ? ir.CreateZExt(ir.CreateICmpNE(res.coverage_mask_arg, ir.getInt32(0)), ir.getInt32Ty())
           : ctx.pso_sample_mask != 0xffffffff ? ir.CreateAnd(res.coverage_mask_arg, ctx.pso_sample_mask)
                                               : res.coverage_mask_arg;
+    Ret = air.D3DCoverage(Ret);
     break;
   }
   case InputAttribute::InnerCoverage: {
@@ -635,7 +636,7 @@ void
 Converter::StoreOperand(const DstOperandOutputCoverageMask &DstOp, llvm::Value *Value) {
   auto ValueInt = ZExtAndBitcastToInt32(Value);
   auto Ptr = ir.CreateConstGEP1_32(ir.getInt32Ty(), res.coverage_mask_reg, 0);
-  ir.CreateStore(ExtractElement(ValueInt, 0), Ptr);
+  ir.CreateStore(air.MetalCoverage(ExtractElement(ValueInt, 0)), Ptr);
 }
 
 void
@@ -2621,7 +2622,7 @@ Converter::MinMaxFilter(
     Own.Range = Custom ? Reducer->getArg(4) : nullptr;
     Own.Metadata = nullptr;
     // an unbound texture's answers are dropped where it is called
-    Own.Texture.Unbound = Own.Texture.SingleSample = nullptr;
+    Own.Texture.Unbound = Own.Texture.SingleSample = Own.Texture.Paired = nullptr;
     Value *Sampler = Reducer->getArg(1), *Metadata = Reducer->getArg(2), *Border = Reducer->getArg(3);
     Value *Coord = Reducer->getArg(5), *ArrayIndex = Reducer->getArg(6), *LOD = Reducer->getArg(7);
     auto Field = [&](unsigned Shift, unsigned Bits) {
@@ -3188,7 +3189,7 @@ Converter::operator()(const InstSampleInfo &sample) {
     if (sample.src.has_value()) {
       SampleCount = ir.getInt32(0);
     } else {
-      SampleCount = air.CreateGetNumSamples();
+      SampleCount = air.CreateD3DSampleCount();
     }
   } else {
     SampleCount = air.CreateTextureQuery(Tex->Texture, Tex->Handle, Texture::num_samples, ir.getInt32(0));
@@ -3220,7 +3221,7 @@ Converter::operator()(const InstSamplePos &sample) {
                          Index
                      )
       : sample.src ? air.CreateSamplePos(ir.getInt32(0), Index)
-                   : air.CreateRasterizerSamplePos(Index);
+                   : air.CreateRasterizerSamplePos(air.MetalSampleIndex(Index));
   ValueVec4 = ir.CreateShuffleVector(Pos, ValueVec4, {0, 1, 2, 3});
 
   StoreOperand(sample.dst, MaskSwizzle(ValueVec4, GetMask(sample.dst), sample.read_swizzle));
@@ -3561,7 +3562,7 @@ Converter::operator()(const InstInterpolateSample &eval) {
   if (!Itp)
     return;
 
-  auto Sample = LoadOperand(eval.sample_index, kMaskComponentX);
+  auto Sample = air.MetalSampleIndex(LoadOperand(eval.sample_index, kMaskComponentX));
   auto Value = Interpolate(*Itp, [&](auto Handle) { return air.CreateInterpolateAtSample(Handle, Sample, Itp->Perspective); });
   StoreOperand(eval.dst, MaskSwizzle(Value, GetMask(eval.dst), eval.read_swizzle));
 }

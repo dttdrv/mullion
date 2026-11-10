@@ -477,11 +477,11 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
-      auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls,
-             cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull] =
+      auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, paired, clips,
+             culls, cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull] =
           *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
-      hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, clips, culls, cull_depth, blend,
-           bounds, late, conservative, coarse, rate, quads, hull);
+      hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, paired, clips, culls, cull_depth,
+           blend, bounds, late, conservative, coarse, rate, quads, hull);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -1129,12 +1129,14 @@ public:
 
     // a description left at zero has one sample (Unreal Engine 5's pipelines; vkd3d-proton draws them so). a pass
     // with no targets rasterizes the forced count (d3d12_command_list.cpp), and its pipeline with it
-    info.raster_sample_count = !rtv_mask && !dsv_mask && pDesc->RasterizerState.ForcedSampleCount
-                                   ? pDesc->RasterizerState.ForcedSampleCount
-                                   : std::max(pDesc->SampleDesc.Count, 1u);
+    uint32_t samples = !rtv_mask && !dsv_mask && pDesc->RasterizerState.ForcedSampleCount
+                           ? pDesc->RasterizerState.ForcedSampleCount
+                           : std::max(pDesc->SampleDesc.Count, 1u);
+    info.raster_sample_count = RasterSampleCount(device_->GetMTLDevice(), samples);
+    paired_samples = info.raster_sample_count < samples;
     // refused before its shaders are compiled for a pipeline Metal would refuse
-    if (!device_->GetMTLDevice().supportsTextureSampleCount(info.raster_sample_count)) {
-      WARN("InitializePSO: ", info.raster_sample_count, " samples, which this GPU does not rasterize");
+    if (!info.raster_sample_count) {
+      WARN("InitializePSO: ", samples, " samples, which this GPU does not rasterize");
       return FAIL(E_INVALIDARG);
     }
     // Metal refuses a mesh pipeline that asks for indirect command buffers on GPUs before Apple9, where mesh draws
@@ -1253,7 +1255,9 @@ public:
     unbiased = !pDesc->GS.BytecodeLength && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT ||
                                              pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
     winding = pDesc->RasterizerState.FrontCounterClockwise ? WMTWindingCounterClockwise : WMTWindingClockwise;
-    forced_sample_count = pDesc->RasterizerState.ForcedSampleCount;
+    forced_sample_count = pDesc->RasterizerState.ForcedSampleCount
+                              ? RasterSampleCount(device_->GetMTLDevice(), pDesc->RasterizerState.ForcedSampleCount)
+                              : 0;
   }
 
   // AS and MS make a mesh shader pipeline: the amplification shader, if any, is Metal's object stage, the mesh shader
@@ -1270,7 +1274,7 @@ public:
     if (rasterizer.ForcedSampleCount != 0 && rasterizer.ForcedSampleCount != 1 && rasterizer.ForcedSampleCount != 4 &&
         rasterizer.ForcedSampleCount != 8 && rasterizer.ForcedSampleCount != 16)
       return E_INVALIDARG;
-    if (rasterizer.ForcedSampleCount > 1 && !device_->GetMTLDevice().supportsTextureSampleCount(rasterizer.ForcedSampleCount))
+    if (rasterizer.ForcedSampleCount > 1 && !RasterSampleCount(device_->GetMTLDevice(), rasterizer.ForcedSampleCount))
       return E_INVALIDARG;
     if (rasterizer.ConservativeRaster != D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF) {
       D3D12_FEATURE_DATA_D3D12_OPTIONS support{};
@@ -1526,6 +1530,13 @@ public:
                     std::any_of(pDesc->RTVFormats, pDesc->RTVFormats + pDesc->NumRenderTargets,
                                 [](auto format) { return format != DXGI_FORMAT_UNKNOWN; });
     uint32_t sample_mask = attached ? pDesc->SampleMask : ~0u;
+    // paired samples keep a sample where either of its two is kept, past the raster samples all kept as before
+    if (paired_samples) {
+      uint32_t raster = mesh ? mesh_info.raster_sample_count : info.raster_sample_count, kept = ~0u << raster;
+      for (uint32_t i = 0; i < raster; i++)
+        kept |= (sample_mask >> 2 * i & 3 ? 1u : 0u) << i;
+      sample_mask = kept;
+    }
     if (pDesc->PS.pShaderBytecode) {
       auto sha1 = ShaderDigest(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength);
 
@@ -1550,6 +1561,7 @@ public:
       std::copy(std::begin(blend), std::end(blend), data_ps.blend);
       data_ps.centered_samples =
           data_ps.single_raster_sample || pDesc->SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;
+      data_ps.paired_samples = paired_samples;
       data_ps.depth_bounds = depth_bounds_emulated;
       data_ps.late_tests = false;
       data_ps.conservative = conservative;

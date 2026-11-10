@@ -653,10 +653,14 @@ public:
     Texture.kind = Descriptor.ResourceKind;
     Texture.memory_access = Descriptor.MemoryAccess;
     Texture.sample_type = Descriptor.SampleType;
-    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms)
+    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms) {
       Texture.SingleSample = ir.CreateICmpNE(
           ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE), ir.getInt64(0)
       );
+      Texture.Paired = ir.CreateICmpNE(
+          ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED), ir.getInt64(0)
+      );
+    }
     Texture.Unbound = ir.CreateICmpNE(ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_METADATA_UNBOUND), ir.getInt64(0));
     return {
         Texture,
@@ -670,11 +674,16 @@ public:
     };
   }
 
-  // a multisample texture's sample offset: the pattern of no samples places every one at the center
+  // a multisample texture's sample offset, of D3D's count and index: the pattern of no samples places every one at
+  // the center, and paired samples are the texture's half as many
   llvm::Value *
   TextureSamplePos(const TextureResourceHandle &Tex, llvm::Value *Samples, llvm::Value *Index) {
     auto Centered =
         ir.CreateICmpNE(ir.CreateAnd(Tex.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED), ir.getInt64(0));
+    if (Tex.Texture.Paired) {
+      Samples = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Samples, 1), Samples);
+      Index = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Index, 1), Index);
+    }
     return air.CreateSamplePos(ir.CreateSelect(Centered, ir.getInt32(0), Samples), Index);
   }
 
