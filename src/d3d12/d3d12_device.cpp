@@ -1276,17 +1276,14 @@ public:
 
   void STDMETHODCALLTYPE
   CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
-    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
-    if (pDesc)
-      Heap->AddConstantBufferView(Index, pDesc->BufferLocation, pDesc->SizeInBytes);
-    else
-      Heap->AddConstantBufferView(Index, 0, 0);
+    TryCreateConstantBufferView(pDesc, Descriptor);
   };
 
+  // E_INVALIDARG for a slot the heap does not have, as the other TryCreate* answer
   HRESULT STDMETHODCALLTYPE
   TryCreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
-    CreateConstantBufferView(pDesc, Descriptor);
-    return S_OK;
+    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+    return Heap->AddConstantBufferView(Index, pDesc ? pDesc->BufferLocation : 0, pDesc ? pDesc->SizeInBytes : 0);
   };
 
   // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
@@ -1428,8 +1425,13 @@ public:
 
   void STDMETHODCALLTYPE
   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    TryCreateSampler(pDesc, Descriptor);
+  };
+
+  HRESULT
+  TryCreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
-    Heap->AddSampler(Index, pDesc);
+    return Heap->AddSampler(Index, pDesc);
   };
 
   // ID3D12Device11: a sampler of a uint border color takes the color of its values, each 0 or 1 as a float (the
@@ -1437,8 +1439,13 @@ public:
   // Metal's samplers of argument buffers take, and are sampled as normalized
   void STDMETHODCALLTYPE
   CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    TryCreateSampler2(pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
     if (!pDesc)
-      return;
+      return E_INVALIDARG;
     D3D12_SAMPLER_DESC desc{pDesc->Filter,         pDesc->AddressU,      pDesc->AddressV, pDesc->AddressW,
                             pDesc->MipLODBias,     pDesc->MaxAnisotropy, pDesc->ComparisonFunc, {},
                             pDesc->MinLOD,         pDesc->MaxLOD};
@@ -1451,15 +1458,7 @@ public:
       if (!told.exchange(true))
         WARN("CreateSampler2: non-normalized coordinates are sampled as normalized");
     }
-    CreateSampler(&desc, Descriptor);
-  };
-
-  HRESULT STDMETHODCALLTYPE
-  TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
-    if (!pDesc)
-      return E_INVALIDARG;
-    CreateSampler2(pDesc, Descriptor);
-    return S_OK;
+    return TryCreateSampler(&desc, Descriptor);
   };
 
   void STDMETHODCALLTYPE
@@ -2018,8 +2017,23 @@ public:
   TryCreateSamplerFeedbackUnorderedAccessView(
       ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
   ) final {
-    CreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, DestDescriptor);
-    return S_OK;
+    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
+    // permitted")
+    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
+    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
+    if (!pTargetedResource || !map || !map->feedback) {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
+      return Heap->AddUnorderedAccessView(Index, &null);
+    }
+    TextureViewDescriptor view{
+        .format = WMTPixelFormatR32Uint,
+        .type = WMTTextureType2DArray,
+        .arraySize = map->feedback->DepthOrArraySize,
+    };
+    return Heap->AddUnorderedAccessView(
+        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
+        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
+    );
   }
 
   // a query heap's results the CPU resolves (D3D12_QUERY_HEAP_FLAG_CPU_RESOLVE) are not kept: such a heap is refused,
@@ -2361,24 +2375,7 @@ public:
   CreateSamplerFeedbackUnorderedAccessView(
       ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
   ) {
-    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
-    // permitted")
-    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
-    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
-    if (!pTargetedResource || !map || !map->feedback) {
-      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
-      Heap->AddUnorderedAccessView(Index, &null);
-      return;
-    }
-    TextureViewDescriptor view{
-        .format = WMTPixelFormatR32Uint,
-        .type = WMTTextureType2DArray,
-        .arraySize = map->feedback->DepthOrArraySize,
-    };
-    Heap->AddUnorderedAccessView(
-        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
-        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
-    );
+    TryCreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, DestDescriptor);
   }
 
   void STDMETHODCALLTYPE
