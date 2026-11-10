@@ -3307,6 +3307,64 @@ public:
     return true;
   }
 
+  // a uint clear that gives an RG11B10Float texture without an integer view (PopulateWMTTextureInfo) a NaN: Metal
+  // stores every NaN a kernel writes as one pattern (ClearUAV, UIntClearWrite::SmallFloat), and a blit from a buffer
+  // stores the clear's bits as they are. rows of the texel, as many as kBytes hold, go over each rectangle
+  bool
+  BlitNaNClear(
+      const UAVTextureCPUStorage &View, const std::array<uint32_t, 4> &Color, UINT RectCount, const D3D12_RECT *pRects
+  ) {
+    auto texture = View.texture;
+    auto nan = [](uint32_t bits, unsigned mantissa) {
+      return (bits >> mantissa & 31) == 31 && (bits & ((1u << mantissa) - 1));
+    };
+    if (texture->pixelFormat(View.view) != WMTPixelFormatRG11B10Float ||
+        (texture->usage() & WMTTextureUsagePixelFormatView) ||
+        !(nan(Color[0], 6) || nan(Color[1], 6) || nan(Color[2], 5)))
+      return false;
+    auto type = texture->textureType(View.view);
+    bool volume = type == WMTTextureType3D;
+    if (!volume && type != WMTTextureType2D && type != WMTTextureType2DArray)
+      return false;
+    const uint32_t texel = decltype(allocator_->clear_uav_)::clearColor(Color, WMTPixelFormatRG11B10Float)[0];
+    const int64_t width = texture->width(View.view), height = texture->height(View.view);
+    // a 3D texture's W slices, or the view's array slices
+    const uint32_t first = volume ? View.first_slice : uint32_t(View.view.array_start),
+                   count = !volume ? texture->arrayLength(View.view)
+                                   : View.slice_count ? View.slice_count : texture->depth(View.view);
+    constexpr int64_t kBytes = 65536;
+    D3D12_RECT whole{0, 0, LONG(width), LONG(height)};
+    for (auto &rect : RectCount ? std::span(pRects, RectCount) : std::span(&whole, 1)) {
+      const int64_t left = std::max<int64_t>(rect.left, 0), top = std::max<int64_t>(rect.top, 0),
+                    right = std::min<int64_t>(rect.right, width), bottom = std::min<int64_t>(rect.bottom, height);
+      if (right <= left || bottom <= top)
+        continue;
+      const int64_t wide = right - left, rows = std::min(bottom - top, std::max<int64_t>(kBytes / (wide * 4), 1));
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(wide * rows * sizeof(texel), alignof(uint32_t));
+      if (!mapped)
+        return false;
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, wide * rows * sizeof(texel), "NaN clear texels");
+      std::fill_n(static_cast<uint32_t *>(mapped), wide * rows, texel);
+      PreBlit();
+      for (uint32_t slice = first; slice < first + count; slice++)
+        for (int64_t y = top; y < bottom; y += rows) {
+          auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
+          copy.type = WMTBlitCommandCopyFromBufferToTexture;
+          copy.src = allocator_->gpu_heap_buffer_;
+          copy.src_offset = offset;
+          copy.bytes_per_row = wide * sizeof(texel);
+          copy.bytes_per_image = wide * rows * sizeof(texel);
+          copy.size = {uint64_t(wide), uint64_t(std::min(rows, bottom - y)), 1};
+          copy.dst = texture->current()->texture();
+          copy.level = View.view.mip_start;
+          copy.slice = volume ? 0 : slice;
+          copy.origin = {uint64_t(left), uint64_t(y), volume ? slice : 0};
+        }
+    }
+    return true;
+  }
+
   // the clear's kernel joins the open compute pass (share_compute_), and the list's next dispatch binds its own
   // pipeline and arguments again
   struct SharedComputePass {
@@ -3348,6 +3406,9 @@ public:
     }
     if (Descriptor.type == ShaderVisibleDescriptorType::UAVBuffer &&
         FillBufferClear(Descriptor.UAVBuffer, color[0], RectCount, pRects))
+      return;
+    if (Descriptor.type == ShaderVisibleDescriptorType::UAVTexture &&
+        BlitNaNClear(Descriptor.UAVTexture, color, RectCount, pRects))
       return;
     SharedComputePass shared(this);
     D3D12_RECT full_rect;
