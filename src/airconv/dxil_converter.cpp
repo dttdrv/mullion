@@ -244,6 +244,18 @@ enum Semantic : uint32_t {
   SemanticCullPrimitive = 30,
 };
 
+// whether a mesh shader's primitive outputs have a layer and no viewport index: it then writes viewport 0 with the
+// layer, as the DXBC stages' mesh functions do and for their reason (SM50ShaderInternal::mesh_handlers)
+static bool
+LayerWithoutViewport(const auto &outputs) {
+  bool layer = false, viewport = false;
+  for (auto &e : outputs) {
+    layer |= e.semantic == SemanticRenderTargetArrayIndex;
+    viewport |= e.semantic == SemanticViewportArrayIndex;
+  }
+  return layer && !viewport;
+}
+
 // DxilConstants.h ResourceClass (createHandle's first operand, and the dx.resources list order)
 enum ResourceClass : uint32_t { SRV, UAV, CBV, SamplerClass };
 
@@ -3049,6 +3061,8 @@ convert_dxil(
           break;
         case SemanticRenderTargetArrayIndex:
           air.CreateSetMeshRenderTargetArrayIndex(a(5), v);
+          if (LayerWithoutViewport(shader->mesh_outputs[1]))
+            air.CreateSetMeshViewportArrayIndex(a(5), ir.getInt32(0));
           break;
         case SemanticViewportArrayIndex:
           air.CreateSetMeshViewportArrayIndex(a(5), v);
@@ -4470,6 +4484,8 @@ convert_dxil(
           air.CreateSetMeshRenderTargetArrayIndex(primitive, system(1));
         if (primitive_outputs[2])
           air.CreateSetMeshViewportArrayIndex(primitive, system(2));
+        else if (primitive_outputs[1])
+          air.CreateSetMeshViewportArrayIndex(primitive, ir.getInt32(0));
         air.CreateSetMeshPrimitiveCulled(primitive, culled);
       }
     }
@@ -4705,6 +4721,8 @@ convert_dxil_mesh_stage(
           break;
         case SemanticRenderTargetArrayIndex:
           func_signature.DefineMeshPrimitiveOutput(air::OutputRenderTargetArrayIndex{});
+          if (LayerWithoutViewport(pShaderInternal->mesh_outputs[1]))
+            func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
           break;
         case SemanticViewportArrayIndex:
           func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});

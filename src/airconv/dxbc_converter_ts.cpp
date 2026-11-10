@@ -1050,7 +1050,7 @@ convert_dxbc_tesselator_domain_shader(
 
   // TESS TODO: 17e30e0855effcaa4da9a05c018a3ba7189d7653 changes
 
-  auto &ds_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto ds_output_handlers = pShaderInternal->mesh_handlers(func_signature);
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D11_SB_DOMAIN_SHADER, rootsig->bytecode,
