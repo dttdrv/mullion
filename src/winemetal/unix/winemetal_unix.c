@@ -4609,7 +4609,6 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = (id<MTLBuffer>)info->instance_count_buffer;
     desc.instanceCountBufferOffset = info->instance_count_offset;
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -4638,7 +4637,7 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = (id<MTLBuffer>)g->transform_buffer;
       triangles.transformationMatrixBufferOffset = g->transform_offset;
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -6646,7 +6645,6 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
     desc.instanceDescriptorStride = sizeof(MTLIndirectAccelerationStructureInstanceDescriptor);
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = metal4_range(state, info->instance_count_buffer, info->instance_count_offset);
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -6671,7 +6669,7 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
       triangles.indexType = (MTLIndexType)g->index_type;
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = metal4_range(state, g->transform_buffer, g->transform_offset);
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;

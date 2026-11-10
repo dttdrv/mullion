@@ -4631,6 +4631,42 @@ public:
       geometries[i].buffer = repeated.first;
       geometries[i].offset = repeated.second;
     }
+    // a GPU that takes no row-major transforms builds from column-major copies of them, made before the build
+    uint32_t transforms = 0;
+    for (UINT i = 0; !top && !device_->row_major_transforms && i < inputs.NumDescs; i++)
+      transforms += geometries[i].transform_buffer != 0;
+    if (transforms) {
+      auto [sources, sources_offset] = allocator_->AllocateGPUHeap(transforms * sizeof(uint64_t), sizeof(uint64_t));
+      auto [transposed, transposed_offset] = allocator_->AllocateGPUHeap(
+          transforms * 12 * sizeof(float), D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT
+      );
+      for (UINT i = 0, k = 0; i < inputs.NumDescs; i++) {
+        if (!geometries[i].transform_buffer)
+          continue;
+        auto &desc = inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY ? inputs.pGeometryDescs[i] : *inputs.ppGeometryDescs[i];
+        static_cast<uint64_t *>(sources)[k] = desc.Triangles.Transform3x4;
+        geometries[i].transform_buffer = allocator_->gpu_heap_buffer_;
+        geometries[i].transform_offset = transposed_offset + k++ * 12 * sizeof(float);
+        geometries[i].transform_column_major = true;
+      }
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(sources, transforms * sizeof(uint64_t), "transform addresses");
+      StartComputePass();
+      auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+      pso.type = WMTComputeCommandSetPSO;
+      pso.pso = device_->acceleration_structure_transforms;
+      pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
+      for (auto [offset, index] : {std::pair{sources_offset, 0}, std::pair{transposed_offset, 1}}) {
+        auto &buffer = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        buffer.type = WMTComputeCommandSetBuffer;
+        buffer.buffer = allocator_->gpu_heap_buffer_;
+        buffer.offset = offset;
+        buffer.index = index;
+      }
+      auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+      dispatch.type = WMTComputeCommandDispatchThreads;
+      dispatch.size = {transforms, 1, 1};
+    }
     uint64_t size = source ? source->size : 0;
     if (!source) {
       auto sizes = info;

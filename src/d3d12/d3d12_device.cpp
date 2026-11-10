@@ -373,7 +373,14 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
+    row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
+    if (!row_major_transforms)
+      acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
+          command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
+      );
     if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        (!row_major_transforms && !acceleration_structure_transforms) ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;

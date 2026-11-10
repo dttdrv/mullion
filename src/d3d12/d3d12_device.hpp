@@ -865,6 +865,10 @@ public:
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
+  // a bottom-level structure's geometry transforms as column-major matrices (acceleration_structure_transforms), for
+  // a GPU that takes no row-major ones
+  WMT::Reference<WMT::ComputePipelineState> acceleration_structure_transforms;
+  bool row_major_transforms = false;
   // the samples of a depth attachment in the depth bounds, for a GPU without the test (depth_bounds_samples_*): of a
   // 2D, 2D array, multisampled and multisampled array view
   WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
