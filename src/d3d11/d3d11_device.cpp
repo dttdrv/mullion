@@ -1137,7 +1137,7 @@ public:
     bool multisample = SUCCEEDED(CheckFormatSupport(Format, &support)) &&
                        (support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET);
     if (SUCCEEDED(hr) && !Flags && (SampleCount == 1 || multisample) &&
-        GetMTLDevice().supportsTextureSampleCount(SampleCount))
+        HasSampleCount(GetMTLDevice(), desc, SampleCount, GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0))
       *pNumQualityLevels = 1;
     return S_OK;
   }

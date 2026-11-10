@@ -553,7 +553,7 @@ public:
   // `Pipeline` is the variant of pPSO that the commands draw with
   IndirectRenderCommandData *EncodeIndirectRenderCommand(
       MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-      size_t MaxCount, bool tessellation, bool statistics_cuts
+      size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
   );
 };
 

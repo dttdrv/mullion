@@ -2893,7 +2893,8 @@ convert_dxil(
       auto ptr = element_ptr(ctx.resource.output, e, call, ctx.resource.thread_id_in_patch);
       auto v = widen(a(4), e.component == kComponentI16);
       auto slot = e.semantic >= Depth && e.semantic <= DepthGreaterEqual ? ir.getFloatTy() : ir.getInt32Ty();
-      ir.CreateStore(ir.CreateBitCast(v, slot), ptr);
+      v = ir.CreateBitCast(v, slot);
+      ir.CreateStore(e.semantic == CoverageOutput ? air.MetalCoverage(v) : v, ptr);
       break;
     }
     case SetMeshOutputCounts: {
@@ -3318,8 +3319,23 @@ convert_dxil(
         }
         return v;
       };
-      // one bound for a load of several units where its last unit is inside
       auto read = mask & kMaskAll, last = llvm::Log2_32(read) * parts + parts - 1;
+      // a structured load that a constant offset keeps inside its element is inside a bounded view where its element is
+      // (an offset past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every unit,
+      // and the address in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping.
+      // a view without bounds may pass 4 GB and keeps the 64-bit address
+      auto inner = dyn_cast<ConstantInt>(a(3));
+      uint32_t unit_bytes = unit->getBitWidth() / 8, stride = b.StructureStride;
+      if (!store && !feedback && read && stride && inner && b.Bounds() &&
+          inner->getZExtValue() + (last + 1) * unit_bytes <= stride) {
+        auto at = ir.CreateUDiv(ir.CreateAdd(ir.CreateMul(a(2), ir.getInt32(stride)), inner), ir.getInt32(unit_bytes));
+        auto within =
+            ir.CreateICmpULT(a(2), ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(stride)));
+        auto v = units(ir.CreateZExt(ir.CreateSelect(within, at, ir.getInt32(0)), ir.getInt64Ty()), true);
+        ret = to_struct(ty, ir.CreateSelect(within, v, Constant::getNullValue(v->getType())), residency);
+        break;
+      }
+      // one bound for a load of several units where its last unit is inside
       bool whole = !store && !feedback && read && (parts > 1 || (read & (read - 1)));
       auto v = dxbc.LoadBufferUnits(b, base, whole ? ir.CreateAdd(base, ir.getInt64(last)) : nullptr, unit->getBitWidth() / 8, units);
       if (!store)
@@ -3832,7 +3848,7 @@ convert_dxil(
       ret = attribute(shader::common::InputAttribute::InnerCoverage, 0);
       break;
     case SampleIndex:
-      ret = ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{}));
+      ret = air.D3DSampleIndex(ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{})));
       break;
     case EvalCentroid:
     case EvalSampleIndex:
@@ -3847,7 +3863,7 @@ convert_dxil(
           );
         };
         auto offset = op == EvalCentroid      ? b.centroid
-                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(a(4))
+                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(4)))
                                               : snapped();
         ret = ir.CreateExtractElement(b.At(ir, offset), a(3));
         break;
@@ -3861,7 +3877,7 @@ convert_dxil(
                                    : dxbc.Interpolate(*itp, [&](Value *handle) {
                                        return op == EvalCentroid
                                                   ? air.CreateInterpolateAtCentroid(handle, itp->Perspective)
-                                                  : air.CreateInterpolateAtSample(handle, a(4), itp->Perspective);
+                                                  : air.CreateInterpolateAtSample(handle, air.MetalSampleIndex(a(4)), itp->Perspective);
                                      });
       ret = narrow(interpolated_component(call, v), ty);
       break;
@@ -4133,13 +4149,14 @@ convert_dxil(
         auto &t = *handles[a(1)].texture;
         samples = air.CreateTextureQuery(t.Texture, t.Handle, Texture::num_samples, ir.getInt32(0));
       } else {
-        samples = air.CreateGetNumSamples();
+        samples = air.CreateD3DSampleCount();
       }
       if (op == RenderTargetGetSampleCount) {
         ret = samples;
         break;
       }
-      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2)) : air.CreateRasterizerSamplePos(a(1));
+      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2))
+                         : air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(1)));
       ret = UndefValue::get(ty);
       for (unsigned i = 0; i < 2; i++)
         ret = ir.CreateInsertValue(ret, ir.CreateExtractElement(pos, i), {i});
