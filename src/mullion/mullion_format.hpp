@@ -104,10 +104,10 @@ bool TypedUnorderedAccess(FormatCapability texture, FormatCapability buffer);
 WMTPixelFormat MTLGetUnsignedIntegerFormat(WMTPixelFormat format);
 
 // how a uint clear's channel bits (D3D11.3 5.2.3.2) are written through a texture's own format to store bit for bit,
-// where the texture has no integer view: as the values unorm bits encode, as halves, or as floats. other formats lose
-// patterns that way (snorm's -128 has -127's value, a small float drops a NaN's payload) and need an integer view
-// how a uint clear stores its channels' bits in a texture of the format without an integer view of it (Metal's format
-// view, which takes the texture's lossless compression). SmallFloat writes the floats RG11B10Float's bits stand for
+// where the texture has no integer view (Metal's format view, which takes the texture's lossless compression): as the
+// values unorm bits encode, as halves, as floats, or as the floats RG11B10Float's bits stand for (SmallFloat, whose
+// NaNs Direct3D 12 writes with a blit: BlitNaNClear). other formats lose patterns that way (snorm's -128 has -127's
+// value) and need an integer view
 enum class UIntClearWrite { IntegerView, Unorm, Half, Float, SmallFloat };
 UIntClearWrite GetUIntClearWrite(WMTPixelFormat format);
 

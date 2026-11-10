@@ -105,7 +105,7 @@ public:
     }
     if (write == UIntClearWrite::SmallFloat) {
       // an unsigned float of a 5-bit exponent (bias 15) and `m` bits of mantissa, which Metal stores back as these bits
-      // but for a NaN's payload
+      // but for a NaN's payload: Direct3D 12 writes a clear with a NaN before this, with a blit (BlitNaNClear)
       auto decode = [](uint32_t bits, int m) {
         uint32_t e = bits >> m, mantissa = bits & ((1u << m) - 1);
         if (e == 31)
