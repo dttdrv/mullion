@@ -4036,6 +4036,10 @@ public:
           );
         EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       }
+      // a geometry stage adds its counts to its command's, as a direct draw's does (CountDraw)
+      if (cmd->statistics)
+        EncodeBuffer(WMTRenderCommandSetMeshBuffer, cmd->statistics - heap + i * sizeof(PipelineStatisticsResult),
+                     SM50_BINDING_INDEX_PIPELINE_STATISTICS);
       auto draw = [&] {
         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
         draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
