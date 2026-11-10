@@ -1743,7 +1743,9 @@ public:
           // the queue's fences updates the scaler's, which MetalFX waits for and updates, and one that waits for that
           // updates the queue's (as the D3D11 context's scaler boundaries)
           auto data = static_cast<UpscaleEncoderData *>(current);
-          WMT::Fence scaler_fence = data->temporal ? data->temporal->fence() : data->denoised->fence();
+          WMT::Fence scaler_fence = data->temporal   ? data->temporal->fence()
+                                    : data->denoised ? data->denoised->fence()
+                                                     : data->interpolator->fence();
           if (diag::trace_encoders)
             scope.inflight->physical[WMTMetal4Blit] += 2;
           auto begin = cmdbuf.blitCommandEncoder();
@@ -1755,10 +1757,14 @@ public:
                 data->temporal->scaler(), data->color, data->output, data->depth, data->motion, data->exposure,
                 scaler_fence, data->props
             );
-          } else {
+          } else if (data->denoised) {
             auto args = data->denoise;
             args.fence = scaler_fence.handle;
             cmdbuf.encodeDenoisedScale(data->denoised->scaler(), args);
+          } else {
+            auto args = data->interpolate;
+            args.fence = scaler_fence.handle;
+            cmdbuf.encodeFrameInterpolation(data->interpolator->interpolator(), args);
           }
           auto end = cmdbuf.blitCommandEncoder();
           end.waitForFence(scaler_fence);

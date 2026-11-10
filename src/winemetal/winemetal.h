@@ -1931,6 +1931,52 @@ MTLCommandBuffer_encodeDenoisedScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, const struct WMTFXDenoisedScaleArgs *args, bool metal4
 );
 
+/* MetalFX frame interpolation (MTLFXFrameInterpolator, macOS 27): the frame between the last one it was given, which
+ * it keeps, and `color`. Depth and motion are at the input size, color, UI and output at the output size. A UI format
+ * of WMTPixelFormatInvalid leaves the UI out */
+struct WMTFXFrameInterpolatorInfo {
+  enum WMTPixelFormat color_format;
+  enum WMTPixelFormat output_format;
+  enum WMTPixelFormat depth_format;
+  enum WMTPixelFormat motion_format;
+  enum WMTPixelFormat ui_format; /* optional */
+  uint32_t input_width;
+  uint32_t input_height;
+  uint32_t output_width;
+  uint32_t output_height;
+};
+
+/* 0 where the device has none; metal4: an interpolator Metal 4 command buffers encode */
+WINEMETAL_API obj_handle_t
+MTLDevice_newFrameInterpolator(obj_handle_t device, const struct WMTFXFrameInterpolatorInfo *info, bool metal4);
+
+struct WMTFXFrameInterpolateArgs {
+  obj_handle_t color;
+  obj_handle_t depth;
+  obj_handle_t motion;
+  obj_handle_t ui; /* optional */
+  obj_handle_t output;
+  obj_handle_t fence;
+  /* motion vectors times these are in pixels of the motion texture, pointing to where the pixel was */
+  float motion_vector_scale_x;
+  float motion_vector_scale_y;
+  float delta_time; /* seconds from the last frame to this one */
+  float near_plane;
+  float far_plane;
+  float field_of_view; /* vertical, in degrees */
+  float aspect_ratio;
+  float jitter_offset_x;
+  float jitter_offset_y;
+  bool reset;
+  bool depth_reversed;
+  bool ui_composited; /* the UI is in `color` too, and MetalFX takes it out */
+};
+
+WINEMETAL_API void
+MTLCommandBuffer_encodeFrameInterpolation(
+    obj_handle_t cmdbuf, obj_handle_t interpolator, const struct WMTFXFrameInterpolateArgs *args, bool metal4
+);
+
 /* MetalFX for Metal 4 command buffers (MTL4FXSpatialScaler): 0 where the device has none */
 WINEMETAL_API obj_handle_t MTLDevice_newSpatialScaler4(obj_handle_t device, const struct WMTFXSpatialScalerInfo *info);
 
@@ -2599,7 +2645,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
-       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixCallCount };
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceNewFrameInterpolator, WMTUnixCommandBufferFrameInterpolate, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

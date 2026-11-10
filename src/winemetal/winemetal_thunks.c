@@ -2113,6 +2113,29 @@ MTLCommandBuffer_encodeDenoisedScale(
   UNIX_CALL(WMTUnixCommandBufferDenoisedScale, &params);
 }
 
+WINEMETAL_API obj_handle_t
+MTLDevice_newFrameInterpolator(obj_handle_t device, const struct WMTFXFrameInterpolatorInfo *info, bool metal4) {
+  struct unixcall_mtldevice_newfxframeinterpolator params;
+  params.device = device;
+  WMT_MEMPTR_SET(params.info, info);
+  params.ret = NULL_OBJECT_HANDLE;
+  params.metal4 = metal4;
+  UNIX_CALL(WMTUnixDeviceNewFrameInterpolator, &params);
+  return params.ret;
+}
+
+WINEMETAL_API void
+MTLCommandBuffer_encodeFrameInterpolation(
+    obj_handle_t cmdbuf, obj_handle_t interpolator, const struct WMTFXFrameInterpolateArgs *args, bool metal4
+) {
+  struct unixcall_mtlcommandbuffer_frame_interpolate params;
+  params.cmdbuf = cmdbuf;
+  params.interpolator = interpolator;
+  WMT_MEMPTR_SET(params.args, args);
+  params.metal4 = metal4;
+  UNIX_CALL(WMTUnixCommandBufferFrameInterpolate, &params);
+}
+
 WINEMETAL_API void
 MTLCommandBuffer_waitUntilSignaled(obj_handle_t cmdbuf, obj_handle_t event, uint64_t value) {
   struct unixcall_generic_obj_obj_uint64_noret params = {.handle = cmdbuf, .arg0 = event, .arg1 = value};

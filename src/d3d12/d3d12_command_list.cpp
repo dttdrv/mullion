@@ -5131,6 +5131,7 @@ public:
     std::array<uint32_t, 14> key{};
     Rc<TemporalScaler> temporal;
     Rc<DenoisedScaler> denoised;
+    Rc<FrameInterpolator> interpolator;
   };
 
   static Texture *
@@ -5381,6 +5382,91 @@ public:
     return S_OK;
   }
 
+  HRESULT
+  FrameInterpolate(const MTL_FRAME_INTERPOLATE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
+    if (!pDesc || !ppCache)
+      return E_INVALIDARG;
+    auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
+         depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
+         ui = UpscaleTexture(pDesc->UI);
+    if (!color || !output || !depth || !motion)
+      return E_INVALIDARG;
+    auto motion_format = MotionVectorFormat(motion->pixelFormat());
+    if (motion_format == WMTPixelFormatInvalid) {
+      ERR("FrameInterpolate: motion vectors of format ", motion->pixelFormat(), " are not supported");
+      return E_INVALIDARG;
+    }
+    auto depth_format = ScalarFloatFormat(depth->pixelFormat());
+    auto cache = static_cast<UpscalerCache *>(*ppCache);
+    if (!cache)
+      *ppCache = cache = new UpscalerCache;
+    std::array<uint32_t, 14> key{3,
+                                 depth->width(),
+                                 depth->height(),
+                                 output->width(),
+                                 output->height(),
+                                 uint32_t(color->pixelFormat()),
+                                 uint32_t(output->pixelFormat()),
+                                 uint32_t(depth_format),
+                                 uint32_t(motion_format),
+                                 uint32_t(ui ? ui->pixelFormat() : WMTPixelFormatInvalid)};
+    if (!cache->interpolator || cache->key != key) {
+      WMTFXFrameInterpolatorInfo info{};
+      info.color_format = color->pixelFormat();
+      info.output_format = output->pixelFormat();
+      info.depth_format = depth_format;
+      info.motion_format = motion_format;
+      info.ui_format = ui ? ui->pixelFormat() : WMTPixelFormatInvalid;
+      info.input_width = depth->width();
+      info.input_height = depth->height();
+      info.output_width = output->width();
+      info.output_height = output->height();
+      cache->interpolator = new FrameInterpolator(device_->GetMTLDevice(), info, device_->UsesMetal4());
+      if (!cache->interpolator->interpolator().handle) {
+        cache->interpolator = nullptr;
+        ERR("FrameInterpolate: MetalFX has no frame interpolator for ", info.input_width, "x", info.input_height,
+            " to ", info.output_width, "x", info.output_height);
+        return E_FAIL;
+      }
+      cache->key = key;
+      Logger::info(str::format(
+          "MetalFX: frame interpolation at ", info.output_width, "x", info.output_height, " from ", info.input_width,
+          "x", info.input_height, " depth and motion", ui ? ", with UI" : "", device_->UsesMetal4() ? " (Metal 4)" : ""
+      ));
+      if (Logger::logLevel() <= LogLevel::Debug)
+        Logger::debug(str::format(
+            "MetalFX: color format ", color->pixelFormat(), " ", color->width(), "x", color->height(),
+            ", output format ", output->pixelFormat(), " usage ", output->usage(), ", depth format ",
+            depth->pixelFormat(), ", motion format ", motion_format, " ", motion->width(), "x", motion->height(),
+            ", UI ", ui ? str::format(ui->pixelFormat(), " composited ", pDesc->UIComposited) : "none",
+            ", motion scale ", pDesc->MotionVectorScaleX, ",", pDesc->MotionVectorScaleY, ", near ", pDesc->Near,
+            ", far ", pDesc->Far, ", fov ", pDesc->FieldOfView, ", aspect ", pDesc->AspectRatio, ", depth reversed ",
+            pDesc->DepthReversed
+        ));
+    }
+    auto pass = RecordUpscale();
+    pass->interpolator = cache->interpolator;
+    auto &args = pass->interpolate;
+    args.color = UpscaleView(color).handle;
+    args.depth = UpscaleView(depth, depth_format).handle;
+    args.motion = UpscaleView(motion, motion_format).handle;
+    args.ui = UpscaleView(ui).handle;
+    args.output = UpscaleView(output).handle;
+    args.motion_vector_scale_x = pDesc->MotionVectorScaleX;
+    args.motion_vector_scale_y = pDesc->MotionVectorScaleY;
+    args.delta_time = pDesc->DeltaTime;
+    args.near_plane = pDesc->Near;
+    args.far_plane = pDesc->Far;
+    args.field_of_view = pDesc->FieldOfView;
+    args.aspect_ratio = pDesc->AspectRatio;
+    args.jitter_offset_x = pDesc->JitterOffsetX;
+    args.jitter_offset_y = pDesc->JitterOffsetY;
+    args.reset = pDesc->InReset;
+    args.depth_reversed = pDesc->DepthReversed;
+    args.ui_composited = ui && pDesc->UIComposited;
+    return S_OK;
+  }
+
   class UpscaleExt final : public IMTLD3D12CommandListExt {
   public:
     explicit UpscaleExt(MTLD3D12GraphicsCommandListImpl *list) : list_(list) {}
@@ -5412,6 +5498,17 @@ public:
     HRESULT STDMETHODCALLTYPE
     DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {
       return list_->DenoisedUpscale(pDesc, ppCache);
+    }
+    BOOL STDMETHODCALLTYPE
+    SupportsFrameInterpolation() final {
+      // MetalFX keeps the frames it interpolates from from macOS 27
+      uint64_t macos_major_version = 0;
+      WMTGetOSVersion(&macos_major_version, nullptr, nullptr);
+      return macos_major_version >= 27 && list_->device_->GetMTLDevice().supportsFXTemporalScaler();
+    }
+    HRESULT STDMETHODCALLTYPE
+    FrameInterpolate(const MTL_FRAME_INTERPOLATE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {
+      return list_->FrameInterpolate(pDesc, ppCache);
     }
 
   private:
