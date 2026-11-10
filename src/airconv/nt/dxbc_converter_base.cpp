@@ -2414,6 +2414,10 @@ Converter::SampleImplicit(
   auto Isotropic = ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
   if (auto Known = dyn_cast<ConstantInt>(Isotropic); Known && Known->isOne())
     return Biased();
+  // as for a static sampler, a sample whose only bias is the sampler's own and that is none reads Metal's own LOD
+  if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)
+    Isotropic =
+        ir.CreateOr(Isotropic, ir.CreateICmpEQ(ir.CreateTrunc(SamplerMetadata, ir.getInt16Ty()), ir.getInt16(0)));
   auto Gradients = [&] {
     auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
     return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
@@ -2426,11 +2430,11 @@ Converter::SampleImplicit(
   }();
   if (!Selects || isa<Constant>(Isotropic))
     return Gradients();
-  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic
-  // reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29 ms on an M1 Max). the
-  // whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a lane's sampler need not
-  // be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the branches of a sampler's samples
-  // that follow each other
+  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic,
+  // or is unbiased as above, reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29
+  // ms on an M1 Max). the whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a
+  // lane's sampler need not be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the
+  // branches of a sampler's samples that follow each other
   auto &Context = air.getContext();
   auto QuadAll = air.getModule()->getOrInsertFunction(
       "air.quad_all", FunctionType::get(ir.getInt1Ty(), {ir.getInt1Ty()}, false),
