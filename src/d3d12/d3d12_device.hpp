@@ -467,6 +467,9 @@ public:
   // views NULL), as (offset, count), and the vertex buffer slots it binds (NULL); the index buffer when it binds one
   std::vector<std::pair<uint32_t, uint32_t>> ResetRootDwords;
   uint32_t ResetVertexBuffers = 0;
+  // the buffers a command of its indirect command buffers sets, past the highest index, per stage: Metal reserves room
+  // for that many in each command (MTLIndirectCommandBufferDescriptor)
+  uint32_t VertexBufferBindCount = 0, FragmentBufferBindCount = 0, KernelBufferBindCount = 0;
 
   // both run as kernels: the one of draws in a compute pass before the render pass that runs its commands
   WMT::Reference<WMT::ComputePipelineState> render_resolver;
@@ -498,6 +501,8 @@ public:
   Sha1Digest library_key;
   mullion::mutex shader_mutex;
   PipelineShaderCache cached_shaders;
+  // the device's functions it is made of (MTLD3D12Device::functions)
+  std::vector<std::shared_ptr<const void>> functions;
   // the sampler emulations its shaders leave out, as no sampler of the device needed them when it was made
   // (MTLD3D12Device::sampler_emulations), and what it is made of, to make it again with them once a draw or dispatch
   // can read a sampler that does
@@ -591,7 +596,10 @@ public:
   // it rasterizes points or lines, which take no depth bias (D3D11.3 15.10); Metal gives them one with a stray slope
   // when an indirect command buffer draws them, so none is set
   bool unbiased = false;
+  // the samples a pass without targets rasterizes (RasterSampleCount of ForcedSampleCount), 0 for its targets'
   uint32_t forced_sample_count;
+  // each raster sample stands for two of the description's (RasterSampleCount)
+  bool paired_samples = false;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
   // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
   // depth_bounds); and whether the pipeline writes depth, which changes what passes
@@ -647,6 +655,44 @@ public:
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const std::string>> bytes;
   } lean_shaders;
+  // the Metal functions pipelines are made of, with what they were loaded from, by their conversion's key
+  // (CompileFunction): made once while any pipeline holds them
+  struct SharedFunction {
+    WMT::Reference<WMT::Function> function;
+    WMT::Reference<WMT::DispatchData> data;
+  };
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<const SharedFunction>> made;
+  } functions;
+  // the program's pipelines kept across launches as their GPU binaries (MTLBinaryArchive): a pipeline is looked up
+  // there before Metal compiles it, and one that is not there is added once it is compiled
+  template <typename Info, typename Make>
+  auto
+  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
+    std::shared_lock lock(archive_lock);
+    auto archives = PipelineArchives();
+    if (archives.empty())
+      return make(info, error);
+    info.binary_archives_for_lookup.set(archives.data());
+    info.num_binary_archives_for_lookup = archives.size();
+    info.fail_on_binary_archive_miss = true;
+    if (auto found = make(info, error))
+      return found;
+    info.fail_on_binary_archive_miss = false;
+    info.binary_archive_for_serialization = archives.back();
+    error = {};
+    auto made = make(info, error);
+    if (made)
+      PipelineArchived();
+    return made;
+  }
+  // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
+  // shader cache (ShaderCacheDirectory)
+  virtual std::span<const obj_handle_t> PipelineArchives() = 0;
+  virtual void PipelineArchived() = 0;
+  // pipelines are made under it shared, and the archive is written under it whole
+  mullion::shared_mutex archive_lock;
 
   // ExecuteIndirect's indirect command buffers that no allocator holds: what an allocator's last use left unused, and
   // what an allocator held when it was destroyed. an allocator takes from its own pool first, then from this one, so
@@ -730,10 +776,9 @@ public:
   // the Metal language version the device's shaders are converted for (ShaderMetalVersion)
   virtual SM50_SHADER_METAL_VERSION GetMetalVersion() = 0;
   // the shader compiler's flags for what this GPU lacks (GPUShaderFlags)
-  SM50_SHADER_FLAG
-  GetShaderFlags() {
-    return GPUShaderFlags(GetMTLDevice());
-  }
+  virtual SM50_SHADER_FLAG GetShaderFlags() = 0;
+  // the device's one depth stencil state of this description: pipelines share them
+  virtual WMT::Reference<WMT::DepthStencilState> DepthStencilState(const WMTDepthStencilInfo &info) = 0;
 
   // the GPU address of the lock words of 64-bit atomics, which every root signature carries (AtomicLocksQword)
   virtual uint64_t GetAtomicLocks() = 0;
@@ -826,6 +871,10 @@ public:
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
   // display-resolution motion vectors at the input resolution, in its pixels, for MetalFX (cs_downscale_dilated_mv)
   WMT::Reference<WMT::ComputePipelineState> downscale_motion;
+  // a bottom-level structure's geometry transforms as column-major matrices (acceleration_structure_transforms), for
+  // a GPU that takes no row-major ones
+  WMT::Reference<WMT::ComputePipelineState> acceleration_structure_transforms;
+  bool row_major_transforms = false;
   // the samples of a depth attachment in the depth bounds, for a GPU without the test (depth_bounds_samples_*): of a
   // 2D, 2D array, multisampled and multisampled array view
   WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
@@ -1074,6 +1123,8 @@ bool IsCpuVisibleHeap(const D3D12_HEAP_PROPERTIES *pHeapProps);
 // has none while experimental shader models are on (D3D12EnableExperimentalFeatures). Direct3D checks that before
 // it reads anything else of one, and refuses what is not with E_INVALIDARG
 bool ShaderContainerHolds(const void *container, size_t size);
+// the SHA1 of a shader's bytecode, which one that held (ShaderContainerHolds) does not compute again
+Sha1Digest ShaderDigest(const void *code, size_t size);
 
 // whether `device` has the features a shader container requires: the low bits of its feature info part (SFI0,
 // DxilContainer.h), which DxilConstants.h calls feature requirements

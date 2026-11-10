@@ -1861,6 +1861,8 @@ convert_dxil(
   };
   auto i8 = ir.getInt8Ty();
   uint32_t corners = shader->mesh_lines ? 2 : 3;
+  // a line that is culled, by its distances or by the shader, is collapsed to a point instead of being marked culled
+  bool collapsed_lines = ctx.collapse_culled_lines && shader->mesh_lines && (culls || cull_distances);
   GlobalVariable *staged_position = nullptr, *staged_distance = nullptr, *staged_index = nullptr, *staged_culled = nullptr;
   // conservative rasterization keeps every output for the group's triangles (io_binding_map::ConservativeMesh): a vertex's
   // varyings, position and clip distances, a primitive's varyings, ID, layer and viewport, as 32-bit words
@@ -1913,7 +1915,7 @@ convert_dxil(
       staged_distance = threadgroup(ArrayType::get(ArrayType::get(i8, cull_distances), shader->mesh_max_vertices));
     if (culls)
       staged_culled = threadgroup(ArrayType::get(i8, shader->mesh_max_primitives));
-  } else if (staged_positions || cull_distances) {
+  } else if (staged_positions || cull_distances || collapsed_lines) {
     keep_counts();
     IRBuilder<>::InsertPointGuard guard(ir);
     ir.SetInsertPoint(&*ctx.function->getEntryBlock().getFirstInsertionPt());
@@ -1925,6 +1927,9 @@ convert_dxil(
       staged_index = threadgroup(ArrayType::get(ArrayType::get(i8, corners), shader->mesh_max_primitives));
       if (culls)
         staged_culled = threadgroup(ArrayType::get(i8, shader->mesh_max_primitives));
+    } else if (collapsed_lines) {
+      staged_index = threadgroup(ArrayType::get(ArrayType::get(i8, corners), shader->mesh_max_primitives));
+      staged_culled = threadgroup(ArrayType::get(i8, shader->mesh_max_primitives));
     }
   }
   // runs `body` for 0 to count - 1, at least once, before `at`
@@ -2888,7 +2893,8 @@ convert_dxil(
       auto ptr = element_ptr(ctx.resource.output, e, call, ctx.resource.thread_id_in_patch);
       auto v = widen(a(4), e.component == kComponentI16);
       auto slot = e.semantic >= Depth && e.semantic <= DepthGreaterEqual ? ir.getFloatTy() : ir.getInt32Ty();
-      ir.CreateStore(ir.CreateBitCast(v, slot), ptr);
+      v = ir.CreateBitCast(v, slot);
+      ir.CreateStore(e.semantic == CoverageOutput ? air.MetalCoverage(v) : v, ptr);
       break;
     }
     case SetMeshOutputCounts: {
@@ -3313,8 +3319,23 @@ convert_dxil(
         }
         return v;
       };
-      // one bound for a load of several units where its last unit is inside
       auto read = mask & kMaskAll, last = llvm::Log2_32(read) * parts + parts - 1;
+      // a structured load that a constant offset keeps inside its element is inside a bounded view where its element is
+      // (an offset past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every unit,
+      // and the address in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping.
+      // a view without bounds may pass 4 GB and keeps the 64-bit address
+      auto inner = dyn_cast<ConstantInt>(a(3));
+      uint32_t unit_bytes = unit->getBitWidth() / 8, stride = b.StructureStride;
+      if (!store && !feedback && read && stride && inner && b.Bounds() &&
+          inner->getZExtValue() + (last + 1) * unit_bytes <= stride) {
+        auto at = ir.CreateUDiv(ir.CreateAdd(ir.CreateMul(a(2), ir.getInt32(stride)), inner), ir.getInt32(unit_bytes));
+        auto within =
+            ir.CreateICmpULT(a(2), ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(stride)));
+        auto v = units(ir.CreateZExt(ir.CreateSelect(within, at, ir.getInt32(0)), ir.getInt64Ty()), true);
+        ret = to_struct(ty, ir.CreateSelect(within, v, Constant::getNullValue(v->getType())), residency);
+        break;
+      }
+      // one bound for a load of several units where its last unit is inside
       bool whole = !store && !feedback && read && (parts > 1 || (read & (read - 1)));
       auto v = dxbc.LoadBufferUnits(b, base, whole ? ir.CreateAdd(base, ir.getInt64(last)) : nullptr, unit->getBitWidth() / 8, units);
       if (!store)
@@ -3827,7 +3848,7 @@ convert_dxil(
       ret = attribute(shader::common::InputAttribute::InnerCoverage, 0);
       break;
     case SampleIndex:
-      ret = ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{}));
+      ret = air.D3DSampleIndex(ctx.function->getArg(shader->func_signature.DefineInput(air::InputSampleIndex{})));
       break;
     case EvalCentroid:
     case EvalSampleIndex:
@@ -3842,7 +3863,7 @@ convert_dxil(
           );
         };
         auto offset = op == EvalCentroid      ? b.centroid
-                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(a(4))
+                      : op == EvalSampleIndex ? air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(4)))
                                               : snapped();
         ret = ir.CreateExtractElement(b.At(ir, offset), a(3));
         break;
@@ -3856,7 +3877,7 @@ convert_dxil(
                                    : dxbc.Interpolate(*itp, [&](Value *handle) {
                                        return op == EvalCentroid
                                                   ? air.CreateInterpolateAtCentroid(handle, itp->Perspective)
-                                                  : air.CreateInterpolateAtSample(handle, a(4), itp->Perspective);
+                                                  : air.CreateInterpolateAtSample(handle, air.MetalSampleIndex(a(4)), itp->Perspective);
                                      });
       ret = narrow(interpolated_component(call, v), ty);
       break;
@@ -4128,13 +4149,14 @@ convert_dxil(
         auto &t = *handles[a(1)].texture;
         samples = air.CreateTextureQuery(t.Texture, t.Handle, Texture::num_samples, ir.getInt32(0));
       } else {
-        samples = air.CreateGetNumSamples();
+        samples = air.CreateD3DSampleCount();
       }
       if (op == RenderTargetGetSampleCount) {
         ret = samples;
         break;
       }
-      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2)) : air.CreateRasterizerSamplePos(a(1));
+      auto pos = texture ? dxbc.TextureSamplePos(*handles[a(1)].texture, samples, a(2))
+                         : air.CreateRasterizerSamplePos(air.MetalSampleIndex(a(1)));
       ret = UndefValue::get(ty);
       for (unsigned i = 0; i < 2; i++)
         ret = ir.CreateInsertValue(ret, ir.CreateExtractElement(pos, i), {i});
@@ -4480,7 +4502,7 @@ convert_dxil(
     );
     air.CreateSetMeshPrimitiveCount(mine);
     ir.CreateBr(epilogue);
-  } else if (staged_position || staged_distance) {
+  } else if (staged_position || staged_distance || staged_culled) {
     // every path of the function ends here first
     auto exported = llvm::BasicBlock::Create(ctx.llvm, "export_mesh", ctx.function, epilogue);
     epilogue->replaceAllUsesWith(exported);
@@ -4517,7 +4539,7 @@ convert_dxil(
           );
         air.CreateSetMeshPosition(vertex, value);
       });
-    if (staged_distance)
+    if (staged_distance || staged_culled)
       own(1, shader->mesh_max_primitives, [&](Value *primitive) {
         // a primitive is culled when one distance puts all its vertices out, or when the shader culls it itself
         Value *culled = culls ? (Value *)ir.CreateLoad(i8, element_of(staged_culled, {primitive})) : ir.getInt8(0);
@@ -4531,7 +4553,18 @@ convert_dxil(
           }
           culled = ir.CreateOr(culled, out);
         }
-        air.CreateSetMeshPrimitiveCulled(primitive, ir.CreateICmpNE(culled, ir.getInt8(0)));
+        auto is_culled = ir.CreateICmpNE(culled, ir.getInt8(0));
+        if (!collapsed_lines) {
+          air.CreateSetMeshPrimitiveCulled(primitive, is_culled);
+          return;
+        }
+        // a culled line ends where it starts, which draws nothing
+        auto start = ir.CreateLoad(i8, element_of(staged_index, {primitive, ir.getInt32(0)}));
+        auto end = ir.CreateLoad(i8, element_of(staged_index, {primitive, ir.getInt32(1)}));
+        air.CreateSetMeshIndex(
+            ir.CreateAdd(ir.CreateMul(primitive, ir.getInt32(2)), ir.getInt32(1)), ir.CreateSelect(is_culled, start, end)
+        );
+        air.CreateSetMeshPrimitiveCulled(primitive, ir.getFalse());
       });
     ir.CreateBr(epilogue);
   }
@@ -4851,6 +4884,7 @@ convert_dxil_mesh_stage(
       .simd_width = sm50_common ? sm50_common->simd_width : 0,
       .coherent_group_sync = pShaderInternal->groups_work_together && (shader_flags & SM50_SHADER_FLAG_COHERENT_GROUP_SYNC),
       .direct_payload = !mesh && !(shader_flags & SM50_SHADER_FLAG_STAGED_PAYLOAD),
+      .collapse_culled_lines = bool(shader_flags & SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES),
   };
 
   auto real_entry = convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);

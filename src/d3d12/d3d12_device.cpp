@@ -29,10 +29,13 @@
 #include "mullion_format.hpp"
 #include "util_env.hpp"
 #include "mullion_info.hpp"
+#include "mullion_shader_cache.hpp"
+#include "util_string.hpp"
 #include "log/log.hpp"
 #include "config/config.hpp"
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <map>
 #include <iomanip>
 #include <limits>
@@ -286,15 +289,50 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
+  // what pipelines are converted for and with, read once: every pipeline asks
+  const SM50_SHADER_METAL_VERSION metal_version_;
+  const SM50_SHADER_FLAG shader_flags_;
+  std::once_flag archive_opened_;
+  // Metal's copy of a loaded archive grows with the square of its pipelines (macOS 27.3, render pipelines: 3.5 MB a
+  // pipeline and 6 s to load in one archive of 4,000; 12 KB and 0.07 s for 4,096 in shards of 32, where a lookup that
+  // misses takes 0.021 ms against 0.013 ms in one archive)
+  static constexpr uint32_t kPipelinesPerArchive = 32;
+  // as many as a pipeline's lookup names
+  static constexpr size_t kMaxArchives =
+      std::numeric_limits<decltype(WMTRenderPipelineInfo::num_binary_archives_for_lookup)>::max();
+  // the archive's shards: those earlier launches wrote, then the one pipelines are added to (Archived)
+  std::vector<WMT::Reference<WMT::BinaryArchive>> archives_;
+  std::vector<obj_handle_t> archive_handles_;
+  std::string archive_path_;
+  mullion::mutex archive_mutex_;
+  mullion::condition_variable archive_changed_;
+  // pipelines added to the archive so far, and of them to its last shard
+  uint64_t archived_ = 0;
+  uint32_t shard_archived_ = 0;
+  bool archive_closing_ = false;
+  mullion::thread archive_writer_;
+  mullion::mutex depth_stencil_lock_;
+  std::map<std::array<uint32_t, 16>, WMT::Reference<WMT::DepthStencilState>> depth_stencil_states_;
   std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
 
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter)
+      : adapter_(adapter), command_library(adapter_->GetMTLDevice()),
+        metal_version_(SM50_SHADER_METAL_VERSION(ShaderMetalVersion(adapter_->GetMTLDevice()))),
+        shader_flags_(GPUShaderFlags(adapter_->GetMTLDevice())) {
     mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
   }
 
   ~MTLD3D12DeviceImpl() {
+    if (archive_writer_.joinable()) {
+      {
+        std::lock_guard lock(archive_mutex_);
+        archive_closing_ = true;
+      }
+      archive_changed_.notify_one();
+      archive_writer_.join();
+    }
     std::lock_guard lock(device_singletons_lock);
     std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
   }
@@ -348,7 +386,14 @@ public:
     downscale_motion = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
     );
+    // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
+    row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
+    if (!row_major_transforms)
+      acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
+          command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
+      );
     if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        (!row_major_transforms && !acceleration_structure_transforms) ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
@@ -469,7 +514,117 @@ public:
         SM50_SHADER_METAL_310 == uint32_t(WMTMetal310) && SM50_SHADER_METAL_320 == uint32_t(WMTMetal320) &&
         SM50_SHADER_METAL_400 == uint32_t(WMTMetal400)
     );
-    return SM50_SHADER_METAL_VERSION(ShaderMetalVersion(GetMTLDevice()));
+    return metal_version_;
+  }
+
+  SM50_SHADER_FLAG
+  GetShaderFlags() override {
+    return shader_flags_;
+  }
+
+  std::string
+  ShardPath(size_t shard) {
+    return str::format(archive_path_, shard, ".metallib");
+  }
+
+  std::span<const obj_handle_t>
+  PipelineArchives() override {
+    std::call_once(archive_opened_, [this] {
+      auto directory = ShaderCacheDirectory();
+      WMT::Reference<WMT::Error> error;
+      WMT::Reference<WMT::BinaryArchive> added;
+      if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
+        return;
+      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+      // shards are read in order up to the first one Metal cannot read (none yet, or a damaged one), where this
+      // launch's shards start
+      while (archives_.size() + 1 < kMaxArchives)
+        if (auto read = GetMTLDevice().newBinaryArchive(ShardPath(archives_.size()).c_str(), error))
+          archives_.push_back(std::move(read));
+        else
+          break;
+      archives_.push_back(std::move(added));
+      for (auto &archive : archives_)
+        archive_handles_.push_back(archive.handle);
+      archive_writer_ = mullion::thread([this] { WriteArchive(); });
+    });
+    return archive_handles_;
+  }
+
+  void
+  PipelineArchived() override {
+    {
+      std::lock_guard lock(archive_mutex_);
+      archived_++;
+      shard_archived_++;
+    }
+    archive_changed_.notify_one();
+  }
+
+  // writes the last shard once additions stop for as long as its last write took, or once it is full: a burst of new
+  // pipelines is written once, and pipelines wait on a write (archive_lock) only between bursts. the device's end
+  // writes what is left
+  void
+  WriteArchive() {
+    env::setThreadName("mullion-archive-thread");
+    std::unique_lock lock(archive_mutex_);
+    uint64_t written = 0;
+    std::chrono::steady_clock::duration took{};
+    for (;;) {
+      archive_changed_.wait(lock, [&] { return archive_closing_ || archived_ != written; });
+      auto full = [&] { return shard_archived_ >= kPipelinesPerArchive; };
+      for (uint64_t seen = written; !archive_closing_ && !full() && seen != archived_;) {
+        seen = archived_;
+        archive_changed_.wait_for(lock, took, [&] { return archive_closing_ || full(); });
+      }
+      if (archived_ == written)
+        return;
+      bool closing = archive_closing_;
+      lock.unlock();
+      auto start = std::chrono::steady_clock::now();
+      WMT::Reference<WMT::Error> error;
+      auto path = ShardPath(archives_.size() - 1);
+      uint64_t target;
+      {
+        std::lock_guard whole(archive_lock);
+        archives_.back().serialize(path.c_str(), error);
+        // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
+        // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")
+        WMT::Reference<WMT::Error> unused;
+        if (!closing && archives_.size() < kMaxArchives)
+          if (auto next = GetMTLDevice().newBinaryArchive(nullptr, unused)) {
+            archive_handles_.push_back(next.handle);
+            archives_.push_back(std::move(next));
+          }
+        // no pipeline is added while the archive is written whole
+        std::lock_guard counts(archive_mutex_);
+        target = archived_;
+        shard_archived_ = 0;
+      }
+      took = std::chrono::steady_clock::now() - start;
+      if (error)
+        ERR("Failed to write the pipeline archive ", path, ": ", error.description().getUTF8String());
+      lock.lock();
+      written = target;
+    }
+  }
+
+  WMT::Reference<WMT::DepthStencilState>
+  DepthStencilState(const WMTDepthStencilInfo &info) override {
+    // whole bindings make header additions visible. a face without the test is one state whatever its operations
+    auto &[compare, write, front, back] = info;
+    std::array<uint32_t, 16> key{compare, write};
+    for (auto [i, stencil] : {std::pair(2, &front), std::pair(9, &back)}) {
+      auto &[enabled, pass, fail, depth_fail, function, write_mask, read_mask] = *stencil;
+      if (enabled)
+        std::ranges::copy(std::array<uint32_t, 7>{enabled, pass, fail, depth_fail, function, write_mask, read_mask},
+                          key.begin() + i);
+    }
+    std::lock_guard lock(depth_stencil_lock_);
+    auto &state = depth_stencil_states_[key];
+    if (!state)
+      state = GetMTLDevice().newDepthStencilState(info);
+    return state;
   }
 
   WMT::Device
@@ -665,7 +820,7 @@ public:
           metal, out->Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
       );
       bool multisample = support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+      if (out->SampleCount == 1 || (!out->Flags && multisample && HasSampleCount(metal, format_desc, out->SampleCount, true)))
         out->NumQualityLevels = 1;
       return S_OK;
     }
@@ -2293,6 +2448,11 @@ public:
   PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
     auto end = std::chrono::steady_clock::now(), present = first_present.load();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    // the profile's pipeline time (tools/mullion-diag), on the thread that made it
+    if (diag::profile) {
+      uint64_t took = std::chrono::nanoseconds(end - start).count();
+      diag::Write(diag::Line("span", "pipeline", str::format(kind, " ", name), GetCurrentThreadId(), diag::Now() - took, took));
+    }
     bool late = present != std::chrono::steady_clock::time_point() && end >= present;
     // MULLION_TRACE_SHADER: 1 has the pipelines that take 20 ms or more or are made after the first present (a
     // stutter), heavy every one

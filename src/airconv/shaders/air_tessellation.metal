@@ -82,6 +82,14 @@ without_top_bit(int x) {
   return x > 0 ? x & ~(0x40000000 >> (clz(x) - 1)) : 0;
 }
 
+// n / d below 2^24, as a float quotient and the one step it may be off by: a GPU divides integers in a long sequence,
+// which every point paid twice
+uint
+divide(uint n, uint d) {
+  uint q = uint(float(n) / float(d));
+  return q - (q * d > n) + ((q + 1) * d <= n);
+}
+
 tess_partition
 partition_of(fxp factor, bool odd) {
   tess_partition p;
@@ -96,8 +104,8 @@ partition_of(fxp factor, bool odd) {
             : odd ? (lower == fxp_one ? 0 : (without_top_bit((lower >> 16) - 1) << 1) + 1)
                   : (without_top_bit(lower >> 16) << 1) + 1;
   int floor_segments = (lower >> 15) - odd, ceil_segments = (upper >> 15) - odd;
-  p.inv_floor = (fxp_one + floor_segments / 2) / floor_segments;
-  p.inv_ceil = (fxp_one + ceil_segments / 2) / ceil_segments;
+  p.inv_floor = divide(fxp_one + floor_segments / 2, floor_segments);
+  p.inv_ceil = divide(fxp_one + ceil_segments / 2, ceil_segments);
   p.points = odd ? ceil(fxp_half + (factor + 1) / 2) >> 15 : (ceil((factor + 1) / 2) >> 15) + 1;
   return p;
 }
@@ -242,8 +250,9 @@ emit(tess_output out, tess_frame a, tess_frame b) {
     tess_workload before = out.workloads[index - 1];
     shared = shared_vertices(before, workload);
   }
+  // a group has fewer workloads than a SIMD group has lanes: one each, and one past them (get_group_layout)
   if (out.next[2] && out.next[2] + added - shared <= (out.group_limit & 0xffff) &&
-      out.next[4] + added <= out.group_limit >> 16) {
+      out.next[4] + added <= out.group_limit >> 16 && index - out.next[3] < 31) {
     out.next[2] += added - shared;
     out.next[4] += added;
   } else {
@@ -623,6 +632,21 @@ struct tess_zip {
     }
     return false;
   }
+  // whether every slot is a step, as when the inner edge has two segments fewer (a ring's side between two of the inside
+  // factor's) or as many (a strip): triangle t is then the one of slot t
+  bool direct() const {
+    return !(inner.kind & stitch_transition) && outer.segments == inner.segments + (inner.kind & stitch_strip ? 0 : 2);
+  }
+  // of a direct zip, triangle t. after the first slot (none in a strip), each pair of slots steps along both edges, the
+  // inner edge first where it is turned: in the half nearer the start, or a strip's turned quad
+  short3 triangle(int t, short base_inner, short base_outer) const {
+    bool strip = inner.kind & stitch_strip;
+    int a = t - !strip, p = a >> 1, e = a & 1;
+    bool turn = strip ? (inner.kind & stitch_turned) && p == (inner.segments + 1) / 2 - 1 : p < (inner.segments + 1) / 2;
+    int i = p + (turn && e), o = p + !strip + (!turn && e);
+    return e != turn ? short3(base_inner + i, base_outer + o, base_inner + i + 1)
+                     : short3(base_outer + o, base_outer + o + 1, base_inner + i);
+  }
 };
 
 // the workload's triangle `n`, numbered as its frames' zips make them; false past the last
@@ -734,33 +758,78 @@ place_edges(object_data tess_workload *workloads, int first, int w, thread int *
   }
 }
 
-// the group's vertex `index`
-domain_location
-get_group_location(int first, int end, int thread_index, object_data int *data) asm("mullion.get_group_location");
+// the group's workload of SIMD lane `lane`: where its own edges' points start among the group's vertices
+// (place_edges), the first being where all its own start; an edge it shares with the one before has none of its own and
+// starts with a later edge or before the first; past the group's last workload, all are the group's vertex count
+int4 get_group_layout(int first, int end, int lane, object_data int *data) asm("mullion.get_group_layout");
+
+int4
+get_group_layout(int first, int end, int lane, object_data int *data) {
+  object_data tess_workload *workloads = (object_data tess_workload *)data;
+  int w = first + lane;
+#if defined(__METAL_VERSION__)
+  // a lane's own points follow those of the lanes before
+  bool mine = w < end;
+  tess_workload workload = workloads[mine ? w : first];
+  int shared = mine && w > first ? shared_edges(workloads[w - 1], workload) : 0, size[4];
+  for (int e = 0; e < 4; e++)
+    size[e] = mine && !(shared >> e & 1) ? workload.edge[e].segments + 1 : 0;
+  int start = simd_prefix_exclusive_sum(size[0] + size[1] + size[2] + size[3]);
+  return int4(start, start + size[0], start + size[0] + size[1], start + size[0] + size[1] + size[2]);
+#else
+  // the host has one thread, which lays out the workloads before
+  int base[4] = {0, 0, 0, 0}, vertices = 0;
+  for (int k = first; k < end; k++) {
+    place_edges(workloads, first, k, base, vertices);
+    if (k == w)
+      return int4(base[0], base[1], base[2], base[3]);
+  }
+  return int4(vertices, vertices, vertices, vertices);
+#endif
+}
+
+// lane `lane`'s layout
+int4
+group_lane(int4 layout, int lane, int first, int end, object_data int *data) {
+#if defined(__METAL_VERSION__)
+  return simd_shuffle(layout, ushort(lane));
+#else
+  return get_group_layout(first, end, lane, data);
+#endif
+}
+
+// the group's vertex `thread_index`, `layout` being the thread's lane's (get_group_layout)
+domain_location get_group_location(int first, int end, int thread_index, int4 layout, object_data int *data) asm(
+    "mullion.get_group_location"
+);
 
 domain_location
-get_group_location(int first, int end, int thread_index, object_data int *data) {
+get_group_location(int first, int end, int thread_index, int4 layout, object_data int *data) {
   simdgroup_barrier(mem_flags::mem_none);
 
   object_data tess_workload *workloads = (object_data tess_workload *)data;
-  domain_location ret{float2(0), false, false};
-  int base[4] = {0, 0, 0, 0}, vertices = 0;
-  for (int w = first; w < end && !ret.active; w++) {
-    int start = vertices;
-    place_edges(workloads, first, w, base, vertices);
-    if (thread_index < start || thread_index >= vertices)
-      continue;
-    // an edge of its own: the one whose points the vertex is among
-    tess_edge edge = no_edge;
-    int at = 0;
-    for (int e = 0; e < 4; e++)
-      if (base[e] >= start && thread_index >= base[e] && thread_index <= base[e] + workloads[w].edge[e].segments) {
-        edge = workloads[w].edge[e];
-        at = thread_index - base[e];
-      }
-    ret.active = true;
-    ret.uv = point(edge, at);
+  int count = end - first;
+  domain_location ret{float2(0), thread_index < group_lane(layout, 31, first, end, data).x, false};
+  // the workload whose own points the vertex is among: the last that starts at or before it
+  int k = 0;
+  for (int step = 16; step; step >>= 1) {
+    int start = group_lane(layout, min(k + step, 31), first, end, data).x;
+    if (k + step < count && start <= thread_index)
+      k += step;
   }
+  int4 base = group_lane(layout, k, first, end, data);
+  tess_workload workload = workloads[first + k];
+  // an edge of its own: the last whose points the vertex is among, as a shared edge starts with a later one or before
+  // the workload's own points
+  tess_edge edge = no_edge;
+  int at = 0;
+  for (int e = 0; e < 4; e++)
+    if (thread_index >= base[e] && thread_index <= base[e] + workload.edge[e].segments) {
+      edge = workload.edge[e];
+      at = thread_index - base[e];
+    }
+  if (ret.active)
+    ret.uv = point(edge, at);
 
   simdgroup_barrier(mem_flags::mem_none);
   ret.iterate = simd_all(ret.active);
@@ -791,6 +860,14 @@ zip_kinds(tess_zip zip, int slots, int chunk, int lane) {
 #endif
 }
 
+void
+put_triangle(Mesh mesh, threadgroup uint *behind, int n, short3 triangle, short ccw_xor) {
+  mesh.set_index(n * 3, triangle[0]);
+  mesh.set_index(n * 3 + (1 ^ ccw_xor), triangle[1]);
+  mesh.set_index(n * 3 + (2 ^ ccw_xor), triangle[2]);
+  cull(mesh, behind, n, triangle[0], triangle[1], triangle[2]);
+}
+
 // a workload's triangles, from primitive `primitives` of the mesh on, its edges' points starting at `base`; returns
 // where they end
 int
@@ -803,6 +880,12 @@ group_triangles(
     tess_zip zip = {workload.edge[frame], workload.edge[frame + 1], 0, 0, 0};
     int inner = zip.inner.segments, outer = zip.outer.segments, slots = zip.slots();
     int base_inner = base[frame], base_outer = base[frame + 1];
+    if (zip.direct()) {
+      for (int t = lane; t < inner + outer; t += 32)
+        put_triangle(mesh, behind, primitives + t, zip.triangle(t, base_inner, base_outer), ccw_xor);
+      primitives += inner + outer;
+      continue;
+    }
     // the inner and outer steps of the slots before the chunk
     int inner_steps = 0, outer_steps = 0;
     for (int chunk = 0; chunk < slots; chunk += 32) {
@@ -813,11 +896,7 @@ group_triangles(
       if (step_inner || step_outer) {
         short3 triangle = step_inner ? short3(base_inner + i, base_outer + taken_o, base_inner + i + 1)
                                      : short3(base_outer + o, base_outer + o + 1, base_inner + taken_i);
-        int n = primitives + taken_i + taken_o;
-        mesh.set_index(n * 3, triangle[0]);
-        mesh.set_index(n * 3 + (1 ^ ccw_xor), triangle[1]);
-        mesh.set_index(n * 3 + (2 ^ ccw_xor), triangle[2]);
-        cull(mesh, behind, n, triangle[0], triangle[1], triangle[2]);
+        put_triangle(mesh, behind, primitives + taken_i + taken_o, triangle, ccw_xor);
       }
       inner_steps += popcount(kinds.x);
       outer_steps += popcount(kinds.y);

@@ -244,11 +244,7 @@ MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevi
     records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
-    clear_rtv_(device_->GetMTLDevice(), *this),
-    copy_temp_allocator_(
-        {device_->GetMTLDevice(), WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate}
-    ),
-    copy_temp_version_(0) {}
+    clear_rtv_(device_->GetMTLDevice(), *this) {}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
@@ -318,7 +314,13 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   acceleration_structures_.clear();
   acceleration_structure_inputs_.clear();
 
-  copy_temp_allocator_.free_blocks(copy_temp_version_++);
+  // the next lists copy in the last buffer while the last lists took half of it: an allocator keeps at most twice what
+  // its last lists copied
+  if (!temp_buffers_.empty() && 2 * temp_used_ >= temp_buffers_.back().length)
+    temp_buffers_.erase(temp_buffers_.begin(), temp_buffers_.end() - 1);
+  else
+    temp_buffers_.clear();
+  temp_offset_ = temp_used_ = 0;
 
   return S_OK;
 }
@@ -441,7 +443,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.max_fragment_buffer_binding = 0;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
-  info.max_kernel_buffer_binding = 31;
+  info.max_kernel_buffer_binding = pCmdSig->KernelBufferBindCount;
   info.max_kernel_threadgroup_memory_binding = 0;
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
@@ -479,7 +481,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
 IndirectRenderCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-    size_t MaxCount, bool tessellation, bool statistics_cuts
+    size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
 ) {
   // for a tessellated, geometry or mesh command (`tessellation`) the resolver leaves an IndirectMeshDraw, and the
   // caller draws each: mesh commands in indirect command buffers come only with Apple9 GPUs, and one way serves all
@@ -498,8 +500,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.support_ray_tracing = 0;
   info.type = pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? WMTIndirectCommandTypeDrawIndexed
                                                                                  : WMTIndirectCommandTypeDraw;
-  info.max_vertex_buffer_binding = 31;
-  info.max_fragment_buffer_binding = 31;
+  info.max_vertex_buffer_binding = pCmdSig->VertexBufferBindCount;
+  info.max_fragment_buffer_binding = pCmdSig->FragmentBufferBindCount;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
   info.max_kernel_buffer_binding = 0;
@@ -636,6 +638,17 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd_use_icb.stages = WMTRenderStageVertex;
   cmd_use_icb.usage = WMTResourceUsageRead;
   cmd_use_icb.resource = icb;
+
+  // Metal 4's shader validation zeroes the loads of a render pass's commands run with a range the GPU reads (#165): a
+  // range known now needs none
+  if (runs_max_count) {
+    auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
+    cmd.type = WMTRenderCommandExecuteCommandsInBuffer;
+    cmd.indirect_command_buffer = icb;
+    cmd.location = 0;
+    cmd.length = MaxCount;
+    return data;
+  }
 
   auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands_indirect>();
   cmd.type = WMTRenderCommandExecuteCommandsInBufferIndirect;

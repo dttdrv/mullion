@@ -108,7 +108,9 @@ class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHea
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
-  std::vector<ShaderVisibleDescriptorCPUStorage> descriptors_;
+  // zero bytes are a null descriptor, so the system's zeroed pages hold them: a page becomes memory once one of its
+  // descriptors is written, which in a large heap of few used ones is a small part
+  std::span<ShaderVisibleDescriptorCPUStorage> descriptors_;
   Rc<Buffer> buffer_;
   ShaderVisibleDescriptorGPUStorage *mapped_argument_buffer_ = nullptr;
   uint64_t argument_buffer_gpu_address_ = 0;
@@ -128,7 +130,13 @@ public:
     default:
       return FAIL(E_INVALIDARG);
     }
-    descriptors_.resize(pDesc->NumDescriptors);
+    static_assert(ShaderVisibleDescriptorType::Null == ShaderVisibleDescriptorType{});
+    if (UINT count = pDesc->NumDescriptors) {
+      auto storage = VirtualAlloc(nullptr, count * sizeof(descriptors_[0]), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+      if (!storage)
+        return FAIL(E_OUTOFMEMORY);
+      descriptors_ = {(ShaderVisibleDescriptorCPUStorage *)storage, count};
+    }
 
     if (pDesc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) {
       buffer_ = new Buffer(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), device_->GetMTLDevice());
@@ -152,6 +160,8 @@ public:
   };
 
   ~MTLD3D12DescriptorHeapImpl() {
+    if (!descriptors_.empty())
+      VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
       device_->UnregisterResidencyAndVA(buffer_->current());
     } else {
@@ -218,7 +228,8 @@ public:
         gpu_storage.SRVTexture.metadata =
             TextureMetadata(Texture->arrayLength(View), 0) |
             (Texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
-            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0) |
+            (Texture->paired ? SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED : 0);
       gpu_storage.SRVTexture.padding[0] = std::bit_cast<uint64_t>(BorderRange);
       // the view's place in its resource, which sampler feedback is recorded for: the first mip and how many mips the
       // resource has, a byte each, then 16 bits each for the first slice and the resource's width and height

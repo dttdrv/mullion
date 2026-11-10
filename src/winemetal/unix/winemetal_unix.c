@@ -2647,6 +2647,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool alpha_to_coverage;
   bool centered_samples;
   bool single_raster_sample;
+  bool paired_samples;
   uint32_t clip_distances;
   uint32_t cull_distances;
   bool cull_depth;
@@ -2764,6 +2765,7 @@ sm50_compilation_argument32_convert(
       data->alpha_to_coverage = src->alpha_to_coverage;
       data->centered_samples = src->centered_samples;
       data->single_raster_sample = src->single_raster_sample;
+      data->paired_samples = src->paired_samples;
       data->clip_distances = src->clip_distances;
       data->cull_distances = src->cull_distances;
       data->cull_depth = src->cull_depth;
@@ -3630,6 +3632,9 @@ _WMTGetOSVersion(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// cache.c: a path under the user's cache directory unless it is absolute, its directory made
+NSString *resolve_cache_dir(NSString *path, bool path_is_file);
+
 static NTSTATUS
 CREATES(_MTLDevice_newBinaryArchive)(void *obj) {
   struct unixcall_mtldevice_newbinaryarchive *params = obj;
@@ -3638,7 +3643,7 @@ CREATES(_MTLDevice_newBinaryArchive)(void *obj) {
   MTLBinaryArchiveDescriptor *desc = [[MTLBinaryArchiveDescriptor alloc] init];
   if (params->url.ptr != NULL) {
     path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
-    url = [[NSURL alloc] initFileURLWithPath:path_str];
+    url = [[NSURL alloc] initFileURLWithPath:resolve_cache_dir(path_str, true)];
     desc.url = url;
   }
   NSError *err = NULL;
@@ -3656,9 +3661,14 @@ static NTSTATUS
 _MTLBinaryArchive_serialize(void *obj) {
   struct unixcall_mtlbinaryarchive_serialize *params = obj;
   NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
-  NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
+  NSString *path = resolve_cache_dir(path_str, true), *written = [path stringByAppendingString:@".new"];
+  NSURL *url = [[NSURL alloc] initFileURLWithPath:written];
   NSError *err = NULL;
-  [(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err];
+  // a file that is replaced whole, never one half written (Apple: an archive updated at runtime needs corruption
+  // resiliency, MTLBinaryArchive.h)
+  if ([(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err] &&
+      rename(written.fileSystemRepresentation, path.fileSystemRepresentation))
+    err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
   params->ret_error = (obj_handle_t)[err retain];
   [url release];
   [path_str release];
@@ -4601,7 +4611,6 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = (id<MTLBuffer>)info->instance_count_buffer;
     desc.instanceCountBufferOffset = info->instance_count_offset;
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -4630,7 +4639,7 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = (id<MTLBuffer>)g->transform_buffer;
       triangles.transformationMatrixBufferOffset = g->transform_offset;
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -6638,7 +6647,6 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
     desc.instanceDescriptorStride = sizeof(MTLIndirectAccelerationStructureInstanceDescriptor);
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = metal4_range(state, info->instance_count_buffer, info->instance_count_offset);
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -6663,7 +6671,7 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
       triangles.indexType = (MTLIndexType)g->index_type;
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = metal4_range(state, g->transform_buffer, g->transform_offset);
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;

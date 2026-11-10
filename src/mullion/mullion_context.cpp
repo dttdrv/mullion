@@ -444,7 +444,8 @@ ArgumentEncodingContext::encodeShaderResources(
               encoded_buffer[arg.StructurePtrOffset + 1] =
                   TextureMetadata(srv.texture->arrayLength(viewIdChecked), 0) |
                   (srv.texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
-                  (srv.texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+                  (srv.texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0) |
+                  (srv.texture->paired ? SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED : 0);
             makeResident<stage, kind>(srv.texture.ptr(), viewIdChecked);
           }
         } else {

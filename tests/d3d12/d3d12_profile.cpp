@@ -516,7 +516,7 @@ main(int argc, char **argv) {
     std::map<Key, std::array<UINT64, 4>> calibrations;
     std::vector<std::vector<std::string>> passes, presents, targets;
     std::map<std::string, UINT> frame_counts;
-    UINT files = 0, clocks = 0, spans = 0, statistics = 0, totals = 0;
+    UINT files = 0, clocks = 0, spans = 0, statistics = 0, totals = 0, made = 0;
     // the bridge's calls a 'unix' record counts, each named once before (mullion_diag.hpp's Calls)
     std::set<UINT64> named;
     std::map<UINT64, UINT> list_counts;
@@ -571,7 +571,9 @@ main(int argc, char **argv) {
               number(call[2]);
             }
         } else if (row[0] == "span" && row.size() >= 6 && row[1] != "execute") {
-          expect(row[1] == "encode" || row[1] == "present" || row[1] == "wait", "unexpected span kind %s", row[1].c_str());
+          expect(row[1] == "encode" || row[1] == "present" || row[1] == "wait" || row[1] == "pipeline",
+                 "unexpected span kind %s", row[1].c_str());
+          made += row[1] == "pipeline";
           expect(number(row[3]) && began <= number(row[4]) && number(row[4]) + number(row[5]) <= ended,
                  "%s span outside run", row[1].c_str());
         } else if (row[0] == "span" && expect(row.size() == 6, "malformed span")) {
@@ -609,6 +611,7 @@ main(int argc, char **argv) {
       const UINT64 host_tick = (1000000000 + host_hz - 1) / host_hz;
       expect(clocks == 2, "one clock pair per queue");
       expect(spans == frames + 1 && list_counts[2] == frames && list_counts[1] == 1, "execute spans lost list counts");
+      expect(made >= std::size(names), "%u pipeline spans, want one for each of %zu pipelines", made, std::size(names));
       // ID3D12CommandQueue::Wait: "waits until the specified fence reaches or exceeds the specified value": the
       // lists behind it run after the signal; their encoding does not wait for it, so the GPU has them at once
       expect(held_began + held_took <= signaled, "lists behind a Wait were encoded %lld ns after the fence's signal",

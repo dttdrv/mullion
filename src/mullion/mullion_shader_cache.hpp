@@ -4,6 +4,7 @@
 #include "airconv_public.h"
 #include "mullion_format.hpp"
 #include <span>
+#include <string>
 
 namespace mullion {
 
@@ -38,6 +39,10 @@ PixelShaderOutputFormats(
   }
   return outputs;
 }
+
+// where a program's caches are, in the user's cache directory when relative (the bridge's resolve_cache_dir): none
+// with MULLION_SHADER_CACHE=0
+std::string ShaderCacheDirectory();
 
 class ShaderCache {
 public:
