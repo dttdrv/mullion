@@ -97,6 +97,15 @@ estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t pat
          (groups ? (max_workload_count + 1) * patch_per_group * sizeof(uint32_t) : 0);
 };
 
+// a native group of patches, its control points and constants (tessellation_payload_type), each control point's
+// registers int4s, which align it to 16 bytes
+uint32_t
+native_patch_group_size(SM50ShaderInternal *pHullStage, uint32_t patch_per_group) {
+  uint32_t size = patch_per_group * (sizeof(uint32_t[4]) * pHullStage->max_output_register * pHullStage->output_control_point_count +
+                                     sizeof(uint32_t) * pHullStage->patch_constant_scalars.size());
+  return (size + sizeof(uint32_t[4]) - 1) & ~uint32_t(sizeof(uint32_t[4]) - 1);
+}
+
 std::pair<uint32_t, uint32_t>
 mesh_threadgroups_per_workload(
     SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int
@@ -161,22 +170,27 @@ tessellation_group_limit(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION
 llvm::StructType *
 tessellation_payload_type(
     SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context,
-    uint32_t group_limit
+    uint32_t group_limit, bool native
 ) {
   uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
   auto per_patch = llvm::ArrayType::get(
       llvm::ArrayType::get(types._int4, pHullStage->max_output_register), pHullStage->output_control_point_count
   );
+  std::vector<llvm::Type *> fields{
+      llvm::ArrayType::get(per_patch, patch_per_group),
+      llvm::ArrayType::get(llvm::ArrayType::get(types._int, pHullStage->patch_constant_scalars.size()), patch_per_group)
+  };
+  // Metal's tessellator takes the factors from a buffer of their own, and a native group of patches is no more
+  if (native)
+    return llvm::StructType::create(context, fields, "patches");
   uint32_t workloads =
       get_max_potential_workload_count(factor_int, pHullStage->tessellation_domain, pHullStage->tessellation_partition) *
       patch_per_group;
-  std::vector<llvm::Type *> fields{
-      llvm::ArrayType::get(per_patch, patch_per_group),
-      llvm::ArrayType::get(llvm::ArrayType::get(types._int, pHullStage->patch_constant_scalars.size()), patch_per_group),
+  fields.insert(fields.end(), {
       types._int, llvm::ArrayType::get(types._int, workloads * sizeof(TessMeshWorkload) / 4),
       // the grid's first workload (or group) and first geometry instance
       types._int, types._int
-  };
+  });
   // with groups, each patch's groups (tess_output), in a room as large as its workloads', and the groups of the
   // patches before each
   if (group_limit) {
@@ -186,26 +200,31 @@ tessellation_payload_type(
   return llvm::StructType::create(context, fields, "payload");
 }
 
-// what the domain shader takes of a workload's patch from the payload (its control points, constants and number),
-// and registers for what it outputs. returns the payload's workloads
+// a native draw's group of patches in its buffer (SM50_BINDING_INDEX_TESSELLATION_PATCHES), after the header
 llvm::Value *
-setup_domain_stage(
+native_patches(llvm::IRBuilder<> &builder, llvm::Value *buffer, llvm::StructType *type, llvm::Value *group) {
+  auto bytes = builder.CreateBitCast(buffer, builder.getInt8PtrTy((uint32_t)air::AddressSpace::device));
+  auto first = builder.CreateBitCast(
+      builder.CreateConstGEP1_32(builder.getInt8Ty(), bytes, SM50_TESSELLATION_HEADER),
+      type->getPointerTo((uint32_t)air::AddressSpace::device)
+  );
+  return builder.CreateGEP(type, first, group);
+}
+
+// a domain shader's inputs from its patch, the patch_index'th of the group of patches at `payload` (the payload's
+// first fields, or a native draw's group), and its registers
+void
+setup_domain_patch(
     SM50ShaderInternal *pDomainStage, SM50ShaderInternal *pHullStage, llvm::StructType *payload_type,
-    llvm::Value *payload_argument, llvm::Value *workload_index, struct context &ctx
+    llvm::Value *payload, llvm::Value *patch_index, llvm::Value *patch_id, struct context &ctx
 ) {
   auto &builder = ctx.builder;
   auto &types = ctx.types;
   auto &resource_map = ctx.resource;
   uint32_t max_input_register = pDomainStage->max_input_register;
   uint32_t max_output_register = pDomainStage->max_output_register;
-
-  auto payload = builder.CreateBitCast(payload_argument, payload_type->getPointerTo(6));
-  auto data = builder.CreateGEP(payload_type, payload, {builder.getInt32(0), builder.getInt32(3), builder.getInt32(0)});
-  auto batched_patch_start =
-      builder.CreateLoad(types._int, builder.CreateGEP(payload_type, payload, {builder.getInt32(0), builder.getInt32(2)}));
-  auto patch_index = dxbc::Converter(ctx.air, ctx, resource_map).DomainGetPatchIndex(workload_index, data);
-
-  resource_map.patch_id = builder.CreateAdd(batched_patch_start, patch_index);
+  auto address_space = cast<llvm::PointerType>(payload->getType())->getAddressSpace();
+  resource_map.patch_id = patch_id;
 
   resource_map.input.ptr_int4 = builder.CreateGEP(
       payload_type, payload,
@@ -218,7 +237,7 @@ setup_domain_stage(
       llvm::ArrayType::get(
           llvm::ArrayType::get(types._float4, pHullStage->max_output_register), pHullStage->output_control_point_count
       )
-          ->getPointerTo(6)
+          ->getPointerTo(address_space)
   );
   resource_map.input_element_count = pHullStage->max_output_register;
 
@@ -257,6 +276,26 @@ setup_domain_stage(
     );
     builder.CreateStore(builder.CreateLoad(types._int, src_ptr), dst_ptr);
   }
+}
+
+// what the domain shader takes of a workload's patch from the payload (its control points, constants and number),
+// and registers for what it outputs. returns the payload's workloads
+llvm::Value *
+setup_domain_stage(
+    SM50ShaderInternal *pDomainStage, SM50ShaderInternal *pHullStage, llvm::StructType *payload_type,
+    llvm::Value *payload_argument, llvm::Value *workload_index, struct context &ctx
+) {
+  auto &builder = ctx.builder;
+  auto &types = ctx.types;
+  auto &resource_map = ctx.resource;
+  auto payload = builder.CreateBitCast(payload_argument, payload_type->getPointerTo(6));
+  auto data = builder.CreateGEP(payload_type, payload, {builder.getInt32(0), builder.getInt32(3), builder.getInt32(0)});
+  auto batched_patch_start =
+      builder.CreateLoad(types._int, builder.CreateGEP(payload_type, payload, {builder.getInt32(0), builder.getInt32(2)}));
+  auto patch_index = dxbc::Converter(ctx.air, ctx, resource_map).DomainGetPatchIndex(workload_index, data);
+  setup_domain_patch(
+      pDomainStage, pHullStage, payload_type, payload, patch_index, builder.CreateAdd(batched_patch_start, patch_index), ctx
+  );
   return data;
 }
 
@@ -384,22 +423,54 @@ convert_dxbc_vertex_hull_shader(
   auto [workload_primitives, geometry_instances] = mesh_threadgroups_per_workload(pHullStage, pArgs, factor_int);
   SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
   args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
+  // a kernel for Metal's tessellator, which writes the patches and their factors to buffers
+  bool native = pso_tess && pso_tess->native;
+  // the compute tessellator's: the factors as floats, as the hull shader made them
+  bool compute = native && pso_tess->compute;
   // the most a grid has (tessellation_grids). left out while the pipeline is to tell what the device lets one have
   uint32_t grid_limit = pso_tess ? pso_tess->max_mesh_threadgroups : 0;
-  if (!pso_tess || grid_limit) {
+  if (!native && (!pso_tess || grid_limit)) {
     auto grids = tessellation_grids(max_workload_count * patch_per_group, workload_primitives, geometry_instances, grid_limit);
     func_signature.UseMaxMeshWorkgroupSize(grids.workloads * workload_primitives * grids.instances);
   }
 
-  uint32_t group_limit = tessellation_group_limit(pHullStage, pArgs, factor_int);
-  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context, group_limit);
+  uint32_t group_limit = native ? 0 : tessellation_group_limit(pHullStage, pArgs, factor_int);
+  auto payload_struct_type = tessellation_payload_type(pHullStage, factor_int, types, context, group_limit, native);
   uint32_t payload_struct_size = module.getDataLayout().getTypeAllocSize(payload_struct_type);
+  assert(!native || payload_struct_size == native_patch_group_size(pHullStage, patch_per_group));
 
-  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = payload_struct_size});
+  uint32_t payload_idx = 0, factors_idx = 0;
+  if (native) {
+    payload_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_PATCHES,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read_write,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLRepresentableType(air::MSLUint{}),
+        .arg_name = "patches",
+        .raster_order_group = {}
+    });
+    factors_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_FACTORS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read_write,
+        .address_space = air::AddressSpace::device,
+        .type = compute ? air::MSLRepresentableType(air::MSLFloat{}) : air::MSLRepresentableType(air::MSLUshort{}),
+        .arg_name = "factors",
+        .raster_order_group = {}
+    });
+  } else
+    payload_idx = func_signature.DefineInput(air::InputPayload{.size = payload_struct_size});
   uint32_t thread_id_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
   // (batched_patch_id_start, instance_id, 0)
   uint32_t tg_id_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
-  func_signature.DefineInput(air::InputMeshGridProperties{});
+  uint32_t tg_count_idx = 0;
+  if (native)
+    tg_count_idx = func_signature.DefineInput(air::InputThreadgroupsPerGrid{});
+  else
+    func_signature.DefineInput(air::InputMeshGridProperties{});
   uint32_t draw_argument_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
       .location_index = SM50_BINDING_INDEX_DRAW_ARGUMENTS,
@@ -676,7 +747,16 @@ convert_dxbc_vertex_hull_shader(
 
     uint32_t vertex_max_output_register = max_vs_output_register;
 
-    auto payload = builder.CreateBitCast(function->getArg(payload_idx), payload_struct_type->getPointerTo(6));
+    // a native draw's instances each have the grid's groups of patches, one after another
+    llvm::Value *groups = native ? builder.CreateExtractElement(function->getArg(tg_count_idx), (uint32_t)0) : nullptr;
+    auto payload = native ? native_patches(
+                                builder, function->getArg(payload_idx), payload_struct_type,
+                                builder.CreateAdd(
+                                    builder.CreateMul(instance_id, groups),
+                                    builder.CreateExtractElement(function->getArg(tg_id_idx), (uint32_t)0)
+                                )
+                            )
+                          : builder.CreateBitCast(function->getArg(payload_idx), payload_struct_type->getPointerTo(6));
 
     assert(pHullStage->input_control_point_count != ~0u);
 
@@ -806,10 +886,38 @@ convert_dxbc_vertex_hull_shader(
     auto dispatch_mesh = llvm::BasicBlock::Create(context, "dispatch_mesh", function);
     auto real_return = llvm::BasicBlock::Create(context, "real_return", function);
 
+    // a native patch's factors, a patch's of the grid's for each instance, so that every one the draw reads is written
+    bool quad = pHullStage->tessellation_domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD;
+    uint32_t factor_count = quad ? 6 : 4;
+    auto factor = [&](uint32_t k) {
+      auto first = builder.CreateMul(
+          builder.CreateAdd(builder.CreateMul(instance_id, builder.CreateMul(groups, builder.getInt32(patch_per_group))), patch_id),
+          builder.getInt32(factor_count)
+      );
+      return builder.CreateGEP(
+          compute ? types._float : builder.getInt16Ty(), function->getArg(factors_idx), builder.CreateAdd(first, builder.getInt32(k))
+      );
+    };
+    auto unused = native ? llvm::BasicBlock::Create(context, "unused_patch", function) : nullptr;
     builder.CreateCondBr(
         builder.CreateICmp(llvm::CmpInst::ICMP_EQ, resource_map.thread_id_in_patch, builder.getInt32(0)),
-        write_patch_constant, counted
+        write_patch_constant, native ? unused : counted
     );
+    // the patches past the draw's (its last group's, or all of a predicated draw's) are culled
+    if (native) {
+      auto cull = llvm::BasicBlock::Create(context, "cull_unused_patch", function);
+      builder.SetInsertPoint(unused);
+      builder.CreateCondBr(
+          builder.CreateAnd(
+              builder.CreateICmpEQ(control_point_id_in_patch, builder.getInt32(0)), builder.CreateICmpUGE(patch_id, patch_count)
+          ),
+          cull, real_return
+      );
+      builder.SetInsertPoint(cull);
+      for (uint32_t k = 0; k < factor_count; k++)
+        builder.CreateStore(compute ? (llvm::Value *)air.getFloat(0) : builder.getInt16(0), factor(k));
+      builder.CreateBr(real_return);
+    }
 
     builder.SetInsertPoint(write_patch_constant);
     if (auto err = epilogue.build(ctx).takeError()) {
@@ -864,6 +972,39 @@ convert_dxbc_vertex_hull_shader(
           tess_factors[domain.second[i]],
           builder.CreateGEP(factors_type, kept_factors, {builder.getInt32(0), builder.getInt32(i)})
       );
+    // Metal's tessellator takes the factors as Direct3D's reference rounds them for integer partitioning, which pow2 is
+    // too (11.7.7.1: rounding to a power of two is the hull shader's work): clamped to 1 and the largest factor, then
+    // up to whole. an edge that is not above 0, or NaN, culls the patch (11.7.10), where every factor is 0. a patch's
+    // factors follow those of the patches before it and of the instances before
+    if (compute) {
+      for (uint32_t k = 0; k < factor_count; k++)
+        builder.CreateStore(tess_factors[domain.second[k]], factor(k));
+      for (auto unused : {counted, write_workloads, dispatch_mesh})
+        unused->eraseFromParent();
+    } else if (native) {
+      llvm::Value *culled = builder.getFalse();
+      for (uint32_t k = 0; k < (quad ? 4u : 3u); k++)
+        culled = builder.CreateOr(culled, builder.CreateNot(builder.CreateFCmpOGT(tess_factors[k], air.getFloat(0))));
+      for (uint32_t k = 0; k < factor_count; k++) {
+        auto rounded = air.CreateFPUnOp(
+            llvm::air::AIRBuilder::ceil,
+            air.CreateFPBinOp(
+                llvm::air::AIRBuilder::fmin,
+                air.CreateFPBinOp(llvm::air::AIRBuilder::fmax, tess_factors[k], air.getFloat(1), false),
+                max_tess_factor_value, false
+            )
+        );
+        builder.CreateStore(
+            builder.CreateBitCast(
+                builder.CreateFPTrunc(builder.CreateSelect(culled, air.getFloat(0), rounded), air.getHalfTy()),
+                builder.getInt16Ty()
+            ),
+            factor(k)
+        );
+      }
+      for (auto unused : {counted, write_workloads, dispatch_mesh})
+        unused->eraseFromParent();
+    } else {
     // the patch's workloads from `first` on, of which those before `capacity` are written at `workloads`, and with
     // groups the groups' places at `groups`; returns where the workloads end
     auto generate = [&](llvm::Value *first, uint32_t capacity, llvm::Value *workloads, llvm::Value *groups) {
@@ -994,6 +1135,7 @@ convert_dxbc_vertex_hull_shader(
     );
     builder.CreateStore(first_workload, builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(4)}));
     builder.CreateStore(first_instance, builder.CreateGEP(payload_struct_type, payload, {builder.getInt32(0), builder.getInt32(5)}));
+    }
 
     builder.CreateBr(real_return);
     builder.SetInsertPoint(real_return);
@@ -1002,7 +1144,228 @@ convert_dxbc_vertex_hull_shader(
   air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   builder.CreateRetVoid();
 
-  module.getOrInsertNamedMetadata("air.object")->addOperand(function_metadata);
+  module.getOrInsertNamedMetadata(native ? "air.kernel" : "air.object")->addOperand(function_metadata);
+  return llvm::Error::success();
+}
+
+// the domain shader as Metal's post-tessellation vertex function: a vertex of its patch's, which it finds in the
+// group of the instance's patches the hull kernel wrote, with the outputs a vertex shader has
+static llvm::Error
+convert_dxbc_domain_vertex_shader(
+    SM50ShaderInternal *pShaderInternal, const char *name, SM50ShaderInternal *pHullStage, llvm::LLVMContext &context,
+    llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+) {
+  using namespace microsoft;
+  // the domain shader's signature holds its outputs as a mesh's: a vertex function's are made here
+  air::FunctionSignatureBuilder func_signature;
+  auto shader_info = &(pShaderInternal->shader_info);
+  SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
+  SM50_SHADER_FLAG shader_flags = {};
+  SM50_SHADER_COMMON_DATA *sm50_common = nullptr;
+  if (args_get_data<SM50_SHADER_COMMON, SM50_SHADER_COMMON_DATA>(pArgs, &sm50_common)) {
+    metal_version = sm50_common->metal_version;
+    shader_flags = sm50_common->flags;
+  }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
+
+  IREffect prologue([](auto) { return std::monostate(); });
+  IRValue epilogue([](struct context ctx) -> pvalue { return llvm::ConstantAggregateZero::get(ctx.function->getReturnType()); });
+  io_binding_map resource_map;
+  air::AirType types(context);
+  {
+    SignatureContext sig_ctx(prologue, epilogue, func_signature, resource_map);
+    for (auto &p : pShaderInternal->signature_handlers)
+      p(sig_ctx);
+  }
+
+  // each register a varying is in, whole, as a vertex shader's (varying_name)
+  uint32_t varyings = 0;
+  for (auto &out : pShaderInternal->output_signature) {
+    auto reg = out.reg();
+    switch (out.systemValue()) {
+    case D3D10_SB_NAME_POSITION:
+      epilogue >> pop_output_reg_sanitize_pos(reg, out.mask(), func_signature.DefineOutput(air::OutputPosition{.type = air::msl_float4}));
+      continue;
+    case D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX:
+      epilogue >> pop_output_reg(reg, out.mask(), func_signature.DefineOutput(air::OutputRenderTargetArrayIndex{}));
+      continue;
+    case D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX:
+      epilogue >> pop_output_reg(reg, out.mask(), func_signature.DefineOutput(air::OutputViewportArrayIndex{}));
+      continue;
+    default:
+      break;
+    }
+    if (std::exchange(varyings, varyings | 1u << reg) >> reg & 1)
+      continue;
+    auto declared = out.systemValue() == D3D10_SB_NAME_CLIP_DISTANCE ? RegisterComponentType::Float : out.componentType();
+    auto component_types = pShaderInternal->register_types(reg, declared);
+    for (unsigned c = 0; c < 4; c++)
+      epilogue >> pop_output_reg(
+                      reg, 1 << c,
+                      func_signature.DefineOutput(air::OutputVertex{.user = varying_name(reg, c), .type = varying_type(component_types[c])})
+                  );
+  }
+  // the compute tessellator's patch, for a pixel shader's SV_PrimitiveID (SM50_PATCH_VARYING)
+  SM50_SHADER_PSO_TESSELLATOR_DATA *tessellator = nullptr;
+  args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &tessellator);
+  uint32_t patch_out_idx = tessellator && tessellator->compute
+                               ? func_signature.DefineOutput(air::OutputVertex{.user = SM50_PATCH_VARYING, .type = air::msl_uint})
+                               : ~0u;
+  uint32_t clip_distance_out_idx = pShaderInternal->clip_distance_scalars.size()
+                                       ? func_signature.DefineOutput(air::OutputClipDistance{pShaderInternal->clip_distance_scalars.size()})
+                                       : ~0u;
+
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D11_SB_DOMAIN_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
+  if (!binding_map)
+    return llvm::make_error<UnsupportedFeature>("invalid root signature or missing resource binding");
+
+  bool quad = pHullStage->tessellation_domain == D3D11_SB_TESSELLATOR_DOMAIN_QUAD;
+  SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
+  args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
+  // the compute tessellator's: a vertex is one of its points, {patch, u, v}, the patch counted over the instances
+  bool compute = pso_tess && pso_tess->compute;
+  uint32_t patch_idx = 0, location_idx = 0, instance_idx = 0, vertex_idx = 0, points_idx = 0;
+  if (compute) {
+    vertex_idx = func_signature.DefineInput(air::InputVertexID{});
+    points_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_POINTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLRepresentableType(air::MSLUint{}),
+        .arg_name = "points",
+        .raster_order_group = {}
+    });
+  } else {
+    patch_idx = func_signature.DefineInput(air::InputPatchID{});
+    location_idx = func_signature.DefineInput(air::InputPositionInPatch{quad ? 2u : 3u});
+    instance_idx = func_signature.DefineInput(air::InputInstanceID{});
+  }
+  uint32_t patches_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+      .buffer_size = {},
+      .location_index = SM50_BINDING_INDEX_TESSELLATION_PATCHES,
+      .array_size = 0,
+      .memory_access = air::MemoryAccess::read,
+      .address_space = air::AddressSpace::device,
+      .type = air::MSLRepresentableType(air::MSLUint{}),
+      .arg_name = "patches",
+      .raster_order_group = {}
+  });
+  auto raster_scale = DefineRasterScale(func_signature);
+  if (!compute)
+    func_signature.UsePatch(quad ? "quad" : "triangle");
+  auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
+
+  auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);
+  auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
+  llvm::IRBuilder<> builder(entry_bb);
+  llvm::raw_null_ostream nulldbg{};
+  llvm::air::AIRBuilder air(
+      {
+          .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
+          .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .noAtomicMinMax64 = bool(shader_flags & SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64),
+          .noCustomBorder = bool(shader_flags & SM50_SHADER_FLAG_NO_CUSTOM_BORDER),
+          .noMinMaxFilter = bool(shader_flags & SM50_SHADER_FLAG_NO_MINMAX_FILTER),
+      },
+      builder, nulldbg
+  );
+  air.RasterScale = function->getArg(raster_scale);
+  setup_metal_version(module, metal_version);
+  setup_temp_register(shader_info, resource_map, types, module, builder);
+  setup_immediate_constant_buffer(shader_info, resource_map, types, module, builder);
+
+  struct context ctx {
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = 0xffffffff,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
+  };
+
+  // the instance's groups of patches are the header's first word, each group as many patches as an object
+  // threadgroup's (convert_dxbc_vertex_hull_shader)
+  uint32_t patch_per_group = next_pow2(32 / next_pow2(pHullStage->hull_maximum_threads_per_patch));
+  auto patches = function->getArg(patches_idx);
+  auto group_type = tessellation_payload_type(pHullStage, 0, types, context, 0, true);
+  if (compute) {
+    // the instances' groups follow each other, so a patch counted over them is its group's place and its own in it;
+    // SV_PrimitiveID is its place in its instance's groups
+    auto point = builder.CreateGEP(
+        types._int, function->getArg(points_idx), builder.CreateMul(function->getArg(vertex_idx), builder.getInt32(3))
+    );
+    auto patch = builder.CreateLoad(types._int, point);
+    auto coordinate = [&](uint32_t k) {
+      return builder.CreateBitCast(builder.CreateLoad(types._int, builder.CreateConstGEP1_32(types._int, point, k)), types._float);
+    };
+    auto per_instance = builder.CreateMul(builder.CreateLoad(types._int, patches), builder.getInt32(patch_per_group));
+    setup_domain_patch(
+        pShaderInternal, pHullStage, group_type,
+        native_patches(builder, patches, group_type, builder.CreateUDiv(patch, builder.getInt32(patch_per_group))),
+        builder.CreateURem(patch, builder.getInt32(patch_per_group)), builder.CreateURem(patch, per_instance), ctx
+    );
+    llvm::Value *location = llvm::UndefValue::get(air.getFloatTy(2));
+    location = builder.CreateInsertElement(location, coordinate(1), 0ull);
+    location = builder.CreateInsertElement(location, coordinate(2), 1ull);
+    resource_map.domain = domain_location(location, builder, air);
+  } else {
+    auto patch = function->getArg(patch_idx);
+    auto group = builder.CreateAdd(
+        builder.CreateMul(function->getArg(instance_idx), builder.CreateLoad(types._int, patches)),
+        builder.CreateUDiv(patch, builder.getInt32(patch_per_group))
+    );
+    setup_domain_patch(
+        pShaderInternal, pHullStage, group_type, native_patches(builder, patches, group_type, group),
+        builder.CreateURem(patch, builder.getInt32(patch_per_group)), patch, ctx
+    );
+    resource_map.domain = domain_location(function->getArg(location_idx), builder, air);
+  }
+
+  if (auto err = prologue.build(ctx).takeError())
+    return err;
+  auto real_entry = convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);
+  if (auto err = real_entry.takeError())
+    return err;
+  builder.CreateBr(real_entry.get());
+
+  builder.SetInsertPoint(epilogue_bb);
+  auto value = epilogue.build(ctx);
+  if (auto err = value.takeError())
+    return err;
+  pvalue result = value.get();
+  if (clip_distance_out_idx != ~0u) {
+    pvalue distances = llvm::ConstantAggregateZero::get(llvm::ArrayType::get(types._float, pShaderInternal->clip_distance_scalars.size()));
+    for (auto x : llvm::enumerate(pShaderInternal->clip_distance_scalars))
+      distances = builder.CreateInsertValue(
+          distances,
+          builder.CreateLoad(
+              types._float, builder.CreateGEP(
+                                llvm::ArrayType::get(types._float4, pShaderInternal->max_output_register),
+                                resource_map.output.ptr_float4,
+                                {builder.getInt32(0), builder.getInt32(x.value().reg), builder.getInt32(x.value().component)}
+                            )
+          ),
+          {(uint32_t)x.index()}
+      );
+    result = builder.CreateInsertValue(result, distances, {clip_distance_out_idx});
+  }
+  if (patch_out_idx != ~0u)
+    result = builder.CreateInsertValue(result, resource_map.patch_id, {patch_out_idx});
+  builder.CreateRet(result);
+
+  module.getOrInsertNamedMetadata("air.vertex")->addOperand(function_metadata);
   return llvm::Error::success();
 }
 
@@ -1012,6 +1375,9 @@ convert_dxbc_tesselator_domain_shader(
     llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
 ) {
   using namespace microsoft;
+  SM50_SHADER_PSO_TESSELLATOR_DATA *native = nullptr;
+  if (args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &native) && native->native)
+    return convert_dxbc_domain_vertex_shader(pShaderInternal, name, pHullStage, context, module, pArgs);
 
   auto func_signature = pShaderInternal->func_signature; // copy
   auto shader_info = &(pShaderInternal->shader_info);

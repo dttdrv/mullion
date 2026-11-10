@@ -535,6 +535,18 @@ public:
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
+  // with Metal's tessellator, `hull` runs its vertex and hull shaders before the pass, writing each group of patches'
+  // control points and constants (patch_group_size bytes) and each patch's factors (patch_factor_size bytes, Metal's
+  // MTL*TessellationFactorsHalf) for `pso_patches`, its domain and pixel shaders; `pso` stays the mesh pipeline, for the
+  // draws Metal's tessellator does not take
+  WMT::Reference<WMT::ComputePipelineState> hull;
+  WMT::Reference<WMT::RenderPipelineState> pso_patches;
+  uint32_t patch_group_size = 0, patch_factor_size = 0;
+  // with Metal 4, the tessellator is in compute (TessellationDraw), and `pso_patches` is a plain vertex pipeline
+  bool compute_tessellation = false;
+  uint32_t tessellation_kind = 0;
+  // the largest whole factor its hull shader's patches can have (MaxTessFactor)
+  uint32_t tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in `pso_strip` for strips (none for points)
   bool geometry_shader = false;
@@ -747,6 +759,11 @@ public:
 
   // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
   std::atomic<uint32_t> max_mesh_threadgroups{0};
+  // the room a render pass's compute tessellator has for its points and indices: as much as a pass has needed, which
+  // grows as passes need more (MTLD3D12CommandAllocatorImpl::Reset). memory counts only where the GPU writes
+  std::atomic<uint32_t> tessellation_point_room{1u << 18}, tessellation_index_room{3u << 18};
+  // 12 MB of points and of indices
+  static constexpr uint32_t kTessellationMostPoints = 1u << 20, kTessellationMostIndices = 3u << 20;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them, through one buffer

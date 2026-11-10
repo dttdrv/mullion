@@ -283,6 +283,10 @@ public:
 
   // gives what the lists recorded into back to the device
   void ReleaseRuns();
+  // a render pass's compute tessellation, once its draws are all recorded: counted, summed and made before the pass
+  void FinishTessellation(RenderEncoderData *Render);
+  // what the passes' arenas needed, read once the GPU is done with them, which sizes the next ones
+  std::vector<const TessellationPass *> tessellation_passes_;
   void Discard(EncoderData *Root);
 
   HRESULT
@@ -303,6 +307,8 @@ public:
   InvalidateCurrentPass() {
     if (!encoder_current)
       return;
+    if (encoder_current->type == EncoderType::Render && static_cast<RenderEncoderData *>(encoder_current)->tessellation)
+      FinishTessellation(static_cast<RenderEncoderData *>(encoder_current));
     encoder_last->next = encoder_current;
     encoder_last = encoder_current;
 

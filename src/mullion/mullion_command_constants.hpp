@@ -14,6 +14,28 @@ constexpr CONSTANT auto kCustomBufferArgumentIndex0 = 30;
 constexpr CONSTANT auto kCustomBufferArgumentIndex1 = 29;
 constexpr CONSTANT auto kSparseBufferArgumentIndex = kCustomBufferArgumentIndex1 - 1;
 
+// the compute tessellator's work for a render pass (tessellation_count, tessellation_scan, tessellation_emit), in the
+// GPU heap. a draw's patches are counted over its instances, from the pass's `first`; its factors are words in the heap,
+// each patch's 4 (a triangle's) or 6 (a quad's); `kind` is its domain (1: quad), partitioning << 1 and counter-clockwise
+// << 3; `arguments` its indexed-indirect draw arguments (5 words); where the pass's arena has no room for it, the mesh
+// draw that takes it instead counts its patches from word `fallback` (0: it has none), which is otherwise 0, and is
+// word `source`, the draw's own, where it is drawn
+struct TessellationDraw {
+  uint32_t first, patches, factors, kind, arguments, fallback, source;
+};
+
+// a pass's draws (`draws`, words in the heap, `draw_count` of them), its patches' counts (3 words a patch: frames,
+// points, triangles, which the scan makes exclusive sums of, then the totals), its arena (`points` and `indices`, words
+// in the heap, room for `point_room` points and `index_room` indices; the points a multiple of 3 words, as indices
+// number points from the heap's start), and what the scan writes: the emit dispatch's threadgroups (3 words), what the
+// pass needed, for the arena's next size, and the frames of the patches that fit, which the emit makes
+struct TessellationPass {
+  uint32_t draws, draw_count, patches, counts, points, indices, point_room, index_room;
+  uint32_t emit_groups[3], need_points, need_indices, frames;
+};
+
+constexpr CONSTANT uint32_t kTessellationThreads = 64;
+
 // D3D11.3 19.1.3.1 defines D24_UNORM_S8_UINT with 24 normalized depth bits.
 constexpr CONSTANT auto kD24UnormMax = (1u << 24) - 1;
 

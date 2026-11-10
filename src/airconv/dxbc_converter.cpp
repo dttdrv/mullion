@@ -640,6 +640,7 @@ llvm::Error convert_dxbc_pixel_shader(
     sig_ctx.pull_mode_reg_mask = shader_info->pull_mode_reg_mask;
     sig_ctx.pull_centroids = pso_sample_mask != 0xffffffff;
     sig_ctx.barycentric_rows = pso_data && (pso_data->quad_lines || pso_data->conservative);
+    sig_ctx.patch_varying = pso_data && pso_data->patch_varying;
     sig_ctx.unorm_output_reg_mask = pso_unorm_output_reg_mask;
     if (pso_pixel_formats)
       memcpy(sig_ctx.pixel_formats, pso_pixel_formats, sizeof(sig_ctx.pixel_formats));
@@ -2126,6 +2127,7 @@ static int SM50InitializeUncached(
         .OutputPrimitive = (MTL_TESSELLATOR_OUTPUT_PRIMITIVE
         )sm50_shader->tessellator_output_primitive,
         .Domain = sm50_shader->tessellation_domain,
+        .PatchGroupSize = native_patch_group_size(sm50_shader, patch_per_group),
       };
     }
     if (sm50_shader->shader_type == microsoft::D3D11_SB_DOMAIN_SHADER) {
@@ -2168,6 +2170,7 @@ static int SM50InitializeUncached(
                             sm50_shader->ps_noperspective_input_mask};
       // EvaluateAttribute* evaluates where the shader chooses, which coarse shading does not move
       pRefl->PixelShader.FineShading = sm50_shader->ps_fine_shading || sm50_shader->shader_info.pull_mode_reg_mask;
+      pRefl->PixelShader.PrimitiveID = sm50_shader->ps_primitive_id;
       pRefl->PixelShader.Barycentrics = sm50_shader->shader_info.use_barycentrics;
       pRefl->PixelShader.DepthOutput = sm50_shader->ps_depth_output;
       pRefl->PixelShader.EarlyTests = sm50_shader->func_signature.EarlyFragmentTests();

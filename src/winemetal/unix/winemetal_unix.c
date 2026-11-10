@@ -1289,6 +1289,20 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                  baseInstance:body->base_instance];
       break;
     }
+    case WMTRenderCommandDrawPatches: {
+      struct wmtcmd_render_draw_patches *body = (struct wmtcmd_render_draw_patches *)next;
+      [encoder setTessellationFactorBuffer:(id<MTLBuffer>)body->factor_buffer
+                                    offset:body->factor_buffer_offset
+                            instanceStride:body->factor_instance_stride];
+      [encoder drawPatches:body->control_points
+                patchStart:0
+                patchCount:body->patch_count
+          patchIndexBuffer:nil
+    patchIndexBufferOffset:0
+             instanceCount:body->instance_count
+              baseInstance:0];
+      break;
+    }
     case WMTRenderCommandDrawIndexed: {
       struct wmtcmd_render_draw_indexed *body = (struct wmtcmd_render_draw_indexed *)next;
       [encoder drawIndexedPrimitives:(MTLPrimitiveType)body->primitive_type
@@ -2658,6 +2672,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   uint32_t shading_rate_varying;
   bool quad_lines;
   bool conservative_hull;
+  bool patch_varying;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2715,6 +2730,8 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
   bool barycentrics;
+  bool native;
+  bool compute;
 };
 
 struct SM50_SHADER_ROOT_SIGNATURE_DATA32 {
@@ -2775,6 +2792,7 @@ sm50_compilation_argument32_convert(
       data->shading_rate_varying = src->shading_rate_varying;
       data->quad_lines = src->quad_lines;
       data->conservative_hull = src->conservative_hull;
+      data->patch_varying = src->patch_varying;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -2880,6 +2898,8 @@ sm50_compilation_argument32_convert(
       data->flat_inputs = src->flat_inputs;
       data->noperspective_inputs = src->noperspective_inputs;
       data->barycentrics = src->barycentrics;
+      data->native = src->native;
+      data->compute = src->compute;
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:

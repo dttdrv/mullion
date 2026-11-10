@@ -298,6 +298,26 @@ emit_workloads(Patch patch, tess_output out) {
     emit(out, patch.last_frame(), no_frame);
 }
 
+// for the compute tessellator, where a frame's inner and outer edges run: the ring and side of each (inner_k, inner_s,
+// outer_k, outer_s). an edge whose points run against its side's has side -1 - s
+struct tess_along {
+  int inner_k, inner_s, outer_k, outer_s;
+};
+
+// ring 0's point i of side s, numbered around the ring from side 0's first point: a side's last point is the next
+// side's first. side `sides` gives the ring's count
+template <typename Patch>
+int
+ring_number(Patch patch, int s, int i) {
+  int at = i, around = 0;
+  for (int t = 0; t < Patch::sides; t++) {
+    int segments = points(patch.out[t]) - 1;
+    at += t < s ? segments : 0;
+    around += segments;
+  }
+  return s == Patch::sides ? around : at % around;
+}
+
 struct quad_patch {
   enum { sides = 4 };
   // the factors of the edges u = 0, v = 0, u = 1, v = 1, and of the inside along u and v
@@ -316,8 +336,9 @@ struct quad_patch {
   int shorter() const { return min(n[0], n[1]); }
   int rings() const { return (shorter() - 1) >> 1; }
   int long_rings() const { return (max(n[0], n[1]) - 1) >> 1; }
+  int side_of(int t) const { return 3 - t; }
   tess_frame frame(int ring, int t) const {
-    int s = 3 - t;
+    int s = side_of(t);
     tess_frame f = {side(ring + 1, s), side(ring, s)};
     f.outer.owned = f.outer.segments;
     // with an odd count of points the middle is a row of them: the inner edge of the sides along it
@@ -343,6 +364,23 @@ struct quad_patch {
     f.outer.owned = f.outer.segments + 1;
     return f;
   }
+  // where the last frame's edges run (tess_along): the far row turned against its side
+  tess_along last_along() const {
+    int k = shorter() / 2 - 1;
+    return n[0] > n[1] ? tess_along{k, -1 - 3, k, 1} : tess_along{k, -1 - 2, k, 0};
+  }
+  // ring k's side s has this many segments
+  int segments(int k, int s) const { return k ? n[s & 1 ? 0 : 1] - 1 - 2 * k : points(out[s]) - 1; }
+  // the patch's points, numbered (ring_number): inside ring 0 by the inside factors' grid, which numbers the middle row
+  // of an odd count once
+  int number(int k, int s, int i) const {
+    if (!k)
+      return ring_number(*this, s, i);
+    int a = s == 0 ? k : s == 1 ? k + i : s == 2 ? n[0] - 1 - k : n[0] - 1 - k - i;
+    int b = s == 0 ? n[1] - 1 - k - i : s == 1 ? k : s == 2 ? k + i : n[1] - 1 - k;
+    return ring_number(*this, sides, 0) + (a - 1) + (b - 1) * (n[0] - 2);
+  }
+  int point_count() const { return ring_number(*this, sides, 0) + (n[0] - 2) * (n[1] - 2); }
 };
 
 struct tri_patch {
@@ -361,8 +399,9 @@ struct tri_patch {
   }
   int rings() const { return (n - 1) >> 1; }
   int long_rings() const { return rings(); }
+  int side_of(int t) const { return (t + 1) % 3; }
   tess_frame frame(int ring, int t) const {
-    int s = (t + 1) % 3;
+    int s = side_of(t);
     tess_frame f = {side(ring + 1, s), side(ring, s)};
     f.outer.owned = f.outer.segments;
     if ((n & 1) && ring + 1 == rings() && t == 0)
@@ -377,7 +416,24 @@ struct tri_patch {
     int k = n / 2 - 1;
     return {run(tri_2, in, k, k, true, kept(k), 1), run(tri_1, in, k, k + 1, false, kept(k), 2)};
   }
+  // its point is side 0's first, its edge's side 1's two
+  tess_along last_along() const { return {n / 2 - 1, 0, n / 2 - 1, 1}; }
+  int segments(int k, int s) const { return k ? n - 1 - 2 * k : points(out[s]) - 1; }
+  // inside ring 0, ring by ring, 3 (n - 1 - 2k) points each, the center one
+  int number(int k, int s, int i) const {
+    if (!k)
+      return ring_number(*this, s, i);
+    int m = n - 1 - 2 * k, base = ring_number(*this, sides, 0) + 3 * (k - 1) * (n - 1 - k);
+    return m ? base + (s * m + i) % (3 * m) : base;
+  }
+  int point_count() const {
+    int k = (n - 1) / 2;
+    return k ? number(k, 0, 0) + (n & 1 ? 1 : 3) : ring_number(*this, sides, 0);
+  }
 };
+
+bool make_patch(thread quad_patch &patch, partitioning p, float in0, float in1, float out0, float out1, float out2, float out3);
+bool make_patch(thread tri_patch &patch, partitioning p, float in, float out0, float out1, float out2);
 
 void generate_workload_quad(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
@@ -391,12 +447,17 @@ generate_workload_quad(
     int group_limit, int partition,
     float in0, float in1, float out0, float out1, float out2, float out3
 ) {
-  if (culls(out0) || culls(out1) || culls(out2) || culls(out3))
-    return;
-  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
-  partitioning p = partitioning(partition);
-  float lower = lowest(p);
   quad_patch patch;
+  if (make_patch(patch, partitioning(partition), in0, in1, out0, out1, out2, out3))
+    emit_workloads(patch, tess_output{(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit});
+}
+
+// a quad patch of these factors, as the hull shader writes them; false if they cull it
+bool
+make_patch(thread quad_patch &patch, partitioning p, float in0, float in1, float out0, float out1, float out2, float out3) {
+  if (culls(out0) || culls(out1) || culls(out2) || culls(out3))
+    return false;
+  float lower = lowest(p);
   patch.out[0] = take(out0, p, lower);
   patch.out[1] = take(out1, p, lower);
   patch.out[2] = take(out2, p, lower);
@@ -421,7 +482,7 @@ generate_workload_quad(
       patch.in[i].odd = false;
     patch.n[i] = points(patch.in[i]);
   }
-  emit_workloads(patch, out);
+  return true;
 }
 
 void generate_workload_triangle(
@@ -436,12 +497,18 @@ generate_workload_triangle(
     int group_limit, int partition,
     float in, float out0, float out1, float out2
 ) {
-  if (culls(out0) || culls(out1) || culls(out2))
-    return;
-  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
-  partitioning p = partitioning(partition);
-  float lower = lowest(p);
   tri_patch patch;
+  if (make_patch(patch, partitioning(partition), in, out0, out1, out2))
+    emit_workloads(patch, tess_output{(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit});
+}
+
+// a triangle patch of these factors; false if they cull it. a patch whose factors are all 1 is its three corners: two
+// points across, which make it one triangle (last_frame)
+bool
+make_patch(thread tri_patch &patch, partitioning p, float in, float out0, float out1, float out2) {
+  if (culls(out0) || culls(out1) || culls(out2))
+    return false;
+  float lower = lowest(p);
   patch.out[0] = take(out0, p, lower);
   patch.out[1] = take(out1, p, lower);
   patch.out[2] = take(out2, p, lower);
@@ -452,15 +519,10 @@ generate_workload_triangle(
   bool ones = p != partitioning::fractional_even && patch.in.value == fxp_one;
   for (int i = 0; i < 3; i++)
     ones = ones && patch.out[i].value == fxp_one;
-  if (ones) {
-    // the patch's three corners
-    emit(out, {run(tri_2, patch.out[2], 0, 0, true, 0, 1), run(tri_1, patch.out[1], 0, 1, false, 0, 2)}, no_frame);
-    return;
-  }
-  if (patch.in.value == fxp_one)
+  if (!ones && patch.in.value == fxp_one)
     patch.in.odd = false;
   patch.n = points(patch.in);
-  emit_workloads(patch, out);
+  return true;
 }
 
 void generate_workload_isoline(
@@ -1055,4 +1117,91 @@ generate_piece(
     cull(mesh, behind, primitives, base, base + vertices - 1, base + (vertices - 1) / 2);
   }
   mesh.set_primitive_count(primitives);
+}
+
+// the compute tessellator, for Metal 4, which has no tessellator of its own: a patch's frames, every ring's sides then
+// the last frame, make its points, each at a number of its own (number), and its triangles as those numbers, for an
+// indexed draw whose vertex function is the domain shader
+
+struct tess_point {
+  uint patch;
+  float u, v;
+};
+
+struct tess_counts {
+  int frames, points, triangles;
+};
+
+template <typename Patch>
+tess_frame
+nth_frame(Patch patch, int f, thread tess_along &along) {
+  int ring = f / Patch::sides, t = f % Patch::sides;
+  if (ring < patch.rings()) {
+    int s = patch.side_of(t);
+    along = {ring + 1, s, ring, s};
+    return patch.frame(ring, t);
+  }
+  along = patch.last_along();
+  return patch.last_frame();
+}
+
+// the patch's triangles before frame f: a frame has as many as its edges have segments (tess_zip)
+template <typename Patch>
+int
+triangles_before(Patch patch, int f) {
+  int full = min(f / Patch::sides, patch.rings()), count = 0;
+  for (int k = 0; k < full; k++)
+    for (int s = 0; s < Patch::sides; s++)
+      count += patch.segments(k, s) + patch.segments(k + 1, s);
+  for (int t = 0; t < f - full * Patch::sides; t++) {
+    if (full == patch.rings()) {
+      tess_frame last = patch.last_frame();
+      count += last.inner.segments + last.outer.segments;
+    } else {
+      int s = patch.side_of(t);
+      count += patch.segments(full, s) + patch.segments(full + 1, s);
+    }
+  }
+  return count;
+}
+
+template <typename Patch>
+tess_counts
+counts(Patch patch) {
+  int frames = patch.rings() * Patch::sides + patch.has_last();
+  return {frames, patch.point_count(), triangles_before(patch, frames)};
+}
+
+template <typename Patch>
+int
+edge_number(Patch patch, int k, int s, tess_edge edge, int i) {
+  return s < 0 ? patch.number(k, -1 - s, edge.segments - i) : patch.number(k, s, i);
+}
+
+// frame f of a patch whose points start at `first`: its points, by number, and its triangles' indices after those of
+// the frames before it. counter-clockwise triangles exchange their second and third corners, as generate_triangles does
+template <typename Patch, typename Points, typename Indices>
+void
+emit_frame(Patch patch, int f, uint patch_slot, Points points, Indices indices, uint first, short ccw_xor) {
+  tess_along along;
+  tess_frame frame = nth_frame(patch, f, along);
+  // shortcut: a point two frames share is written by both, the same bits; tess_edge.owned would write each once
+  for (int i = 0; i <= frame.inner.segments; i++) {
+    float2 uv = point(frame.inner, i);
+    points[first + edge_number(patch, along.inner_k, along.inner_s, frame.inner, i)] = tess_point{patch_slot, uv.x, uv.y};
+  }
+  for (int i = 0; i <= frame.outer.segments; i++) {
+    float2 uv = point(frame.outer, i);
+    points[first + edge_number(patch, along.outer_k, along.outer_s, frame.outer, i)] = tess_point{patch_slot, uv.x, uv.y};
+  }
+  tess_zip zip = {frame.inner, frame.outer, 0, 0, 0};
+  short inner = frame.inner.segments + 1;
+  int at = 3 * triangles_before(patch, f);
+  for (short3 triangle(0, 0, 0); zip.next(triangle, 0, inner); at += 3)
+    for (int c = 0; c < 3; c++) {
+      int v = triangle[c];
+      indices[at + (c ? c ^ ccw_xor : 0)] =
+          first + (v < inner ? edge_number(patch, along.inner_k, along.inner_s, frame.inner, v)
+                             : edge_number(patch, along.outer_k, along.outer_s, frame.outer, v - inner));
+    }
 }
