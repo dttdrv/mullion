@@ -86,4 +86,6 @@ class Install(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    result = unittest.main(exit=False).result
+    print("passed: installer" if result.wasSuccessful() else "failed: installer")
+    sys.exit(not result.wasSuccessful())
