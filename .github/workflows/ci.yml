@@ -214,6 +214,8 @@ jobs:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
+      # LLVM 15 uses std::is_pod without including <type_traits> (ItaniumDemangle.h), which the libc++ of llvm-mingw
+      # 20260908 no longer brings in with <algorithm> or <utility>
       - name: Build LLVM for Windows
         if: steps.cache-llvm-win.outputs.cache-hit != 'true'
         run: |
@@ -228,6 +230,7 @@ jobs:
             -DLLVM_BUILD_TOOLS=Off \
             -DCMAKE_SYSROOT="$(pwd)/toolchains/${{ env.LLVM_MINGW_DIR }}" \
             -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_FLAGS="-include type_traits" \
             -DBUG_REPORT_URL="https://github.com/dttdrv/mullion" \
             -DPACKAGE_VENDOR="Mullion" \
             -DLLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO=Off \
