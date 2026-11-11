@@ -183,6 +183,10 @@ public:
                   IDXGISwapChain **ppSwapChain) final {
     if (ppSwapChain == nullptr || pDesc == nullptr || pDevice == nullptr)
       return FAIL(DXGI_ERROR_INVALID_CALL);
+    // the window is this call's argument: its refusal names this call in the log, not the function both entries share
+    *ppSwapChain = nullptr;
+    if (!pDesc->OutputWindow)
+      return FAIL(DXGI_ERROR_INVALID_CALL);
 
     DXGI_SWAP_CHAIN_DESC1 desc;
     desc.Width = pDesc->BufferDesc.Width;
