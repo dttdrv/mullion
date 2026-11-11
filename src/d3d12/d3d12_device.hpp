@@ -757,11 +757,18 @@ public:
   std::atomic<uint32_t> max_mesh_threadgroups{0};
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
-  // what the device's command allocators record into: commands, and what the GPU reads of them, through one buffer
+  // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads
+  // `arguments` through buffers over its start, each twice the last, as it is handed out (MTLD3D12CommandAllocator::
+  // GrowArguments): a GPU capture copies all of a buffer the CPU writes for each command buffer that uses it, which
+  // for 1 GB made traces of tens of GB. each covers what the ones before it do, which stay, as lists recorded addresses
+  // in them
+  struct ArgumentsBuffer {
+    WMT::Reference<WMT::Buffer> buffer;
+    uint64_t address = 0, length = 0;
+  };
   struct {
     RecordingArena commands, arguments;
-    WMT::Reference<WMT::Buffer> buffer;
-    uint64_t address = 0;
+    std::vector<ArgumentsBuffer> buffers;
     // blocks of `arguments` nothing writes: the zeros an indirect draw's indices past their view read
     std::optional<RecordingArena::Run> zeros;
     mullion::mutex mutex;

@@ -1847,7 +1847,18 @@ _MTLCaptureManager_startCapture(void *obj) {
   NSString *path_str = [[NSString alloc] initWithCString:info->output_url.ptr encoding:NSUTF8StringEncoding];
   NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
   desc.outputURL = url;
-  [(MTLCaptureManager *)params->capture_manager startCaptureWithDescriptor:desc error:nil];
+  NSError *error = nil;
+  MTLCaptureManager *manager = (MTLCaptureManager *)params->capture_manager;
+  // a capture that does not start says why in <trace>.error.txt (and on stderr): Metal starts none without
+  // MTL_CAPTURE_ENABLED=1 in the process's environment, or where the trace already exists
+  if (![manager startCaptureWithDescriptor:desc error:&error]) {
+    NSString *why = [NSString stringWithFormat:@"Metal did not start the capture (trace documents supported: %d): %@\n",
+                                               (int)[manager supportsDestination:desc.destination],
+                                               error ? error.localizedDescription : @"no error given"];
+    fprintf(stderr, "mullion: %s", why.UTF8String);
+    [why writeToFile:[path_str stringByAppendingString:@".error.txt"] atomically:YES encoding:NSUTF8StringEncoding
+               error:nil];
+  }
   [url release];
   [path_str release];
   [desc release];

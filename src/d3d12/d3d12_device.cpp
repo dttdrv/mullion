@@ -531,6 +531,10 @@ public:
   PipelineArchives() override {
     std::call_once(archive_opened_, [this] {
       auto directory = ShaderCacheDirectory();
+      // Metal captures no mesh pipeline made with a binary archive ("Capturing Mesh Shaders with Binary Archives is
+      // not supported"): a process that may be captured makes its pipelines without one
+      if (env::getEnvVar("MTL_CAPTURE_ENABLED") == "1")
+        return;
       WMT::Reference<WMT::Error> error;
       WMT::Reference<WMT::BinaryArchive> added;
       if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
