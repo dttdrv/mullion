@@ -595,7 +595,7 @@ convert_dxbc_geometry_shader(
       for (auto &p : pVertexStage->signature_handlers)
         p(domain_ctx);
   }
-  auto& gs_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto gs_output_handlers = pShaderInternal->mesh_handlers(func_signature);
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_GEOMETRY_SHADER, rootsig->bytecode,
@@ -1790,8 +1790,12 @@ convert_pass_through_geometry_shader(
   uint32_t thread_idx = hull ? func_signature.DefineInput(air::InputThreadPositionInThreadgroup{}) : ~0u,
            threads_idx = hull ? func_signature.DefineInput(air::InputThreadsPerThreadgroup{}) : ~0u;
   func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
-  // what the vertex shader outputs, as the mesh's: the position, the layer and viewport its first vertex chooses,
-  // and its other registers as varyings
+  // what the vertex shader outputs, as the mesh's: the position, the layer and viewport its first vertex chooses
+  // (viewport 0 with a layer and no viewport index, as SM50ShaderInternal::mesh_handlers), and its other registers as
+  // varyings
+  const bool default_viewport = pVertexStage->mesh_layer_without_viewport();
+  if (default_viewport)
+    func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
   struct Varying {
     uint32_t reg, component, index;
   };
@@ -2050,6 +2054,8 @@ convert_pass_through_geometry_shader(
       air.CreateSetMeshRenderTargetArrayIndex(i, layer);
     if (auto viewport = chosen(D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX))
       air.CreateSetMeshViewportArrayIndex(i, viewport);
+    else if (default_viewport)
+      air.CreateSetMeshViewportArrayIndex(i, builder.getInt32(0));
   };
   // culled by a distance that every vertex is behind: negative, or NaN
   pvalue culled = triangle ? triangle->culled : builder.getFalse();
@@ -2470,6 +2476,9 @@ convert_dxbc_vertex_for_geometry_shader(
     );
     func_signature.DefineInput(air::InputMesh{primitives * 3, primitives, air::MeshOutputTopology::Triangle});
     func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
+    // viewport 0 with a layer and no viewport index, as SM50ShaderInternal::mesh_handlers
+    if (pShaderInternal->mesh_layer_without_viewport())
+      func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
     uint32_t declared = 0;
     for (auto &element : pShaderInternal->output_signature) {
       switch (element.systemValue()) {
@@ -3164,6 +3173,8 @@ convert_dxbc_vertex_for_geometry_shader(
       else
         air.CreateSetMeshViewportArrayIndex(slot, value);
     }
+    if (pShaderInternal->mesh_layer_without_viewport())
+      air.CreateSetMeshViewportArrayIndex(slot, builder.getInt32(0));
     for (uint32_t k = 0; k < 3; k++) {
       auto vertex = builder.CreateAdd(builder.CreateMul(slot, builder.getInt32(3)), builder.getInt32(k));
       auto from = corner(k);
