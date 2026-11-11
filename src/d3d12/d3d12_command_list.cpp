@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <bit>
 #include <functional>
 #include "d3d12_command_allocator.hpp"
 #include "d3d12_acceleration_structure.hpp"

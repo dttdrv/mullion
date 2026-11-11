@@ -4,6 +4,7 @@
 #include "nt/air_builder.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "tessellation_limits.hpp"
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>

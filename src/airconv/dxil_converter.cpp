@@ -35,6 +35,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LowerAtomic.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include <bit>
 #include <format>
 #include <map>
 #include <optional>
