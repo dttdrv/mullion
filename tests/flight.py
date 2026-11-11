@@ -17,6 +17,9 @@ cost: not judged; how long a record takes its thread, printed.
 d3d11: MULLION_FLIGHT=exit dumps a run that failed nothing; it holds the context's command buffer committing and
 completing.
 busy: each dump made while other threads record holds the dumping thread's record from just before it.
+refused: a feature level D3D12CreateDevice refuses dumps once, however often it is refused, and so does the exit: the
+first dump holds the first refusal and the exit's both, each with the level asked for, the level the device reaches
+and its tiled resources tier, as the program read them from D3D12_FEATURE_FEATURE_LEVELS and D3D12_FEATURE_D3D12_OPTIONS.
 unloaded: tests/d3d12/d3d12_flight_unload.cpp frees winemetal.dll and raises an exception its own handler continues
 from: the run ends well and writes no dump, as the DLL's handler left with it.
 """
@@ -57,7 +60,7 @@ def judge(mode, facts, dump):
         return [f"a line that is no record: {got[:120]!r}"]
     want = {"removed": ["a removed device", "exit"], "exception": ["exception", "exit"],
             "unhoused": ["exception", "exit"], "many": ["a removed device", "exit"],
-            "d3d11": ["exit"], "busy": ["busy"] * int(facts["busy"][0][0]) + ["exit"] if "busy" in facts else []}[mode]
+            "d3d11": ["exit"], "refused": ["a refused feature level", "exit"], "busy": ["busy"] * int(facts["busy"][0][0]) + ["exit"] if "busy" in facts else []}[mode]
     # an exception's dump names the module of its address, "exception in <module>+<offset>", or its memory
     named = r"^exception in (memory )?[^+ ]+\+0x[0-9a-f]+( .*)?$"
     reasons = [re.sub(named, "exception", reason) for reason, _, _ in got]
@@ -108,6 +111,12 @@ def judge(mode, facts, dump):
         for d, (_, _, records) in enumerate(got[:-1], 1):
             if not any(text == f"busy {d}" for _, _, text in records):
                 wrong.append(f"dump {d} has not its thread's record 'busy {d}'")
+    elif mode == "refused":
+        (asked, reached, tier), = facts["refused"]
+        want = f"D3D12CreateDevice refuses feature level {asked}: the device reaches {reached}, tiled resources tier {tier}"
+        said = [[text for _, _, text in records if text.startswith("D3D12CreateDevice refuses")] for _, _, records in got]
+        if said != [[want], [want] * 2]:
+            wrong.append(f"the refusals in the dumps: {said}, want '{want}' once in the first and twice in the exit's")
     elif mode == "d3d11":
         for pattern in [r"chunk \d+ of frame \d+ commits as", f"chunk \\d+ completes, status {COMPLETED}$"]:
             if not any(re.search(pattern, text) for text in first):
@@ -126,7 +135,7 @@ def main():
         base = run.as_family(base, args.family)
         exe = next(path for build in builds for path in build.glob("tests/*/d3d12_flight.exe"))
         failed = 0
-        for mode in ("removed", "exception", "unhoused", "quiet", "many", "d3d11", "busy"):
+        for mode in ("removed", "exception", "unhoused", "quiet", "many", "d3d11", "busy", "refused"):
             out = (args.out / mode).resolve()
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir(parents=True)

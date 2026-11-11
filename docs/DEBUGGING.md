@@ -170,8 +170,8 @@ can hide the synchronization fault being sought.
 its last records in memory: D3D12 submissions, command buffers with their Metal identities and completion status,
 fence signals and waits, presents, D3D11 command buffers, the device's removal and exceptions. A record costs its
 thread about 10 ns, and nothing is written while the game runs. A removed device, a Metal command buffer error, a D3D12
-command buffer still awaited after ten seconds, or an exception that ends a process unless it is caught writes the
-records in time order to `~/Library/Logs/Mullion/<executable>.flight`, or to `MULLION_DIAG_PATH` when it is set, and
+command buffer still awaited after ten seconds, a feature level `D3D12CreateDevice` refuses (the record says which
+level the device reaches), or an exception that ends a process unless it is caught writes the records in time order to `~/Library/Logs/Mullion/<executable>.flight`, or to `MULLION_DIAG_PATH` when it is set, and
 Wine's console output names the file. A process that ends after such a dump adds what was recorded since, and
 `MULLION_FLIGHT=exit` writes one at the end of every process, for a failure Mullion does not see.
 

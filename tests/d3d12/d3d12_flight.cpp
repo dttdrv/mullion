@@ -1,11 +1,12 @@
-// the runs tests/flight.py reads the flight recorder's dumps of. argv: <removed|exception|unhoused|quiet|many|d3d11|busy|cost>.
+// the runs tests/flight.py reads the flight recorder's dumps of. argv: <removed|exception|unhoused|quiet|many|d3d11|busy|refused|cost>.
 // each says what it did in 'fact' lines, which the dump must hold in the same order.
 // removed: a list executes, the queue signals a fence and waits for it, and the device is removed
 // (ID3D12Device5::RemoveDevice). exception: two continuable access violations (RaiseException), which a handler of
 // the program's own, added last, continues. quiet: the work of removed with no removal. many: the queue signals the
 // fence more times than the ring is said to hold, then the device is removed. d3d11: a cleared and flushed context,
 // waited for with an event query. busy: dumps while other threads record without pause, each after a record of the
-// dumping thread's own, whose ring is the oldest. cost: how long a record takes.
+// dumping thread's own, whose ring is the oldest. refused: D3D12CreateDevice is asked twice for a feature level above
+// every level, after the program read what the device reaches. cost: how long a record takes.
 #include "d3d12_test.hpp"
 #include <d3d11.h>
 #include <algorithm>
@@ -60,7 +61,7 @@ d3d11() {
 
 int
 main(int argc, char **argv) {
-  if (!expect(argc == 2, "usage: d3d12_flight <removed|exception|unhoused|quiet|many|d3d11|busy|cost>"))
+  if (!expect(argc == 2, "usage: d3d12_flight <removed|exception|unhoused|quiet|many|d3d11|busy|refused|cost>"))
     return verdict();
   std::string mode = argv[1];
   if (mode == "exception") {
@@ -151,6 +152,23 @@ main(int argc, char **argv) {
 
   ComPtr<ID3D12Device5> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  if (mode == "refused") {
+    static const D3D_FEATURE_LEVEL all[] = {D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
+                                            D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    D3D12_FEATURE_DATA_FEATURE_LEVELS levels{UINT(std::size(all)), all};
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+    CHECK(device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels)));
+    CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+    device.Reset();
+    // no device has a level above 12_2 ("D3D_FEATURE_LEVEL enumeration", d3dcommon.h)
+    const auto above = D3D_FEATURE_LEVEL(0xd000);
+    for (unsigned i = 0; i < 2; i++)
+      expect(D3D12CreateDevice(nullptr, above, __uuidof(ID3D12Device), nullptr) == E_INVALIDARG,
+             "a feature level above every level was not refused");
+    printf("fact refused %#x %#x %u\n", unsigned(above), unsigned(levels.MaxSupportedFeatureLevel),
+           unsigned(options.TiledResourcesTier));
+    return verdict();
+  }
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
   ComPtr<ID3D12GraphicsCommandList> list;
