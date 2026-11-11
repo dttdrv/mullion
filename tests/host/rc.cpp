@@ -27,5 +27,6 @@ int main() {
     CHECK(object.references == 1);
   }
   CHECK(object.references == 0);
+  std::printf("passed\n");
   return 0;
 }
