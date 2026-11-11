@@ -734,10 +734,14 @@ main(int argc, char **argv) {
                "pass lost or gained targets");
       expect(targets.size() == kinds["Render"] + kinds["Clear"] && textures.size() == frame_counts.size(),
              "targets lost or mixed");
-      for (UINT frame = 0; frame < frames; frame++) {
-        auto &fast = kernel_times[compute_runs[0]], &slow = kernel_times[compute_runs[1]];
-        if (expect(fast.size() == frames && slow.size() == frames, "kernel samples missing"))
-          expect(slow[frame] > fast[frame] && fast[frame] > 0, "long kernel not slower in frame %u", frame);
+      // a pass's time is the GPU's clock from its first sample to its last, and the GPU is other processes' too: what
+      // it does for them between the two only lengthens the pass. so the kernels are compared by the least time each
+      // took in a frame
+      auto &fast = kernel_times[compute_runs[0]], &slow = kernel_times[compute_runs[1]];
+      if (expect(fast.size() == frames && slow.size() == frames, "kernel samples missing")) {
+        const auto least = std::ranges::min(fast), long_least = std::ranges::min(slow);
+        expect(long_least > least && least > 0, "long kernel not slower: %llu ns at least, the short one %llu ns",
+               long_least, least);
       }
       UINT overflow_buffers = 0;
       for (auto &[key, group] : by_buffer)
