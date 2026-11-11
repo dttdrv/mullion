@@ -542,7 +542,15 @@ void handle_signature_ps(
     case microsoft::D3D10_SB_NAME_SAMPLE_INDEX:
       assigned_index = func_signature.DefineInput(InputSampleIndex{});
       sm50_shader->ps_fine_shading = true;
-      break;
+      // D3D's number of the sample (AIRBuilder PairedSamples)
+      signature_handlers.push_back([=](SignatureContext &ctx) {
+        ctx.prologue << make_effect_bind([=](struct context ctx) {
+          auto index = ctx.air.D3DSampleIndex(ctx.function->getArg(assigned_index));
+          return store_at_vec4_array_masked(ctx.resource.input.ptr_int4, ctx.builder.getInt32(reg), index, mask);
+        });
+      });
+      max_input_register = std::max(reg + 1, max_input_register);
+      return;
     case microsoft::D3D10_SB_NAME_PRIMITIVE_ID:
       assigned_index = func_signature.DefineInput(InputPrimitiveID{});
       break;

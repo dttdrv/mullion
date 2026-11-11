@@ -217,6 +217,15 @@ centered(const DESC &desc) {
   return false;
 }
 
+// each of the texture's samples is two of the description's (RasterSampleCount)
+template <typename DESC>
+bool
+paired(const DESC &desc, Texture &texture) {
+  if constexpr (requires { desc.SampleDesc; })
+    return texture.sampleCount() < desc.SampleDesc.Count;
+  return false;
+}
+
 template <typename tag_texture>
 class DeviceTexture : public TResourceBase<tag_texture, IMTLMinLODClampable> {
 private:
@@ -331,6 +340,7 @@ public:
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice) {
         this->texture_ = std::move(u_texture);
         this->texture_->centered = centered(*pDesc);
+        this->texture_->paired = paired(*pDesc, *this->texture_);
       }
 
   DeviceTexture(
@@ -341,6 +351,7 @@ public:
       renamable_(std::move(renamable)) {
         this->texture_ = std::move(u_texture);
         this->texture_->centered = centered(*pDesc);
+        this->texture_->paired = paired(*pDesc, *this->texture_);
       }
 
   DeviceTexture(
@@ -350,6 +361,7 @@ public:
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice), share_(std::move(share)) {
         this->texture_ = std::move(u_texture);
         this->texture_->centered = centered(*pDesc);
+        this->texture_->paired = paired(*pDesc, *this->texture_);
         this->keyed_mutex_ = std::move(keyed_mutex);
       }
 

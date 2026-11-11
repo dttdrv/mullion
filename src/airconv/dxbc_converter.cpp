@@ -916,6 +916,7 @@ llvm::Error convert_dxbc_pixel_shader(
 
   setup_metal_version(module, metal_version);
   air.CenteredSamples = pso_data && pso_data->centered_samples;
+  air.PairedSamples = pso_data && pso_data->paired_samples;
 
   // a pixel of a primitive a cull distance culls is discarded before the shader does anything, the quad's derivatives
   // taken while all its threads run: one where a varying and both its derivatives are 0 (SM50_CULL_VARYING)

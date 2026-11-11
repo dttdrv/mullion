@@ -1,4 +1,4 @@
-// the runs tests/flight.py reads the flight recorder's dumps of. argv: <removed|exception|quiet|many|d3d11|busy|cost>.
+// the runs tests/flight.py reads the flight recorder's dumps of. argv: <removed|exception|unhoused|quiet|many|d3d11|busy|cost>.
 // each says what it did in 'fact' lines, which the dump must hold in the same order.
 // removed: a list executes, the queue signals a fence and waits for it, and the device is removed
 // (ID3D12Device5::RemoveDevice). exception: two continuable access violations (RaiseException), which a handler of
@@ -18,6 +18,15 @@ static LONG CALLBACK
 resume(EXCEPTION_POINTERS *pointers) {
   return pointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_CONTINUE_EXECUTION
                                                                                 : EXCEPTION_CONTINUE_SEARCH;
+}
+
+// steps over the two bytes of `mov [rax], eax`, the one instruction of `unhoused` that faults
+static LONG CALLBACK
+step_over(EXCEPTION_POINTERS *pointers) {
+  if (pointers->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    return EXCEPTION_CONTINUE_SEARCH;
+  pointers->ContextRecord->Rip += 2;
+  return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 static int
@@ -48,7 +57,7 @@ d3d11() {
 
 int
 main(int argc, char **argv) {
-  if (!expect(argc == 2, "usage: d3d12_flight <removed|exception|quiet|many|d3d11|busy|cost>"))
+  if (!expect(argc == 2, "usage: d3d12_flight <removed|exception|unhoused|quiet|many|d3d11|busy|cost>"))
     return verdict();
   std::string mode = argv[1];
   if (mode == "exception") {
@@ -58,6 +67,19 @@ main(int argc, char **argv) {
       RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 2, information);
       printf("fact exception %#llx\n", (unsigned long long)address);
     }
+    return verdict();
+  }
+  if (mode == "unhoused") {
+    // code no module holds, as a JIT's: xor eax, eax; mov [rax], eax; ret
+    const unsigned char code[] = {0x31, 0xc0, 0x89, 0x00, 0xc3};
+    auto page =
+        static_cast<unsigned char *>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!expect(page != nullptr, "a page for code"))
+      return verdict();
+    memcpy(page, code, sizeof(code));
+    AddVectoredExceptionHandler(0, step_over);
+    reinterpret_cast<void (*)()>(page)();
+    printf("fact unhoused %#llx\n", (unsigned long long)(uintptr_t)page);
     return verdict();
   }
   if (mode == "d3d11")

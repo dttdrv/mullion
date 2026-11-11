@@ -5326,7 +5326,7 @@ public:
         auto &viewport = state_.Rasterizer.viewports[0];
         render_target_width = so_only ? 1 : viewport.Width;
         render_target_height = so_only ? 1 : viewport.Height;
-        sample_count = std::max(1u, rs->ForcedSampleCount());
+        sample_count = std::max(1u, RasterSampleCount(device->GetMTLDevice(), rs->ForcedSampleCount()));
         if (!(render_target_width && render_target_height)) {
           ERR("uav only rendering is enabled but viewport is empty");
           return false;
@@ -5576,6 +5576,20 @@ public:
     auto centered = [](auto &view) { return view && view->texture_->centered; };
     Desc.CenteredSamples = Desc.SingleRasterSample || centered(state_.OutputMerger.DSV) ||
                            std::any_of(state_.OutputMerger.RTVs, state_.OutputMerger.RTVs + Desc.NumColorAttachments, centered);
+    // the targets' samples, or the forced count's of a pass without targets, are pairs of D3D's (RasterSampleCount)
+    auto paired = [](auto &view) { return view && view->texture_->paired; };
+    uint32_t forced = rs->ForcedSampleCount();
+    Desc.PairedSamples = attached ? paired(state_.OutputMerger.DSV) ||
+                                        std::any_of(state_.OutputMerger.RTVs,
+                                                    state_.OutputMerger.RTVs + Desc.NumColorAttachments, paired)
+                                  : forced > 1 && RasterSampleCount(device->GetMTLDevice(), forced) < forced;
+    // a sample is kept where either of its two is
+    if (Desc.PairedSamples && Desc.SampleMask != ~0u) {
+      uint32_t kept = 0;
+      for (uint32_t i = 0; i < 16; i++)
+        kept |= (Desc.SampleMask >> 2 * i & 3 ? 1u : 0u) << i;
+      Desc.SampleMask = kept;
+    }
     Desc.GSPassthrough = GS && !Desc.SOLayout ? GS->reflection().GeometryShader.GSPassThrough : ~0u;
     // a pixel shader whose runs are seen tests the last pre-raster stage's clip distances itself (D3D11.3 15.4.1),
     // where Metal would cut the primitive and run a pixel on the cut once for each piece. a geometry shader after
@@ -5607,7 +5621,8 @@ public:
     }
     Desc.IndexBufferFormat = IndexFormat<IndexedDraw>();
     // a pass with no targets rasterizes the forced count, and its pipeline with it
-    Desc.SampleCount = attached ? state_.OutputMerger.SampleCount : std::max(1u, rs->ForcedSampleCount());
+    Desc.SampleCount = attached ? state_.OutputMerger.SampleCount
+                                : std::max(1u, RasterSampleCount(device->GetMTLDevice(), rs->ForcedSampleCount()));
   }
 
   // how a draw's vertices are numbered: by the bound index buffer's format, or not at all. the object stage of a
