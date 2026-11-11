@@ -386,6 +386,9 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    downscale_motion = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
+    );
     // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
     row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
     if (!row_major_transforms)
@@ -531,6 +534,10 @@ public:
   PipelineArchives() override {
     std::call_once(archive_opened_, [this] {
       auto directory = ShaderCacheDirectory();
+      // Metal captures no mesh pipeline made with a binary archive ("Capturing Mesh Shaders with Binary Archives is
+      // not supported"): a process that may be captured makes its pipelines without one
+      if (env::getEnvVar("MTL_CAPTURE_ENABLED") == "1")
+        return;
       WMT::Reference<WMT::Error> error;
       WMT::Reference<WMT::BinaryArchive> added;
       if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
@@ -1018,7 +1025,8 @@ public:
       out->SRVOnlyTiledResourceTier3 = FALSE;
       out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
       // MULLION_D3D12_RAYTRACING=0: none, for an application whose ray tracing is its own choice (DXR spec,
-      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest
+      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest.
+      // the device then reaches 12_1: 12_2 has ray tracing tier 1.1, so an application that asks for 12_2 is refused
       static const bool rays = env::getEnvVar("MULLION_D3D12_RAYTRACING") != "0";
       out->RaytracingTier = rays ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
       return S_OK;

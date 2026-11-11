@@ -414,7 +414,12 @@ public:
     std::function<void(const WMT::Reference<WMT::SharedEvent> &, uint64_t)> open;
   };
   mullion::mutex following_mutex;
-  Following following;
+  // the Signals of Metal 4 queues not yet seen reached, oldest first: a Wait follows the first that reaches its value.
+  // following the last alone made a Wait for an older value wait for a later Signal's command buffer, which can wait
+  // on the GPU for work behind that Wait: two queues that signal each other a frame apart (Unreal's async compute)
+  // then waited for each other until Metal gave up, some 4 seconds on, every few hundred frames (Subnautica 2)
+  std::deque<Following> following;
+  static constexpr size_t kFollowed = 64;
   std::vector<Opener> openers;
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
@@ -756,11 +761,18 @@ public:
   std::atomic<uint32_t> max_mesh_threadgroups{0};
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
-  // what the device's command allocators record into: commands, and what the GPU reads of them, through one buffer
+  // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads
+  // `arguments` through buffers over its start, each twice the last, as it is handed out (MTLD3D12CommandAllocator::
+  // GrowArguments): a GPU capture copies all of a buffer the CPU writes for each command buffer that uses it, which
+  // for 1 GB made traces of tens of GB. each covers what the ones before it do, which stay, as lists recorded addresses
+  // in them
+  struct ArgumentsBuffer {
+    WMT::Reference<WMT::Buffer> buffer;
+    uint64_t address = 0, length = 0;
+  };
   struct {
     RecordingArena commands, arguments;
-    WMT::Reference<WMT::Buffer> buffer;
-    uint64_t address = 0;
+    std::vector<ArgumentsBuffer> buffers;
     // blocks of `arguments` nothing writes: the zeros an indirect draw's indices past their view read
     std::optional<RecordingArena::Run> zeros;
     mullion::mutex mutex;
@@ -877,6 +889,8 @@ public:
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
+  // display-resolution motion vectors at the input resolution, in its pixels, for MetalFX (cs_downscale_dilated_mv)
+  WMT::Reference<WMT::ComputePipelineState> downscale_motion;
   // a bottom-level structure's geometry transforms as column-major matrices (acceleration_structure_transforms), for
   // a GPU that takes no row-major ones
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_transforms;

@@ -390,6 +390,14 @@ pop_mesh_output_primitive_id(uint32_t from_reg, uint32_t mask, pvalue primitive_
   co_return {};
 }
 
+// viewport 0 for a primitive of a shader that names none (SM50ShaderInternal::mesh_handlers)
+IREffect
+pop_mesh_output_default_viewport_array_index(pvalue primitive_id) {
+  auto ctx = co_yield get_context();
+  ctx.air.CreateSetMeshViewportArrayIndex(primitive_id, ctx.builder.getInt32(0));
+  co_return {};
+}
+
 IREffect
 pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
   auto ctx = co_yield get_context();
