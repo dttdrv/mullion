@@ -1020,7 +1020,8 @@ public:
       out->SRVOnlyTiledResourceTier3 = FALSE;
       out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
       // MULLION_D3D12_RAYTRACING=0: none, for an application whose ray tracing is its own choice (DXR spec,
-      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest
+      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest.
+      // the device then reaches 12_1: 12_2 has ray tracing tier 1.1, so an application that asks for 12_2 is refused
       static const bool rays = env::getEnvVar("MULLION_D3D12_RAYTRACING") != "0";
       out->RaytracingTier = rays ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
       return S_OK;
