@@ -24,6 +24,7 @@
 #include "mullion_query.hpp"
 #include "mullion_presenter.hpp"
 #include "wsi_platform.hpp"
+#include <bit>
 #include <cstdint>
 #include <cfloat>
 #include <cmath>

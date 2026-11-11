@@ -23,6 +23,7 @@
 #include "airconv_public.h"
 #include "mullion_sampler.hpp"
 #include "log/log.hpp"
+#include <bit>
 
 namespace mullion {
 
