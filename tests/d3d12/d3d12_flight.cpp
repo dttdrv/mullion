@@ -20,6 +20,8 @@ resume(EXCEPTION_POINTERS *pointers) {
                                                                                 : EXCEPTION_CONTINUE_SEARCH;
 }
 
+// `unhoused` runs x86_64 code of its own and steps over it by that machine's registers
+#if defined(__x86_64__)
 // steps over the two bytes of `mov [rax], eax`, the one instruction of `unhoused` that faults
 static LONG CALLBACK
 step_over(EXCEPTION_POINTERS *pointers) {
@@ -28,6 +30,7 @@ step_over(EXCEPTION_POINTERS *pointers) {
   pointers->ContextRecord->Rip += 2;
   return EXCEPTION_CONTINUE_EXECUTION;
 }
+#endif
 
 static int
 d3d11() {
@@ -69,6 +72,7 @@ main(int argc, char **argv) {
     }
     return verdict();
   }
+#if defined(__x86_64__)
   if (mode == "unhoused") {
     // code no module holds, as a JIT's: xor eax, eax; mov [rax], eax; ret
     const unsigned char code[] = {0x31, 0xc0, 0x89, 0x00, 0xc3};
@@ -82,6 +86,7 @@ main(int argc, char **argv) {
     printf("fact unhoused %#llx\n", (unsigned long long)(uintptr_t)page);
     return verdict();
   }
+#endif
   if (mode == "d3d11")
     return d3d11();
   auto metal = LoadLibraryA("winemetal.dll");
