@@ -383,6 +383,9 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    downscale_motion = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
+    );
     // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
     row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
     if (!row_major_transforms)
