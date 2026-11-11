@@ -638,7 +638,7 @@ def known(path=None):
     entries = {}
     for number, line in enumerate(path.read_text().splitlines() if path.exists() else [], 1):
         if line.strip() and not line.startswith("#"):
-            fields = re.fullmatch(r"(native\([^)]*\)|\S+) (\S+) (failed: \d+ wrong results \[[0-9a-f]{8}\]|skipped: .+) -- (.*\S.*)", line)
+            fields = re.fullmatch(r"(native\(.*?\)|\S+) (\S+) (failed: \d+ wrong results \[[0-9a-f]{8}\]|skipped: .+) -- (.*\S.*)", line)
             if not fields:
                 sys.exit(f"{path}:{number}: not '<family> <test> <verdict or skip> -- <cause>'")
             entries[fields[1], fields[2]] = fields[3]
