@@ -36,6 +36,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     lib(lib),
     emulated_cmd(device, lib, *this),
     clear_rt_cmd(device, *this),
+    blit_color_cmd(device, *this),
     blit_depth_stencil_cmd(device, lib, *this),
     clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
@@ -136,6 +137,30 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
       cmd.type = WMTRenderCommandSetVertexBufferOffset;
   }
 }
+
+void
+ArgumentEncodingContext::encodeVertexStreamOutput(uint64_t offset) {
+  struct SO_BUFFER_ENTRY {
+    uint64_t buffer_handle;
+    uint64_t counter_handle;
+  };
+  SO_BUFFER_ENTRY *entries = getMappedArgumentBuffer<SO_BUFFER_ENTRY>(offset);
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto &buffer = so_[slot].buffer;
+    entries[slot] = {};
+    if (!buffer.ptr())
+      continue;
+    auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, 0, buffer->length(), ResourceAccess::Write);
+    entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
+  }
+  auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
+  cmd.offset = getFinalArgumentBufferOffset(offset);
+  cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+  cmd.type = WMTRenderCommandSetVertexBufferOffset;
+  currentRenderEncoder()->use_emulated_so = 1;
+}
+
 uint64_t
 ArgumentEncodingContext::indirectGeometryBound(uint32_t invocations) {
   auto bound = indirect_geometry_bound.load(std::memory_order_relaxed);
@@ -662,6 +687,7 @@ ArgumentEncodingContext::resolveTexture(
   encoder_info->fence_update = {encoder_info->id};
   encoder_current = encoder_info;
 
+  encoder_info->depth = DepthStencilPlanarFlags(src->pixelFormat()) & 1;
   encoder_info->src = access(src, src_view, ResourceAccess::Read);
   encoder_info->dst = access(dst, dst_view, ResourceAccess::Write);
 
@@ -1286,6 +1312,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_VERTEX_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
+      if (data->use_emulated_so)
+        encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_STREAM_OUTPUT0);
       encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
       encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
       if (data->use_geometry || data->use_tessellation) {
@@ -1539,10 +1567,18 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       {
         WMTRenderPassInfo info;
         WMT::InitializeRenderPassInfo(info);
-        info.colors[0].texture = data->src.texture();
-        info.colors[0].load_action = WMTLoadActionLoad;
-        info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
-        info.colors[0].resolve_texture = data->dst.texture();
+        if (data->depth) {
+          info.depth.texture = data->src.texture();
+          info.depth.load_action = WMTLoadActionLoad;
+          info.depth.store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.depth.resolve_texture = data->dst.texture();
+          info.colors[0].store_action = WMTStoreActionDontCare;
+        } else {
+          info.colors[0].texture = data->src.texture();
+          info.colors[0].load_action = WMTLoadActionLoad;
+          info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.colors[0].resolve_texture = data->dst.texture();
+        }
 
         auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(info, samples)
                                             : cmdbuf.renderCommandEncoder(info);
@@ -1697,6 +1733,9 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
 
       if (render->render_target_array_length != clear->array_length)
         break;
+      // a load action only clears the render area, which a smaller attachment can shrink
+      if (render->render_target_width < clear->width || render->render_target_height < clear->height)
+        break;
 
       if (clear->clear_dsv) {
         if (auto depth_attachment = isClearDepthSignatureMatched(clear, render)) {
@@ -1822,6 +1861,7 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       }
       r1->use_tessellation = r0->use_tessellation || r1->use_tessellation;
       r1->use_geometry = r0->use_geometry || r1->use_geometry;
+      r1->use_emulated_so = r0->use_emulated_so || r1->use_emulated_so;
       std::move(
         r1->gs_arg_marshal_tasks.begin(),
         r1->gs_arg_marshal_tasks.end(),

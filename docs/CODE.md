@@ -14,11 +14,12 @@ rule whose reason is known can be applied to cases it does not name.
 
 Mullion runs as Windows DLLs inside Wine, which call into a native macOS library that talks to Metal.
 
-- [`src/d3d10`](../src/d3d10), [`src/d3d11`](../src/d3d11), [`src/d3d12`](../src/d3d12) and [`src/dxgi`](../src/dxgi)
-  implement the Direct3D and DXGI interfaces. Direct3D 10 is built on the Direct3D 11 implementation.
+- [`src/d3d9`](../src/d3d9), [`src/d3d10`](../src/d3d10), [`src/d3d11`](../src/d3d11), [`src/d3d12`](../src/d3d12) and
+  [`src/dxgi`](../src/dxgi) implement the Direct3D and DXGI interfaces. Direct3D 10 is built on the Direct3D 11
+  implementation. Direct3D 9 is built only with the `enable_d3d9` option.
 - [`src/mullion`](../src/mullion) holds what the APIs share: devices, command encoding, resources, queues,
   presentation.
-- [`src/airconv`](../src/airconv) converts shaders, DXBC and DXIL, to Metal IR.
+- [`src/airconv`](../src/airconv) converts shaders, DXBC, DXIL and Direct3D 9 bytecode, to Metal IR.
 - [`src/winemetal`](../src/winemetal) is the bridge. `Metal.hpp` wraps Metal objects for the Windows side, and
   `unix/` is the native half, written against Metal's Objective-C API, that does the work.
   [`src/nativemetal`](../src/nativemetal) builds the bridge's native sources into a macOS build without Wine,

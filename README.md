@@ -15,6 +15,7 @@ reports](https://github.com/dttdrv/mullion/discussions/categories/game-reports),
 | Direct3D 12 | up to 12_2 | Shader models up to 6.7, ray tracing tier 1.1, mesh and amplification shaders, conservative rasterization tier 3, variable rate shading tier 2, tiled resources tier 3, the depth bounds test, tessellation, geometry shaders, stream output, sampler feedback, reserved resources, pipeline libraries, planar video formats and D3D11On12. |
 | Direct3D 11 | 11_1 | |
 | Direct3D 10 and 10.1 | 10_1 | Runs on the Direct3D 11 implementation. |
+| Direct3D 9 | | Shader models 1 to 3 and the fixed-function pipeline. Not in releases yet: built with `-Denable_d3d9=true`. |
 
 This describes the main branch. Feature levels 12_1 and 12_2 and Metal 4 come to a release with v0.5.
 
@@ -34,7 +35,7 @@ has God of War Ragnarök and 3DMark too, with screenshots.
 - A Mac with Apple silicon, M1 or later, on macOS 15 or later.
 - Wine for x86_64 or CrossOver, with [Rosetta](https://support.apple.com/en-us/102527), or Wine for arm64, whose x86_64
   programs load Mullion's ARM64X libraries as ARM64EC. Stock Wine works, without patches or DLL overrides.
-- A 64-bit game. 32-bit games are not supported yet.
+- A 64-bit game. 32-bit games are not supported yet, other than Direct3D 9 games on a win32 build with `enable_d3d9`.
 
 ## Install
 

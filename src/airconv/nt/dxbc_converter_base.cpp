@@ -146,7 +146,29 @@ Converter::LoadOperand(const SrcOperandImmediateConstantBuffer &SrcOp, mask_t Ma
 }
 
 llvm::Value *
-Converter::LoadOperand(const SrcOperandImmediate32 &SrcOp, mask_t Mask) {
+Converter::LoadOperand(const SrcOperandImmediate32 &Operand, mask_t Mask) {
+  // DXBC immediates never carry a swizzle or modifier; D3D9 def constants do, so fold them into the values.
+  SrcOperandImmediate32 SrcOp = Operand;
+  if (!(Operand._.swizzle == swizzle_identity) || Operand._.abs || Operand._.neg) {
+    uint8_t lanes[4] = {Operand._.swizzle.x, Operand._.swizzle.y, Operand._.swizzle.z, Operand._.swizzle.w};
+    for (int i = 0; i < 4; i++) {
+      uint32_t value = Operand.uvalue[lanes[i] & 3];
+      if (Operand._.read_type == OperandDataType::Integer) {
+        int32_t signed_value = (int32_t)value;
+        if (Operand._.abs && signed_value < 0)
+          signed_value = -signed_value;
+        if (Operand._.neg)
+          signed_value = -signed_value;
+        value = (uint32_t)signed_value;
+      } else {
+        if (Operand._.abs)
+          value &= 0x7FFFFFFFu;
+        if (Operand._.neg)
+          value ^= 0x80000000u;
+      }
+      SrcOp.uvalue[i] = value;
+    }
+  }
   llvm::SmallVector<llvm::Constant *> Constants;
   switch (SrcOp._.read_type) {
   case OperandDataType::Float:

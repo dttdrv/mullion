@@ -1,0 +1,178 @@
+/*
+ * Copyright 2026 David Skoland
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#include "d3d9_adapter.hpp"
+#include "d3d9_constants.hpp"
+#include "d3d9_fixed_function.hpp"
+#include <cstring>
+
+namespace mullion {
+
+void
+D3D9FillCaps(UINT Ordinal, WMT::Device Device, D3DCAPS9 *pCaps) {
+  std::memset(pCaps, 0, sizeof(*pCaps));
+
+  pCaps->DeviceType = D3DDEVTYPE_HAL;
+  pCaps->AdapterOrdinal = Ordinal;
+  pCaps->Caps = D3DCAPS_READ_SCANLINE;
+  pCaps->Caps2 = D3DCAPS2_FULLSCREENGAMMA | D3DCAPS2_CANCALIBRATEGAMMA | D3DCAPS2_CANMANAGERESOURCE |
+                 D3DCAPS2_DYNAMICTEXTURES | D3DCAPS2_CANAUTOGENMIPMAP | D3DCAPS2_CANSHARERESOURCE;
+  pCaps->Caps3 = D3DCAPS3_ALPHA_FULLSCREEN_FLIP_OR_DISCARD | D3DCAPS3_LINEAR_TO_SRGB_PRESENTATION |
+                 D3DCAPS3_COPY_TO_VIDMEM | D3DCAPS3_COPY_TO_SYSTEMMEM;
+  pCaps->PresentationIntervals = D3DPRESENT_INTERVAL_DEFAULT | D3DPRESENT_INTERVAL_ONE | D3DPRESENT_INTERVAL_TWO |
+                                 D3DPRESENT_INTERVAL_THREE | D3DPRESENT_INTERVAL_FOUR |
+                                 D3DPRESENT_INTERVAL_IMMEDIATE;
+  pCaps->CursorCaps = D3DCURSORCAPS_COLOR | D3DCURSORCAPS_LOWRES;
+  pCaps->DevCaps = D3DDEVCAPS_EXECUTESYSTEMMEMORY | D3DDEVCAPS_EXECUTEVIDEOMEMORY |
+                   D3DDEVCAPS_TLVERTEXSYSTEMMEMORY | D3DDEVCAPS_TLVERTEXVIDEOMEMORY |
+                   D3DDEVCAPS_TEXTURESYSTEMMEMORY | D3DDEVCAPS_TEXTUREVIDEOMEMORY | D3DDEVCAPS_DRAWPRIMTLVERTEX |
+                   D3DDEVCAPS_CANRENDERAFTERFLIP | D3DDEVCAPS_TEXTURENONLOCALVIDMEM | D3DDEVCAPS_DRAWPRIMITIVES2 |
+                   D3DDEVCAPS_DRAWPRIMITIVES2EX | D3DDEVCAPS_HWTRANSFORMANDLIGHT | D3DDEVCAPS_CANBLTSYSTONONLOCAL |
+                   D3DDEVCAPS_HWRASTERIZATION | D3DDEVCAPS_PUREDEVICE;
+  pCaps->PrimitiveMiscCaps = D3DPMISCCAPS_MASKZ | D3DPMISCCAPS_CULLNONE | D3DPMISCCAPS_CULLCW |
+                             D3DPMISCCAPS_CULLCCW | D3DPMISCCAPS_COLORWRITEENABLE | D3DPMISCCAPS_CLIPPLANESCALEDPOINTS |
+                             D3DPMISCCAPS_TSSARGTEMP | D3DPMISCCAPS_BLENDOP | D3DPMISCCAPS_INDEPENDENTWRITEMASKS |
+                             D3DPMISCCAPS_PERSTAGECONSTANT | D3DPMISCCAPS_FOGANDSPECULARALPHA |
+                             D3DPMISCCAPS_SEPARATEALPHABLEND | D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS |
+                             D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING | D3DPMISCCAPS_FOGVERTEXCLAMPED |
+                             D3DPMISCCAPS_POSTBLENDSRGBCONVERT;
+  pCaps->RasterCaps = D3DPRASTERCAPS_DITHER | D3DPRASTERCAPS_ZTEST | D3DPRASTERCAPS_FOGVERTEX |
+                      D3DPRASTERCAPS_FOGTABLE | D3DPRASTERCAPS_MIPMAPLODBIAS | D3DPRASTERCAPS_ZFOG |
+                      D3DPRASTERCAPS_WFOG | D3DPRASTERCAPS_FOGRANGE | D3DPRASTERCAPS_ANISOTROPY |
+                      D3DPRASTERCAPS_COLORPERSPECTIVE | D3DPRASTERCAPS_SCISSORTEST |
+                      D3DPRASTERCAPS_SLOPESCALEDEPTHBIAS | D3DPRASTERCAPS_DEPTHBIAS |
+                      D3DPRASTERCAPS_MULTISAMPLE_TOGGLE;
+
+  DWORD cmp_caps = D3DPCMPCAPS_NEVER | D3DPCMPCAPS_LESS | D3DPCMPCAPS_EQUAL | D3DPCMPCAPS_LESSEQUAL |
+                   D3DPCMPCAPS_GREATER | D3DPCMPCAPS_NOTEQUAL | D3DPCMPCAPS_GREATEREQUAL | D3DPCMPCAPS_ALWAYS;
+  pCaps->ZCmpCaps = cmp_caps;
+  pCaps->AlphaCmpCaps = cmp_caps;
+
+  DWORD blend_caps = D3DPBLENDCAPS_ZERO | D3DPBLENDCAPS_ONE | D3DPBLENDCAPS_SRCCOLOR | D3DPBLENDCAPS_INVSRCCOLOR |
+                     D3DPBLENDCAPS_SRCALPHA | D3DPBLENDCAPS_INVSRCALPHA | D3DPBLENDCAPS_DESTALPHA |
+                     D3DPBLENDCAPS_INVDESTALPHA | D3DPBLENDCAPS_DESTCOLOR | D3DPBLENDCAPS_INVDESTCOLOR |
+                     D3DPBLENDCAPS_SRCALPHASAT | D3DPBLENDCAPS_BOTHSRCALPHA | D3DPBLENDCAPS_BOTHINVSRCALPHA |
+                     D3DPBLENDCAPS_BLENDFACTOR;
+  pCaps->SrcBlendCaps = blend_caps;
+  pCaps->DestBlendCaps = blend_caps;
+
+  pCaps->ShadeCaps = D3DPSHADECAPS_COLORGOURAUDRGB | D3DPSHADECAPS_SPECULARGOURAUDRGB |
+                     D3DPSHADECAPS_ALPHAGOURAUDBLEND | D3DPSHADECAPS_FOGGOURAUD;
+  pCaps->TextureCaps = D3DPTEXTURECAPS_PERSPECTIVE | D3DPTEXTURECAPS_ALPHA | D3DPTEXTURECAPS_PROJECTED |
+                       D3DPTEXTURECAPS_CUBEMAP | D3DPTEXTURECAPS_VOLUMEMAP | D3DPTEXTURECAPS_MIPMAP |
+                       D3DPTEXTURECAPS_MIPVOLUMEMAP | D3DPTEXTURECAPS_MIPCUBEMAP;
+
+  DWORD filter_caps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MINFANISOTROPIC |
+                      D3DPTFILTERCAPS_MIPFPOINT | D3DPTFILTERCAPS_MIPFLINEAR | D3DPTFILTERCAPS_MAGFPOINT |
+                      D3DPTFILTERCAPS_MAGFLINEAR | D3DPTFILTERCAPS_MAGFANISOTROPIC;
+  pCaps->TextureFilterCaps = filter_caps;
+  pCaps->CubeTextureFilterCaps = filter_caps;
+  pCaps->VolumeTextureFilterCaps = filter_caps;
+  pCaps->VertexTextureFilterCaps = filter_caps;
+  pCaps->StretchRectFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MINFLINEAR |
+                                 D3DPTFILTERCAPS_MAGFPOINT | D3DPTFILTERCAPS_MAGFLINEAR;
+
+  DWORD address_caps = D3DPTADDRESSCAPS_WRAP | D3DPTADDRESSCAPS_MIRROR | D3DPTADDRESSCAPS_CLAMP |
+                       D3DPTADDRESSCAPS_BORDER | D3DPTADDRESSCAPS_INDEPENDENTUV | D3DPTADDRESSCAPS_MIRRORONCE;
+  pCaps->TextureAddressCaps = address_caps;
+  pCaps->VolumeTextureAddressCaps = address_caps;
+
+  pCaps->LineCaps = D3DLINECAPS_TEXTURE | D3DLINECAPS_ZTEST | D3DLINECAPS_BLEND | D3DLINECAPS_ALPHACMP |
+                    D3DLINECAPS_FOG | D3DLINECAPS_ANTIALIAS;
+
+  pCaps->MaxTextureWidth = 16384;
+  pCaps->MaxTextureHeight = 16384;
+  pCaps->MaxVolumeExtent = 2048;
+  pCaps->MaxTextureRepeat = 8192;
+  pCaps->MaxTextureAspectRatio = 16384;
+  pCaps->MaxAnisotropy = 16;
+  pCaps->MaxVertexW = 1e10f;
+
+  pCaps->GuardBandLeft = -32768.0f;
+  pCaps->GuardBandTop = -32768.0f;
+  pCaps->GuardBandRight = 32768.0f;
+  pCaps->GuardBandBottom = 32768.0f;
+  pCaps->ExtentsAdjust = 0.0f;
+
+  pCaps->StencilCaps = D3DSTENCILCAPS_KEEP | D3DSTENCILCAPS_ZERO | D3DSTENCILCAPS_REPLACE |
+                       D3DSTENCILCAPS_INCRSAT | D3DSTENCILCAPS_DECRSAT | D3DSTENCILCAPS_INVERT |
+                       D3DSTENCILCAPS_INCR | D3DSTENCILCAPS_DECR | D3DSTENCILCAPS_TWOSIDED;
+  pCaps->FVFCaps = D3DFVFCAPS_PSIZE | (DWORD)caps::MaxTexturesFF;
+  pCaps->TextureOpCaps = D3DTEXOPCAPS_DISABLE | D3DTEXOPCAPS_SELECTARG1 | D3DTEXOPCAPS_SELECTARG2 |
+                         D3DTEXOPCAPS_MODULATE | D3DTEXOPCAPS_MODULATE2X | D3DTEXOPCAPS_MODULATE4X |
+                         D3DTEXOPCAPS_ADD | D3DTEXOPCAPS_ADDSIGNED | D3DTEXOPCAPS_ADDSIGNED2X |
+                         D3DTEXOPCAPS_SUBTRACT | D3DTEXOPCAPS_ADDSMOOTH | D3DTEXOPCAPS_BLENDDIFFUSEALPHA |
+                         D3DTEXOPCAPS_BLENDTEXTUREALPHA | D3DTEXOPCAPS_BLENDFACTORALPHA |
+                         D3DTEXOPCAPS_BLENDTEXTUREALPHAPM | D3DTEXOPCAPS_BLENDCURRENTALPHA |
+                         D3DTEXOPCAPS_PREMODULATE | D3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR |
+                         D3DTEXOPCAPS_MODULATECOLOR_ADDALPHA | D3DTEXOPCAPS_MODULATEINVALPHA_ADDCOLOR |
+                         D3DTEXOPCAPS_MODULATEINVCOLOR_ADDALPHA | D3DTEXOPCAPS_BUMPENVMAP |
+                         D3DTEXOPCAPS_BUMPENVMAPLUMINANCE | D3DTEXOPCAPS_DOTPRODUCT3 | D3DTEXOPCAPS_MULTIPLYADD |
+                         D3DTEXOPCAPS_LERP;
+  pCaps->MaxTextureBlendStages = caps::MaxTexturesFF;
+  pCaps->MaxSimultaneousTextures = caps::MaxTexturesFF;
+
+  pCaps->VertexProcessingCaps = D3DVTXPCAPS_TEXGEN | D3DVTXPCAPS_MATERIALSOURCE7 | D3DVTXPCAPS_DIRECTIONALLIGHTS |
+                                D3DVTXPCAPS_POSITIONALLIGHTS | D3DVTXPCAPS_LOCALVIEWER |
+                                D3DVTXPCAPS_TEXGEN_SPHEREMAP;
+  pCaps->MaxActiveLights = caps::MaxEnabledLights;
+  pCaps->MaxUserClipPlanes = caps::MaxClipPlanes;
+  pCaps->MaxVertexBlendMatrices = 4;
+  pCaps->MaxVertexBlendMatrixIndex = ff::MaxIndexedMatrices - 1;
+  pCaps->MaxPointSize = 256.0f;
+  pCaps->MaxPrimitiveCount = 0x00555555;
+  pCaps->MaxVertexIndex = 0x00ffffff;
+  pCaps->MaxStreams = caps::MaxStreams;
+  pCaps->MaxStreamStride = 508;
+
+  pCaps->VertexShaderVersion = D3DVS_VERSION(3, 0);
+  pCaps->MaxVertexShaderConst = caps::MaxFloatConstantsVS;
+  pCaps->PixelShaderVersion = D3DPS_VERSION(3, 0);
+  pCaps->PixelShader1xMaxValue = 65504.0f;
+
+  pCaps->DevCaps2 = D3DDEVCAPS2_STREAMOFFSET | D3DDEVCAPS2_VERTEXELEMENTSCANSHARESTREAMOFFSET |
+                    D3DDEVCAPS2_CAN_STRETCHRECT_FROM_TEXTURES;
+  pCaps->MaxNpatchTessellationLevel = 0.0f;
+  pCaps->MasterAdapterOrdinal = 0;
+  pCaps->AdapterOrdinalInGroup = 0;
+  pCaps->NumberOfAdaptersInGroup = 1;
+  pCaps->DeclTypes = D3DDTCAPS_UBYTE4 | D3DDTCAPS_UBYTE4N | D3DDTCAPS_SHORT2N | D3DDTCAPS_SHORT4N |
+                     D3DDTCAPS_USHORT2N | D3DDTCAPS_USHORT4N | D3DDTCAPS_UDEC3 | D3DDTCAPS_DEC3N |
+                     D3DDTCAPS_FLOAT16_2 | D3DDTCAPS_FLOAT16_4;
+  pCaps->NumSimultaneousRTs = caps::MaxSimultaneousRenderTargets;
+
+  pCaps->VS20Caps.Caps = D3DVS20CAPS_PREDICATION;
+  pCaps->VS20Caps.DynamicFlowControlDepth = D3DVS20_MAX_DYNAMICFLOWCONTROLDEPTH;
+  pCaps->VS20Caps.NumTemps = D3DVS20_MAX_NUMTEMPS;
+  pCaps->VS20Caps.StaticFlowControlDepth = D3DVS20_MAX_STATICFLOWCONTROLDEPTH;
+
+  pCaps->PS20Caps.Caps = D3DPS20CAPS_ARBITRARYSWIZZLE | D3DPS20CAPS_GRADIENTINSTRUCTIONS |
+                         D3DPS20CAPS_PREDICATION | D3DPS20CAPS_NODEPENDENTREADLIMIT |
+                         D3DPS20CAPS_NOTEXINSTRUCTIONLIMIT;
+  pCaps->PS20Caps.DynamicFlowControlDepth = D3DPS20_MAX_DYNAMICFLOWCONTROLDEPTH;
+  pCaps->PS20Caps.NumTemps = D3DPS20_MAX_NUMTEMPS;
+  pCaps->PS20Caps.StaticFlowControlDepth = D3DPS20_MAX_STATICFLOWCONTROLDEPTH;
+  pCaps->PS20Caps.NumInstructionSlots = D3DPS20_MAX_NUMINSTRUCTIONSLOTS;
+
+  pCaps->MaxVShaderInstructionsExecuted = 0xffffffff;
+  pCaps->MaxPShaderInstructionsExecuted = 0xffffffff;
+  pCaps->MaxVertexShader30InstructionSlots = 32768;
+  pCaps->MaxPixelShader30InstructionSlots = 32768;
+}
+
+} // namespace mullion

@@ -21,6 +21,22 @@
 #include "airconv_public.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+class SM50ErrorInternal {
+public:
+  llvm::SmallVector<char, 0> buf;
+};
+
+#define SM50_RETURN_ERROR(errorObj, ppError, errorCode) \
+  do { \
+    if (ppError) \
+      *(ppError) = (sm50_error_t)(errorObj).release(); \
+    return errorCode; \
+  } while (0)
+
+namespace mullion::d3d9 {
+struct ShaderData;
+}
+
 namespace mullion::dxbc {
 
 struct ResourceRange {
@@ -565,6 +581,7 @@ public:
   mullion::air::FunctionSignatureBuilder func_signature;
   std::vector<Signature> output_signature;
   std::vector<std::unique_ptr<BasicBlock>> bbs;
+  std::shared_ptr<d3d9::ShaderData> d3d9;
   std::vector<std::function<void(SignatureContext &)>> signature_handlers;
   microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE shader_type;
   /* for domain shader, it refers to patch constant input count */
@@ -755,6 +772,23 @@ convert_dxil(
 std::vector<std::unique_ptr<BasicBlock>> read_control_flow(
     microsoft::D3D10ShaderBinary::CShaderCodeParser &Parser, SM50ShaderInternal *sm50_shader,
     microsoft::CSignatureParser &inputParser, microsoft::CSignatureParser5 &outputParser
+);
+
+struct BindingSlotMasks {
+  uint16_t cbuffer = 0;
+  uint16_t sampler = 0;
+  uint64_t uav = 0;
+  uint64_t srv_hi = 0;
+  uint64_t srv_lo = 0;
+};
+
+// Defines argument-table entries for every cbuffer, sampler, SRV and UAV in shader_info and fills args_reflection.
+BindingSlotMasks define_argument_bindings(SM50ShaderInternal *sm50_shader);
+
+// Replaces each BasicBlockCall with a clone of the callee, up to 32 levels deep.
+void inline_calls(
+    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> call_targets,
+    const std::map<uint32_t, BasicBlock *> &func_entries, const std::function<BasicBlock *(const char *)> &fresh_bb
 );
 
 uint32_t next_pow2(uint32_t x);

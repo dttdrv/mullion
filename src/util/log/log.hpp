@@ -12,6 +12,7 @@
 
 #include <fstream>
 #include <string>
+#include <utility>
 
 #include "../thread.hpp"
 #include "../util_string.hpp"
@@ -94,4 +95,10 @@ private:
   static bool s_errorShown = false;                                            \
   if (!std::exchange(s_errorShown, true)) {                                    \
     Logger::err(str::format(__VA_ARGS__));                                     \
+  }
+
+#define WARN_ONCE(...)                                                         \
+  static bool s_warningShown = false;                                          \
+  if (!std::exchange(s_warningShown, true)) {                                  \
+    Logger::warn(str::format(__VA_ARGS__));                                    \
   }

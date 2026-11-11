@@ -555,6 +555,12 @@ renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *samp
     descriptor.depthAttachment.texture = (id<MTLTexture>)info->depth.texture;
     descriptor.depthAttachment.loadAction = (MTLLoadAction)info->depth.load_action;
     descriptor.depthAttachment.storeAction = (MTLStoreAction)info->depth.store_action;
+    if (info->depth.resolve_texture) {
+      descriptor.depthAttachment.resolveTexture = (id<MTLTexture>)info->depth.resolve_texture;
+      descriptor.depthAttachment.resolveLevel = info->depth.resolve_level;
+      descriptor.depthAttachment.resolveSlice = info->depth.resolve_slice;
+      descriptor.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
   }
 
   if (info->stencil.texture) {
@@ -2386,6 +2392,12 @@ _CreateMetalViewFromHWND(void *obj) {
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
+    if (!win_data || !win_data->client_cocoa_view) {
+      /* A window this process did not create (or one the driver refused): no view to attach a
+         layer to. Report it instead of dereferencing NULL; the caller fails the swapchain. */
+      if (win_data) pfn_release_win_data(win_data);
+      return STATUS_SUCCESS;
+    }
     macdrv_metal_view view =
         pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
     params->ret_view = (obj_handle_t)view;
@@ -2463,6 +2475,16 @@ thunk_SM50Initialize(void *args) {
 
   params->ret =
       SM50Initialize(params->bytecode, params->bytecode_size, params->shader, params->reflection, params->error);
+
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_SM30Initialize(void *args) {
+  struct sm50_initialize_params *params = args;
+
+  params->ret =
+      SM30Initialize(params->bytecode, params->bytecode_size, params->shader, params->reflection, params->error);
 
   return STATUS_SUCCESS;
 }
@@ -2612,6 +2634,18 @@ thunk32_SM50Initialize(void *args) {
   return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+thunk32_SM30Initialize(void *args) {
+  struct sm50_initialize_params32 *params = args;
+
+  params->ret = SM30Initialize(
+      UInt32ToPtr(params->bytecode), params->bytecode_size, UInt32ToPtr(params->shader),
+      UInt32ToPtr(params->reflection), UInt32ToPtr(params->error)
+  );
+
+  return STATUS_SUCCESS;
+}
+
 struct SM50_SHADER_COMMON_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -2671,6 +2705,29 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
   bool RasterizationDisabled;
   bool ClipDistanceVaryings;
   bool CullDistanceVaryings;
+};
+
+struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t num_output_slots;
+  uint32_t num_elements;
+  uint32_t strides[4];
+  uint32_t elements;
+};
+
+struct SM30_SHADER_D3D9_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t alpha_func;
+  uint32_t fog_mode;
+  uint32_t clip_plane_mask;
+  uint32_t flags;
+  uint32_t ps1_texture_types;
+  uint32_t vs_outputs[7];
+  uint32_t shadow_samplers;
+  uint32_t fetch4_samplers;
+  uint32_t unbound_samplers;
 };
 
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
@@ -2737,6 +2794,23 @@ sm50_compilation_argument32_convert(
 
   while (args32) {
     switch (args32->type) {
+    case SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT: {
+      struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *data =
+          malloc(sizeof(struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->num_output_slots = src->num_output_slots;
+      data->num_elements = src->num_elements;
+      data->strides[0] = src->strides[0];
+      data->strides[1] = src->strides[1];
+      data->strides[2] = src->strides[2];
+      data->strides[3] = src->strides[3];
+      data->elements = UInt32ToPtr(src->elements);
+      break;
+    }
     case SM50_SHADER_COMMON: {
       struct SM50_SHADER_COMMON_DATA32 *src = (void *)args32;
       struct SM50_SHADER_COMMON_DATA *data = malloc(sizeof(struct SM50_SHADER_COMMON_DATA));
@@ -2803,6 +2877,24 @@ sm50_compilation_argument32_convert(
       data->RasterizationDisabled = src->RasterizationDisabled;
       data->ClipDistanceVaryings = src->ClipDistanceVaryings;
       data->CullDistanceVaryings = src->CullDistanceVaryings;
+      break;
+    }
+    case SM30_SHADER_D3D9: {
+      struct SM30_SHADER_D3D9_DATA32 *src = (void *)args32;
+      struct SM30_SHADER_D3D9_DATA *data = malloc(sizeof(struct SM30_SHADER_D3D9_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->alpha_func = src->alpha_func;
+      data->fog_mode = src->fog_mode;
+      data->clip_plane_mask = src->clip_plane_mask;
+      data->flags = src->flags;
+      data->ps1_texture_types = src->ps1_texture_types;
+      memcpy(data->vs_outputs, src->vs_outputs, sizeof(data->vs_outputs));
+      data->shadow_samplers = src->shadow_samplers;
+      data->fetch4_samplers = src->fetch4_samplers;
+      data->unbound_samplers = src->unbound_samplers;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
@@ -6990,6 +7082,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &thunk_SM30Initialize,
 };
 
 #ifndef MULLION_NATIVE
@@ -7203,6 +7296,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &thunk32_SM30Initialize,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");
@@ -7210,3 +7304,4 @@ _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wo
 
 _Static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == WMTUnixCallCount,
                "bridge call count");
+_Static_assert(unix_sm30_initialize == WMTUnixSM30Initialize, "airconv_thunks.h names the same call");

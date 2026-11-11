@@ -63,6 +63,93 @@ to_shader_scaler_type(microsoft::D3D10_SB_RESOURCE_RETURN_TYPE type) {
   return ScalerDataType::Float;
 };
 
+void
+inline_calls(
+    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> call_targets,
+    const std::map<uint32_t, BasicBlock *> &func_entries, const std::function<BasicBlock *(const char *)> &fresh_bb
+) {
+  for (int stack_depth = 32; stack_depth > 0; stack_depth--) {
+    if (call_targets.empty())
+      break;
+
+    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> new_call_targets;
+
+    for (auto [bb, target] : call_targets) {
+      // the call is replaced in its block below, and its return point is still needed
+      auto call = *target;
+      std::unordered_map<BasicBlock *, BasicBlock *> visited;
+      std::stack<BasicBlock *> block_to_redirect;
+
+      auto clone = [&](BasicBlock *target) -> BasicBlock * {
+        if (visited.contains(target))
+          return visited.at(target);
+        auto cloned = fresh_bb(target->debug_name.c_str());
+        cloned->instructions = target->instructions; // copy instructions
+        visited.insert({target, cloned});
+        block_to_redirect.push(target);
+        return cloned;
+      };
+
+      bb->target = BasicBlockUnconditionalBranch{clone(func_entries.at(call.func_id))};
+
+      while (!block_to_redirect.empty()) {
+        auto current = block_to_redirect.top();
+        block_to_redirect.pop();
+        auto cloned = visited[current];
+        cloned->target = std::visit(
+            patterns{
+                [](BasicBlockUndefined) -> BasicBlockTarget { return BasicBlockUndefined{}; },
+                [&](BasicBlockReturn ret) -> BasicBlockTarget {
+                  return BasicBlockUnconditionalBranch{call.return_point};
+                },
+                [&](BasicBlockUnconditionalBranch uncond) -> BasicBlockTarget {
+                  return BasicBlockUnconditionalBranch{clone(uncond.target)};
+                },
+                [&](BasicBlockConditionalBranch cond) -> BasicBlockTarget {
+                  return BasicBlockConditionalBranch{cond.cond, clone(cond.true_branch), clone(cond.false_branch)};
+                },
+                [&](BasicBlockSwitch swc) -> BasicBlockTarget {
+                  BasicBlockSwitch new_swc;
+                  new_swc.value = swc.value;
+                  new_swc.case_default = clone(swc.case_default);
+                  for (auto [val, case_] : swc.cases) {
+                    new_swc.cases.insert({val, clone(case_)});
+                  }
+                  return new_swc;
+                },
+                [&](BasicBlockInstanceBarrier instance) -> BasicBlockTarget {
+                  return BasicBlockInstanceBarrier{
+                      instance.instance_count, clone(instance.active), clone(instance.sync)
+                  };
+                },
+                [&](BasicBlockHullShaderWriteOutput hull_end) -> BasicBlockTarget {
+                  return BasicBlockHullShaderWriteOutput{hull_end.instance_count, clone(hull_end.epilogue)};
+                },
+                [&](BasicBlockCall call) -> BasicBlockTarget {
+                  if (stack_depth == 1)
+                    return BasicBlockUnconditionalBranch{clone(call.return_point)};
+                  return BasicBlockCall{call.func_id, clone(call.return_point)};
+                },
+                [&](BasicBlockDXIL dxil) -> BasicBlockTarget {
+                  return BasicBlockDXIL{dxil.shader, dxil.function, clone(dxil.next)};
+                },
+            },
+            current->target
+        );
+        std::visit(
+            patterns{
+                [&](BasicBlockCall &call) { new_call_targets.push_back({cloned, &call}); },
+                [](auto) {},
+            },
+            cloned->target
+        );
+      }
+    }
+
+    call_targets = new_call_targets;
+  }
+}
+
 std::vector<std::unique_ptr<BasicBlock>>
 read_control_flow(
     D3D10ShaderBinary::CShaderCodeParser &Parser, SM50ShaderInternal *sm50_shader, CSignatureParser &inputParser,
@@ -681,86 +768,7 @@ read_control_flow(
     bb_current = bb_return;
   }
 
-  for (int stack_depth = 32; stack_depth > 0; stack_depth--) {
-    if (call_targets.empty())
-      break;
-
-    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> new_call_targets;
-
-    for (auto [bb, target] : call_targets) {
-      // the call is replaced in its block below, and its return point is still needed
-      auto call = *target;
-      std::unordered_map<BasicBlock *, BasicBlock *> visited;
-      std::stack<BasicBlock *> block_to_redirect;
-
-      auto clone = [&](BasicBlock *target) -> BasicBlock * {
-        if (visited.contains(target))
-          return visited.at(target);
-        auto cloned = fresh_bb(target->debug_name.c_str());
-        cloned->instructions = target->instructions; // copy instructions
-        visited.insert({target, cloned});
-        block_to_redirect.push(target);
-        return cloned;
-      };
-
-      bb->target = BasicBlockUnconditionalBranch{clone(func_entries.at(call.func_id))};
-
-      while (!block_to_redirect.empty()) {
-        auto current = block_to_redirect.top();
-        block_to_redirect.pop();
-        auto cloned = visited[current];
-        cloned->target = std::visit(
-            patterns{
-                [](BasicBlockUndefined) -> BasicBlockTarget { return BasicBlockUndefined{}; },
-                [&](BasicBlockReturn ret) -> BasicBlockTarget {
-                  return BasicBlockUnconditionalBranch{call.return_point};
-                },
-                [&](BasicBlockUnconditionalBranch uncond) -> BasicBlockTarget {
-                  return BasicBlockUnconditionalBranch{clone(uncond.target)};
-                },
-                [&](BasicBlockConditionalBranch cond) -> BasicBlockTarget {
-                  return BasicBlockConditionalBranch{cond.cond, clone(cond.true_branch), clone(cond.false_branch)};
-                },
-                [&](BasicBlockSwitch swc) -> BasicBlockTarget {
-                  BasicBlockSwitch new_swc;
-                  new_swc.value = swc.value;
-                  new_swc.case_default = clone(swc.case_default);
-                  for (auto [val, case_] : swc.cases) {
-                    new_swc.cases.insert({val, clone(case_)});
-                  }
-                  return new_swc;
-                },
-                [&](BasicBlockInstanceBarrier instance) -> BasicBlockTarget {
-                  return BasicBlockInstanceBarrier{
-                      instance.instance_count, clone(instance.active), clone(instance.sync)
-                  };
-                },
-                [&](BasicBlockHullShaderWriteOutput hull_end) -> BasicBlockTarget {
-                  return BasicBlockHullShaderWriteOutput{hull_end.instance_count, clone(hull_end.epilogue)};
-                },
-                [&](BasicBlockCall call) -> BasicBlockTarget {
-                  if (stack_depth == 1)
-                    return BasicBlockUnconditionalBranch{clone(call.return_point)};
-                  return BasicBlockCall{call.func_id, clone(call.return_point)};
-                },
-                [&](BasicBlockDXIL dxil) -> BasicBlockTarget {
-                  return BasicBlockDXIL{dxil.shader, dxil.function, clone(dxil.next)};
-                },
-            },
-            current->target
-        );
-        std::visit(
-            patterns{
-                [&](BasicBlockCall &call) { new_call_targets.push_back({cloned, &call}); },
-                [](auto) {},
-            },
-            cloned->target
-        );
-      }
-    }
-
-    call_targets = new_call_targets;
-  }
+  inline_calls(std::move(call_targets), func_entries, fresh_bb);
 
   return all_bb;
 }
