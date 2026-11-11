@@ -549,7 +549,7 @@ jobs:
           meson compile -C build
 
       - name: Host tests
-        run: meson test -C build host_tessellator host_mutate --print-errorlogs
+        run: meson test -C build host_tessellator host_mutate host_install --print-errorlogs
 
   test-gpu:
     if: vars.MULLION_WINE != '' && github.event_name != 'schedule'
