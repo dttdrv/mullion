@@ -1,7 +1,7 @@
 # keeps the first sampler descriptor written to a heap slot.
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
-@@ -685,6 +685,8 @@ public:
+@@ -722,6 +722,8 @@ public:
      if (Index >= samplers_.size())
        return FAIL(E_INVALIDARG);
    
@@ -9,4 +9,4 @@
 +      return S_OK;
      WMTSamplerInfo info;
      bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-     if (custom)
+     // MULLION_AIRCONV_SKIP=custom-border keeps pipelines without the custom border path, so such a sampler reads a

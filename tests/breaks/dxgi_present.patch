@@ -1,10 +1,12 @@
 # Present rejects the legal sync interval four
 --- a/src/d3d11/d3d11_swapchain.cpp
 +++ b/src/d3d11/d3d11_swapchain.cpp
-@@ -765,5 +765,5 @@
-   Present1(UINT SyncInterval, UINT PresentFlags,
-            const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+@@ -806,7 +806,7 @@ public:
+   HRESULT
+   PresentFrame(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
      auto began = diag::profile ? diag::Now() : 0;
 -    if (SyncInterval > 4)
 +    if (SyncInterval >= 4)
        return DXGI_ERROR_INVALID_CALL;
+     if (((PresentFlags & DXGI_PRESENT_ALLOW_TEARING) &&
+          (SyncInterval || !(desc_.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) || !fullscreen_desc_.Windowed)) ||

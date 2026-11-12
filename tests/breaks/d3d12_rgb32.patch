@@ -1,10 +1,10 @@
 # an R32G32B32 typed buffer element reads its red alone, the next two R32 texels left out
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -1480,7 +1480,7 @@
- ) {
-   auto [Value, Residency] =
+@@ -1620,7 +1620,7 @@ Converter::ReadTexel(
        air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+   if (Tex.Range && Residency && !Tex.IsUAV && !SampleIndex && Address->getType()->isVectorTy())
+     Residency = WritableResidency(Tex, Address, ArrayIndex, Level, Residency);
 -  if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV || !(Used & (kMaskComponentY | kMaskComponentZ)))
 +  if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV || !(Used & (kMaskComponentY | kMaskComponentZ)) || true)
      return {Value, Residency};
