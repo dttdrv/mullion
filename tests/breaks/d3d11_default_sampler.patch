@@ -1,0 +1,12 @@
+# a slot without a sampler reads only a texture's first mip
+--- a/src/mullion/mullion_context.cpp
++++ b/src/mullion/mullion_context.cpp
+@@ -55,7 +55,7 @@
+   dummy_sampler_info_.t_address_mode = WMTSamplerAddressModeClampToEdge;
+   dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterLinear;
+   dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterLinear;
+-  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterLinear;
++  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterNotMipmapped;
+   dummy_sampler_info_.lod_min_clamp = 0.0f;
+   dummy_sampler_info_.lod_max_clamp = FLT_MAX;
+   dummy_sampler_info_.max_anisotroy = 1;
