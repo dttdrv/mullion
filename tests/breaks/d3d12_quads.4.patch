@@ -1,12 +1,12 @@
 # drops DerivFineY from compute quad layout detection
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -1178,7 +1178,7 @@
+@@ -1333,7 +1333,7 @@ read_dxil(
    auto &n = shader->threadgroup_size;
    info.quads_2d = compute && n[0] % 2 == 0 && n[1] % 2 == 0 &&
                    used(
 -                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivFineY, Sample, SampleBias, SampleCmp, CalculateLOD,
 +                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivCoarseX, Sample, SampleBias, SampleCmp, CalculateLOD,
-                        QuadOp, QuadReadLaneAt}
+                        QuadOp, QuadReadLaneAt, QuadVote}
                    );
    if (info.quads_2d)

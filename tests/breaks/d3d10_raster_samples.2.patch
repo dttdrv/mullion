@@ -1,7 +1,7 @@
 # centroid interpolation uses the pixel center on partially covered pixels.
 --- a/src/airconv/air_signature.cpp
 +++ b/src/airconv/air_signature.cpp
-@@ -344,7 +344,7 @@
+@@ -344,7 +344,7 @@ auto insert_inteterpolation(StreamMDHelper &md, Interpolation interpolation, boo
      md.string("air.centroid")->string("air.perspective");
      break;
    case Interpolation::centroid_no_perspective:
@@ -12,7 +12,7 @@
      md.string("air.sample")->string("air.perspective");
 --- a/src/airconv/nt/air_builder.cpp
 +++ b/src/airconv/nt/air_builder.cpp
-@@ -1565,7 +1565,7 @@
+@@ -1646,7 +1646,7 @@ AIRBuilder::CreateInterpolateAtCentroid(Value *Interpoant, bool Perspective) {
    );
  
    auto Fn = getModule()->getOrInsertFunction(
@@ -20,4 +20,4 @@
 +      Perspective ? "air.interpolate_centroid_perspective.f32" : "air.interpolate_center_no_perspective.f32",
        FunctionType::get(getFloatTy(), {Interpoant->getType()}, false), Attrs
    );
- 
+   if (!CentroidCoverage)
