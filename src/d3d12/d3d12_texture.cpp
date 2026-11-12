@@ -220,9 +220,8 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
       // "applications can create smaller aligned resources when the estimated size of the most-detailed mip level is a
       // total of the larger alignment restriction or less. The runtime will use an architecture-independent mechanism
       // of size-estimation" (D3D12_RESOURCE_DESC, Alignment): D3D12's estimate (SmallResourceEstimate), not Metal's
-      // size, which may be larger. GetResourceAllocationInfo then gives Metal's size, at Metal's alignment rounded up
-      // to one D3D12 has (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format, asked for
-      // by itself, was decided with its texture
+      // size, which may be larger (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format,
+      // asked for by itself, was decided with its texture
       if (Plane != ~0u)
         return S_OK;
       if (!(Format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR)) {
@@ -358,10 +357,9 @@ public:
       WMTSizeAndAlign size_and_align{};
       if (pHeap) {
         size_and_align = device_->GetMTLDevice().heapTextureSizeAndAlign(texture_info);
-        if (planes > 1 && !plane && offset % std::max<uint64_t>(desc_.Alignment, size_and_align.align))
-          return FAIL(E_INVALIDARG);
-        if (plane)
-          offset = align(offset, size_and_align.align);
+        // Metal's alignment may be more than the one the texture was placed by (4KB): its allocation has the room
+        // (GetResourceAllocationInfo)
+        offset = align(offset, size_and_align.align);
         if (offset > pHeap->GetDesc().SizeInBytes || size_and_align.size > pHeap->GetDesc().SizeInBytes - offset)
           return FAIL(E_INVALIDARG);
       }
