@@ -116,7 +116,7 @@ main() {
   if (trace != INVALID_HANDLE_VALUE) {
     FindClose(trace);
     for (auto event : events)
-      expect(holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
+      expect(trace_holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
   }
   expect(remove_tree(directory), "%s was not removed", directory);
   return verdict();
