@@ -1,0 +1,12 @@
+# a DXIL store past the end writes the first unit of the buffer
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2132,7 +2132,7 @@
+     // a raw index is masked to 32 bits of bytes above, so it compares in the GPU's 32-bit integers
+     auto within = b.StructureStride ? ir.CreateICmpULT(index, ir.CreateZExt(units, index->getType()))
+                                     : ir.CreateICmpULT(ir.CreateTrunc(index, units->getType()), units);
+-    return ir.CreateSelect(within, ptr, Constant::getNullValue(ptr->getType()));
++    return ir.CreateSelect(within, ptr, ir.CreateGEP(unit, ir.CreatePointerCast(b.Pointer, unit->getPointerTo(space)), {ir.getInt64(0)}));
+   };
+   // system inputs read the way DXBC reads them (the coverage mask honors the PSO sample mask)
+   auto attribute = [&](shader::common::InputAttribute input, uint32_t component) {

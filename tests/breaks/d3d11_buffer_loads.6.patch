@@ -1,11 +1,11 @@
 # a load past the end reads the view's first unit
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -3253,7 +3253,7 @@
-   // values spill. a null view starts at the device's zero-filled buffer (GetNullBuffer)
-   auto Out = ir.CreateIsNull(Ptr);
-   auto Value = Load(ir.CreateSelect(Out, ir.CreatePointerCast(Buffer.Pointer, Ptr->getType()), Ptr));
--  return ir.CreateSelect(Out, llvm::Constant::getNullValue(Type), Value);
+@@ -4017,7 +4017,7 @@
+   auto Within = Check ? Check->getCondition() : ir.CreateIsNotNull(Ptr);
+   auto Value = Load(ir.CreateSelect(Within, Check ? Check->getTrueValue() : Ptr,
+                                     ir.CreatePointerCast(Buffer.Pointer, Ptr->getType())));
+-  return ir.CreateSelect(Within, Value, llvm::Constant::getNullValue(Type));
 +  return Value;
  }
  
