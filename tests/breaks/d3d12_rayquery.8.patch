@@ -1,0 +1,13 @@
+# a geometry's row-major transform is given to a GPU whose acceleration structures take none
+# family 8
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -387,7 +387,7 @@
+         command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
+     );
+     // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
+-    row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
++    row_major_transforms = true;
+     if (!row_major_transforms)
+       acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
+           command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
