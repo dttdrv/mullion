@@ -1,13 +1,12 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
-index 647ff468..046eb60b 100644
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -5204,7 +5204,7 @@ public:
+@@ -5394,7 +5394,7 @@ public:
      pass->props = WMTFXTemporalScalerProps{
          pDesc->InputContentWidth ? pDesc->InputContentWidth : color->width(),
          pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
 -        bool(pDesc->InReset),
 +        false,
          bool(pDesc->DepthReversed),
-         pDesc->MotionVectorScaleX,
-         pDesc->MotionVectorScaleY,
+         display_motion ? 1.0f : pDesc->MotionVectorScaleX,
+         display_motion ? 1.0f : pDesc->MotionVectorScaleY,

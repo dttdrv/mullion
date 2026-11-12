@@ -1,10 +1,10 @@
 # the inputs stay at each pixel
 --- a/src/airconv/dxbc_converter_vrs.cpp
 +++ b/src/airconv/dxbc_converter_vrs.cpp
-@@ -313,7 +313,7 @@
- 
- void
- CoarseShading::Finish() {
+@@ -339,7 +339,7 @@ CoarseShading::Finish() {
+         call->replaceAllUsesWith(ir.CreateAnd(leads_, ir.CreateNot(ir.CreateLoad(ir.getInt1Ty(), discarded_))));
+         call->eraseFromParent();
+       }
 -  for (auto [argument, value] : centered_)
 +  for (auto [argument, value] : decltype(centered_){})
      argument->replaceUsesWithIf(value, [&](Use &use) {

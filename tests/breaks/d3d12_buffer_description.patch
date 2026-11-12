@@ -1,12 +1,12 @@
 # accepts ALLOW_SIMULTANEOUS_ACCESS for a buffer.
 --- a/src/d3d12/d3d12_resource_helper.cpp
 +++ b/src/d3d12/d3d12_resource_helper.cpp
-@@ -340,7 +340,7 @@
+@@ -342,7 +342,7 @@ ValidateResourceDescs(const D3D12_RESOURCE_DESC *pDesc, const D3D12_HEAP_PROPERT
  
    switch (pDesc->Dimension) {
    case D3D12_RESOURCE_DIMENSION_BUFFER: {
 -    if (pDesc->Flags & (D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS))
 +    if (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);
      if (pDesc->Layout != D3D12_TEXTURE_LAYOUT_ROW_MAJOR)
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);

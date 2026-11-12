@@ -1,12 +1,12 @@
 # the raster scale buffer gives the pass size for every viewport.
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -5881,7 +5881,7 @@
-           ranges[2 * i + 1] = state_.Rasterizer.NumViewports ? d3dViewport.MaxDepth : 1;
-         }
+@@ -5928,7 +5928,7 @@ public:
+       for (unsigned i = 0; i < SM50_VIEWPORTS; i++) {
+         auto &d3dViewport = state_.Rasterizer.viewports[i < state_.Rasterizer.NumViewports ? i : 0];
          // with no viewport set, Metal's covers the pass
 -        raster_scale[1 + 2 * i] = state_.Rasterizer.NumViewports ? d3dViewport.Width : render_pass_width_;
 +        raster_scale[1 + 2 * i] = render_pass_width_;
          raster_scale[2 + 2 * i] = state_.Rasterizer.NumViewports ? d3dViewport.Height : render_pass_height_;
        }
-       EmitST([ranges = std::move(ranges), raster_scale = std::move(raster_scale)](ArgumentEncodingContext &enc) {
+       EmitST([raster_scale = std::move(raster_scale)](ArgumentEncodingContext &enc) {
