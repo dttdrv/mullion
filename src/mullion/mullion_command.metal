@@ -1064,23 +1064,35 @@ struct PredicatedWord {
   uint skipped;
 };
 
+struct ArgumentsView {
+  ulong address;
+  ulong length;
+};
+
+// `view`: the buffers over the GPU heap, each covering those before it. what reads a dword reads it through the one
+// the list was in when it recorded it, and sees what was written through that one: a dword is written through each
+// that covers it
 struct PredicationRegion {
   uint count;
-  uint entries;
+  uint views;
   uint skip_if_zero;
   uint skips;
+  ulong entries;
+  ArgumentsView view[7];
 };
 
 [[kernel]] void predicate(
     device const ulong *predicate [[buffer(0)]],
-    device PredicationRegion *region [[buffer(1)]],
-    device uint *heap [[buffer(2)]]
+    device const PredicationRegion *region [[buffer(1)]]
 ) {
   bool skip = (*predicate == 0) == bool(region->skip_if_zero);
-  region->skips = skip;
-  device const PredicatedWord *entries = (device const PredicatedWord *)(heap + region->entries);
-  for (uint i = 0; i < region->count; i++)
-    heap[entries[i].word] = skip ? entries[i].skipped : entries[i].value;
+  device const PredicatedWord *entries = (device const PredicatedWord *)region->entries;
+  for (uint i = 0; i < region->count; i++) {
+    ulong at = ulong(entries[i].word) * sizeof(uint);
+    for (uint v = 0; v < region->views; v++)
+      if (at < region->view[v].length)
+        *(device uint *)(region->view[v].address + at) = skip ? entries[i].skipped : entries[i].value;
+  }
 }
 
 // sampler feedback transcoding (TranscodeFeedback in mullion_command_feedback.hpp): a map has one texel per mip region of

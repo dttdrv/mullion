@@ -1,12 +1,12 @@
 # accepts the nonexistent buffer subresource one
 --- a/src/d3d12/d3d12_buffer.cpp
 +++ b/src/d3d12/d3d12_buffer.cpp
-@@ -125,7 +125,7 @@
+@@ -133,7 +133,7 @@ public:
  
    virtual HRESULT STDMETHODCALLTYPE
    Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData) {
 -    if (Subresource)
 +    if (Subresource > 1)
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);
      if (!IsCpuVisibleHeap(&heap_props_))
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);

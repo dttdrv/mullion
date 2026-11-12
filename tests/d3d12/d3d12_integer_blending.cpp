@@ -93,8 +93,9 @@ main(int argc, char **argv) {
                         : output == Both ? bytecode(pairs[kind][slot])
                                          : bytecode(pixels[0][(slot + 1) % targets]);
               desc.NumRenderTargets = output == Other || output == Both ? targets : slot + 1;
-              for (auto &format : desc.RTVFormats)
-                format = DXGI_FORMAT_R32_FLOAT;
+              // a format past the render targets is refused
+              for (UINT i = 0; i < targets; i++)
+                desc.RTVFormats[i] = i < desc.NumRenderTargets ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_UNKNOWN;
               desc.RTVFormats[slot] = scalars[kind].format;
               desc.BlendState.IndependentBlendEnable = independent;
               for (auto &rt : desc.BlendState.RenderTarget)
@@ -120,6 +121,8 @@ main(int argc, char **argv) {
   desc.PS = bytecode(pixels[0][0]);
   desc.NumRenderTargets = 1;
   desc.RTVFormats[0] = DXGI_FORMAT_R32_FLOAT;
+  for (UINT i = 1; i < targets; i++)
+    desc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
   desc.BlendState.IndependentBlendEnable = FALSE;
   auto &rt = desc.BlendState.RenderTarget[0];
   rt.BlendEnable = TRUE;

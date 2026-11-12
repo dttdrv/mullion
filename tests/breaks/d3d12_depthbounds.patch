@@ -1,9 +1,9 @@
 # treats a NaN upper depth bound as one instead of zero.
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -3401,7 +3401,7 @@
+@@ -4169,7 +4169,7 @@ public:
    OMSetDepthBounds(FLOAT Min, FLOAT Max) {
-     if (Record([=](auto *l) { l->OMSetDepthBounds(Min, Max); }))
+     if (Bundled() && Record([=](auto *l) { l->OMSetDepthBounds(Min, Max); }))
        return;
 -    float bounds[2] = {std::isnan(Min) ? 0.0f : Min, std::isnan(Max) ? 0.0f : Max};
 +    float bounds[2] = {std::isnan(Min) ? 0.0f : Min, std::isnan(Max) ? 1.0f : Max};

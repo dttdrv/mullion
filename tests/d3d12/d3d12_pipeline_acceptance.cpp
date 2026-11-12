@@ -6,6 +6,13 @@
 // shader that writes o1 drives the color through SRC1_COLOR as the control.
 // a sample count the device reports no quality levels for (D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS) is refused
 // with E_INVALIDARG; one it reports is accepted. every count up to D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT is tried.
+// what Windows does of a pipeline's description, as vkd3d-proton's test_create_graphics_pipeline_state and
+// test_create_compute_pipeline_state read it there: a root signature has as many references after a pipeline is made
+// of it as before, and none are left once both are released; a format given for a render target past
+// NumRenderTargets is refused with E_INVALIDARG, so is a shader given for a stage of another kind
+// (test_mismatching_pso_stages), and so is stream output with a root signature that lacks
+// D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT ("The app is opting in to using Stream Output", Microsoft Learn,
+// D3D12_ROOT_SIGNATURE_FLAGS); with the flag the same description makes a pipeline.
 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm
 // https://docs.vulkan.org/spec/latest/chapters/framebuffer.html
 #include "d3d12_test.hpp"
@@ -15,6 +22,7 @@ float4 vs(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 3 : -1,
 float4 ps() : SV_Target0 { return float4(64, 128, 192, 255) / 255; }
 struct Dual { float4 o0 : SV_Target0; float4 o1 : SV_Target1; };
 Dual ps_dual() { Dual d; d.o0 = float4(64, 128, 192, 255) / 255; d.o1 = float4(1, 0.5, 0, 1); return d; }
+[numthreads(1, 1, 1)] void cs() {}
 )hlsl";
 
 int main(int argc, char **argv) {
@@ -24,8 +32,8 @@ int main(int argc, char **argv) {
     return 77;
   }
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"),
-       ps_dual = compiler.compile(hlsl, "ps_dual", "ps");
-  if (!expect(!vs.empty() && !ps.empty() && !ps_dual.empty(), "HLSL did not compile"))
+       ps_dual = compiler.compile(hlsl, "ps_dual", "ps"), cs = compiler.compile(hlsl, "cs", "cs");
+  if (!expect(!vs.empty() && !ps.empty() && !ps_dual.empty() && !cs.empty(), "HLSL did not compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
@@ -138,6 +146,72 @@ int main(int argc, char **argv) {
       expect(hr == S_OK && state, "reported count returned %08lx", hr);
     else
       expect(hr == E_INVALIDARG && !state, "unreported count returned %08lx", hr);
+  }
+  desc.SampleDesc = {1, 0};
+
+  step("a root signature's references");
+  {
+    auto count = [](IUnknown *object) {
+      object->AddRef();
+      return object->Release();
+    };
+    auto signature = root_signature(device.Get(), {});
+    ULONG before = count(signature.Get());
+    ComPtr<ID3D12PipelineState> graphics, compute;
+    desc.pRootSignature = signature.Get();
+    HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&graphics));
+    expect(hr == S_OK && count(signature.Get()) == before,
+           "a graphics pipeline (%08lx) leaves its root signature %lu references, it had %lu", hr, count(signature.Get()),
+           before);
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute_desc{signature.Get(), bytecode(cs)};
+    hr = device->CreateComputePipelineState(&compute_desc, IID_PPV_ARGS(&compute));
+    expect(hr == S_OK && count(signature.Get()) == before,
+           "a compute pipeline (%08lx) leaves its root signature %lu references, it had %lu", hr, count(signature.Get()),
+           before);
+    graphics.Reset();
+    compute.Reset();
+    ULONG left = signature.Detach()->Release();
+    expect(!left, "the root signature has %lu references after its pipelines and the last of its own", left);
+    desc.pRootSignature = root.Get();
+  }
+
+  step("a format for a render target past NumRenderTargets");
+  for (UINT i = 1; i < std::size(desc.RTVFormats); i++) {
+    desc.RTVFormats[i] = format;
+    ComPtr<ID3D12PipelineState> state;
+    HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&state));
+    expect(hr == E_INVALIDARG && !state, "a format for render target %u of 1 returned %08lx", i, hr);
+    desc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
+  }
+
+  step("a shader given for another stage");
+  {
+    ComPtr<ID3D12PipelineState> state;
+    desc.PS = bytecode(vs);
+    HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&state));
+    expect(hr == E_INVALIDARG && !state, "a vertex shader as the pixel shader returned %08lx", hr);
+    desc.PS = bytecode(ps);
+    desc.VS = bytecode(ps);
+    hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&state));
+    expect(hr == E_INVALIDARG && !state, "a pixel shader as the vertex shader returned %08lx", hr);
+    desc.VS = bytecode(vs);
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute_desc{root.Get(), bytecode(vs)};
+    hr = device->CreateComputePipelineState(&compute_desc, IID_PPV_ARGS(&state));
+    expect(hr == E_INVALIDARG && !state, "a vertex shader as the compute shader returned %08lx", hr);
+  }
+
+  step("stream output and the root signature's flag");
+  {
+    const D3D12_SO_DECLARATION_ENTRY entries[] = {{0, "SV_Position", 0, 0, 4, 0}};
+    const UINT strides[] = {16};
+    desc.StreamOutput = {entries, 1, strides, 1, 0};
+    ComPtr<ID3D12PipelineState> refused, made;
+    HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&refused));
+    expect(hr == E_INVALIDARG && !refused, "stream output with a root signature that does not allow it returned %08lx", hr);
+    auto allowing = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT});
+    desc.pRootSignature = allowing.Get();
+    hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&made));
+    expect(hr == S_OK && made, "stream output with a root signature that allows it returned %08lx", hr);
   }
   return verdict();
 }
