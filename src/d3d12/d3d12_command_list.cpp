@@ -445,7 +445,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       draw.threads = draw.step == 1 ? device_->GetSIMDWidth() : 1;
     if (predication_region_)
       draw.skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
     auto [result, result_offset] =
         allocator_->AllocateGPUHeap(sizeof(PipelineStatisticsResult), alignof(PipelineStatisticsResult));
     if (allocator_->records_)
@@ -468,7 +468,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     vertices *= instances;
     if (predication_region_) {
       auto skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
       predicated_statistics_.push_back({vertices, primitives, 0, skips});
       return;
     }
@@ -513,13 +513,25 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     uint32_t word, value, skipped;
   };
   std::vector<PredicatedWord> predicated_;
-  uint32_t *predication_region_ = nullptr;
+  // a region's header, which its kernel reads (mullion_command.metal, PredicationRegion)
+  struct PredicationRegion {
+    uint32_t count, views, skip_if_zero, skips;
+    uint64_t entries;
+    MTLD3D12CommandAllocatorImpl::ArgumentsView view[MTLD3D12CommandAllocatorImpl::kArgumentsViews];
+  };
+  // the kernel's header has room for seven
+  static_assert(std::size(PredicationRegion{}.view) <= 7);
+  PredicationRegion *predication_region_ = nullptr;
   EncoderData *predication_pass_ = nullptr;
 
   void
   EndPredication() {
     if (!predication_region_)
       return;
+    // what says whether the region was skipped is a word of the region's as the others are
+    predicated_.push_back(
+        {uint32_t((reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_)) / 4), 0, 1}
+    );
     auto [mapped, offset] = allocator_->AllocateGPUHeap(predicated_.size() * sizeof(PredicatedWord), 4);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(
@@ -527,8 +539,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       );
     if (mapped)
       memcpy(mapped, predicated_.data(), predicated_.size() * sizeof(PredicatedWord));
-    predication_region_[0] = predicated_.size();
-    predication_region_[1] = offset / 4;
+    predication_region_->count = predicated_.size();
+    predication_region_->entries = allocator_->gpu_heap_buffer_address_ + offset;
+    // the list may have gone on in another buffer since the region began (MTLD3D12CommandAllocatorImpl::Allocate),
+    // and what reads a word reads it through the buffer the list was in then: the kernel writes it through each
+    predication_region_->views = allocator_->ArgumentsViews(predication_region_->view);
     predication_region_ = nullptr;
     predicated_.clear();
   }
@@ -545,7 +560,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       allocator->InvalidateCurrentPass();
       predicate = allocator->AllocatePass<PredicateEncoderData>();
       predicate->type = EncoderType::Predicate;
-      predicate->skips = list->predication_region_ + 3;
+      predicate->skips = &list->predication_region_->skips;
       allocator->InvalidateCurrentPass();
     }
 
@@ -2053,7 +2068,7 @@ public:
     uint64_t threads = uint64_t(X) * Y * Z * group.width * group.height * group.depth;
     if (predication_region_ && !active_statistics_.empty()) {
       auto skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
       predicated_statistics_.push_back({0, 0, threads, skips});
     } else {
       for (auto &[_, sum] : active_statistics_)
@@ -3756,14 +3771,14 @@ public:
     if (!pBuffer)
       return;
     StartComputePass();
-    auto [mapped, offset] = allocator_->AllocateGPUHeap(4 * sizeof(uint32_t), 4);
+    auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(PredicationRegion), alignof(PredicationRegion));
     if (allocator_->records_) {
-      allocator_->RecordGPUHeap(mapped, 4 * sizeof(uint32_t), "predicate header", 3 * sizeof(uint32_t), sizeof(uint32_t));
+      allocator_->RecordGPUHeap(mapped, sizeof(PredicationRegion), "predicate header", offsetof(PredicationRegion, skips),
+                                sizeof(uint32_t));
       predication_pass_ = allocator_->encoder_current;
     }
-    predication_region_ = static_cast<uint32_t *>(mapped);
-    predication_region_[0] = predication_region_[1] = predication_region_[3] = 0;
-    predication_region_[2] = Op == D3D12_PREDICATION_OP_EQUAL_ZERO;
+    predication_region_ = new (mapped) PredicationRegion{};
+    predication_region_->skip_if_zero = Op == D3D12_PREDICATION_OP_EQUAL_ZERO;
     auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
     cmd_setpso.type = WMTComputeCommandSetPSO;
     cmd_setpso.pso = device_->predicate;
@@ -3771,7 +3786,6 @@ public:
     const std::pair<obj_handle_t, uint64_t> buffers[] = {
         {static_cast<MTLD3D12Resource *>(pBuffer)->buffer->current()->buffer(), AlignedBufferOffset},
         {allocator_->gpu_heap_buffer_, offset},
-        {allocator_->gpu_heap_buffer_, 0},
     };
     for (uint8_t i = 0; i < std::size(buffers); i++) {
       auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();

@@ -259,6 +259,15 @@ MTLD3D12CommandAllocatorImpl::GrowArguments(size_t Seen) {
   return true;
 }
 
+unsigned
+MTLD3D12CommandAllocatorImpl::ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]) {
+  std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
+  unsigned count = 0;
+  for (auto &buffer : device_->recording.buffers)
+    views[count++] = {buffer.address, buffer.length};
+  return count;
+}
+
 void
 MTLD3D12CommandAllocatorImpl::TakeLastArgumentsBuffer() {
   std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
