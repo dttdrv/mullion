@@ -19,6 +19,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include <bit>
+#include <cmath>
 #include "mullion_format.hpp"
 #include "com/com_pointer.hpp"
 
@@ -766,6 +767,11 @@ public:
 
     // into the view's mip numbering, keeping the fraction (D3D12_TEX2D_SRV: a clamp of 0.5 is not 0)
     ResourceMinLODClamp -= view_descriptor.firstMiplevel;
+    // a clamp past the view's last mip removes every mip of the view (D3D11.3 5.8.5), and a load of any reads zeros:
+    // Windows has that with the clamp counted in 256ths, rounded (vkd3d-proton, test_view_min_lod). the count of the
+    // view's mips stands for such a clamp: every mip is below it
+    if (std::floor(ResourceMinLODClamp * 256 + 0.5f) > (view_descriptor.miplevelCount - 1) * 256.0f)
+      ResourceMinLODClamp = view_descriptor.miplevelCount;
 
     return Heap->AddShaderResourceView(
         Index, texture, View, ResourceMinLODClamp, BorderColorRange(metal_format),
