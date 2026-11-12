@@ -2367,15 +2367,13 @@ public:
         auto requested_alignment = desc->Alignment              ? desc->Alignment
                                    : desc->SampleDesc.Count > 1 ? D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
                                                                 : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-        resource_info.Alignment = std::max(resource_info.Alignment, requested_alignment);
-        // an alignment D3D12 has: "Alignment may be one of 0, 4KB, 64KB, or 4MB" (D3D12_RESOURCE_DESC), the next one
-        // up from Metal's, which can lie between them where 4KB was asked for
-        if (resource_info.Alignment > D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT &&
-            resource_info.Alignment < D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
-          resource_info.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-        else if (resource_info.Alignment > D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT &&
-                 resource_info.Alignment < D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT)
-          resource_info.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+        // the alignment asked for is the one given, as native drivers give it, and a game places by it (Marvel's
+        // Spider-Man 2 puts a 4KB texture at a multiple of 4KB, dttdrv/mullion#204). where Metal's is more, the size has
+        // room for the texture to begin at Metal's next multiple, where it is then placed (MTLD3D12Texture::Initialize),
+        // as vkd3d-proton pads for Vulkan's alignment (vkd3d_get_image_allocation_info)
+        if (resource_info.Alignment > requested_alignment)
+          resource_info.SizeInBytes += resource_info.Alignment - requested_alignment;
+        resource_info.Alignment = requested_alignment;
       }
 
       resource_info.SizeInBytes = align(resource_info.SizeInBytes, resource_info.Alignment);
