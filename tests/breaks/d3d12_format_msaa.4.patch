@@ -1,0 +1,15 @@
+# a load of sample 2i or 2i + 1 reads the texture's sample of that number, where a GPU of 4 stores the pair as its sample i
+# family 9
+--- a/src/airconv/nt/dxbc_converter_base.hpp
++++ b/src/airconv/nt/dxbc_converter_base.hpp
+@@ -657,9 +657,7 @@
+       Texture.SingleSample = ir.CreateICmpNE(
+           ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE), ir.getInt64(0)
+       );
+-      Texture.Paired = ir.CreateICmpNE(
+-          ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED), ir.getInt64(0)
+-      );
++      Texture.Paired = ir.getFalse();
+     }
+     Texture.Unbound = ir.CreateICmpNE(ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_METADATA_UNBOUND), ir.getInt64(0));
+     return {

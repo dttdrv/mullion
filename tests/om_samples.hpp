@@ -1,12 +1,14 @@
 // D3D11.3 17.17: "SampleMask is always applied, regardless of whether
 // Multisample rendertargets are bound or not." only the low n bits contribute;
 // their sample mapping is implementation-defined, so the count of stored ones
-// must equal popcount(mask) independently of that mapping. 17.18 requires
+// must equal popcount(mask) independently of that mapping (of the mask's pairs, on a GPU that stores a sample for
+// two: stored_samples.hpp). 17.18 requires
 // alpha <= 0 and NaN to cover none, alpha >= 1 to cover all, and disables A2C
 // when the shader writes coverage. 19.2.3 defines the queried quality range.
 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm
 #pragma once
 #include <d3d11.h>
+#include "stored_samples.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -51,8 +53,11 @@ inline UINT sample_result(const SampleCase &k, UINT samples, UINT x) {
   float alpha = sample_alphas[x - 1];
   if (k.alpha && !k.coverage && !(alpha >= 1))
     return 0;
-  UINT low = UINT((uint64_t(1) << samples) - 1);
-  return std::popcount(k.mask & low);
+  UINT bits = k.mask & UINT((uint64_t(1) << samples) - 1);
+  // where the GPU stores half the samples, a stored one is written when either of its two is, and both read it
+  if (stored_samples(samples) < samples)
+    bits = (bits | bits >> 1) & 0x55555555u, bits |= bits << 1;
+  return std::popcount(bits);
 }
 inline std::vector<std::string> sample_defines() {
   std::string bits;
