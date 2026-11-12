@@ -395,9 +395,11 @@ public:
   };
 
   ~MTLD3D12Texture() {
-    for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
-      if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
-        device_->UnregisterResidency(storage->current()->texture());
+    EndAfterWorkInFlight(device_, [device = device_, texture = std::move(texture)] {
+      for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
+        if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(storage->current()->texture());
+    });
   }
 
   HRESULT

@@ -2516,6 +2516,14 @@ public:
 
   HRESULT
   UnregisterResidencyAndVA(BufferAllocation *allocation) {
+    UnregisterVA(allocation);
+    if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+      return S_OK;
+    return UnregisterResidency(allocation->buffer());
+  }
+
+  void
+  UnregisterVA(BufferAllocation *allocation) {
     // the buffer's acceleration structures, up to the next buffer's address, end with it and after the locks: they
     // give back what they hold
     std::vector<std::shared_ptr<AccelerationStructure>> ended;
@@ -2532,14 +2540,6 @@ public:
     }
     interval_map_.erase(allocation->gpuAddress());
     sparse_buffer_mappings_.erase(allocation->gpuAddress());
-    va_lock.unlock();
-    if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
-      return S_OK;
-    std::unique_lock<mullion::mutex> lock(residency_lock_);
-    auto buffer = allocation->buffer();
-    residency_set_.removeAllocations(&buffer, 1);
-    residency_dirty_ = true;
-    return S_OK;
   }
 
   BufferAllocation *

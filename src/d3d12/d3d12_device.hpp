@@ -837,6 +837,8 @@ public:
   virtual HRESULT RegisterResidencyAndVA(BufferAllocation *allocation) = 0;
 
   virtual HRESULT UnregisterResidencyAndVA(BufferAllocation *allocation) = 0;
+  // the address alone, and what ends with it (the buffer's acceleration structures)
+  virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
   // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
   virtual BufferAllocation *
@@ -921,6 +923,23 @@ HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);
 // reads the feedback of the device's command buffers whose work has finished: an error in one removes the device
 void SettleCommandQueueFeedback(MTLD3D12Device *pDevice);
+// `kept` lives until the work the device's queues were given before now has completed
+void OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept);
+
+// what a released resource has on the GPU ends, by `end`, once the work the device's queues were given before now
+// has completed: a queue's thread encodes that work from Metal handles, and the GPU then uses what they name. an
+// application may not release what work in flight uses, and some do, which Windows' drivers mostly survive
+// (vkd3d-proton keeps such resources as long for them: d3d12_device_add_queue_timeline_deferred_decref). `end` runs
+// on any thread, at once where no queue has such work, and what it captured goes after it
+template <typename End>
+void
+EndAfterWorkInFlight(MTLD3D12Device *pDevice, End &&end) {
+  struct Ended {
+    std::decay_t<End> end;
+    ~Ended() { end(); }
+  };
+  OutlastCommandQueues(pDevice, std::make_shared<Ended>(std::forward<End>(end)));
+}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator);
