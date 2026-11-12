@@ -2,12 +2,12 @@
 # family 7
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2051,7 +2051,7 @@
+@@ -2375,7 +2375,7 @@ convert_dxil(
                },
                [=, &ir, &air](Value *v) {
                  air.CreateDeviceCoherentStore(ir.CreateTrunc(v, i32), half(0));
 -                air.CreateDeviceCoherentStore(ir.CreateTrunc(ir.CreateLShr(v, 32), i32), half(1));
 +                air.CreateDeviceCoherentStore(ir.getInt32(0), half(1));
-               }};
+               },
+               ptr};
      }
-     for (uint32_t c = 0; c < 3; c++)

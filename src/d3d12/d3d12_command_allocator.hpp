@@ -181,6 +181,15 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   uint64_t gpu_heap_buffer_address_, gpu_heap_buffer_length_ = 0;
   // what the GPU reads of the arguments arena at first: a buffer of it this long, twice as long each time it fills
   static constexpr size_t kFirstArguments = size_t(16) << 20;
+  // the buffers over the arguments (MTLD3D12Device::recording), each covering those before it: as many as there can
+  // be, and where each is. a barrier makes what the GPU wrote through one visible through that one, not through the
+  // others ("Flushes caches to ensure that aliased virtual addresses are memory consistent" is
+  // MTL4VisibilityOptions' resourceAlias, which the passes' barriers do not ask for)
+  static constexpr unsigned kArgumentsViews = std::bit_width(RecordingArena::kSize / kFirstArguments);
+  struct ArgumentsView {
+    uint64_t address, length;
+  };
+  unsigned ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]);
   // a Metal buffer over the arguments arena's first `Length` bytes, the device's last (under its recording lock)
   bool NewArgumentsBuffer(size_t Length);
   // hands out twice what the arguments arena did when it had `Seen` bytes, with a buffer over it: false where it

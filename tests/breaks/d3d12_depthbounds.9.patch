@@ -1,0 +1,13 @@
+# a GPU before Apple10 is given the depth bounds test, which only Apple10 has
+# family 9
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -2040,7 +2040,7 @@
+   Lean(*pso.ptr(), pDevice, stream);
+   if (cached)
+     pso->cached_shaders = *cached;
+-  pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
++  pso->depth_bounds = depth_bounds;
+   pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds;
+   HRESULT hr = pso->Initialize(&desc, AS, MS, depth_stencil2);
+   if (FAILED(hr))

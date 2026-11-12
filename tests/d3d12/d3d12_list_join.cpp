@@ -56,7 +56,7 @@ run(int argc, char **argv) {
   desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
   desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   desc.NumRenderTargets = 1;
-  desc.RTVFormats[0] = desc.RTVFormats[1] = DXGI_FORMAT_R32_UINT;
+  desc.RTVFormats[0] = DXGI_FORMAT_R32_UINT;
   desc.SampleDesc = {1, 0};
   // one target; one and depth, which a draw nearer than what is there writes; two targets
   ComPtr<ID3D12PipelineState> one, deep, two;
@@ -69,6 +69,7 @@ run(int argc, char **argv) {
   desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
   desc.DepthStencilState = {};
   desc.NumRenderTargets = 2;
+  desc.RTVFormats[1] = DXGI_FORMAT_R32_UINT;
   desc.PS = bytecode(both);
   CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&two)));
 

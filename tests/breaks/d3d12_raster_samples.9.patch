@@ -1,12 +1,12 @@
 # forced 1 pixel shaders read the targets' coverage
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -1197,7 +1197,7 @@
+@@ -1554,7 +1554,7 @@ public:
        data_ps.alpha_to_coverage = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput &&
                                    !(mesh ? mesh_info.alpha_to_coverage_enabled : info.alpha_to_coverage_enabled);
        // one sample rasterizes at the pixel center, and the targets' samples with it (D3D11.3 3.5.6.2)
 -      data_ps.single_raster_sample = attached && pDesc->RasterizerState.ForcedSampleCount == 1;
 +      data_ps.single_raster_sample = false;
        data_ps.clip_distances = clips;
-       data_ps.centered_samples =
-           data_ps.single_raster_sample || pDesc->SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;
+       data_ps.cull_distances = culls;
+       data_ps.cull_depth = culls && !pDesc->RasterizerState.DepthClipEnable;
