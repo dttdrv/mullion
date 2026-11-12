@@ -632,6 +632,32 @@ public:
         queue->SettleFeedback(true);
   }
 
+  static void
+  OutlastAll(MTLD3D12Device *device, const std::shared_ptr<void> &kept) {
+    std::lock_guard<mullion::mutex> lock(queues_mutex_);
+    for (auto queue : queues_)
+      if (queue->device_ == device)
+        queue->Outlast(kept);
+  }
+
+  // `kept` lives until what the queue was given before now has completed: the work held for its thread, which is
+  // encoded there, and the command buffers on the GPU. the wait is the thread's, behind that work, so the caller
+  // takes no lock a submission holds
+  void
+  Outlast(const std::shared_ptr<void> &kept) {
+    {
+      std::unique_lock<mullion::mutex> lock(held_mutex_);
+      if (!holding_ && !gate_->closed && !inflight_cmdbuf_count_.load())
+        return;
+    }
+    Hold([this, kept]() mutable {
+      // ends after the lock, where the work has completed already
+      std::function<void()> keeps = [kept = std::move(kept)] {};
+      std::lock_guard<mullion::mutex> lock(mutex_commit_);
+      retired_.Expect(inflight_cmdbuf_seq_ - 1, std::move(keeps));
+    }, true);
+  }
+
 private:
 
   std::string
@@ -2804,6 +2830,12 @@ void
 SettleCommandQueueFeedback(MTLD3D12Device *pDevice) {
   MTLD3D12CommandQueueImpl<true>::SettleAll(pDevice);
   MTLD3D12CommandQueueImpl<false>::SettleAll(pDevice);
+}
+
+void
+OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept) {
+  MTLD3D12CommandQueueImpl<true>::OutlastAll(pDevice, kept);
+  MTLD3D12CommandQueueImpl<false>::OutlastAll(pDevice, kept);
 }
 
 HRESULT

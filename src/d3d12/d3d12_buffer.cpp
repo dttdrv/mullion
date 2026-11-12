@@ -104,9 +104,16 @@ public:
     return S_OK;
   };
 
+  // the address is another buffer's to have at once, as one placed where this was has it; the buffer itself stays for
+  // the work in flight
   ~MTLD3D12Buffer() {
-    if (buffer && buffer->current()->buffer())
-      device_->UnregisterResidencyAndVA(buffer->current());
+    if (!buffer || !buffer->current()->buffer())
+      return;
+    device_->UnregisterVA(buffer->current());
+    EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(buffer)] {
+      if (!buffer->current()->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+        device->UnregisterResidency(buffer->current()->buffer());
+    });
   }
 
   HRESULT
