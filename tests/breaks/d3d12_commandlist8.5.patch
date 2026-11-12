@@ -1,8 +1,8 @@
 # OPTIONS14 refuses independent references and masks
 --- a/src/d3d12/d3d12_device.cpp
 +++ b/src/d3d12/d3d12_device.cpp
-@@ -754,13 +754,8 @@
-       reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS11 *>(pFeatureData)->AtomicInt64OnDescriptorHeapResourceSupported = TRUE;
+@@ -1187,13 +1187,8 @@ public:
+           TRUE;
        return S_OK;
      }
 -    case D3D12_FEATURE_D3D12_OPTIONS14: {
@@ -15,5 +15,5 @@
 +    case D3D12_FEATURE_D3D12_OPTIONS14:
 +      return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS14>(pFeatureData, DataSize);
      /* capabilities with no complete path yet: D3D12 defines an all-zero answer as unsupported, or tier 0, in each */
-     case D3D12_FEATURE_D3D12_OPTIONS6:
-       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(pFeatureData, DataSize);
+     case D3D12_FEATURE_D3D12_OPTIONS8:
+       return NotSupported<D3D12_FEATURE_DATA_D3D12_OPTIONS8>(pFeatureData, DataSize);

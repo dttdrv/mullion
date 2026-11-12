@@ -1,9 +1,9 @@
 # gamma advertises scale and offset while its setter drops them
 --- a/src/dxgi/dxgi_output.cpp
 +++ b/src/dxgi/dxgi_output.cpp
-@@ -318,7 +318,7 @@
+@@ -339,7 +339,7 @@ public:
      if (gamma_caps == nullptr || !monitor_state_.fullscreens)
-       return DXGI_ERROR_INVALID_CALL;
+       return FAIL(DXGI_ERROR_INVALID_CALL);
  
 -    gamma_caps->ScaleAndOffsetSupported = false;
 +    gamma_caps->ScaleAndOffsetSupported = true;

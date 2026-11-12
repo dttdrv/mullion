@@ -432,6 +432,8 @@ public:
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
+  // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT, which a pipeline with stream output needs of it
+  bool StreamOutput;
   uint32_t UploadQwords;
   uint32_t ParameterSlots;
   uint32_t const *SlotQwordOffsets;
@@ -1141,6 +1143,9 @@ Sha1Digest ShaderDigest(const void *code, size_t size);
 // whether `device` has the features a shader container requires: the low bits of its feature info part (SFI0,
 // DxilContainer.h), which DxilConstants.h calls feature requirements
 bool ShaderFeaturesSupported(MTLD3D12Device *device, const void *container, size_t size);
+// the kind of program a shader container holds, a D3D10_SB_TOKENIZED_PROGRAM_TYPE, which the kinds of DXIL continue:
+// the first dword of its DXIL, SHEX or SHDR part from bit 16. -1 where it has none
+int ShaderProgramType(const void *container, size_t size);
 
 bool IsD3D12BoxInBounds(D3D12_BOX &box, D3D12_BOX &bounds);
 

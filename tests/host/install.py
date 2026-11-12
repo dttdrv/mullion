@@ -1,7 +1,10 @@
 # contract: install.sh --crossover <bottle> [app] gives the bottle a root of its own, links to CrossOver's files with
 # the release's libraries as lib/dxmt, names that root in the bottle's environment with DXMT chosen, and keeps the
 # bottle's first configuration beside it. what it does not find, the bottle or a CrossOver with DXMT, it names, and
-# then changes nothing
+# then changes nothing.
+# install.sh <wine> [prefix ...] puts each architecture's libraries where a Wine that has the architecture keeps its
+# own, the Wine's own architecture into each prefix's system32 and the 32-bit ones into its syswow64, and nothing of
+# an architecture the Wine does not run
 import shutil
 import subprocess
 import sys
@@ -21,7 +24,8 @@ class Install(unittest.TestCase):
             (self.cx / path).parent.mkdir(parents=True, exist_ok=True)
             (self.cx / path).write_text("CrossOver's")
         self.release = self.home / "release"
-        for path in ["x86_64-windows/d3d12.dll", "x86_64-unix/winemetal.so", "aarch64-windows/d3d12.dll"]:
+        for path in ["x86_64-windows/d3d12.dll", "x86_64-unix/winemetal.so", "aarch64-windows/d3d12.dll",
+                     "i386-windows/d3d11.dll"]:
             (self.release / path).parent.mkdir(parents=True, exist_ok=True)
             (self.release / path).write_text("Mullion's")
         shutil.copy(SCRIPT, self.release / "install.sh")
@@ -57,9 +61,31 @@ class Install(unittest.TestCase):
                     self.assertEqual((root / linked).resolve(), (self.cx / linked).resolve())
                     self.assertTrue((root / linked).is_symlink())
                 self.assertEqual({str(path.relative_to(root / "lib/dxmt")) for path in (root / "lib/dxmt").rglob("*.*")},
-                                 {"x86_64-windows/d3d12.dll", "x86_64-unix/winemetal.so", "aarch64-windows/d3d12.dll"})
+                                 {"x86_64-windows/d3d12.dll", "x86_64-unix/winemetal.so", "aarch64-windows/d3d12.dll",
+                                  "i386-windows/d3d11.dll"})
                 self.assertEqual((root / "lib/dxmt/x86_64-windows/d3d12.dll").read_text(), "Mullion's")
                 self.assertEqual((self.cx / "lib/dxmt/x86_64-windows/d3d11.dll").read_text(), "CrossOver's")
+
+    def test_wine(self):
+        # a Wine that runs 32-bit programs beside its own, and one that does not
+        for name, kinds in [("both", ["x86_64-windows", "x86_64-unix", "i386-windows"]),
+                            ("one", ["x86_64-windows", "x86_64-unix"])]:
+            wine, prefix = self.home / name, self.home / (name + "-prefix")
+            for kind in kinds:
+                (wine / "lib/wine" / kind).mkdir(parents=True)
+                (wine / "lib/wine" / kind / "ntdll").write_text("Wine's")
+            for directory in ["system32", "syswow64"]:
+                (prefix / "drive_c/windows" / directory).mkdir(parents=True)
+            done = subprocess.run(["sh", self.release / "install.sh", wine, prefix], capture_output=True, text=True,
+                                  env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual({str(path.relative_to(wine / "lib/wine")) for path in (wine / "lib/wine").rglob("*.*")},
+                             {{"x86_64-windows": "x86_64-windows/d3d12.dll", "x86_64-unix": "x86_64-unix/winemetal.so",
+                               "i386-windows": "i386-windows/d3d11.dll"}[kind] for kind in kinds})
+            windows = prefix / "drive_c/windows"
+            self.assertEqual([path.name for path in (windows / "system32").iterdir()], ["d3d12.dll"])
+            self.assertEqual([path.name for path in (windows / "syswow64").iterdir()],
+                             ["d3d11.dll"] if "i386-windows" in kinds else [])
 
     def test_names_what_it_does_not_find(self):
         text = '[Bottle]\n"Version" = "26.3"\n'

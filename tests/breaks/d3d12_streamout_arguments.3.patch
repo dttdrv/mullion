@@ -1,12 +1,12 @@
 # legacy ResourceBarrier examines only the first barrier
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1880,7 +1880,7 @@
-       allocator_->InvalidateCurrentPass();
-       return;
+@@ -2864,7 +2864,7 @@ public:
      }
+     barrier_serial_++;
+     bool ordered = false;
 -    for (auto &barrier : std::span(barriers, Count)) {
 +    for (auto &barrier : std::span(barriers, Count ? 1u : 0u)) {
-       bool other = barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-       auto &states = barrier.Transition;
-       if (Order(other || (states.StateBefore & draw_writes), other || ((states.StateBefore | states.StateAfter) & uav)))
+       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
+         clear_joinable_ = false, va_found_ = nullptr;
+       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)

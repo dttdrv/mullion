@@ -1,9 +1,9 @@
 # keeps the first constant-buffer descriptor written to a heap slot.
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
-@@ -204,6 +204,8 @@
+@@ -246,6 +246,8 @@ public:
      if (Index >= descriptors_.size())
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);
      auto &cpu_storage = descriptors_[Index];
 +    if (cpu_storage.type == ShaderVisibleDescriptorType::ConstantBuffer)
 +      return S_OK;
