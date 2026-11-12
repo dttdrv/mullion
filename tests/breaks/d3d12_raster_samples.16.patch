@@ -1,10 +1,10 @@
 # centroids ignore the state's sample mask.
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -582,7 +582,7 @@
-     kept = mask;
+@@ -1069,7 +1069,7 @@ llvm::Error convert_dxbc_pixel_shader(
+     bounded = phi;
    }
-   resource_map.clip_coverage = kept;
+   resource_map.kept_samples = kept && bounded ? builder.CreateAnd(kept, bounded) : kept ? kept : bounded;
 -  if (pso_sample_mask != 0xffffffff) {
 +  if (false) {
      air.CentroidCoverage = kept ? kept : function->getArg(input_coverage);

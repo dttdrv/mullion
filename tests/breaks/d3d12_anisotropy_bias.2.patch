@@ -2,8 +2,8 @@
 # family native
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -2334,7 +2334,7 @@
-   // when the shader runs
+@@ -2406,7 +2406,7 @@ Converter::SampleImplicit(
+   // implicit one (the probe's sample scenes on an M4)
    if (auto Known = KnownSamplers.find(SamplerMetadata); Known != KnownSamplers.end()) {
      auto Own = SamplerBiases.find(Bias);
 -    if (!Known->second.Anisotropic ||

@@ -237,6 +237,21 @@ ShaderFeaturesSupported(MTLD3D12Device *device, const void *container, size_t si
          !(flags & WriteableMSAATextures && !options14.WriteableMSAATexturesSupported);
 }
 
+int
+ShaderProgramType(const void *container, size_t size) {
+  microsoft::CDXBCParser parser;
+  if (FAILED(parser.ReadDXBC(container, size)))
+    return -1;
+  for (auto name : {microsoft::DXBC_DXIL, microsoft::DXBC_GenericShaderEx, microsoft::DXBC_GenericShader})
+    if (auto part = parser.FindNextMatchingBlob(name);
+        part != DXBC_BLOB_NOT_FOUND && parser.GetBlobSize(part) >= sizeof(uint32_t)) {
+      uint32_t version;
+      memcpy(&version, parser.GetBlob(part), sizeof(version));
+      return version >> 16;
+    }
+  return -1;
+}
+
 // features outside the released API, asked for before a device is made and granted all or none
 // (D3D12EnableExperimentalFeatures: "S_OK if successful", E_NOINTERFACE for a feature that is not known). the one
 // that is here is experimental shader models, with which Direct3D takes shaders that carry no hash (INF-0004)

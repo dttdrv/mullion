@@ -1,9 +1,9 @@
 # omits generation for a two-level shader resource view.
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -1010,7 +1010,7 @@
-           fixedViewId = tex->checkViewUseFormat(viewId, WMTPixelFormatR8Unorm);
-         }
+@@ -1042,7 +1042,7 @@ public:
+       EmitOP([tex = srv->texture(), viewId = srv->viewId()](ArgumentEncodingContext &enc) {
+         auto fixedViewId = tex->checkViewUseFormat(viewId, MipmapFormat(tex->pixelFormat(viewId)));
          WMT::Texture texture = enc.access(tex, fixedViewId, ResourceAccess::ReadWrite).texture;
 -        if (texture.mipmapLevelCount() > 1) {
 +        if (texture.mipmapLevelCount() > 2) {

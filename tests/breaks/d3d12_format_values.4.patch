@@ -1,9 +1,9 @@
 # SRV casts retain the storage format instead of interpreting the view format.
 --- a/src/d3d12/d3d12_texture.cpp
 +++ b/src/d3d12/d3d12_texture.cpp
-@@ -530,7 +530,8 @@
+@@ -611,7 +611,8 @@ public:
      if (FAILED(hr) || (!this->texture->chroma && DXGIFormatType(ViewDesc.Format) != DXGIFormatType(desc_.Format)))
-       return FAILED(hr) ? hr : E_INVALIDARG;
+       return FAILED(hr) ? hr : FAIL(E_INVALIDARG);
  
 -    view_descriptor.format = EncodeComponentMapping(ViewDesc.Shader4ComponentMapping, metal_format.PixelFormat);
 +    view_descriptor.format = EncodeComponentMapping(ViewDesc.Shader4ComponentMapping,

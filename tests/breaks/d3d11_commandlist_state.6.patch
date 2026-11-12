@@ -1,11 +1,11 @@
 # R17: nested command lists are not executed
 --- a/src/d3d11/d3d11_context_imm.cpp
 +++ b/src/d3d11/d3d11_context_imm.cpp
-@@ -589,7 +589,6 @@
+@@ -673,7 +673,6 @@ public:
  
      for (size_t region = 0; region < cmdlist->regions.size(); region++) {
        if (auto &nested = cmdlist->regions[region].nested) {
 -        Execute(nested.ptr());
          continue;
        }
-       std::shared_ptr<std::vector<Rc<TimestampQuery>>> timestamp_queries;
+       bool skips = Skips(cmdlist->regions[region].predicate.ptr(), cmdlist->regions[region].value);
