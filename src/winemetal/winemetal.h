@@ -1795,6 +1795,9 @@ WINEMETAL_API bool MTLDevice_supports32BitMSAA(obj_handle_t device);
 WINEMETAL_API bool MTLDevice_supportsShaderBarycentricCoordinates(obj_handle_t device);
 
 WINEMETAL_API uint64_t MTLDevice_maxArgumentBufferSamplerCount(obj_handle_t device);
+// whether the GPU, on this system, takes the coordinates of a sparse read of a writable placement sparse texture as
+// a tile's where it answers for residency: it asks the GPU, with one tile of a small texture mapped
+WINEMETAL_API bool MTLDevice_sparseResidencyInTiles(obj_handle_t device);
 
 // whether a sampler's reductionMode reaches what it samples: measured once per device, as no property says so
 WINEMETAL_API bool MTLDevice_supportsSamplerReduction(obj_handle_t device);
@@ -2609,6 +2612,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
+       WMTUnixDeviceSparseResidencyInTiles,
        WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,

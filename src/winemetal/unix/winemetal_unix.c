@@ -5201,6 +5201,114 @@ _WMTGPUStatistics(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* whether a sparse read of a writable placement sparse texture answers for residency by tile where the shader gave a
+ * texel: an M3 Max with macOS 26.6 did (sparse_read(p) told of tile p, and of the texel only as sparse_read(p / tile
+ * size)), the same GPU with macOS 27.2 does not, and Apple documents neither. so the GPU is asked: of a texture of
+ * four tiles by four the second tile of the first row is mapped alone, and a kernel reads the texel in that tile's
+ * middle and the texel whose coordinates are the tile's, (1, 0), which lies in the first tile. where texels are read
+ * the first is resident and the second is not, where tiles are read it is the other way round. any other answer, or
+ * a GPU without such textures, says texels */
+static NTSTATUS
+_MTLDevice_sparseResidencyInTiles(void *obj) {
+  struct unixcall_generic_obj_uint64_ret *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  params->ret = 0;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      const MTLSparsePageSize page_size = MTLSparsePageSize16;
+      NSUInteger page = [device supportsPlacementSparse] ? [device sparseTileSizeInBytesForSparsePageSize:page_size] : 0;
+      if (!page)
+        return STATUS_SUCCESS;
+      MTLSize tile = [device sparseTileSizeWithTextureType:MTLTextureType2D
+                                               pixelFormat:MTLPixelFormatR32Uint
+                                               sampleCount:1
+                                            sparsePageSize:page_size];
+      MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Uint
+                                                                                      width:tile.width * 4
+                                                                                     height:tile.height * 4
+                                                                                  mipmapped:NO];
+      desc.storageMode = MTLStorageModePrivate;
+      desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+      desc.placementSparsePageSize = page_size;
+      id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+      MTLHeapDescriptor *heap_desc = [[MTLHeapDescriptor alloc] init];
+      heap_desc.type = MTLHeapTypePlacement;
+      heap_desc.storageMode = MTLStorageModePrivate;
+      heap_desc.maxCompatiblePlacementSparsePageSize = page_size;
+      heap_desc.size = page;
+      id<MTLHeap> heap = texture ? [device newHeapWithDescriptor:heap_desc] : nil;
+      [heap_desc release];
+      MTLResidencySetDescriptor *set_desc = [[MTLResidencySetDescriptor alloc] init];
+      id<MTLResidencySet> set = heap ? [device newResidencySetWithDescriptor:set_desc error:nil] : nil;
+      [set_desc release];
+      id<MTL4CommandQueue> mapper = set ? [device newMTL4CommandQueue] : nil;
+      id<MTLCommandQueue> queue = mapper ? [device newCommandQueue] : nil;
+      id<MTLSharedEvent> mapped = queue ? [device newSharedEvent] : nil;
+      id<MTLLibrary> library =
+          mapped ? [device newLibraryWithSource:@"#include <metal_stdlib>\n"
+                                                 "using namespace metal;\n"
+                                                 "kernel void residency(texture2d<uint> t [[texture(0)]],\n"
+                                                 "                      constant uint2 *at [[buffer(0)]],\n"
+                                                 "                      device uint *out [[buffer(1)]]) {\n"
+                                                 "  out[0] = t.sparse_read(at[0]).resident();\n"
+                                                 "  out[1] = t.sparse_read(at[1]).resident();\n"
+                                                 "}\n"
+                                        options:nil
+                                          error:nil]
+                 : nil;
+      id<MTLFunction> function = [library newFunctionWithName:@"residency"];
+      id<MTLComputePipelineState> pipeline = function ? [device newComputePipelineStateWithFunction:function error:nil] : nil;
+      id<MTLBuffer> at = pipeline ? [device newBufferWithLength:4 * sizeof(uint32_t) options:MTLResourceStorageModeShared] : nil;
+      id<MTLBuffer> out = at ? [device newBufferWithLength:2 * sizeof(uint32_t) options:MTLResourceStorageModeShared] : nil;
+      if (out) {
+        uint32_t *coordinates = at.contents, *answers = out.contents;
+        coordinates[0] = tile.width + tile.width / 2, coordinates[1] = tile.height / 2;
+        coordinates[2] = 1, coordinates[3] = 0;
+        answers[0] = answers[1] = ~0u;
+        [set addAllocation:heap];
+        [set commit];
+        MTL4UpdateSparseTextureMappingOperation op = {};
+        op.mode = MTLSparseTextureMappingModeMap;
+        op.textureRegion = MTLRegionMake3D(1, 0, 0, 1, 1, 1);
+        op.heapOffset = 0;
+        [mapper updateTextureMappings:texture heap:heap operations:&op count:1];
+        [mapper signalEvent:mapped value:1];
+        id<MTLCommandBuffer> cmdbuf = [queue commandBuffer];
+        [cmdbuf useResidencySet:set];
+        [cmdbuf encodeWaitForEvent:mapped value:1];
+        id<MTLComputeCommandEncoder> encoder = [cmdbuf computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+        [encoder setTexture:texture atIndex:0];
+        [encoder setBuffer:at offset:0 atIndex:0];
+        [encoder setBuffer:out offset:0 atIndex:1];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+        if (cmdbuf.status == MTLCommandBufferStatusCompleted)
+          params->ret = answers[0] == 0 && answers[1] == 1;
+        if (answers[0] + answers[1] != 1)
+          fprintf(stderr, "mullion: a sparse read's residency is neither by texel nor by tile here (%u, %u)\n", answers[0],
+                  answers[1]);
+      } else {
+        fprintf(stderr, "mullion: how a sparse read answers for residency could not be asked\n");
+      }
+      [out release];
+      [at release];
+      [pipeline release];
+      [function release];
+      [library release];
+      [mapped release];
+      [queue release];
+      [mapper release];
+      [set release];
+      [heap release];
+      [texture release];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
 // what the bridge answers of a device, a `name=value` line each, as the family it answers as (`family`, 0 for the
 // GPU's own): every capability call above, so one read shows what Mullion is told (tests/d3d11/d3d11_gpu_family.cpp
 // holds the answers to Apple's tables)
@@ -7201,6 +7309,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_maxThreadsPerThreadgroup,
     &_WMTDeviceReport,
     &_MTLDevice_sparseTailHolds,
+    &_MTLDevice_sparseResidencyInTiles,
 };
 
 #ifndef MULLION_NATIVE
@@ -7416,6 +7525,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_maxThreadsPerThreadgroup,
     &_WMTDeviceReport,
     &_MTLDevice_sparseTailHolds,
+    &_MTLDevice_sparseResidencyInTiles,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

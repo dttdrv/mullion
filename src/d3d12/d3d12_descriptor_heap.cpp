@@ -55,6 +55,23 @@ struct SRVTextureGPUStorage {
 
 static_assert(D3D12_REQ_MIP_LEVELS <= (1u << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS));
 
+// the bits of a view's place that say how to read a writable sparse texture's residency: none where the GPU reads it
+// by texel, as it says itself when first asked (MTLDevice_sparseResidencyInTiles). an M3 Max read it by tile with
+// macOS 26.6 and reads it by texel with 27.2
+static uint64_t
+ResidencyTile(WMT::Device device, Texture *texture) {
+  static const bool tiles = device.sparseResidencyInTiles();
+  if (!tiles)
+    return 0;
+  auto tile = device.sparseTileSize(texture->textureType(), texture->pixelFormat(), texture->sampleCount(), WMTSparsePageSize16);
+  uint64_t depth = std::countr_zero(tile.depth);
+  return uint64_t(std::countr_zero(tile.width)) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH |
+         uint64_t(std::countr_zero(tile.height)) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT |
+         (depth & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0 |
+         (depth >> 1 & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1 |
+         (depth >> 2 & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2;
+}
+
 using UAVTextureGPUStorage = SRVTextureGPUStorage;
 
 // a typed buffer view: its texture, then (element count << 32) | its first element in the texture. padding[1] is
@@ -257,7 +274,7 @@ public:
       gpu_storage.SRVTexture.padding[1] = View.mip_start | Texture->miplevelCount() << 8 | View.array_start << 16 |
                                           (uint64_t)Texture->width() << 32 | (uint64_t)Texture->height() << 48;
       if (Texture->isSparse() && (Texture->usage() & WMTTextureUsageShaderWrite))
-        gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE;
+        gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE | ResidencyTile(device_->GetMTLDevice(), Texture);
     }
     return S_OK;
   }

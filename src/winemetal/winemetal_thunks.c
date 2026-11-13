@@ -1584,6 +1584,15 @@ MTLDevice_maxArgumentBufferSamplerCount(obj_handle_t device) {
   return params.ret;
 }
 
+WINEMETAL_API bool
+MTLDevice_sparseResidencyInTiles(obj_handle_t device) {
+  struct unixcall_generic_obj_uint64_ret params;
+  params.handle = device;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixDeviceSparseResidencyInTiles, &params);
+  return params.ret;
+}
+
 WINEMETAL_API uint64_t
 MTLRenderPipelineState_maxTotalThreadgroupsPerMeshGrid(obj_handle_t pipeline) {
   struct unixcall_generic_obj_uint64_ret params;
