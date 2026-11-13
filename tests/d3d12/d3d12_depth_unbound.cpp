@@ -59,6 +59,7 @@ main(int argc, char **argv) {
   for (UINT k = 0; k < std::size(kinds); k++) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{rs.Get(), bytecode(vs), bytecode(kinds[k].shader)};
     desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    desc.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     desc.SampleMask = ~0u;
     desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
     desc.RasterizerState.DepthClipEnable = TRUE;
@@ -71,8 +72,10 @@ main(int argc, char **argv) {
         D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_NEVER
     };
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    desc.NumRenderTargets = 1;
-    desc.RTVFormats[0] = format;
+    // a second target the draws do not bind, as a pass may bind fewer than its pipeline has: Metal takes a pipeline
+    // of the pass's own formats then, depth among them
+    desc.NumRenderTargets = 2;
+    desc.RTVFormats[0] = desc.RTVFormats[1] = format;
     desc.DSVFormat = depth_format;
     desc.SampleDesc = {1, 0};
     CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso[k])));
