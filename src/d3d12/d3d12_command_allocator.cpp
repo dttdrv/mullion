@@ -268,6 +268,15 @@ MTLD3D12CommandAllocatorImpl::ArgumentsViews(ArgumentsView (&views)[kArgumentsVi
   return count;
 }
 
+std::pair<obj_handle_t, uint64_t>
+MTLD3D12CommandAllocatorImpl::ArgumentsAt(uint64_t Address) {
+  std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
+  for (auto &buffer : device_->recording.buffers)
+    if (Address - buffer.address < buffer.length)
+      return {buffer.buffer, Address - buffer.address};
+  return {gpu_heap_buffer_, Address - gpu_heap_buffer_address_};
+}
+
 void
 MTLD3D12CommandAllocatorImpl::TakeLastArgumentsBuffer() {
   std::lock_guard<mullion::mutex> lock(device_->recording.mutex);

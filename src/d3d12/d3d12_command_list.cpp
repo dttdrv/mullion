@@ -1536,9 +1536,11 @@ public:
     bound_.pass = nullptr;
   }
 
+  // binds the list's buffer over the arguments at an offset, or the earlier one an address was made in (`Earlier`,
+  // ArgumentsAt)
   void
-  EncodeBuffer(WMTRenderCommandType Type, uint64_t Offset, uint8_t Index) {
-    obj_handle_t buffer = allocator_->gpu_heap_buffer_;
+  EncodeBuffer(WMTRenderCommandType Type, uint64_t Offset, uint8_t Index, obj_handle_t Earlier = 0) {
+    obj_handle_t buffer = Earlier ? Earlier : obj_handle_t(allocator_->gpu_heap_buffer_);
     // each Set*Buffer is followed by its Set*BufferOffset (WMTRenderCommandType)
     unsigned stage = Type == WMTRenderCommandSetVertexBuffer     ? 0
                      : Type == WMTRenderCommandSetFragmentBuffer ? 1
@@ -3899,15 +3901,15 @@ public:
       cmd->max_count_buffer = CountBufferAddress;
       PredicateIndirect(cmd);
       cmd->argument_buffer = ArgBufferAddress;
-      uint64_t root_arguments = 0;
+      uint64_t root_arguments = 0, static_samplers = 0;
 
       if (sig->UpdateRootArguments) {
         root_arguments = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount, true);
         cmd->rootsig_qwords = root_arguments;
         cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
         cmd->rootsig_qwords_stride = rootsig_compute_->UploadQwords;
-        cmd->static_samplers = EncodeStaticSamplers(rootsig_compute_.ptr());
-        cmd->static_samplers += allocator_->gpu_heap_buffer_address_;
+        static_samplers = EncodeStaticSamplers(rootsig_compute_.ptr());
+        cmd->static_samplers = static_samplers + allocator_->gpu_heap_buffer_address_;
         ResetIndirectState(sig, true);
       }
       if (parts) {
@@ -3920,7 +3922,7 @@ public:
           if (sig->UpdateRootArguments) {
             const std::pair<uint64_t, uint8_t> bindings[] = {
                 {root_arguments + i * rootsig_compute_->UploadQwords * sizeof(uint64_t), SM50_BINDING_INDEX_ROOT_ARGUMENTS},
-                {cmd->static_samplers - allocator_->gpu_heap_buffer_address_, SM50_BINDING_INDEX_STATIC_SAMPLERS}};
+                {static_samplers, SM50_BINDING_INDEX_STATIC_SAMPLERS}};
             for (auto [offset, index] : bindings) {
               auto &binding = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
               binding.type = WMTComputeCommandSetBuffer;
@@ -4087,7 +4089,11 @@ public:
     }
     // a GPU without mesh commands in indirect command buffers: every command is a draw of its own, which binds what
     // the command's stages read and has the threadgroups the resolver left for it (none past the count)
-    auto heap = allocator_->gpu_heap_buffer_address_;
+    // each address where it is in the buffer over the arguments it was made in: a longer buffer may have followed
+    // since (GrowArguments), and what the resolver wrote is read through the buffer it wrote through
+    auto draws = allocator_->ArgumentsAt(cmd->draws), roots = allocator_->ArgumentsAt(cmd->rootsig_qwords),
+         samplers = allocator_->ArgumentsAt(cmd->static_samplers), vertices = allocator_->ArgumentsAt(cmd->vertex_buffer),
+         counts = allocator_->ArgumentsAt(cmd->statistics), targets = allocator_->ArgumentsAt(cmd->so_targets);
     WMTSize object{cmd->geometry_threads, 1, 1}, mesh{1, 1, 1};
     // a mesh function alone takes the warps as mesh threadgroups, and what the object stage reads (MeshOnly)
     bool mesh_only = geometry && MeshOnly();
@@ -4108,31 +4114,32 @@ public:
       EncodeBuffer(stage, origin_offset, SM50_BINDING_INDEX_DRAW_ORIGIN);
     }
     for (UINT i = 0; i < MaxCommandCount; i++) {
-      auto at = cmd->draws - heap + i * sizeof(IndirectMeshDraw);
-      auto roots = cmd->rootsig_qwords - heap + i * cmd->rootsig_qwords_stride * sizeof(uint64_t);
+      auto at = draws.second + i * sizeof(IndirectMeshDraw);
+      auto root = roots.second + i * cmd->rootsig_qwords_stride * sizeof(uint64_t);
       for (auto stage : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer, WMTRenderCommandSetFragmentBuffer}) {
-        EncodeBuffer(stage, roots, SM50_BINDING_INDEX_ROOT_ARGUMENTS);
-        EncodeBuffer(stage, cmd->static_samplers - heap, SM50_BINDING_INDEX_STATIC_SAMPLERS);
+        EncodeBuffer(stage, root, SM50_BINDING_INDEX_ROOT_ARGUMENTS, roots.first);
+        EncodeBuffer(stage, samplers.second, SM50_BINDING_INDEX_STATIC_SAMPLERS, samplers.first);
       }
       if (!dispatch_mesh) {
         EncodeBuffer(
-            stage, cmd->vertex_buffer - heap + i * cmd->vertex_argbuf_stride, SM50_BINDING_INDEX_VERTEX_BUFFER
+            stage, vertices.second + i * cmd->vertex_argbuf_stride, SM50_BINDING_INDEX_VERTEX_BUFFER, vertices.first
         );
-        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, view), SM50_BINDING_INDEX_INDEX_BUFFER);
+        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, view), SM50_BINDING_INDEX_INDEX_BUFFER, draws.first);
         if (cmd->threads_per_patch)
           EncodeBuffer(
-              WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, control_points), SM50_BINDING_INDEX_PATCH_SIZE
+              WMTRenderCommandSetObjectBuffer, at + offsetof(IndirectMeshDraw, control_points),
+              SM50_BINDING_INDEX_PATCH_SIZE, draws.first
           );
-        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
+        EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS, draws.first);
       }
       // a geometry stage adds its counts to its command's, as a direct draw's does (CountDraw)
       if (cmd->statistics)
-        EncodeBuffer(WMTRenderCommandSetMeshBuffer, cmd->statistics - heap + i * sizeof(PipelineStatisticsResult),
-                     SM50_BINDING_INDEX_PIPELINE_STATISTICS);
+        EncodeBuffer(WMTRenderCommandSetMeshBuffer, counts.second + i * sizeof(PipelineStatisticsResult),
+                     SM50_BINDING_INDEX_PIPELINE_STATISTICS, counts.first);
       auto draw = [&] {
         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
         draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
-        draw.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+        draw.indirect_args_buffer = draws.first;
         draw.indirect_args_offset = at + offsetof(IndirectMeshDraw, threadgroups);
         draw.object_threadgroup_size = object;
         draw.mesh_threadgroup_size = mesh;
@@ -4141,11 +4148,11 @@ public:
         draw();
         continue;
       }
-      StreamOut(cmd->so_targets - heap + i * sizeof(SM50_STREAM_OUTPUT_TARGETS), allocator_->so_scratch_offset_, draw, [&] {
+      StreamOut(targets.second + i * sizeof(SM50_STREAM_OUTPUT_TARGETS), allocator_->so_scratch_offset_, draw, [&] {
         auto &zero = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indirect>();
         zero.type = WMTRenderCommandDrawIndirect;
         zero.primitive_type = WMTPrimitiveTypePoint;
-        zero.indirect_args_buffer = allocator_->gpu_heap_buffer_;
+        zero.indirect_args_buffer = draws.first;
         zero.indirect_args_offset = at + offsetof(IndirectMeshDraw, zero);
       }, SinglePass());
     }

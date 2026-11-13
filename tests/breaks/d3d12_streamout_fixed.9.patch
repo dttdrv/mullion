@@ -1,0 +1,14 @@
+# an indirect command's addresses are bound through the list's last buffer, whichever they were made in
+# family native-metal3
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -271,9 +271,6 @@
+ std::pair<obj_handle_t, uint64_t>
+ MTLD3D12CommandAllocatorImpl::ArgumentsAt(uint64_t Address) {
+   std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
+-  for (auto &buffer : device_->recording.buffers)
+-    if (Address - buffer.address < buffer.length)
+-      return {buffer.buffer, Address - buffer.address};
+   return {gpu_heap_buffer_, Address - gpu_heap_buffer_address_};
+ }
+ 
