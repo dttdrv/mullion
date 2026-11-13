@@ -85,6 +85,8 @@ public:
   enum SampleType sample_type;
   enum MemoryAccess memory_access;
   Value *SingleSample = nullptr;
+  // true where each of a multisample texture's samples stands for two of D3D's (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED)
+  Value *Paired = nullptr;
   // true where the texture stands for an unbound one (SM50_TEXTURE_METADATA_UNBOUND): what it answers is dropped
   Value *Unbound = nullptr;
 };
@@ -270,6 +272,14 @@ public:
   Value *CreateSamplePos(Value *SampleCount, Value *Index);
   Value *CreateRasterizerSamplePos(Value *Index);
 
+  // the raster samples as D3D numbers them where each stands for two (PairedSamples): its count, a sample index or
+  // coverage mask of Metal's as D3D's, and D3D's as Metal's
+  Value *CreateD3DSampleCount();
+  Value *D3DSampleIndex(Value *Index);
+  Value *MetalSampleIndex(Value *Index);
+  Value *D3DCoverage(Value *Mask);
+  Value *MetalCoverage(Value *Mask);
+
   Value *CreateDerivative(Value *Val, bool YAxis);
 
   CallInst *CreateDiscard();
@@ -304,6 +314,8 @@ public:
   Value *Live = nullptr;
   // a pixel shader's render target samples all lie at the pixel center (D3D11.3 19.2.4.1)
   bool CenteredSamples = false;
+  // each of a pixel shader's raster samples stands for two of D3D's (SM50_SHADER_PSO_PIXEL_SHADER_DATA paired_samples)
+  bool PairedSamples = false;
   // a pixel shader's covered samples and the state's sample mask, where D3D takes a centroid among the covered samples
   // in the mask (D3D11.3 3.5.5) and Metal among all covered: null where they agree
   Value *CentroidCoverage = nullptr, *CentroidMask = nullptr;

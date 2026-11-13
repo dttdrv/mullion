@@ -1,0 +1,14 @@
+# a slot without a sampler reads the nearest texel
+--- a/src/mullion/mullion_context.cpp
++++ b/src/mullion/mullion_context.cpp
+@@ -53,8 +53,8 @@
+   dummy_sampler_info_.r_address_mode = WMTSamplerAddressModeClampToEdge;
+   dummy_sampler_info_.s_address_mode = WMTSamplerAddressModeClampToEdge;
+   dummy_sampler_info_.t_address_mode = WMTSamplerAddressModeClampToEdge;
+-  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterLinear;
+-  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterLinear;
++  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterNearest;
++  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterNearest;
+   dummy_sampler_info_.mip_filter = WMTSamplerMipFilterLinear;
+   dummy_sampler_info_.lod_min_clamp = 0.0f;
+   dummy_sampler_info_.lod_max_clamp = FLT_MAX;

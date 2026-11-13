@@ -8,6 +8,7 @@
 #include <algorithm>
 #include "winemetal.h"
 #include "wsi_monitor.hpp"
+#include <bit>
 #include <string>
 #define __NVAPI_EMPTY_SAL
 #include "nvapi.h"

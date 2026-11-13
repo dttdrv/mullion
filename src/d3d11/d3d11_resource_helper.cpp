@@ -503,7 +503,8 @@ CreateMTLTextureDescriptorInternal(
     break;
   case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
     if (SampleCount > 1) {
-      if (!pDevice->GetMTLDevice().supportsTextureSampleCount(SampleCount)) {
+      pDescOut->sample_count = RasterSampleCount(pDevice->GetMTLDevice(), SampleCount);
+      if (!pDescOut->sample_count) {
         ERR("CreateMTLTextureDescriptorInternal: sample count ", SampleCount,
             " is not supported.");
         return E_INVALIDARG;
@@ -514,7 +515,6 @@ CreateMTLTextureDescriptorInternal(
       } else {
         pDescOut->type = WMTTextureType2DMultisample;
       }
-      pDescOut->sample_count = SampleCount;
     } else {
       if (ArraySize > 1) {
         pDescOut->type = WMTTextureType2DArray;

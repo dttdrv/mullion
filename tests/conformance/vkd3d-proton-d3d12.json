@@ -3,7 +3,9 @@
   "verdict": "passed"
  },
  "test_ags_float8_conversion": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4064,
+  "first": "test_ags_float8_conversion:6882: Test failed: value 0 (-0.000000): expected #80, got #0"
  },
  "test_aliasing_barrier": {
   "verdict": "passed"
@@ -15,7 +17,10 @@
   "verdict": "passed"
  },
  "test_amplification_shader_execute_indirect_state": {
-  "verdict": "passed"
+  "verdict": "crashed",
+  "at": "d3d12.exe: test_amplification_shader_execute_indirect_state at d3d12_mesh_shader.c:1485:5",
+  "failed": 3,
+  "first": "test_amplification_shader_execute_indirect_state:1417: Test failed: Failed to create pipeline, hr 0x80004005."
  },
  "test_append_aligned_element": {
   "verdict": "passed"
@@ -75,16 +80,23 @@
   "verdict": "passed"
  },
  "test_buffer_descriptor_byte_offset": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "CreateByteOffsetViewsSupported not set."
+  ]
  },
  "test_buffer_feedback_instructions_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 128,
+  "first": "test_buffer_feedback_instructions_dxil:1799:Test 0: Test failed: Got 0x00000000, expected 0x00000001 at (0, 0, 0)."
  },
  "test_buffer_feedback_instructions_sm51": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 128,
+  "first": "test_buffer_feedback_instructions_sm51:1799:Test 0: Test failed: Got 0x00000000, expected 0x00000001 at (0, 0, 0)."
  },
  "test_buffer_rtv_dsv_usage": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_buffer_srv": {
   "verdict": "passed"
@@ -96,7 +108,7 @@
   "verdict": "passed"
  },
  "test_buffers_oob_behavior_vectorized_byte_address": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_buffers_oob_behavior_vectorized_structured_16bit": {
   "verdict": "passed"
@@ -111,7 +123,9 @@
   "verdict": "passed"
  },
  "test_byte_buffer_addressing_wrap": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 8,
+  "first": "test_byte_buffer_addressing_wrap:2024: Test failed: reads: buffer_index 10, value 1, expected 0, got 1"
  },
  "test_cbv_hoisting_dxil": {
   "verdict": "passed"
@@ -129,10 +143,16 @@
   "verdict": "passed"
  },
  "test_clear_render_target_view_extreme_values": {
-  "verdict": "passed"
+  "verdict": "partly",
+  "skipped": [
+   "Format #43 is unsupported, skipping."
+  ]
  },
  "test_clear_uav_extreme_values": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Format #43 is unsupported, skipping."
+  ]
  },
  "test_clear_uav_mismatch_heap": {
   "verdict": "passed"
@@ -142,7 +162,11 @@
   "at": "d3d12.exe: test_clear_unordered_access_view_buffer at d3d12_clear.c:778:9"
  },
  "test_clear_unordered_access_view_image": {
-  "verdict": "passed"
+  "verdict": "partly",
+  "skipped": [
+   "Format 67 not supported.",
+   "Format 87 not supported."
+  ]
  },
  "test_clip_distance_dxbc": {
   "verdict": "passed"
@@ -190,10 +214,10 @@
   "verdict": "passed"
  },
  "test_conservative_rasterization_dxbc": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_conservative_rasterization_dxil": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_conservative_ssbo_vectorization_dxbc_heap_desc": {
   "verdict": "passed"
@@ -223,7 +247,10 @@
   "verdict": "passed"
  },
  "test_copy_block_spam": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Copy took 0.000 ms"
+  ]
  },
  "test_copy_buffer_overlap": {
   "verdict": "passed"
@@ -232,7 +259,7 @@
   "verdict": "passed"
  },
  "test_copy_buffer_texture_bc_rgba": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_copy_buffer_to_depth_stencil": {
   "verdict": "passed"
@@ -277,14 +304,15 @@
   "verdict": "passed"
  },
  "test_copy_texture_buffer_d24": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_copy_texture_ds_edge_cases": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 5,
+  "first": "test_copy_texture_ds_edge_cases:436:Test 5: Test failed: Depth: expected #ababab, got #0."
  },
  "test_copy_texture_mismatch_format": {
-  "verdict": "timeout",
-  "at": "_mtlValidateArgumentsForTextureViewOnDevice:1877: failed assertion `Texture Creation; 1 gave no stack (00f0)"
+  "verdict": "passed"
  },
  "test_copy_tiles": {
   "verdict": "passed"
@@ -335,7 +363,7 @@
   "verdict": "passed"
  },
  "test_create_graphics_pipeline_state": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_heap": {
   "verdict": "passed"
@@ -356,20 +384,23 @@
   "verdict": "passed"
  },
  "test_create_query_heap": {
-  "verdict": "crashed",
-  "at": "?+0x0"
+  "verdict": "passed"
  },
  "test_create_reserved_resource": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_create_reserved_resource:1143: Test failed: Failed to create reserved resource, hr 0x80070057."
  },
  "test_create_root_signature": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_create_root_signature:122: Test failed: Got unexpected hr 0."
  },
  "test_create_sampler": {
   "verdict": "passed"
  },
  "test_create_sampler2": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_create_unordered_access_view": {
   "verdict": "passed"
@@ -384,13 +415,19 @@
   "verdict": "passed"
  },
  "test_custom_border_color_limits": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1024,
+  "first": "test_custom_border_color_limits:6216: Test failed: Value 7168, expected 0.000000, 0.000000, 0.000000, 0.000000, got 0.000000, 0.062745, 0.000000, 0.501961"
  },
  "test_custom_border_color_limits_compute": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1024,
+  "first": "test_custom_border_color_limits_compute:6216: Test failed: Value 7168, expected 0.000000, 0.000000, 0.000000, 0.000000, got 0.000000, 0.062745, 0.000000, 0.501961"
  },
  "test_custom_border_color_srgb": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 184,
+  "first": "test_custom_border_color_srgb:6465: Test failed: Value 0 (R, R, R, R), expected (0.125490, 0.125490, 0.125490, 0.125490) or (0.125490, 0.250980, 0.376471, 0.125490), got: (0.125490, 0.250980, 0.376471, 0.501961)"
  },
  "test_decrement_uav_counter": {
   "verdict": "passed"
@@ -402,17 +439,24 @@
   "verdict": "passed"
  },
  "test_denorm_behavior_dxbc": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "FP64 not supported."
+  ]
  },
  "test_denorm_behavior_dxil": {
-  "verdict": "failed"
+  "verdict": "partly",
+  "skipped": [
+   "FP64 not supported."
+  ]
  },
  "test_depth_bias_behaviour": {
-  "verdict": "crashed",
-  "at": "ntdll.dll+0x345900000300000"
+  "verdict": "passed"
  },
  "test_depth_bias_formats": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 3,
+  "first": "test_depth_bias_formats:2569:Test 4, pso 0: Test failed: Got 0xff0000ff, expected 0xff00ff00 at (0, 0, 0)."
  },
  "test_depth_clip": {
   "verdict": "passed"
@@ -424,22 +468,29 @@
   "verdict": "passed"
  },
  "test_depth_stencil_front_and_back": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_depth_stencil_layout_tracking": {
   "verdict": "passed"
  },
  "test_depth_stencil_sampling": {
-  "verdict": "failed"
+  "verdict": "partly",
+  "skipped": [
+   "Reads from depth/stencil shader resource views return stale values on some AMD drivers."
+  ]
  },
  "test_depth_stencil_test_no_dsv": {
   "verdict": "passed"
  },
  "test_derivative_hoisting_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_derivative_hoisting_dxbc:14585: Test failed: (0, 0): Expected (11.000000, -14.000000, 1.000000, 1.000000), got (6.000000, -6.500000, 1.000000, 1.000000)"
  },
  "test_derivative_hoisting_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_derivative_hoisting_dxil:14585: Test failed: (0, 0): Expected (11.000000, -14.000000, 1.000000, 1.000000), got (6.000000, -6.500000, 1.000000, 1.000000)"
  },
  "test_descriptor_heap_broken_table_va": {
   "verdict": "passed"
@@ -448,7 +499,9 @@
   "verdict": "passed"
  },
  "test_descriptor_range_validation": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_descriptor_range_validation:5018: Test failed: Unexpected success."
  },
  "test_descriptor_tables": {
   "verdict": "passed"
@@ -460,26 +513,39 @@
   "verdict": "passed"
  },
  "test_destruction_notifier_callback": {
-  "verdict": "crashed",
-  "at": "d3d12.exe: test_destruction_notifier_callback at d3d12_device.c:1846:10"
+  "verdict": "passed"
  },
  "test_destruction_notifier_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_device_configuration": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "skipped": [
+   "Failed to get SDK configuration interface."
+  ],
+  "failed": 2,
+  "first": "test_device_configuration:2562:ID3D12Device: Test failed: Unexpected enabled experimental features."
  },
  "test_device_factory": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Failed to get SDK configuration interface."
+  ]
  },
  "test_device_factory_create_device": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Failed to get SDK configuration interface."
+  ]
  },
  "test_device_factory_creation": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Failed to get device factory interface."
+  ]
  },
  "test_device_removed_reason": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_discard_instruction": {
   "verdict": "passed"
@@ -518,22 +584,34 @@
   "verdict": "passed"
  },
  "test_dstorage_decompression": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "DirectStorage meta command not supported."
+  ]
  },
  "test_dual_source_blending_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "test_dual_source_blending_dxbc:1185: Test failed: Unexpected result, hr 0."
  },
  "test_dual_source_blending_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "test_dual_source_blending_dxil:1185: Test failed: Unexpected result, hr 0."
  },
  "test_dynamic_depth_bias": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_dynamic_depth_bias:2196:Test 1: Test failed: Got 0, expected 1."
  },
  "test_dynamic_depth_stencil_write": {
   "verdict": "passed"
  },
  "test_dynamic_index_strip_cut": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Dynamic index buffer strip cut is broken on AMD (native)."
+  ]
  },
  "test_early_depth_stencil_tests": {
   "verdict": "passed"
@@ -542,16 +620,28 @@
   "verdict": "passed"
  },
  "test_enhanced_barrier_castable_dsv": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "RelaxedFormatCasting is not supported."
+  ]
  },
  "test_enhanced_barrier_castable_formats": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "RelaxedFormatCasting is not supported."
+  ]
  },
  "test_enhanced_barrier_castable_formats_buffer": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "RelaxedFormatCasting is not supported."
+  ]
  },
  "test_enhanced_barrier_castable_formats_validation": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "RelaxedFormatCasting is not supported."
+  ]
  },
  "test_enhanced_barrier_discard_behavior": {
   "verdict": "passed"
@@ -584,13 +674,16 @@
   "verdict": "passed"
  },
  "test_execute_indirect_state": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_execute_indirect_state_predication": {
   "verdict": "passed"
  },
  "test_execute_indirect_state_tier_11": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "ExecuteIndirect tier 1.1 not supported."
+  ]
  },
  "test_execute_indirect_state_vbo_offsets": {
   "verdict": "passed"
@@ -605,7 +698,9 @@
   "verdict": "passed"
  },
  "test_fence_pending_signal_cpu_rewind_shared": {
-  "verdict": "passed"
+  "verdict": "failed",
+  "failed": 128,
+  "first": "test_fence_pending_signal_cpu_rewind_shared:1839: Test failed: Expected completed fence value of 0."
  },
  "test_fence_signal_availability_plain": {
   "verdict": "passed"
@@ -617,26 +712,33 @@
   "verdict": "passed"
  },
  "test_fence_signal_ordering_raced_signal_shared": {
-  "verdict": "passed"
+  "verdict": "partly",
+  "skipped": [
+   "Unexpected fence_alt == 1 observed. Not impossible in a valid implementation. If queues are truly async, this is extremely unlikely to actually happen."
+  ]
  },
  "test_fence_values": {
   "verdict": "passed"
  },
  "test_fence_wait_multiple": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_fence_wait_multiple_shared": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_fence_wait_robustness": {
   "verdict": "passed"
  },
  "test_fence_wait_robustness_shared": {
-  "verdict": "timeout",
-  "at": "2 in d3d12core.dll: mullion::MTLD3D12CommandQueueImpl::Watch() at ??:0:0; 1 in d3d12core.dll: mullion::MTLD3D12Fence::Reach(unsigned long long) at ??:0:0; 1 in d3d12core.dll: void std::__1::__contention_wait<8ull, std::__1::NoTimeout>(std::__1::__cxx_atomic_impl<long long, std::__1::__cxx_atomic_base_impl<long long>>*, void const*, void const*, std::__1::NoTimeout) at ??:0:0; 1 in d3d12core.dll: mullion::MTLD3D12Fence::Expect(unsigned long long, std::__1::function<void ()>&&) at ??:0:0"
+  "verdict": "crashed",
+  "at": "d3d12.exe: get_refcount at d3d12_test_utils.c:94:5",
+  "failed": 6,
+  "first": "test_fence_wait_robustness_shared:1274: Test failed: Failed to open shared handle, hr #80070057."
  },
  "test_format_support": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "test_format_support:534:format 0x44: Test failed: Format 68 got unexpected hr 0x80004005."
  },
  "test_fp16_rounding_behavior_legacy": {
   "verdict": "passed"
@@ -648,7 +750,7 @@
   "verdict": "passed"
  },
  "test_fractional_viewports": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_fragment_coords": {
   "verdict": "passed"
@@ -666,7 +768,9 @@
   "verdict": "passed"
  },
  "test_get_cached_blob": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 3,
+  "first": "test_get_cached_blob:103: Test failed: Unexpected hr 0."
  },
  "test_get_copyable_footprints": {
   "verdict": "passed"
@@ -675,7 +779,12 @@
   "verdict": "passed"
  },
  "test_get_resource_tiling": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "skipped": [
+   "Tiled resources tier 4 not supported."
+  ],
+  "failed": 19,
+  "first": "test_get_resource_tiling:258:test 28: Test failed: Unexpected standard mip count 0."
  },
  "test_gpu_signal_fence": {
   "verdict": "passed"
@@ -705,10 +814,14 @@
   "verdict": "passed"
  },
  "test_gs_topology_mismatch_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 10,
+  "first": "test_gs_topology_mismatch_dxbc:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
  },
  "test_gs_topology_mismatch_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 10,
+  "first": "test_gs_topology_mismatch_dxil:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
  },
  "test_hull_shader_control_point_phase_dxbc": {
   "verdict": "passed"
@@ -732,7 +845,9 @@
   "verdict": "passed"
  },
  "test_index_buffer_edge_case_stream_output": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_index_buffer_edge_case_stream_output:429: Test failed: Got {-1.00000000e+00, 1.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {-1.00000000e+00, -3.00000000e+00, 0.00000000e+00, 1.00000000e+00}."
  },
  "test_instance_id_dxbc": {
   "verdict": "passed"
@@ -753,11 +868,12 @@
   "verdict": "passed"
  },
  "test_large_heap": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_large_texel_buffer_view": {
-  "verdict": "timeout",
-  "at": "-[MTLTextureDescriptorInternal validateWithDevice:]:1421: failed assertion `Texture Descriptor Validation; 1 gave no stack (00f4)"
+  "verdict": "failed",
+  "failed": 21,
+  "first": "test_large_texel_buffer_view:5000:Test 2: Test failed: Got data 0, expected 0x1234567 at 0."
  },
  "test_layered_rendering_dxbc": {
   "verdict": "passed"
@@ -766,13 +882,22 @@
   "verdict": "passed"
  },
  "test_line_rasterization": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "skipped": [
+   "D3D12_RASTERIZER_DESC2 not supported."
+  ],
+  "failed": 1,
+  "first": "test_line_rasterization:2855:Test 1: Test failed: Got coverage 0x3c0, expected range is 0x13c8 - 0x3ffc."
  },
  "test_line_tessellation_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 55,
+  "first": "test_line_tessellation_dxbc:1115: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_line_tessellation_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 55,
+  "first": "test_line_tessellation_dxil:1115: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_map_placed_resources": {
   "verdict": "passed"
@@ -790,7 +915,9 @@
   "verdict": "passed"
  },
  "test_mesh_shader_create_pipeline": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_mesh_shader_create_pipeline:152: Test failed: Unexpected result for pipeline creation, hr 0."
  },
  "test_mesh_shader_execute_indirect": {
   "verdict": "passed"
@@ -799,13 +926,16 @@
   "verdict": "passed"
  },
  "test_mesh_shader_rendering": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Derivatives in mesh and amplification shaders not supported."
+  ]
  },
  "test_misc_agility_sdk_feature_checks": {
   "verdict": "passed"
  },
  "test_mismatching_pso_stages": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_mismatching_rtv_dsv_size": {
   "verdict": "passed"
@@ -832,7 +962,7 @@
   "verdict": "passed"
  },
  "test_multisample_resolve_strongly_typed": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_multithread_command_queue_exec": {
   "verdict": "passed"
@@ -844,7 +974,10 @@
   "verdict": "passed"
  },
  "test_negative_viewports": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Device does not support negative viewport height."
+  ]
  },
  "test_node_count": {
   "verdict": "passed"
@@ -865,8 +998,7 @@
   "verdict": "passed"
  },
  "test_null_rtv": {
-  "verdict": "timeout",
-  "at": "-[AGXG17XFamilyCommandBuffer blitCommandEncoderCommon:]:891: failed assertion `A command encoder is already encoding to this command buffer'; 3 gave no stack (0110 0114 0118)"
+  "verdict": "passed"
  },
  "test_null_srv": {
   "verdict": "passed"
@@ -878,7 +1010,10 @@
   "verdict": "passed"
  },
  "test_nvx_cubin": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "ID3D12DeviceExt magic interface not exposed, skipping."
+  ]
  },
  "test_object_interface": {
   "verdict": "passed"
@@ -887,12 +1022,12 @@
   "verdict": "passed"
  },
  "test_open_heap_from_address": {
-  "verdict": "crashed",
-  "at": "winemenubuilder.exe+0x1f788"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_open_heap_from_address:132: Test failed: Expected VirtualFree to fail."
  },
  "test_pipeline_library": {
-  "verdict": "crashed",
-  "at": "d3d12.exe: test_pipeline_library at d3d12_pso_blob.c:212:10"
+  "verdict": "passed"
  },
  "test_pipeline_no_ps_nonzero_rts": {
   "verdict": "passed"
@@ -901,19 +1036,27 @@
   "verdict": "passed"
  },
  "test_placed_msaa_alignment_workaround": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_placed_msaa_alignments": {
   "verdict": "passed"
  },
  "test_planar_video_formats": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Format 0x68 unsupported.",
+   "Format 0x69 unsupported."
+  ]
  },
  "test_primitive_id_read_tess_geom": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_primitive_id_read_tess_geom:5102: Test failed: Failed to create pipeline."
  },
  "test_primitive_restart": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 3,
+  "first": "test_primitive_restart:1412:Test 1: Test failed: Got 0xffffffff, expected 0xff00ff00 at (0, 0, 0)."
  },
  "test_primitive_restart_list_topology_stream_output": {
   "verdict": "passed"
@@ -926,45 +1069,60 @@
  },
  "test_quad_tessellation_dxbc": {
   "verdict": "crashed",
-  "at": "winemenubuilder.exe+0x42b26"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_dxbc:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_tessellation_dxil": {
   "verdict": "crashed",
-  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_dxil:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_tessellation_wrong_input_count_dxbc": {
   "verdict": "crashed",
-  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_wrong_input_count_dxbc:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_tessellation_wrong_input_count_dxil": {
   "verdict": "crashed",
-  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_wrong_input_count_dxil:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_tessellation_wrong_pso_topology_dxbc": {
   "verdict": "crashed",
-  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_wrong_pso_topology_dxbc:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_tessellation_wrong_pso_topology_dxil": {
   "verdict": "crashed",
-  "at": "winemenubuilder.exe+0x42b26"
+  "at": "d3d12.exe: test_quad_tessellation at d3d12_tessellation.c:382:5",
+  "failed": 2,
+  "first": "test_quad_tessellation_wrong_pso_topology_dxil:347: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_quad_vote_sm67_compute": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_query_heap_cpu_resolve_occlusion": {
   "verdict": "crashed",
-  "at": "?+0x0"
+  "at": "d3d12core.dll: mullion::MTLD3D12GraphicsCommandListImpl::SumOcclusion() at ??:0:0",
+  "failed": 1,
+  "first": "test_query_heap_cpu_resolve_occlusion:906: Test failed: Failed to create query heap, hr #80004001."
  },
  "test_query_heap_cpu_resolve_timestamp": {
   "verdict": "crashed",
-  "at": "d3d12.exe: test_query_heap_cpu_resolve_timestamp at d3d12_query.c:785:10"
+  "at": "d3d12core.dll: mullion::MTLD3D12CommandQueueImpl<true>::CommandBufferWaitingThread() at ??:0:0",
+  "failed": 19,
+  "first": "test_query_heap_cpu_resolve_timestamp:794: Test failed: Failed to create query heap, hr #80004001."
  },
  "test_query_occlusion": {
   "verdict": "passed"
  },
  "test_query_pipeline_statistics": {
-  "verdict": "crashed",
-  "at": "winemenubuilder.exe+0x142a17"
+  "verdict": "passed"
  },
  "test_query_timestamp": {
   "verdict": "passed"
@@ -979,44 +1137,58 @@
   "verdict": "passed"
  },
  "test_rasterizer_ordered_views_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 379,
+  "first": "test_rasterizer_ordered_views_dxbc:179:Test 1: Test failed: Pixel 0, 0: Got -4.000000, expected -1.000000."
  },
  "test_rasterizer_ordered_views_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 379,
+  "first": "test_rasterizer_ordered_views_dxil:179:Test 1: Test failed: Pixel 0, 0: Got -4.000000, expected -1.000000."
  },
  "test_rayquery_root_desc": {
   "verdict": "passed"
  },
  "test_rayquery_root_table": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_raytracing": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 58,
+  "first": "test_raytracing:1977:Test: Plain: Test failed: Ray color [6].x mismatch (1003.000000 != 1002.000000)."
  },
  "test_raytracing_acceleration_structure_validation": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_raytracing_acceleration_structure_validation:4804: Test failed: Got hr 0, expected E_INVALIDARG."
  },
  "test_raytracing_collection_handle_invariance": {
-  "verdict": "failed"
+  "verdict": "partly",
+  "skipped": [
+   "Miss1 raw handle { 0000000000000004, 0000000000000000, 0000000000000000, 0000000000000000 }",
+   "Miss2 raw handle { 0000000000000005, 0000000000000000, 0000000000000000, 0000000000000000 }"
+  ]
  },
  "test_raytracing_collection_identifiers": {
   "verdict": "passed"
  },
  "test_raytracing_create_root_signature_from_subobject": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 5,
+  "first": "test_raytracing_create_root_signature_from_subobject:5053: Test failed: Expected success, got hr #80004001."
  },
  "test_raytracing_default_association_tiebreak": {
   "verdict": "passed"
  },
  "test_raytracing_deferred_compilation": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_raytracing_embedded_subobjects": {
   "verdict": "passed"
  },
  "test_raytracing_huge_dispatch": {
   "verdict": "timeout",
-  "at": "1 in winemetal.dll: MTLCommandBuffer_waitUntilCompleted at ??:0:0; 1 in d3d12core.dll: mullion::MTLD3D12CommandQueueImpl::Watch() at ??:0:0; 1 in d3d12.exe: wait_queue_idle_ at d3d12_crosstest.h:352:10"
+  "at": "1 in d3d12.exe: wait_queue_idle_ at d3d12_crosstest.h:352:10; 1 in d3d12core.dll: mullion::MTLD3D12CommandQueueImpl<true>::Watch() at ??:0:0; 1 in d3d12core.dll: mullion::MTLD3D12CommandQueueImpl<true>::CommitHeld() at ??:0:0; 1 in winemetal.dll: SharedEventListener_start at ??:0:0; 1 in winemetal.dll: MTL4CommandBuffer_waitForGPU at ??:0:0"
  },
  "test_raytracing_local_rs_static_sampler": {
   "verdict": "passed"
@@ -1025,8 +1197,7 @@
   "verdict": "passed"
  },
  "test_raytracing_mismatch_global_rs_link": {
-  "verdict": "crashed",
-  "at": "d3d12.exe: test_raytracing_mismatch_global_rs_link at d3d12_raytracing.c:3947:12"
+  "verdict": "passed"
  },
  "test_raytracing_missing_required_objects": {
   "verdict": "passed"
@@ -1044,16 +1215,22 @@
   "verdict": "passed"
  },
  "test_raytracing_opacity_micro_map": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Raytracing tier #c is not supported on this device. Skipping RT test."
+  ]
  },
  "test_raytracing_opacity_micro_map_ray_query": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Raytracing tier #c is not supported on this device. Skipping RT test."
+  ]
  },
  "test_raytracing_reject_duplicate_objects": {
   "verdict": "passed"
  },
  "test_raytracing_root_signature_from_subobject": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_read_subresource_rt": {
   "verdict": "passed"
@@ -1086,20 +1263,23 @@
   "verdict": "passed"
  },
  "test_render_target_support_validation": {
-  "verdict": "timeout",
-  "at": "validateWithDevice:5101: failed assertion `Render Pipeline Descriptor Validation; 1 gave no stack (00e0)"
+  "verdict": "passed"
  },
  "test_rendering_no_attachments_layers": {
   "verdict": "passed"
  },
  "test_renderpass_rendering": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 8,
+  "first": "test_renderpass_rendering:1504: Test failed: Got 0xdeadbeef, expected 0xff0000ff at (0, 0, 0)."
  },
  "test_renderpass_resolve_suspend_resume": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_renderpass_validation": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 7,
+  "first": "test_renderpass_validation:1091: Test failed: Got hr 0, expected E_FAIL."
  },
  "test_reserved_resource_mapping": {
   "verdict": "passed"
@@ -1114,7 +1294,7 @@
   "verdict": "passed"
  },
  "test_resolve_image_exhaustive_descriptors": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_resolve_non_issued_query_data": {
   "verdict": "passed"
@@ -1126,7 +1306,9 @@
   "verdict": "passed"
  },
  "test_resolve_subresource_depth": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 16,
+  "first": "test_resolve_subresource_depth:3690: Test failed: 0, 0: expected 0.015625, got 0.023438"
  },
  "test_resource_allocation_info": {
   "verdict": "passed"
@@ -1135,19 +1317,27 @@
   "verdict": "passed"
  },
  "test_rgb9e5_rendering": {
-  "verdict": "passed"
+  "verdict": "partly",
+  "skipped": [
+   "RGB9E5 not supported for rendering."
+  ]
  },
  "test_root_constant_indexing_dxbc": {
   "verdict": "passed"
  },
  "test_root_constant_indexing_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_root_constant_indexing_dxil:14658: Test failed: Got hr 0, expected 0x80070057."
  },
  "test_root_constants": {
   "verdict": "passed"
  },
  "test_root_descriptor_offset_sign": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Skipping exploratory test for root descriptor over/underflow test."
+  ]
  },
  "test_root_parameter_preservation": {
   "verdict": "passed"
@@ -1156,7 +1346,7 @@
   "verdict": "passed"
  },
  "test_root_signature_byte_code2": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_root_signature_embedded": {
   "verdict": "passed"
@@ -1186,7 +1376,9 @@
   "verdict": "passed"
  },
  "test_sample_instructions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 31,
+  "first": "test_sample_instructions:4504:Test 23: Test failed: Got color 0xff0000ff, expected 0xffffffff at (0, 0)."
  },
  "test_sample_mask_dxbc": {
   "verdict": "passed"
@@ -1195,13 +1387,17 @@
   "verdict": "passed"
  },
  "test_sample_shading_coverage_mask": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "test_sample_shading_coverage_mask:5333:PSO index 1, test index 2: Test failed: (0, 1, 0): expected b0000001, got a0000001"
  },
  "test_sampler_border_color": {
   "verdict": "passed"
  },
  "test_sampler_feedback_decode_encode_min_mip": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 92,
+  "first": "test_sampler_feedback_decode_encode_min_mip:990: Test failed: Value 3: Expected 3, got 2"
  },
  "test_sampler_feedback_decode_encode_mip_used": {
   "verdict": "passed"
@@ -1210,7 +1406,9 @@
   "verdict": "passed"
  },
  "test_sampler_feedback_grad": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 60,
+  "first": "test_sampler_feedback_grad:2456:Test 1: Test failed: Mip0: Expected #33, got #20."
  },
  "test_sampler_feedback_implicit_lod": {
   "verdict": "passed"
@@ -1222,28 +1420,46 @@
   "verdict": "passed"
  },
  "test_sampler_feedback_min_mip_level": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 939,
+  "first": "test_sampler_feedback_min_mip_level:566: Test failed: Coord 1, 0, 0: expected 4 or 255, got 5."
  },
  "test_sampler_feedback_min_mip_level_array": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1005,
+  "first": "test_sampler_feedback_min_mip_level_array:566: Test failed: Coord 1, 0, 0: expected 4 or 255, got 5."
  },
  "test_sampler_feedback_mip_used_region_level": {
   "verdict": "passed"
  },
  "test_sampler_feedback_npot_min_mip_level": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 58,
+  "first": "test_sampler_feedback_npot_min_mip_level:823: Test failed: Coord 16, 0: expected 0, got 255."
  },
  "test_sampler_feedback_npot_used_region": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 32,
+  "first": "test_sampler_feedback_npot_used_region:1868:Base resolution 15 x 16: Test failed: Mip 0, Coord 2, 3: expected 255, got 0."
  },
  "test_sampler_feedback_resource_creation": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "test_sampler_feedback_resource_creation:99:Test 4: Test failed: Unexpected hr, expected #80070057, got #0."
  },
  "test_sampler_non_normalized_coordinates": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Non-normalized sampler coordinates not supported."
+  ]
  },
  "test_sampler_rounding": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "skipped": [
+   "Driver does not expose PointSamplingAddressesNeverRoundUp."
+  ],
+  "failed": 25,
+  "first": "test_sampler_rounding:5626:Test 0: Test failed: UV [raw 255.609375] [snap lo 1.#00, snap hi 1.#00]: Expected value in range ([256.000000, 256.000000] / 256.0), got (0.000000 / 256.0)"
  },
  "test_scissor": {
   "verdict": "passed"
@@ -1252,13 +1468,16 @@
   "verdict": "passed"
  },
  "test_sdk_configuration1": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Failed to get SDK configuration interface."
+  ]
  },
  "test_sdk_configuration_creation": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_sdk_configuration_set_sdk_path": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_separate_bindings": {
   "verdict": "passed"
@@ -1273,13 +1492,22 @@
   "verdict": "passed"
  },
  "test_shader_execution_reordering_basic": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping Shader Execution Reordering test."
+  ]
  },
  "test_shader_execution_reordering_ray_query": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping Shader Execution Reordering test."
+  ]
  },
  "test_shader_execution_reordering_trace": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping Shader Execution Reordering test."
+  ]
  },
  "test_shader_fp16": {
   "verdict": "passed"
@@ -1294,16 +1522,21 @@
   "verdict": "passed"
  },
  "test_shader_instructions": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Skipping FP64 test due to lack of feature support."
+  ]
  },
  "test_shader_instructions_dxil": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_shader_interstage_interface": {
   "verdict": "passed"
  },
  "test_shader_io_mismatch": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 61,
+  "first": "test_shader_io_mismatch:4704:Test 2: Test failed: Got hr 0, expected 0x80070057."
  },
  "test_shader_sample_position_dxbc": {
   "verdict": "passed"
@@ -1312,10 +1545,12 @@
   "verdict": "passed"
  },
  "test_shader_sm62_denorm": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_shader_sm64_packed": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_shader_sm64_packed:1505:Test 12: Test failed: 0x4b800000 != 0x4b800001"
  },
  "test_shader_sm65_wave_intrinsics": {
   "verdict": "passed"
@@ -1327,7 +1562,7 @@
   "verdict": "passed"
  },
  "test_shader_sm66_is_helper_lane": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_shader_sm66_packed": {
   "verdict": "passed"
@@ -1336,67 +1571,122 @@
   "verdict": "passed"
  },
  "test_shader_sm66_wave_size": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "WaveSize 16 not supported, skipping.",
+   "WaveSize 64 not supported, skipping."
+  ]
  },
  "test_shader_waveop_maximal_convergence": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 16,
+  "first": "test_shader_waveop_maximal_convergence:1790: Test failed: Element 0, 25 != 12."
  },
  "test_sm67_dynamic_texture_offset": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Advanced texture ops not supported."
+  ]
  },
  "test_sm67_helper_lane_only_wave_ops": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_sm67_helper_lane_only_wave_ops:4949:Test PSO 0: Test failed: (1, 1): expected (-100.000000, 66.000000, 55.000000, 44.000000), got (-100.000000, 6.000000, 5.000000, 4.000000)."
  },
  "test_sm67_helper_lane_wave_ops": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 448,
+  "first": "test_sm67_helper_lane_wave_ops:2859:Test 1 (helpers: 1): Test failed: (0, 0): expected #de424, got #c2424."
  },
  "test_sm67_integer_sampling": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Advanced texture ops not supported."
+  ]
  },
  "test_sm67_multi_sample_uav": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Writable MSAA textures not supported."
+  ]
  },
  "test_sm67_raw_gather": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Advanced texture ops not supported."
+  ]
  },
  "test_sm67_sample_cmp_level": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Advanced texture ops not supported."
+  ]
  },
  "test_sm68_draw_parameters": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Device does not support SM 6.8."
+  ]
  },
  "test_sm68_sample_cmp_bias_grad": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Device does not support SM 6.8."
+  ]
  },
  "test_sm68_wave_size_range": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Device does not support SM 6.8."
+  ]
  },
  "test_sm69_fp16_isspecial": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sm69_long_vector_intrinsics": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sm69_long_vector_load_store_heap_desc": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sm69_long_vector_load_store_root_desc": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sm69_long_vector_storage": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sm69_long_vector_waveops": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "SM 6.9 not supported, skipping."
+  ]
  },
  "test_sparse_buffer_memory_lifetime": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_sparse_default_mapping": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Skipping test to avoid crash inside AMD driver."
+  ]
  },
  "test_sparse_depth_stencil_rendering": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_srgb_unorm_mismatch_usage_aliasing": {
   "verdict": "passed"
@@ -1405,7 +1695,9 @@
   "verdict": "passed"
  },
  "test_static_sampler_dynamic_index": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "test_static_sampler_dynamic_index:6725: Test failed: Unexpected success."
  },
  "test_stencil_export_dxbc": {
   "verdict": "passed"
@@ -1417,19 +1709,21 @@
   "verdict": "passed"
  },
  "test_structured_buffer_addressing_wrap": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_suballocate_small_textures": {
   "verdict": "passed"
  },
  "test_suballocate_small_textures_size": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1942,
+  "first": "test_suballocate_small_textures_size:2301:Test 0: fmt #47, bpp 4, width 512, height 256, levels 1, layers 2: Test failed: Resource size 143360 is larger than expected 131072."
  },
  "test_suballocate_va_alignment": {
   "verdict": "passed"
  },
  "test_sv_barycentric": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_tessellation_dcl_index_range_complex_dxbc": {
   "verdict": "passed"
@@ -1447,7 +1741,9 @@
   "verdict": "passed"
  },
  "test_tessellation_read_tesslevel": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 29,
+  "first": "test_tessellation_read_tesslevel:948: Test failed: Failed to create state, hr 0x80004001."
  },
  "test_tex1d_array_reinterpretation_dxil": {
   "verdict": "passed"
@@ -1462,10 +1758,10 @@
   "verdict": "passed"
  },
  "test_texture_feedback_instructions_dxil": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture_feedback_instructions_sm51": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture_ld": {
   "verdict": "passed"
@@ -1477,10 +1773,16 @@
   "verdict": "passed"
  },
  "test_tight_resource_alignment": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Tight resource alignment not supported."
+  ]
  },
  "test_topology_triangle_fan": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Triangle fan topology not supported by device."
+  ]
  },
  "test_typed_buffer_uav": {
   "verdict": "passed"
@@ -1501,16 +1803,20 @@
   "verdict": "passed"
  },
  "test_uav_3d_sliced_view": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_uav_clear_exhaustive_descriptors": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_uav_counter_null_behavior_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 20,
+  "first": "test_uav_counter_null_behavior_dxbc:4546: Test failed: Unexpected value 0 = 72"
  },
  "test_uav_counter_null_behavior_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 20,
+  "first": "test_uav_counter_null_behavior_dxil:4546: Test failed: Unexpected value 0 = 71"
  },
  "test_uav_counters": {
   "verdict": "passed"
@@ -1519,10 +1825,16 @@
   "verdict": "passed"
  },
  "test_uav_robustness_oob_structure_element_dxbc": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Driver checks robustness based on byte offset."
+  ]
  },
  "test_uav_robustness_oob_structure_element_dxil": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Driver checks robustness based on byte offset."
+  ]
  },
  "test_unaligned_vertex_stride": {
   "verdict": "passed"
@@ -1531,40 +1843,80 @@
   "verdict": "passed"
  },
  "test_undefined_descriptor_heap_mismatch_types": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "skipped": [
+   "Accessing type 0 is not compatible with descriptor type 2, got NULL result instead.",
+   "Accessing type 0 is not compatible with descriptor type 3 (as expected, expected 11.000000, got 10.000000).",
+   "Accessing type 0 is not compatible with descriptor type 4, got NULL result instead.",
+   "Accessing type 0 is not compatible with descriptor type 5 (as expected, expected 13.000000, got 10.000000).",
+   "Accessing type 0 is not compatible with descriptor type 6, got NULL result instead.",
+   "Accessing type 1 is not compatible with descriptor type 2, got NULL result instead.",
+   "Accessing type 1 is not compatible with descriptor type 3 (as expected, expected 11.000000, got 10.000000).",
+   "Accessing type 1 is not compatible with descriptor type 4, got NULL result instead.",
+   "Accessing type 1 is not compatible with descriptor type 5 (as expected, expected 13.000000, got 10.000000).",
+   "Accessing type 1 is not compatible with descriptor type 6, got NULL result instead.",
+   "Accessing type 2 is not compatible with descriptor type 0, got NULL result instead.",
+   "Accessing type 2 is not compatible with descriptor type 1, got NULL result instead.",
+   "Accessing type 3 is not compatible with descriptor type 0, got NULL result instead.",
+   "Accessing type 3 is not compatible with descriptor type 1, got NULL result instead.",
+   "Accessing type 4 is not compatible with descriptor type 0, got NULL result instead.",
+   "Accessing type 4 is not compatible with descriptor type 1, got NULL result instead.",
+   "Accessing type 5 is not compatible with descriptor type 0, got NULL result instead.",
+   "Accessing type 5 is not compatible with descriptor type 1, got NULL result instead.",
+   "Accessing type 6 is not compatible with descriptor type 0, got NULL result instead.",
+   "Accessing type 6 is not compatible with descriptor type 1, got NULL result instead."
+  ],
+  "failed": 4,
+  "first": "test_undefined_descriptor_heap_mismatch_types:5132: Test failed: Descriptor type 2, Shader type 3, expected 10.000000, got 0.000000."
  },
  "test_undefined_read_typed_buffer_as_untyped_simple_dxbc": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_undefined_read_typed_buffer_as_untyped_simple_dxil": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_undefined_structured_raw_alias_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 880,
+  "first": "test_undefined_structured_raw_alias_dxbc:865: Test failed: Structured: output 0, index 16, expected 268435473, got 268435456"
  },
  "test_undefined_structured_raw_alias_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 880,
+  "first": "test_undefined_structured_raw_alias_dxil:865: Test failed: Structured: output 0, index 16, expected 268435473, got 268435456"
  },
  "test_undefined_structured_raw_read_typed_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 552,
+  "first": "test_undefined_structured_raw_read_typed_dxbc:1154: Test failed: output 0, index 0, expected (1, 1, 1, 1), got (0, 0, 0, 0)"
  },
  "test_undefined_structured_raw_read_typed_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 552,
+  "first": "test_undefined_structured_raw_read_typed_dxil:1154: Test failed: output 0, index 0, expected (1, 1, 1, 1), got (0, 0, 0, 0)"
  },
  "test_undefined_typed_read_structured_raw_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 508,
+  "first": "test_undefined_typed_read_structured_raw_dxbc:1428: Test failed: output 0, index 12, expected (16, 16, 16, 16), got (0, 0, 0, 0)"
  },
  "test_undefined_typed_read_structured_raw_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 508,
+  "first": "test_undefined_typed_read_structured_raw_dxil:1428: Test failed: output 0, index 12, expected (16, 16, 16, 16), got (0, 0, 0, 0)"
  },
  "test_uninit_root_parameters": {
   "verdict": "passed"
  },
  "test_uninitialized_pixel_output_dxbc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_uninitialized_pixel_output_dxbc:14796: Test failed: Got {5.01960814e-01, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00} at (0, 0)."
  },
  "test_uninitialized_pixel_output_dxil": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "test_uninitialized_pixel_output_dxil:14796: Test failed: Got {5.01960814e-01, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00}, expected {0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00} at (0, 0)."
  },
  "test_unknown_dsv_format": {
   "verdict": "passed"
@@ -1573,7 +1925,10 @@
   "verdict": "passed"
  },
  "test_unused_attachments_mix_and_match": {
-  "verdict": "failed"
+  "verdict": "crashed",
+  "at": "d3d12.exe: wait_queue_idle_ at d3d12_crosstest.h:352:10",
+  "failed": 257,
+  "first": "test_unused_attachments_mix_and_match:2887: Test failed: RT 0, pixel 1, expected 256.000000, got 0.000000"
  },
  "test_update_compute_descriptor_tables": {
   "verdict": "passed"
@@ -1591,13 +1946,18 @@
   "verdict": "passed"
  },
  "test_update_tile_mappings": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "skipped": [
+   "Tiled resources tier 4 not supported."
+  ],
+  "failed": 54,
+  "first": "test_update_tile_mappings:1064: Test failed: Unexpected number of standard mips 1."
  },
  "test_update_tile_mappings_remap_smem": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_update_tile_mappings_remap_vmem": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_varying_nointerpolation_mixed_type_dxbc": {
   "verdict": "passed"
@@ -1609,10 +1969,10 @@
   "verdict": "passed"
  },
  "test_vertex_id_dxbc": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_vertex_id_dxil": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_vertex_shader_stream_output_dxbc": {
   "verdict": "passed"
@@ -1621,43 +1981,65 @@
   "verdict": "passed"
  },
  "test_view_instancing": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "View instancing not supported by device."
+  ]
  },
  "test_view_instancing_indirect_state": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "View instancing not supported by device."
+  ]
  },
  "test_view_min_lod": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 5,
+  "first": "test_view_min_lod:3742:Test 51: Test failed: Got 0xffffffff, expected 0x00000000 at (0, 0, 0)."
  },
  "test_virtual_queries": {
   "verdict": "passed"
  },
  "test_vkd3d_dxvk_cmdbuf_interop": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "ID3D12DXVKInteropDevice1 not implemented."
+  ]
  },
  "test_vkd3d_out_of_band_interop": {
   "verdict": "passed"
  },
  "test_vrs": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Skipped test 0, AdditionalShadingRates not supported.",
+   "Skipped test 1, AdditionalShadingRates not supported.",
+   "Skipped test 2, AdditionalShadingRates not supported.",
+   "Skipped test 3, AdditionalShadingRates not supported.",
+   "Skipped test 4, AdditionalShadingRates not supported.",
+   "Skipped test 5, AdditionalShadingRates not supported.",
+   "Skipped test 6, AdditionalShadingRates not supported."
+  ]
  },
  "test_vrs_clip_distance": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_vrs_depth_write_dxbc": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_vrs_depth_write_dxil": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_vrs_dxil": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_vrs_image": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_vrs_sample_mask": {
-  "verdict": "partly"
+  "verdict": "failed",
+  "failed": 248,
+  "first": "test_vrs_sample_mask:926: Test failed: Test 0, coord 0, 0, expected #8, got #1."
  },
  "test_vs_instance_input_nonuniform_workarounds": {
   "verdict": "passed"
@@ -1666,82 +2048,140 @@
   "verdict": "passed"
  },
  "test_wmma_alloca": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 256,
+  "first": "test_wmma_alloca:6426: Test failed: Row 0, Col 0: Expected 21824.000000, got 0.000000"
  },
  "test_wmma_copy_transpose": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 768,
+  "first": "test_wmma_copy_transpose:6325: Test failed: FP32: Row 0, Col 0: Expected 4.843750, got 0.000000"
  },
  "test_wmma_element_wise": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2046,
+  "first": "test_wmma_element_wise:6714: Test failed: FP32 ADD Value 0: Expected -200.000000, got 0.000000"
  },
  "test_wmma_extract_insert": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 511,
+  "first": "test_wmma_extract_insert:6047: Test failed: Value 0: Expected 0xff, got 0x0"
  },
  "test_wmma_fp32_fp8_conversions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 43651,
+  "first": "test_wmma_fp32_fp8_conversions:5739: Test failed: -FP32 -> FP8 [0x8000 (-0.000000 / 512.0)]: Expected 0x80, got 0x0"
  },
  "test_wmma_fp32_fp8_special_conversions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 12,
+  "first": "test_wmma_fp32_fp8_special_conversions:5857: Test failed: FP32 unclamped (#7f7fffff) -> FP8: Expected 0x7f, got 0x0"
  },
  "test_wmma_fp8_fp32_conversions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 252,
+  "first": "test_wmma_fp8_fp32_conversions:5652: Test failed: FP8 -> FP32 [0x1]: Expected 0.001953, got 0.000000"
  },
  "test_wmma_layout_assumptions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 256,
+  "first": "test_wmma_layout_assumptions:6517: Test failed: Row 0, Col 0: Expected 101.000000, got 0.000000"
  },
  "test_wmma_lds_layout": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 512,
+  "first": "test_wmma_lds_layout:6221: Test failed: value 0: Expected 1.000000, got 0.000000"
  },
  "test_wmma_lds_transpose": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 256,
+  "first": "test_wmma_lds_transpose:6143: Test failed: Row 0, Col 0: Expected 317440.000000, got 0.000000"
  },
  "test_wmma_matmul": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2816,
+  "first": "test_wmma_matmul:5408:Test 0: Test failed: row 0, column 0, expected 2954.562500 (unrounded 2954.562500), got 0.000000"
  },
  "test_wmma_matrix_length": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 10,
+  "first": "test_wmma_matrix_length:5948: Test failed: 0: Expected 8, got 0"
  },
  "test_wmma_multi_matmul": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 256,
+  "first": "test_wmma_multi_matmul:5571: Test failed: row 0, col 0: Expected 0x58, got 0x00"
  },
  "test_wmma_special_conversions": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 252,
+  "first": "test_wmma_special_conversions:6601: Test failed: Value 1: Expected 0.001953, got 0.000000"
  },
  "test_workgraph_basic": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_basic_recursion": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_broadcast_input": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_coalesced_input": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_cross_group_sharing": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_local_root_signature": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_shared_inputs": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_thread_input": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_two_level_broadcast": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_workgraph_two_level_empty": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Workgraphs not supported."
+  ]
  },
  "test_write_buffer_immediate": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_write_watch": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_zero_vertex_stride": {
   "verdict": "passed"

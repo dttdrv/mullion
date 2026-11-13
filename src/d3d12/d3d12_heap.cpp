@@ -29,10 +29,10 @@ class MTLD3D12HeapImpl : public MTLD3D12Pageable<MTLD3D12Heap> {
 public:
   MTLD3D12HeapImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12Heap>(pDevice) {}
 
+  // with what is placed on it, which work in flight may use
   ~MTLD3D12HeapImpl() {
     if (heap)
-      device_->UnregisterResidency(heap);
-    heap = {};
+      EndAfterWorkInFlight(device_, [device = device_, heap = std::move(heap)] { device->UnregisterResidency(heap); });
   }
 
   HRESULT

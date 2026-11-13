@@ -1,9 +1,9 @@
 # predication bypasses the split dispatch path
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1238,7 +1238,7 @@
+@@ -2035,7 +2035,7 @@ public:
    Dispatch(UINT X, UINT Y, UINT Z) {
-     if (Record([=](auto *l) { l->Dispatch(X, Y, Z); }))
+     if (Bundled() && Record([=](auto *l) { l->Dispatch(X, Y, Z); }))
        return;
 -    if (pso_compute_ && pso_compute_->groups_work_together) {
 +    if (pso_compute_ && pso_compute_->groups_work_together && !predication_region_) {

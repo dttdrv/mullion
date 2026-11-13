@@ -1,7 +1,7 @@
 # input coverage ignores a single raster sample
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -262,7 +262,7 @@
+@@ -297,7 +297,7 @@ Converter::LoadOperand(const SrcOperandAttribute &SrcOp, mask_t Mask) {
    }
    case InputAttribute::CoverageMask: {
      // with one raster sample, input coverage is that sample's alone and the mask selects only output samples
@@ -9,4 +9,4 @@
 +    Ret = false ? ir.CreateZExt(ir.CreateICmpNE(res.coverage_mask_arg, ir.getInt32(0)), ir.getInt32Ty())
            : ctx.pso_sample_mask != 0xffffffff ? ir.CreateAnd(res.coverage_mask_arg, ctx.pso_sample_mask)
                                                : res.coverage_mask_arg;
-     break;
+     Ret = air.D3DCoverage(Ret);

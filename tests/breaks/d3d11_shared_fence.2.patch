@@ -1,9 +1,12 @@
 # the shared fence loses its initial 64-bit value
 diff --git a/src/d3d11/d3d11_fence.cpp b/src/d3d11/d3d11_fence.cpp
-index b481320..c0f7e9f 100644
 --- a/src/d3d11/d3d11_fence.cpp
 +++ b/src/d3d11/d3d11_fence.cpp
-@@ -99,3 +99,2 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
+@@ -75,7 +75,6 @@ CreateFence(MTLD3D11Device *pDevice, UINT64 InitialValue, D3D11_FENCE_FLAG Flags
+   auto event = pDevice->GetMTLDevice().newSharedEvent();
+   if (!event)
      return E_OUTOFMEMORY;
 -  event.signalValue(InitialValue);
-   auto fence = Com(new MTLD3D11FenceImpl(pDevice, std::move(event), 0));
+   char mach_port_name[54] = {};
+   if (shared && !shareEvent(event, mach_port_name))
+     return E_FAIL;

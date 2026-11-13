@@ -2,12 +2,12 @@
 # family native
 --- a/src/airconv/dxbc_binding_rootsig.cpp
 +++ b/src/airconv/dxbc_binding_rootsig.cpp
-@@ -171,7 +171,7 @@
+@@ -186,7 +186,7 @@ public:
        // a static sampler's border color is one of Metal's own (D3D12_STATIC_BORDER_COLOR)
        Static.Border = nullptr;
        if (auto Known = llvm::dyn_cast<llvm::ConstantInt>(Index)) {
 -        auto At = Known->getZExtValue() - Sampler.range.lower_bound + Sampler.arg_index;
 +        auto At = Known->getZExtValue() - Sampler.range.lower_bound;
          if (At < StaticSamplerStates.size())
-           std::tie(Static.Anisotropic, Static.Biased) = StaticSamplerStates[At];
+           std::tie(Static.Anisotropic, Static.Biased, Static.Reduces) = StaticSamplerStates[At];
        }

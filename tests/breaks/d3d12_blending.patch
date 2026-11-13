@@ -1,7 +1,7 @@
 # maps MIN blending to MAX.
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -65,7 +65,7 @@
+@@ -69,7 +69,7 @@ constexpr WMTStencilOperation kStencilOperationMap[] = {
  constexpr WMTBlendOperation kBlendOpMap[] = {
      WMTBlendOperationAdd, // padding 0
      WMTBlendOperationAdd, WMTBlendOperationSubtract, WMTBlendOperationReverseSubtract,
@@ -9,4 +9,4 @@
 +    WMTBlendOperationMax, WMTBlendOperationMax,
  };
  
- constexpr WMTLogicOperation kLogicOpMap[] = {
+ constexpr WMTBlendFactor kBlendFactorMap[] = {

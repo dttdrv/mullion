@@ -1,7 +1,7 @@
 # queue Signal retains a public reference instead of a private reference
 --- a/src/d3d12/d3d12_command_queue.cpp
 +++ b/src/d3d12/d3d12_command_queue.cpp
-@@ -1266,7 +1266,7 @@
+@@ -2482,7 +2482,7 @@ public:
    HRESULT STDMETHODCALLTYPE
    Signal(ID3D12Fence *pFence, UINT64 Value) {
      // from the CPU, once the work before has completed and what it left for the CPU is done
@@ -9,4 +9,4 @@
 +    auto work = [this, fence = Com(static_cast<MTLD3D12Fence *>(pFence)), Value] {
        // after a submission another thread is in the middle of
        std::lock_guard<mullion::mutex> lock(mutex_commit_);
-       retired_.Expect(inflight_cmdbuf_seq_ - 1, [this, fence, Value] {
+       if (ends_since_signal_)

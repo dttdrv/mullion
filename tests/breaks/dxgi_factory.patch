@@ -1,8 +1,8 @@
 # factory creation drops the debug flag from GetCreationFlags
 --- a/src/dxgi/dxgi_factory.cpp
 +++ b/src/dxgi/dxgi_factory.cpp
-@@ -268,7 +268,7 @@
-     ERR("Not implemented");
+@@ -402,7 +402,7 @@ public:
+     StatusNotifications::remove(true, dwCookie);
    }
  
 -  UINT STDMETHODCALLTYPE GetCreationFlags() override { return flags_; }

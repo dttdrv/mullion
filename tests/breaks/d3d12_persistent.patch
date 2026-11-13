@@ -1,7 +1,7 @@
 # a globally coherent buffer uses an ordinary load (DXIL)
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -3268,8 +3268,7 @@
+@@ -4003,8 +4003,7 @@ Converter::CreateGEPInt32WithBoundCheck(BufferResourceHandle &Buffer, llvm::Valu
  llvm::Value *
  Converter::LoadBufferValue(BufferResourceHandle &Buffer, llvm::Type *Type, llvm::Value *Ptr, bool Inside) {
    auto Load = [&](llvm::Value *Ptr) -> llvm::Value * {
@@ -9,5 +9,5 @@
 -                                 : ir.CreateLoad(Type, Ptr, Ptr->getType()->getPointerAddressSpace() == 3);
 +    return ir.CreateLoad(Type, Ptr, Ptr->getType()->getPointerAddressSpace() == 3);
    };
-   if (!Buffer.Metadata || Inside)
+   if (!Buffer.Bounds() || Inside)
      return Load(Ptr);

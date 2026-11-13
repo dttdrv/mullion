@@ -20,6 +20,8 @@
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pipeline.hpp"
+#include "DXBCParser/d3d12tokenizedprogramformat.hpp"
+#include "d3d12_deferred_pipeline.hpp"
 #include "log/log.hpp"
 #include <array>
 #include <limits>
@@ -39,6 +41,13 @@ public:
     IsComputePipelineState = 1;
   }
 
+  // a compile of its Metal pipeline that has not begun is dropped, and one under way finished, before the pipeline
+  // goes
+  ~MTLD3D12ComputePipelineStateImpl() {
+    if (deferred)
+      deferred->Cancel();
+  }
+
   HRESULT
   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
     auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
@@ -55,6 +64,9 @@ public:
     common.next = &rootsig;
 
     Name({pDesc->CS});
+    // as a graphics pipeline's stages (MTLD3D12GraphicsPipelineStateImpl::Initialize)
+    if (ShaderProgramType(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength) != microsoft::D3D11_SB_COMPUTE_SHADER)
+      return E_INVALIDARG;
     if (HRESULT hr = InitializeShader(device_, pDesc->CS, &shader_cs, &ref_cs); FAILED(hr))
       return hr;
 
@@ -87,8 +99,23 @@ public:
       info.compute_function = cs_func;
       info.support_indirect_command_buffers = true;
 
-      pso = device_->Archived(info, err, [&](auto &info, auto &error) { return metal.newComputePipelineState(info, error); });
-      if (!pso) {
+      // a pipeline whose threadgroups work together is measured below (GroupsAtOnce), so it is made here
+      if (DeferredPipeline::Enabled() && !groups_work_together) {
+        // Metal's compile of it on a compile thread (DeferredPipeline), as a graphics pipeline's, through the program's
+        // pipeline archive (Archived); a failure there leaves `pso` null, and the dispatches of it are dropped. it holds
+        // the pipeline by pointer: the pipeline's destructor drops or finishes it (Cancel)
+        deferred = std::make_shared<DeferredPipeline>([self = this, info, cs_func]() {
+          WMT::Reference<WMT::Error> error;
+          auto device = self->device_;
+          if (!(self->pso = device->Archived(info, error, [&](auto &info, auto &error) {
+                  return device->GetMTLDevice().newComputePipelineState(info, error);
+                })))
+            ERR("Failed to create compute PSO of shader ", self->name, ": ", error.description().getUTF8String());
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = device_->Archived(info, err, [&](auto &info, auto &error) {
+                     return metal.newComputePipelineState(info, error);
+                   }))) {
         ERR("Failed to create compute PSO of shader ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->CS});
         return E_FAIL;

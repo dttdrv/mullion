@@ -1,12 +1,12 @@
 # the last bound scissor is treated as absent.
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -935,7 +935,7 @@
+@@ -1393,7 +1393,7 @@ public:
        LONG width = pass->render_target_width, height = pass->render_target_height;
        auto metal_scissors = allocator_->AllocateCommandData<WMTScissorRect>(count);
        for (auto i = 0u; i < count; i++) {
 -        if (i < num_scissors && i < num_viewports) {
 +        if (i + 1 < num_scissors && i < num_viewports) {
+           // a viewport scissors to the pixels its floored extents hold (D3D11.3 15.6.1)
            auto &d3d_rect = scissors[i];
-           LONG left = std::clamp(d3d_rect.left, (LONG)0, width);
-           LONG top = std::clamp(d3d_rect.top, (LONG)0, height);
+           auto &viewport = viewports[i];

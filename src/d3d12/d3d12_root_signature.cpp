@@ -614,6 +614,7 @@ public:
       SamplerHeapQword = total_qwords++;
     AtomicLocksQword = total_qwords++;
     UploadQwords = total_qwords;
+    StreamOutput = desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
     ParameterSlots = qword_offsets_.size();
     SlotQwordOffsets = qword_offsets_.data();
 

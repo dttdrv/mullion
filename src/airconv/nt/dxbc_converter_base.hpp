@@ -575,6 +575,10 @@ public:
   // 1.0 when `Reference` passes the sampler's comparison function against `Texel`, else 0.0
   llvm::Value *SamplerCompare(llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Texel);
   llvm::Value *CompareReference(llvm::Value *SamplerMetadata, llvm::Value *Reference);
+  llvm::Value *ComparePointAtZero(
+      const TextureResourceHandle &Tex, llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Value,
+      llvm::function_ref<llvm::Value *()> Read
+  );
 
   // `Value`, what `Sampler` read (a sample, a gather of `Component`, or a comparison of either with `Reference`), with
   // the sampler's custom border color (SM50_SAMPLER_BORDER). `Read(Sampler)` repeats the read without its comparison
@@ -610,6 +614,10 @@ public:
   // frc and DXIL's Frc: the value less its floor (D3D11.3 22.10.7), NaN for an infinity or a NaN
   llvm::Value *Fraction(llvm::Value *Value);
   llvm::Value *SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value);
+  llvm::Value *WritableResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+      llvm::Value *Residency
+  );
   // `Used`: the components the caller takes of the texel
   std::pair<llvm::Value *, llvm::Value *> ReadTexel(
       const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
@@ -653,10 +661,14 @@ public:
     Texture.kind = Descriptor.ResourceKind;
     Texture.memory_access = Descriptor.MemoryAccess;
     Texture.sample_type = Descriptor.SampleType;
-    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms)
+    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms) {
       Texture.SingleSample = ir.CreateICmpNE(
           ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE), ir.getInt64(0)
       );
+      Texture.Paired = ir.CreateICmpNE(
+          ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED), ir.getInt64(0)
+      );
+    }
     Texture.Unbound = ir.CreateICmpNE(ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_METADATA_UNBOUND), ir.getInt64(0));
     return {
         Texture,
@@ -670,11 +682,16 @@ public:
     };
   }
 
-  // a multisample texture's sample offset: the pattern of no samples places every one at the center
+  // a multisample texture's sample offset, of D3D's count and index: the pattern of no samples places every one at
+  // the center, and paired samples are the texture's half as many
   llvm::Value *
   TextureSamplePos(const TextureResourceHandle &Tex, llvm::Value *Samples, llvm::Value *Index) {
     auto Centered =
         ir.CreateICmpNE(ir.CreateAnd(Tex.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED), ir.getInt64(0));
+    if (Tex.Texture.Paired) {
+      Samples = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Samples, 1), Samples);
+      Index = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Index, 1), Index);
+    }
     return air.CreateSamplePos(ir.CreateSelect(Centered, ir.getInt32(0), Samples), Index);
   }
 
@@ -770,8 +787,11 @@ public:
       BufferResourceHandle &Buffer, llvm::Value *Base, llvm::Value *Last, uint32_t UnitBytes,
       llvm::function_ref<llvm::Value *(llvm::Value *, bool)> Read
   );
+  // Within, when given, bounds the whole load in place of each word's own bound (InstLoadStructured), and Index is at
+  // the view's start where it fails
   void LoadBufferWords(
-      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+      llvm::Value *Within = nullptr
   );
 
   llvm::Value * CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm::Value* Index);

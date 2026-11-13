@@ -1,7 +1,7 @@
 # a dispatch past the count keeps the dimensions an earlier execution resolved
 --- a/src/d3d12/d3d12_command_signature.cpp
 +++ b/src/d3d12/d3d12_command_signature.cpp
-@@ -295,8 +295,7 @@
+@@ -420,8 +420,7 @@ public:
               << offsetof(IndirectRays, threadgroups) << ");\n";
        source << "threadgroups = uint3(0);\n";
      } else if (is_compute) {
@@ -9,5 +9,5 @@
 -                "else { compute_command cmd(command_data.cmd_buf, i); cmd.reset(); }\n";
 +      source << "if (!command_data.dispatches) { compute_command cmd(command_data.cmd_buf, i); cmd.reset(); }\n";
      } else {
-       // an indexed draw's indices past their view are a second command, `rest`, which draws zeros (command_data.zeros)
-       source << "render_command cmd(command_data.cmd_buf, "
+       // each command's draw is command i of the indirect command buffer (an indexed one's extras are past them, below)
+       source << "render_command cmd(command_data.cmd_buf, i);\n";

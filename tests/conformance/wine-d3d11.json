@@ -6,10 +6,12 @@
   "verdict": "passed"
  },
  "test_blend": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_buffer_srv": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "d3d11.c:24845: Test failed: Got unexpected hr 0."
  },
  "test_cb_relative_addressing": {
   "verdict": "passed"
@@ -54,7 +56,7 @@
   "verdict": "passed"
  },
  "test_compressed_format_compatibility": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_compute_shader_registers": {
   "verdict": "passed"
@@ -63,7 +65,9 @@
   "verdict": "passed"
  },
  "test_constant_buffer_offset": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 10,
+  "first": "d3d11.c:34434: Test failed: Got offset 1."
  },
  "test_copy_subresource_region": {
   "verdict": "passed"
@@ -78,20 +82,21 @@
   "verdict": "passed"
  },
  "test_create_buffer": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_deferred_context": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "d3d11.c:2551: Test failed: Got refcount 3, expected 2."
  },
  "test_create_depthstencil_state": {
   "verdict": "passed"
  },
  "test_create_depthstencil_view": {
-  "verdict": "crashed",
-  "at": "winemenubuilder.exe+0xa7d07"
+  "verdict": "passed"
  },
  "test_create_device": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_input_layout": {
   "verdict": "passed"
@@ -103,8 +108,7 @@
   "verdict": "passed"
  },
  "test_create_rendertarget_view": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: test_create_rendertarget_view at d3d11.c:4403:5"
+  "verdict": "passed"
  },
  "test_create_sampler_state": {
   "verdict": "passed"
@@ -113,27 +117,28 @@
   "verdict": "passed"
  },
  "test_create_shader_resource_view": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: check_interface_ at d3d11.c:276:10"
+  "verdict": "passed"
  },
  "test_create_texture1d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_texture2d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_texture3d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_unordered_access_view": {
   "verdict": "crashed",
-  "at": "d3d11_test.exe: test_create_unordered_access_view at d3d11.c:20200:9"
+  "at": "d3d11_test.exe: test_create_unordered_access_view at d3d11.c:20239:9",
+  "failed": 1,
+  "first": "d3d11.c:20219: Test failed: Test 16: Got unexpected hr 0x80070057."
  },
  "test_cs_uav_store": {
   "verdict": "passed"
  },
  "test_cube_maps": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_ddy": {
   "verdict": "passed"
@@ -151,16 +156,23 @@
   "verdict": "passed"
  },
  "test_deferred_context_swap_state": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "d3d11.c:33469: Test failed: Got state 00000000007826B0."
  },
  "test_depth_bias": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 205,
+  "first": "d3d11.c:28752: Test failed: Format 0x2d: z 0.125000, bias -10000, clamp 0.000000: Got 0x1ff63c, expected 0x1fd8f0 at (0, 0, 0), sub-resource 0."
  },
  "test_depth_clip": {
   "verdict": "passed"
  },
  "test_depth_stencil_sampling": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Some AMD drivers have a bug affecting the test."
+  ]
  },
  "test_depthstencil_view_interfaces": {
   "verdict": "passed"
@@ -169,10 +181,12 @@
   "verdict": "passed"
  },
  "test_device_context_state": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 47,
+  "first": "d3d11.c:8183: Test failed: Got unexpected buffer 00000000007527B0."
  },
  "test_device_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_device_removed_reason": {
   "verdict": "passed"
@@ -202,19 +216,25 @@
   "verdict": "passed"
  },
  "test_filter_minmax": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_fl10_stream_output_desc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 44,
+  "first": "d3d11.c:27358: Test failed: Got unexpected hr 0."
  },
  "test_fl9_draw": {
   "verdict": "passed"
  },
  "test_format_compatibility": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 44,
+  "first": "d3d11.c:29492: Test failed: Test 26: Got unexpected colour 0x00ff0000 at (0, 1), expected 0x00000000."
  },
  "test_format_support": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 66,
+  "first": "d3d11.c:21338: Test failed: Feature level 0x9300: Format 0x32 - vertex buffer supported, format support 0x27251f2."
  },
  "test_fp_specials": {
   "verdict": "passed"
@@ -232,16 +252,23 @@
   "verdict": "passed"
  },
  "test_generate_mips": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 15,
+  "first": "d3d11.c:30776: Test failed: Test 2: Got unexpected hr 0."
  },
  "test_geometry_shader": {
   "verdict": "passed"
  },
  "test_getdc": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 16,
+  "first": "d3d11.c:17822: Test failed: Format B8G8R8A8_UNORM: Got unexpected hr 0."
  },
  "test_h264_decoder": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Failed to get ID3D11VideoDevice."
+  ]
  },
  "test_high_resource_count": {
   "verdict": "passed"
@@ -253,7 +280,7 @@
   "verdict": "passed"
  },
  "test_immediate_context": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_independent_blend": {
   "verdict": "passed"
@@ -268,10 +295,12 @@
   "verdict": "passed"
  },
  "test_input_assembler": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_input_layout_alignment": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 6,
+  "first": "d3d11.c:19378: Test failed: Test 1: Got unexpected hr 0, expected 0x80070057."
  },
  "test_instanced_draw": {
   "verdict": "passed"
@@ -286,7 +315,9 @@
   "verdict": "passed"
  },
  "test_logic_op": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "d3d11.c:34769: Test failed: Got hr 0."
  },
  "test_multiple_render_targets": {
   "verdict": "passed"
@@ -295,22 +326,28 @@
   "verdict": "passed"
  },
  "test_multisample_resolve": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "d3d11.c:31630: Test failed: Got 0xffbcffbc, expected 0xff80ff80 at (0, 0, 0), sub-resource 0."
  },
  "test_negative_viewports": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "d3d11.c:29083: Test failed: Feature level 0xa100: Got 0xffffffff, expected 0xff00ff00 at (639, 479, 0), sub-resource 0."
  },
  "test_null_sampler": {
   "verdict": "passed"
  },
  "test_nv12": {
-  "verdict": "partly"
+  "verdict": "passed"
  },
  "test_occlusion_query": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "d3d11.c:6266: Test failed: Got unexpected query result 0x0000000090000000."
  },
  "test_pipeline_statistics_query": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_primitive_restart": {
   "verdict": "passed"
@@ -322,7 +359,9 @@
   "verdict": "passed"
  },
  "test_quad_tessellation": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 6,
+  "first": "d3d11.c:26629: Test failed: Triangle 0 vertices {0.00000000e+000, 0.00000000e+000, 0.00000000e+000, 0.00000000e+000}, {0.00000000e+000, 0.00000000e+000, 0.00000000e+000, 0.00000000e+000}, {0.00000000e+000, 0.00000000e+000, 0.00000000e+000, 0.00000000e+000} do not match {-1.00000000e+000, -1.00000000e+000, 0.00000000e+000, 1.00000000e+000}, {1.00000000e+000, -1.00000000e+000, 0.00000000e+000, 1.00000000e+000}, {-1.00000000e+000, 1.00000000e+000, 0.00000000e+000, 1.00000000e+000}."
  },
  "test_render_a8": {
   "verdict": "passed"
@@ -331,14 +370,15 @@
   "verdict": "passed"
  },
  "test_render_target_views": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_resinfo_instruction": {
   "verdict": "passed"
  },
  "test_resource_access": {
-  "verdict": "timeout",
-  "at": "d3d11.c:_mtlValidateStrideTextureParameters:1938: failed assertion `Texture Descriptor Validation; 20 gave no stack (02c8 02e4 02e8 02f0 02fc 0300 0304 030c 0314 0318 0320 0330 0338 034c 0370 0374 0384 0388 0398 03a0)"
+  "verdict": "failed",
+  "failed": 12,
+  "first": "d3d11.c:15654: Test failed: Feature level 0xb000: Test 3: Got hr 0x80070057, expected 0."
  },
  "test_resource_map": {
   "verdict": "passed"
@@ -356,7 +396,7 @@
   "verdict": "passed"
  },
  "test_sample_shading": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_sampleinfo_instruction": {
   "verdict": "passed"
@@ -401,7 +441,7 @@
   "verdict": "passed"
  },
  "test_staging_buffers": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_standard_pattern": {
   "verdict": "passed"
@@ -431,25 +471,27 @@
   "verdict": "passed"
  },
  "test_swapchain_formats": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 3,
+  "first": "d3d11.c:15946: Test failed: Feature level 0x9100: Got hr 0, expected 0x80070057 (format 0x59)."
  },
  "test_swapchain_views": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture1d": {
   "verdict": "passed"
  },
  "test_texture1d_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture2d_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture3d_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture_compressed_3d": {
   "verdict": "passed"
@@ -473,7 +515,11 @@
   "verdict": "passed"
  },
  "test_unaligned_raw_buffer_access": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Feature level 0xa000: Feature level 11_0 required for unaligned UAV test.",
+   "Feature level 0xa100: Feature level 11_0 required for unaligned UAV test."
+  ]
  },
  "test_unbind_shader_resource_view": {
   "verdict": "passed"

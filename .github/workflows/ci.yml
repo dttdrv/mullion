@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
+  # GitHub removes a cache nothing has read for 7 days, and a tag's run reads only the caches of the default branch:
+  # every 5 days the toolchains are read there (keep-toolchains), and made again where one is gone
+  schedule:
+    - cron: '17 3 */5 * *'
 
 permissions:
   contents: write
@@ -182,6 +186,7 @@ jobs:
           path: ./toolchains/llvm-darwin
 
   setup-llvm-win:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-llvm-project, setup-llvm-mingw]
     steps:
@@ -209,6 +214,9 @@ jobs:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
+      # LLVM 15 uses std::is_pod without including <type_traits> (ItaniumDemangle.h), which the libc++ of llvm-mingw
+      # 20260908 no longer brings in with <algorithm> or <utility>. its benchmark library, which nothing here uses,
+      # is built with -Werror and that compiler warns of its __COUNTER__
       - name: Build LLVM for Windows
         if: steps.cache-llvm-win.outputs.cache-hit != 'true'
         run: |
@@ -223,6 +231,8 @@ jobs:
             -DLLVM_BUILD_TOOLS=Off \
             -DCMAKE_SYSROOT="$(pwd)/toolchains/${{ env.LLVM_MINGW_DIR }}" \
             -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_FLAGS="-include type_traits" \
+            -DLLVM_INCLUDE_BENCHMARKS=Off \
             -DBUG_REPORT_URL="https://github.com/dttdrv/mullion" \
             -DPACKAGE_VENDOR="Mullion" \
             -DLLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO=Off \
@@ -285,7 +295,39 @@ jobs:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
           path: ./toolchains/llvm-darwin-arm64
 
+  # reads each toolchain cache, which counts as its use: a cache that is only looked up may not
+  keep-toolchains:
+    if: github.event_name == 'schedule'
+    runs-on: macos-26
+    needs: [setup-wine, setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin, setup-llvm-darwin-arm64]
+    steps:
+      - uses: actions/cache/restore@v5
+        with:
+          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
+          path: ./toolchains/wine
+      - uses: actions/cache/restore@v5
+        with:
+          key: wine-arm64ec-${{ env.WINE_ARM64EC_VERSION }}-macos
+          path: ./toolchains/wine
+      - uses: actions/cache/restore@v5
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
+      - uses: actions/cache/restore@v5
+        with:
+          key: llvm-project-${{ env.LLVM_VERSION }}-macos
+          path: ./toolchains/llvm-project
+      - uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          path: ./toolchains/llvm-darwin
+      - uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
+          path: ./toolchains/llvm-darwin-arm64
+
   build-gcc-release-x86_64-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine, setup-llvm-darwin]
     steps:
@@ -330,6 +372,7 @@ jobs:
           path: install
 
   build-gcc-release-x86-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine]
     steps:
@@ -368,6 +411,7 @@ jobs:
           path: install
 
   build-clang-debugoptimized-x86_64-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin, setup-llvm-win]
     steps:
@@ -420,6 +464,7 @@ jobs:
           path: install
 
   build-clang-release-x86_64-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin]
     steps:
@@ -469,6 +514,7 @@ jobs:
   # run on a self-hosted Mac, once the repository's variables name its Wine (MULLION_WINE, an installation with
   # bin/wine), its LLVM 15 (MULLION_LLVM) and a prefix with the shader compilers (MULLION_PREFIX)
   test-host:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin]
     steps:
@@ -508,10 +554,10 @@ jobs:
           meson compile -C build
 
       - name: Host tests
-        run: meson test -C build host_tessellator host_mutate --print-errorlogs
+        run: meson test -C build host_tessellator host_mutate host_install --print-errorlogs
 
   test-gpu:
-    if: vars.MULLION_WINE != ''
+    if: vars.MULLION_WINE != '' && github.event_name != 'schedule'
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
@@ -545,6 +591,7 @@ jobs:
             build/meson-logs/benchmarks
 
   build-clang-release-x86-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine, setup-llvm-mingw]
     steps:
@@ -585,6 +632,7 @@ jobs:
           path: install
 
   build-clang-debugoptimized-arm64ec-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin-arm64]
     steps:
@@ -631,6 +679,7 @@ jobs:
           path: install
 
   build-clang-release-arm64ec-windows-cross:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: [setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin-arm64]
     steps:
@@ -677,6 +726,7 @@ jobs:
           path: install
 
   build-clang-release-arm64-macos:
+    if: github.event_name != 'schedule'
     runs-on: macos-26
     needs: setup-llvm-darwin-arm64
     steps:
@@ -709,11 +759,12 @@ jobs:
           name: clang-release-arm64-macos
           path: install
 
-  # the release archive: x86_64 for Wine and CrossOver on Rosetta, and ARM64X for arm64 Wine, whose x86_64 programs load
-  # it as ARM64EC. a v tag makes a draft release with it, for its notes to be written
+  # the release archive: x86_64 for Wine and CrossOver on Rosetta with the 32-bit Direct3D 10 and 11 for their 32-bit
+  # programs, and ARM64X for arm64 Wine, whose x86_64 programs load it as ARM64EC. a v tag makes a draft release with
+  # it, for its notes to be written
   package:
     runs-on: macos-26
-    needs: [build-gcc-release-x86_64-windows-cross, build-clang-release-arm64ec-windows-cross]
+    needs: [build-gcc-release-x86_64-windows-cross, build-gcc-release-x86-windows-cross, build-clang-release-arm64ec-windows-cross]
     env:
       PACKAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
     steps:
@@ -724,6 +775,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: gcc-release-x86_64-windows-cross
+          path: ./combined/${{ env.PACKAGE_TAG }}
+
+      - name: Download WoW64 Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: gcc-release-x86-windows-cross
           path: ./combined/${{ env.PACKAGE_TAG }}
 
       - name: Download ARM64X Artifact

@@ -1,9 +1,9 @@
 # only the first resolver thread emits its command
 --- a/src/d3d12/d3d12_command_signature.cpp
 +++ b/src/d3d12/d3d12_command_signature.cpp
-@@ -291,7 +291,7 @@
-       if (indexed)
-         source << "if (command_data.zeros) rest.reset();\n";
+@@ -432,7 +432,7 @@ public:
+       source << "if (command_data.omitted) command_data.omitted[i] = 0;\n";
+       source << "if (command_data.so_lacked) command_data.so_lacked[i] = 0;\n";
      }
 -    source << "if (i >= count) return;\n";
 +    source << "if (i >= count || i != 0) return;\n";

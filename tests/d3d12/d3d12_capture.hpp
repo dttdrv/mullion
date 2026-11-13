@@ -29,6 +29,18 @@ holds(const std::string &path, const std::string &text) {
   return held;
 }
 
+// whether the trace under `path` holds `text` once it can all be read: Metal's stop of a capture returns with the
+// trace's files at their sizes while a group's name may not be read from them yet, and is a moment later
+inline bool
+trace_holds(const std::string &path, const std::string &text) {
+  for (unsigned tries = 0; tries < 100; tries++) {
+    if (holds(path, text))
+      return true;
+    Sleep(100);
+  }
+  return false;
+}
+
 // removes `path` and everything under it. a trace holds symbolic links, which Windows' file calls under Wine leave
 // behind, so the host's rm takes the tree
 inline bool

@@ -1,0 +1,14 @@
+# a window still taken by a released chain is not asked for again after the queue's held presents
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -280,10 +280,6 @@ public:
+         window = Com<FlipWindow>::transfer(new FlipWindow(hWnd));
+         // a chain the application has released may still be kept by a present its queue has not run yet (Wine's
+         // test_swapchain_present_count replaces a chain so, on Windows): the window is asked for again after those
+-        if (!window->acquired()) {
+-          swapchain_factory->ReleasedSwapChains();
+-          window = Com<FlipWindow>::transfer(new FlipWindow(hWnd));
+-        }
+         if (!window->acquired())
+           return DXGI_ERROR_INVALID_CALL;
+       }

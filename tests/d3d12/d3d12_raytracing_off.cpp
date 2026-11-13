@@ -1,6 +1,8 @@
 // contract: MULLION_D3D12_RAYTRACING=0 reports no ray tracing: "D3D12_RAYTRACING_TIER_NOT_SUPPORTED: No support for
 // raytracing on the device" (D3D12_RAYTRACING_TIER), so an application that checks for it before using it leaves it
-// out. the device is otherwise made and works: a copy of a buffer reaches its destination.
+// out. the device is otherwise made and works: a copy of a buffer reaches its destination. its feature level is then
+// below 12_2, which has "DirectX Raytracing: Tier 1.1" (Direct3D feature levels, 12_2), and device creation refuses
+// 12_2 while it takes the level the device reports.
 #include "d3d12_test.hpp"
 
 int
@@ -12,6 +14,16 @@ main(int argc, char **argv) {
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options)));
   expect(options.RaytracingTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED, "ray tracing tier %u is reported",
          options.RaytracingTier);
+  static const D3D_FEATURE_LEVEL all[] = {D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
+                                          D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+  D3D12_FEATURE_DATA_FEATURE_LEVELS levels{UINT(std::size(all)), all};
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels)));
+  expect(levels.MaxSupportedFeatureLevel < D3D_FEATURE_LEVEL_12_2, "feature level %#x without ray tracing",
+         levels.MaxSupportedFeatureLevel);
+  expect(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_2, __uuidof(ID3D12Device), nullptr) == E_INVALIDARG,
+         "12_2 was not refused without ray tracing");
+  expect(D3D12CreateDevice(nullptr, levels.MaxSupportedFeatureLevel, __uuidof(ID3D12Device), nullptr) == S_FALSE,
+         "the level the device reports was refused");
 
   auto upload = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_STATE_GENERIC_READ);
   auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, 256, D3D12_RESOURCE_STATE_COPY_DEST);

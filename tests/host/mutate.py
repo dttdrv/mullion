@@ -548,7 +548,7 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
             with redirect_stdout(StringIO()) as out:
                 counted = run.own(args, tests, [root], None, dict(os.environ))
             lines = out.getvalue().splitlines()
-            self.assertEqual(sorted(re.findall(r"^(?:new|passes, still listed as known): native\([^)]*\) (\S+)",
+            self.assertEqual(sorted(re.findall(r"^(?:new|passes, still listed as known): native\(.*?\) (\S+)",
                                                out.getvalue(), re.M)), ["fixed", "fresh", "other", "skip"], out.getvalue())
             self.assertEqual(counted, 4)
             self.assertIn(f"new: native({chip}) other {three} (known: {two})", lines)
@@ -559,6 +559,9 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
                     run.known()
             run.KNOWN.write_text("9 skip skipped: no 16x -- the cause\n")
             self.assertEqual(run.known(), {("9", "skip"): "skipped: no 16x"})
+            # a chip's name may have brackets of its own, as a virtual machine's has
+            run.KNOWN.write_text("native(Apple M1 (Virtual)) skip skipped: no 16x -- the cause\n")
+            self.assertEqual(run.known(), {("native(Apple M1 (Virtual))", "skip"): "skipped: no 16x"})
             # a list to compare with that is not there is a mistake, not an empty list
             with self.assertRaises(SystemExit), redirect_stdout(StringIO()):
                 run.own(Namespace(late=None, family="native", benchmark=False, repeat=1, jobs=1, known=root / "none.txt"),
@@ -595,12 +598,12 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
             args = Namespace(late=None, family="native", benchmark=False, repeat=2, jobs=1, record=root / "record.txt")
             with redirect_stdout(StringIO()) as out:
                 counted = run.own(args, tests, [root], None, dict(os.environ))
-            self.assertEqual(sorted(re.findall(r"^new: native\([^)]*\) (\S+)", out.getvalue(), re.M)), ["flip", "twin"],
+            self.assertEqual(sorted(re.findall(r"^new: native\(.*?\) (\S+)", out.getvalue(), re.M)), ["flip", "twin"],
                              out.getvalue())
             # what a run records is what a later run compares with: every failure, the unstable one included, which
             # cannot be compared with
             recorded = args.record.read_text().splitlines()
-            self.assertEqual(sorted(re.match(r"native\([^)]*\) (\S+)", line)[1] for line in recorded), ["flip", "same", "twin"])
+            self.assertEqual(sorted(re.match(r"native\(.*?\) (\S+)", line)[1] for line in recorded), ["flip", "same", "twin"])
             with self.assertRaises(SystemExit):
                 run.known(args.record)
             args.record.write_text("".join(line + "\n" for line in recorded if " flip " not in line))

@@ -1,16 +1,16 @@
 # positive infinity becomes the signed integer maximum; use the lane walk that consumes the identity
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2123,7 +2123,7 @@
-   // these for 32 bits and less, without groups; the rest walk the lanes
-   auto reduce = [&](const std::string &name, Value *v, Signedness sign, bool prefix, Combine combine, Value *identity,
-                     Value *group = nullptr) -> Value * {
+@@ -2569,7 +2569,7 @@ convert_dxil(
+     // Metal's half sums count the helper lanes a branch leaves out; given the identity, they add nothing
+     if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves && v->getType()->isHalfTy())
+       v = ir.CreateSelect(simd("simd_is_helper_thread", ir.getInt1Ty(), {}), identity, v);
 -    if (v->getType()->getPrimitiveSizeInBits() != 64 && !group)
 +    if (v->getType()->getPrimitiveSizeInBits() != 64 && !group && !v->getType()->isFloatingPointTy())
        return simd(prefix ? "simd_prefix_exclusive_" + name : "simd_" + name, v->getType(), {v}, v->getType(), sign);
      auto lane = prefix ? lane_index() : nullptr;
      return over_lanes(
-@@ -2348,7 +2348,7 @@
+@@ -2836,7 +2836,7 @@ convert_dxil(
          identity = fp ? ConstantFP::get(vty, 1.0) : ConstantInt::get(vty, 1);
          break;
        case 2:

@@ -64,6 +64,17 @@ struct unixcall_sparse_tail {
   uint64_t bytes;
 };
 
+struct unixcall_sparse_tail_holds {
+  obj_handle_t device;
+  struct WMTConstMemoryPointer info;
+  uint32_t block_width;
+  uint32_t block_height;
+  uint32_t block_bytes;
+  uint32_t ret;
+  uint64_t first_mip;
+  uint64_t bytes;
+};
+
 struct unixcall_mtl4_mappings {
   obj_handle_t queue;
   obj_handle_t resource;
@@ -198,6 +209,14 @@ struct unixcall_mtldevice_newrenderpso {
 struct unixcall_mtldevice_newmeshrenderpso {
   obj_handle_t device;
   struct WMTConstMemoryPointer info;
+  obj_handle_t ret_error;
+  obj_handle_t ret_pso;
+};
+
+struct unixcall_mtldevice_newspecializedpso {
+  obj_handle_t device;
+  obj_handle_t pipeline;
+  struct WMTConstMemoryPointer colors;
   obj_handle_t ret_error;
   obj_handle_t ret_pso;
 };

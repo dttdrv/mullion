@@ -1160,8 +1160,14 @@ RWBuffer<uint> result : register(u1);
               D3D10_USAGE_DEFAULT,
               UINT(depth ? D3D10_BIND_DEPTH_STENCIL : D3D10_BIND_RENDER_TARGET) | D3D10_BIND_SHADER_RESOURCE
           };
+          // the Direct3D 10 device, of feature level 10_0, need not have the 8 samples a feature level 11_0 device
+          // has whatever the GPU: without them it makes no texture, and its views are not asked for
+          UINT quality10 = 0;
+          CHECK(device10->CheckMultisampleQualityLevels(format, samples, &quality10));
           ComPtr<ID3D10Texture2D> texture10;
-          CHECK(device10->CreateTexture2D(&desc10, nullptr, &texture10));
+          HRESULT made10 = device10->CreateTexture2D(&desc10, nullptr, &texture10);
+          expect(quality10 ? made10 == S_OK && texture10 : made10 == E_INVALIDARG && !texture10,
+                 "D3D10 texture of %u samples returned %#lx with %u quality levels", samples, made10, quality10);
           for (UINT first : {0u, arrays, ~0u}) {
             for (UINT count : {0u, arrays + 1, ~0u}) {
               if (first == 0 && count == ~0u)
@@ -1245,8 +1251,10 @@ RWBuffer<uint> result : register(u1);
                   if (array_view)
                     srv10_desc.Texture2DMSArray = {first, requested};
                   ComPtr<ID3D10ShaderResourceView> srv10;
-                  hr = device10->CreateShaderResourceView(texture10.Get(), &srv10_desc, &srv10);
-                  expect(hr == S_OK && srv10, "D3D10 SRV returned %#lx", hr);
+                  if (texture10) {
+                    hr = device10->CreateShaderResourceView(texture10.Get(), &srv10_desc, &srv10);
+                    expect(hr == S_OK && srv10, "D3D10 SRV returned %#lx", hr);
+                  }
                   D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
                   rtv_desc.Format = format;
                   rtv_desc.ViewDimension =
@@ -1275,8 +1283,10 @@ RWBuffer<uint> result : register(u1);
                   if (array_view)
                     rtv10_desc.Texture2DMSArray = {first, requested};
                   ComPtr<ID3D10RenderTargetView> rtv10;
-                  hr = device10->CreateRenderTargetView(texture10.Get(), &rtv10_desc, &rtv10);
-                  expect(hr == S_OK && rtv10, "D3D10 RTV returned %#lx", hr);
+                  if (texture10) {
+                    hr = device10->CreateRenderTargetView(texture10.Get(), &rtv10_desc, &rtv10);
+                    expect(hr == S_OK && rtv10, "D3D10 RTV returned %#lx", hr);
+                  }
                   if (srv && rtv) {
                     context->ClearUnorderedAccessViewUint(ms_result_view.Get(), unwritten);
                     context->CSSetShader(array_view ? ms_array.Get() : ms.Get(), nullptr, 0);
@@ -1324,8 +1334,10 @@ RWBuffer<uint> result : register(u1);
                   if (array_view)
                     dsv10_desc.Texture2DMSArray = {first, requested};
                   ComPtr<ID3D10DepthStencilView> dsv10;
-                  hr = device10->CreateDepthStencilView(texture10.Get(), &dsv10_desc, &dsv10);
-                  expect(hr == S_OK && dsv10, "D3D10 DSV returned %#lx", hr);
+                  if (texture10) {
+                    hr = device10->CreateDepthStencilView(texture10.Get(), &dsv10_desc, &dsv10);
+                    expect(hr == S_OK && dsv10, "D3D10 DSV returned %#lx", hr);
+                  }
                 }
                 if (samples == 1) {
                   auto staging_desc = desc;

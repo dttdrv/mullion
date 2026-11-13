@@ -293,7 +293,8 @@ main(int argc, char **argv) {
     D3D12_PIPELINE_STATE_STREAM_DESC stream_desc{sizeof(stream), &stream};
     return device2->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&out));
   };
-  ComPtr<ID3D12PipelineState> counted, unclipped, plain, discarding, geometry, masked, bounded, bounded_alone;
+  ComPtr<ID3D12PipelineState> counted, unclipped, plain, discarding, geometry, masked, alone, bounded,
+      bounded_alone;
   CHECK(pipeline(ps, true, true, false, false, counted));
   CHECK(pipeline(ps, true, false, false, false, unclipped));
   CHECK(pipeline(ps_plain, true, true, true, false, plain));
@@ -301,6 +302,7 @@ main(int argc, char **argv) {
   CHECK(pipeline(ps, false, true, false, true, geometry));
   // the one sample's mask (all of them, and still a mask the shader keeps)
   CHECK(pipeline(ps_plain, true, true, true, false, masked, 1));
+  CHECK(pipeline("", true, true, true, false, alone));
   D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2{};
   device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options2, sizeof(options2));
   if (options2.DepthBoundsTestSupported) {
@@ -563,6 +565,7 @@ main(int argc, char **argv) {
   CHECK(check_depth(steep, discarding.Get(), "a shader that may discard"));
   CHECK(check_depth(across, plain.Get(), "a shader that writes no memory"));
   CHECK(check_depth(across, masked.Get(), "a sample mask"));
+  CHECK(check_depth(across, alone.Get(), "no pixel shader"));
   if (options2.DepthBoundsTestSupported) {
     CHECK(check_depth(across, bounded.Get(), "the depth bounds test"));
     CHECK(check_depth(across, bounded_alone.Get(), "the depth bounds test without a pixel shader"));

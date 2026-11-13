@@ -1,5 +1,6 @@
 #include <atomic>
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"

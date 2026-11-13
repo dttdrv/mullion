@@ -1,0 +1,12 @@
+# the bridge says a sparse read answers for residency by tile where the GPU answers by texel
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -5175,7 +5175,7 @@
+         [cmdbuf commit];
+         [cmdbuf waitUntilCompleted];
+         if (cmdbuf.status == MTLCommandBufferStatusCompleted)
+-          params->ret = answers[0] == 0 && answers[1] == 1;
++          params->ret = answers[0] == 1 && answers[1] == 0;
+         if (answers[0] + answers[1] != 1)
+           fprintf(stderr, "mullion: a sparse read's residency is neither by texel nor by tile here (%u, %u)\n", answers[0],
+                   answers[1]);

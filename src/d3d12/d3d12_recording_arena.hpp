@@ -29,24 +29,39 @@ public:
       VirtualFree(base, 0, MEM_RELEASE);
   }
 
-  // blocks are what the system gives address space in
+  // blocks are what the system gives address space in. the first `usable` bytes of it are handed out until Grow
   bool
-  Initialize() {
+  Initialize(size_t usable = kSize) {
     if (base)
       return true;
     SYSTEM_INFO system;
     GetSystemInfo(&system);
     block_ = system.dwAllocationGranularity;
     used_.assign(kSize / block_, false);
+    limit_ = std::clamp<size_t>(usable / block_, 1, used_.size());
     return (base = VirtualAlloc(nullptr, kSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
   }
 
-  // the first whole blocks in one piece that hold `bytes`
+  // how much of it from its start is handed out
+  size_t
+  Usable() {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    return limit_ * block_;
+  }
+
+  // hands out the first `usable` bytes, no fewer than it did
+  void
+  Grow(size_t usable) {
+    std::lock_guard<mullion::mutex> lock(mutex_);
+    limit_ = std::clamp<size_t>(usable / block_, limit_, used_.size());
+  }
+
+  // the first whole blocks in one piece that hold `bytes`, of those handed out
   std::optional<Run>
   Acquire(size_t bytes) {
     size_t count = std::max<size_t>(bytes + block_ - 1, block_) / block_;
     std::lock_guard<mullion::mutex> lock(mutex_);
-    for (size_t i = 0, free = 0; i < used_.size(); i++) {
+    for (size_t i = 0, free = 0; i < limit_; i++) {
       free = used_[i] ? 0 : free + 1;
       if (free == count) {
         std::fill_n(used_.begin() + (i + 1 - count), count, true);
@@ -63,7 +78,7 @@ public:
   }
 
 private:
-  size_t block_ = 0;
+  size_t block_ = 0, limit_ = 0;
   std::vector<bool> used_;
   mullion::mutex mutex_;
 };

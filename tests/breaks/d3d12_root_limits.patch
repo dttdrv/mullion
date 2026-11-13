@@ -1,12 +1,12 @@
 # rejects a root signature using exactly the legal DWORD budget
 --- a/src/d3d12/d3d12_root_signature.cpp
 +++ b/src/d3d12/d3d12_root_signature.cpp
-@@ -535,7 +535,7 @@
+@@ -535,7 +535,7 @@ public:
            break;
          }
          }
 -        if (!local && root_cost > D3D12_MAX_ROOT_COST)
 +        if (!local && root_cost >= D3D12_MAX_ROOT_COST)
-           return E_INVALIDARG;
+           return FAIL(E_INVALIDARG);
          if (parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
            bool is_normal_range = false, is_sampler_range = false;

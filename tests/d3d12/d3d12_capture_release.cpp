@@ -97,7 +97,7 @@ main() {
   HANDLE trace = FindFirstFileA((std::string(directory) + "\\*_F.1_*.gputrace").c_str(), &found);
   if (expect(trace != INVALID_HANDLE_VALUE, "no trace of frame 1 in %s", directory)) {
     FindClose(trace);
-    expect(holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
+    expect(trace_holds(std::string(directory) + "\\" + found.cFileName, event), "the trace has no group %s", event);
   }
   step("queue B, presenting after it");
   ResetEvent(gone);

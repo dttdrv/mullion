@@ -2,12 +2,12 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -3012,8 +3012,6 @@
+@@ -4143,8 +4143,6 @@ public:
      for (unsigned slot = 0; slot < vertex_buffers_.size(); slot++)
        if (sig->ResetVertexBuffers & (1u << slot))
          vertex_buffers_[slot] = {};
 -    if (sig->UpdateIndexBuffer)
 -      IASetIndexBuffer(nullptr);
      dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::VertexBuffer);
-     if (!cmd->draws)
-       return;
+   }
+ 

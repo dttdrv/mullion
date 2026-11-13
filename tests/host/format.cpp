@@ -16,5 +16,6 @@ main() {
     check(format("x", uint8_t(value), 'y'), "x" + std::to_string(value) + "y");
   }
   check(format('a', "b"), "ab");
+  std::printf("%s: %u wrong results\n", failures ? "failed" : "passed", failures);
   return failures != 0;
 }

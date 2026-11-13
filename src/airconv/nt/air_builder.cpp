@@ -661,6 +661,14 @@ AIRBuilder::CreateRead(
   assert(Texture.kind <= Texture::last_resource_kind);
   auto &TexInfo = TextureInfo[Texture.kind];
 
+  // D3D's sample 2i and 2i + 1 are the texture's i
+  if (Texture.Paired) {
+    auto Own = Texture;
+    Own.Paired = nullptr;
+    auto Index = builder.CreateSelect(Texture.Paired, builder.CreateLShr(SampleIndexOrCubeFace, 1), SampleIndexOrCubeFace);
+    return CreateRead(Own, Handle, Pos, ArrayIndex, Index, Level, DeviceCoherent);
+  }
+
   if (Texture.SingleSample) {
     auto Head = builder.GetInsertBlock();
     auto Fn = Head->getParent();
@@ -1000,6 +1008,14 @@ AIRBuilder::CreateTextureQuery(const Texture &Texture, Value *Handle, Texture::Q
   assert(Texture.kind <= Texture::last_resource_kind);
   auto &TexInfo = TextureInfo[Texture.kind];
 
+  if (Texture.Paired) {
+    auto Own = Texture;
+    Own.Paired = nullptr;
+    auto Value = CreateTextureQuery(Own, Handle, Query, Level);
+    return Query == Texture::num_samples ? builder.CreateShl(Value, builder.CreateZExt(Texture.Paired, getIntTy()))
+                                         : Value;
+  }
+
   if (Texture.SingleSample) {
     auto Head = builder.GetInsertBlock();
     auto Fn = Head->getParent();
@@ -1206,6 +1222,42 @@ AIRBuilder::CreateSamplePos(Value *SampleCount, Value *Index) {
 Value *
 AIRBuilder::CreateRasterizerSamplePos(Value *Index) {
   return CreateSamplePos(CenteredSamples ? getInt(0) : CreateGetNumSamples(), Index);
+}
+
+// D3D's sample 2i and 2i + 1 are Metal's i
+Value *
+AIRBuilder::CreateD3DSampleCount() {
+  return PairedSamples ? builder.CreateShl(CreateGetNumSamples(), 1) : CreateGetNumSamples();
+}
+
+Value *
+AIRBuilder::D3DSampleIndex(Value *Index) {
+  return PairedSamples ? builder.CreateShl(Index, 1) : Index;
+}
+
+Value *
+AIRBuilder::MetalSampleIndex(Value *Index) {
+  return PairedSamples ? builder.CreateLShr(Index, 1) : Index;
+}
+
+// each of Metal's covered samples covers both of D3D's: bit i to bits 2i and 2i + 1, of at most 4 samples
+Value *
+AIRBuilder::D3DCoverage(Value *Mask) {
+  if (!PairedSamples)
+    return Mask;
+  auto Spread = builder.CreateAnd(builder.CreateOr(Mask, builder.CreateShl(Mask, 2)), 0x33);
+  Spread = builder.CreateAnd(builder.CreateOr(Spread, builder.CreateShl(Spread, 1)), 0x55);
+  return builder.CreateOr(Spread, builder.CreateShl(Spread, 1));
+}
+
+// a Metal sample is written where either of its D3D samples is
+Value *
+AIRBuilder::MetalCoverage(Value *Mask) {
+  if (!PairedSamples)
+    return Mask;
+  auto Folded = builder.CreateAnd(builder.CreateOr(Mask, builder.CreateLShr(Mask, 1)), 0x55);
+  Folded = builder.CreateAnd(builder.CreateOr(Folded, builder.CreateLShr(Folded, 1)), 0x33);
+  return builder.CreateAnd(builder.CreateOr(Folded, builder.CreateLShr(Folded, 2)), 0x0f);
 }
 
 Value *

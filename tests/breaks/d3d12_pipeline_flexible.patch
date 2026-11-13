@@ -1,0 +1,15 @@
+# a specialization that keeps the factors of a target without blending.
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -761,10 +761,6 @@ CREATES(_MTLDevice_newSpecializedRenderPipeline)(void *obj) {
+       color.pixelFormat = to_metal_pixel_format(colors[i].pixel_format);
+       color.writeMask = (MTLColorWriteMask)colors[i].write_mask;
+       color.blendingState = colors[i].blending_enabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
+-      // a target without blending keeps Metal's own factors: one that a pixel shader blends itself (ShaderBlend) still
+-      // names its dual-source factors, which Metal 3 ignores and the specialization aborts on
+-      if (!colors[i].blending_enabled)
+-        continue;
+       color.rgbBlendOperation = (MTLBlendOperation)colors[i].rgb_blend_operation;
+       color.alphaBlendOperation = (MTLBlendOperation)colors[i].alpha_blend_operation;
+       color.sourceRGBBlendFactor = (MTLBlendFactor)colors[i].src_rgb_blend_factor;

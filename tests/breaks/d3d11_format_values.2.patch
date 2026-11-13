@@ -1,12 +1,12 @@
 # RGB9E5 is decoded as independent float11/float10 channels.
 --- a/src/mullion/mullion_format.cpp
 +++ b/src/mullion/mullion_format.cpp
-@@ -930,7 +930,7 @@
+@@ -943,7 +943,7 @@ MTLQueryDXGIFormat(WMT::Device device, uint32_t format, MTL_DXGI_FORMAT_DESC &de
      return E_FAIL;
    }
    case DXGI_FORMAT_R9G9B9E5_SHAREDEXP: {
 -    description.PixelFormat = WMTPixelFormatRGB9E5Float;
 +    description.PixelFormat = WMTPixelFormatRG11B10Float;
-     description.AttributeFormat = WMTAttributeFormatFloatRGB9E5;
      description.BytesPerTexel = 4;
      break;
+   }
