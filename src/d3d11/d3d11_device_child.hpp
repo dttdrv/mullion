@@ -127,9 +127,14 @@ public:
   }
 
   ULONG STDMETHODCALLTYPE Release() {
-    D3D11_ASSERT(m_refCount > 0u && "try to release a 0 reference object");
-    uint32_t refCount = --this->m_refCount;
-    if (unlikely(!refCount)) {
+    // a release the application has no reference for changes nothing: the count stays 0, so a later AddRef holds the
+    // object again (Wine's test_sample_attached_rtv releases its bound sampler twice, which Windows lets pass)
+    uint32_t refCount = this->m_refCount.load();
+    do {
+      if (unlikely(!refCount))
+        return 0;
+    } while (!this->m_refCount.compare_exchange_weak(refCount, refCount - 1));
+    if (unlikely(!--refCount)) {
       this->ReleasePrivate();
       this->m_parent->Release();
     }

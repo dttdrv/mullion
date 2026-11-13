@@ -308,5 +308,25 @@ main() {
       }
     }
   }
+  // a release without a reference: Wine's test_sample_attached_rtv releases its bound sampler twice and goes on, on
+  // Windows too. the context still holds the sampler, which a Get returns with a reference of its own
+  step("a bound sampler released twice");
+  ComPtr<ID3D11DeviceContext> context;
+  device->GetImmediateContext(&context);
+  D3D11_SAMPLER_DESC twice{D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_TEXTURE_ADDRESS_MIRROR, D3D11_TEXTURE_ADDRESS_MIRROR,
+                           D3D11_TEXTURE_ADDRESS_MIRROR, 0, 1, D3D11_COMPARISON_NEVER, {}, 0, 3};
+  ID3D11SamplerState *sampler = nullptr, *bound = nullptr;
+  CHECK(device->CreateSamplerState(&twice, &sampler));
+  context->PSSetSamplers(0, 1, &sampler);
+  expect(sampler->Release() == 0, "the first release leaves references");
+  sampler->Release();
+  context->PSGetSamplers(0, 1, &bound);
+  expect(bound == sampler, "the context holds another sampler");
+  if (bound) {
+    D3D11_SAMPLER_DESC got{};
+    bound->GetDesc(&got);
+    expect(got.MaxLOD == 3 && got.AddressU == D3D11_TEXTURE_ADDRESS_MIRROR, "the sampler's description is not its own");
+    expect(bound->Release() == 0, "the reference a Get gave is not the only one");
+  }
   return verdict();
 }
