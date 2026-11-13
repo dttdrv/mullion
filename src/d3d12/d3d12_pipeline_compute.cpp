@@ -21,6 +21,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pipeline.hpp"
 #include "DXBCParser/d3d12tokenizedprogramformat.hpp"
+#include "d3d12_deferred_pipeline.hpp"
 #include "log/log.hpp"
 #include <array>
 #include <limits>
@@ -38,6 +39,13 @@ public:
   MTLD3D12ComputePipelineStateImpl(MTLD3D12Device *pDevice) :
       MTLD3D12PipelineObject<MTLD3D12ComputePipelineState>(pDevice) {
     IsComputePipelineState = 1;
+  }
+
+  // a compile of its Metal pipeline that has not begun is dropped, and one under way finished, before the pipeline
+  // goes
+  ~MTLD3D12ComputePipelineStateImpl() {
+    if (deferred)
+      deferred->Cancel();
   }
 
   HRESULT
@@ -91,8 +99,23 @@ public:
       info.compute_function = cs_func;
       info.support_indirect_command_buffers = true;
 
-      pso = device_->Archived(info, err, [&](auto &info, auto &error) { return metal.newComputePipelineState(info, error); });
-      if (!pso) {
+      // a pipeline whose threadgroups work together is measured below (GroupsAtOnce), so it is made here
+      if (DeferredPipeline::Enabled() && !groups_work_together) {
+        // Metal's compile of it on a compile thread (DeferredPipeline), as a graphics pipeline's, through the program's
+        // pipeline archive (Archived); a failure there leaves `pso` null, and the dispatches of it are dropped. it holds
+        // the pipeline by pointer: the pipeline's destructor drops or finishes it (Cancel)
+        deferred = std::make_shared<DeferredPipeline>([self = this, info, cs_func]() {
+          WMT::Reference<WMT::Error> error;
+          auto device = self->device_;
+          if (!(self->pso = device->Archived(info, error, [&](auto &info, auto &error) {
+                  return device->GetMTLDevice().newComputePipelineState(info, error);
+                })))
+            ERR("Failed to create compute PSO of shader ", self->name, ": ", error.description().getUTF8String());
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = device_->Archived(info, err, [&](auto &info, auto &error) {
+                     return metal.newComputePipelineState(info, error);
+                   }))) {
         ERR("Failed to create compute PSO of shader ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->CS});
         return E_FAIL;

@@ -19,6 +19,7 @@
 #pragma once
 #include "d3d12.h"
 #include "d3d12_command_encoder.hpp"
+#include "d3d12_deferred_pipeline.hpp"
 #include "d3d12_descriptor_heap.hpp"
 #include "d3d12_device_interfaces.hpp"
 #include "d3d12_recording_arena.hpp"
@@ -542,6 +543,14 @@ public:
 class MTLD3D12GraphicsPipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::RenderPipelineState> pso;
+  // `pso` while a compile thread makes it (DeferredPipeline): a draw reads it after WaitPipeline
+  std::shared_ptr<DeferredPipeline> deferred;
+
+  void
+  WaitPipeline() {
+    if (deferred)
+      deferred->Wait();
+  }
   // the threads each patch takes in a tessellation pipeline's object stage; zero for ordinary pipelines
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
@@ -635,6 +644,13 @@ public:
 class MTLD3D12ComputePipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::ComputePipelineState> pso;
+  // `pso` while a compile thread makes it (DeferredPipeline): a dispatch reads it after WaitPipeline
+  std::shared_ptr<DeferredPipeline> deferred;
+  void
+  WaitPipeline() {
+    if (deferred)
+      deferred->Wait();
+  }
   WMTSize threadgroup_size;
   // see MTL_SHADER_REFLECTION::GroupsWorkTogether and DeviceAtomics64
   bool groups_work_together = false;

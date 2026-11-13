@@ -27,6 +27,9 @@ main(int argc, char **argv) {
     return printf("failed: no temporary directory\n"), 1;
   SetEnvironmentVariableA("MULLION_SHADER_CACHE", "1");
   SetEnvironmentVariableA("MULLION_SHADER_CACHE_PATH", unix_name(wide));
+  // the calls counted are a creation's own: its Metal pipeline is made at the create call here, not on a compile
+  // thread, whose pipelines d3d12_deferred_pipelines has
+  SetEnvironmentVariableA("MULLION_D3D12_DEFER_PIPELINES", "0");
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");
