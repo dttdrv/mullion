@@ -671,9 +671,12 @@ protected:
   mullion::mutex render_targets_mutex_;
   // the pixel shader made again when first needed: counting pipeline statistics, with its depth and stencil tests
   // after it (an occlusion query and the depth bounds test of a GPU without one), of coarse pixels (variable rate
-  // shading), or blending only the targets a pass binds, as Metal refuses a pipeline whose shader reads a target it has
-  // no format for
-  std::function<WMT::Reference<WMT::Function>(bool statistics, bool late, bool coarse, uint32_t blends, bool depth)>
+  // shading), blending only the targets a pass binds, as Metal refuses a pipeline whose shader reads a target it has
+  // no format for, or with the depth it outputs for a pass that has depth (`depth`) and without it for one that has
+  // none (`bare`)
+  std::function<WMT::Reference<WMT::Function>(
+      bool statistics, bool late, bool coarse, uint32_t blends, bool depth, bool bare
+  )>
       pixel_shader_;
   std::unordered_map<uint32_t, WMT::Reference<WMT::Function>> pixel_shaders_;
   // the targets the pixel shader blends itself (ShaderBlend)
@@ -1699,7 +1702,7 @@ public:
           [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
            signature = Com<MTLD3D12RootSignature, false>(static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)),
            data_ps, common,
-           ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth) mutable {
+           ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth, bool bare) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
             MTL_SHADER_REFLECTION reflection;
@@ -1710,8 +1713,8 @@ public:
             data.late_tests = late;
             data.coarse_shading = coarse;
             // Metal refuses a pipeline whose shader outputs depth without a depth format: the shader's depth is kept
-            // only for a variant that has one (RenderTargets)
-            data.disable_depth_output &= !depth;
+            // only for a variant that has one (RenderTargets), and a draw without a depth stencil view goes without
+            data.disable_depth_output = bare || (data.disable_depth_output && !depth);
             for (unsigned i = 0; i < std::size(data.blend); i++)
               if (!(blends >> i & 1))
                 data.blend[i] = {};
@@ -1719,7 +1722,8 @@ public:
             SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
             auto arguments = RootSignature(rootsig, signature.ptr(), &data);
             auto name =
-                ps_name + "_" + std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11);
+                ps_name + "_" +
+                std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11 | bare << 12);
             return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, name.c_str(),
                                    [&shader](auto args, auto name, auto bitcode, auto error) {
                                      return SM50Compile(shader, args, name, bitcode, error);
@@ -2059,10 +2063,14 @@ public:
           // a pipeline of any depth stencil format was converted without the depth its shader outputs, which a
           // variant with the view's depth keeps
           bool depth = any_format && (DSVPlanar & 1) && ref_ps.PixelShader.DepthOutput;
+          // a pipeline of a depth format drawn without a depth stencil view: the depth its shader outputs goes
+          // nowhere, as with no depth buffer bound in Direct3D
+          bool bare = !(DSVPlanar & 1) && info.depth_pixel_format != WMTPixelFormatInvalid &&
+                      ref_ps.PixelShader.DepthOutput;
           if (auto blends = blend_mask_ & Mask;
-              pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth)) {
-            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11];
-            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends, depth)))
+              pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth || bare)) {
+            auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11 | bare << 12];
+            if (!ps && !(ps = pixel_shader_(Statistics, late, Coarse, blends, depth, bare)))
               return WMT::Reference<WMT::RenderPipelineState>{};
             info.fragment_function = ps;
           }
