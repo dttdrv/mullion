@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/mullion-dark.svg">
+  <img src="docs/mullion.svg" width="88" alt="">
+</picture>
+
 # Mullion
 
 Mullion translates Direct3D 10, 11 and 12 to Metal, so Windows games run on Apple silicon Macs through Wine. It is free
