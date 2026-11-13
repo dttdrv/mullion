@@ -1,4 +1,4 @@
-// contract: on Metal 4, pipelines that differ only in their targets' formats, write masks and blending compile Metal
+// contract: on Metal 4 with MULLION_D3D12_FLEXIBLE=1, pipelines that differ only in their targets' formats, write masks and blending compile Metal
 // once; each other one is a specialization of that compile ("Flexible render pipeline states: compile most of the
 // shader ahead of time and optionally compile other parts once your app knows those details", Apple, Using the
 // Metal 4 compilation API). control: an integer target changes what the pixel shader outputs (D3D11.3 16.6), so it is
@@ -34,6 +34,9 @@ main(int argc, char **argv) {
     return printf("failed: no temporary directory\n"), 1;
   SetEnvironmentVariableA("MULLION_SHADER_CACHE", "1");
   SetEnvironmentVariableA("MULLION_SHADER_CACHE_PATH", unix_name(wide));
+  SetEnvironmentVariableA("MULLION_D3D12_FLEXIBLE", "1");
+  // the counts are taken around the create call
+  SetEnvironmentVariableA("MULLION_D3D12_DEFER_PIPELINES", "0");
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");

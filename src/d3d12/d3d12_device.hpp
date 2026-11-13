@@ -720,7 +720,7 @@ public:
   virtual void PipelineArchived() = 0;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
-  // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=0 turns them off): one pipeline of each state but its targets'
+  // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=1 turns them on): one pipeline of each state but its targets'
   // formats, write masks and blending, compiled once while a pipeline holds it, and its specializations to those
   struct Flexible {
     WMT::Reference<WMT::RenderPipelineState> unspecialized;

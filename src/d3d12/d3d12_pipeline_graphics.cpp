@@ -694,8 +694,10 @@ protected:
   WMT::Reference<WMT::RenderPipelineState>
   MetalPipeline(const WMTRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
     auto &flexible = device_->flexible;
+    // off unless asked for: on macOS 27.3 a specialization gives the fragment stage no primitive id (d3d12_primitiveid),
+    // and d3d12_psout, d3d12_format_values and d3d12_rayquery fail through it too
     std::call_once(flexible.checked, [&] {
-      flexible.enabled = env::getEnvVar("MULLION_D3D12_FLEXIBLE") != "0" && device_->UsesMetal4();
+      flexible.enabled = env::getEnvVar("MULLION_D3D12_FLEXIBLE") == "1" && device_->UsesMetal4();
     });
     if (!flexible.enabled)
       return device_->Archived(info, error, [&](auto &info, auto &error) {
