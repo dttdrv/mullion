@@ -1,6 +1,8 @@
 // contract: occlusion queries count the samples that pass while they run, binary ones say whether any did, across
 // render passes and while other queries overlap them; timestamps read the GPU clock in order, inside the window the
-// queue's clock calibration brackets. results resolve into a buffer from a later command list. the draws fill
+// queue's clock calibration brackets, also the first three of a list that ends each in a render pass of its own:
+// Metal samples a pass at an index of its command buffer, and a pass must not write at another's. results resolve
+// into a buffer from a later command list. the draws fill
 // scissor rectangles of a one-sample target, so each count is an area. a query ended, begun and ended again before a
 // resolve holds its second count, however long the first took to sum. resolved as binary occlusion queries, the same
 // queries write 0 or 1, whether they counted or not: "The least significant bit is either 0 ... or 1 ... The rest of
@@ -92,6 +94,36 @@ main(int argc, char **argv) {
 
   D3D12_VIEWPORT viewport{0, 0, (float)size, (float)size, 0, 1};
   const float black[4] = {};
+
+  // a list of its own, run first: three timestamps, each ended in a render pass that a clear then ends, so they are
+  // the first three sampled passes of a command buffer
+  enum { Opening = 3 };
+  ComPtr<ID3D12QueryHeap> opening_heap;
+  D3D12_QUERY_HEAP_DESC opening_desc{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, Opening};
+  CHECK(device->CreateQueryHeap(&opening_desc, IID_PPV_ARGS(&opening_heap)));
+  auto opening_results =
+      buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, Opening * sizeof(UINT64), D3D12_RESOURCE_STATE_COPY_DEST);
+  ComPtr<ID3D12CommandAllocator> opening_allocator;
+  ComPtr<ID3D12GraphicsCommandList> opening;
+  CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&opening_allocator)));
+  CHECK(device->CreateCommandList(
+      0, D3D12_COMMAND_LIST_TYPE_DIRECT, opening_allocator.Get(), pso.Get(), IID_PPV_ARGS(&opening)
+  ));
+  const D3D12_RECT whole{0, 0, (LONG)size, (LONG)size};
+  for (UINT q = 0; q < Opening; q++) {
+    opening->SetGraphicsRootSignature(rs.Get());
+    opening->RSSetViewports(1, &viewport);
+    opening->RSSetScissorRects(1, &whole);
+    opening->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    opening->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    opening->DrawInstanced(3, 1, 0, 0);
+    opening->EndQuery(opening_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, q);
+    opening->ClearRenderTargetView(rtv, black, 0, nullptr);
+  }
+  opening->ResolveQueryData(opening_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, Opening, opening_results.Get(), 0);
+  UINT64 opened, opened_cpu;
+  CHECK(queue->GetClockCalibration(&opened, &opened_cpu));
+  CHECK(submit(device.Get(), queue.Get(), opening.Get()));
   auto bind = [&] {
     list->SetGraphicsRootSignature(rs.Get());
     list->RSSetViewports(1, &viewport);
@@ -195,6 +227,16 @@ main(int argc, char **argv) {
     if (t[i - 1] > t[i] && failures++ < 8)
       printf("timestamp %u is %llu, after %llu\n", i, t[i], t[i - 1]);
   results->Unmap(0, nullptr);
+  const UINT64 *opened_at;
+  CHECK(opening_results->Map(0, nullptr, (void **)&opened_at));
+  if (!(opened <= opened_at[0] && opened_at[Opening - 1] <= before) && ++failures)
+    printf("the first list's timestamps %llu to %llu not inside %llu to %llu\n", opened_at[0], opened_at[Opening - 1], opened,
+           before);
+  for (UINT i = 1; i < Opening; i++)
+    if (opened_at[i - 1] > opened_at[i] && ++failures)
+      printf("the first list's timestamp %u is %llu, before the %llu of the one ahead of it\n", i, opened_at[i],
+             opened_at[i - 1]);
+  opening_results->Unmap(0, nullptr);
 
   // queues 1 and 2 wait for a fence with lists behind it that each end a query, all but one of Metal's buffers
   // between them; queue 0 then runs lists that end one each, and the fence is signalled after them
