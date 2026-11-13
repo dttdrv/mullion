@@ -532,6 +532,15 @@ sample_positions(id descriptor, const struct WMTRenderPassInfo *info) {
   [descriptor setSamplePositions:positions count:count];
 }
 
+// whether a render pass samples both ends of both its stages, vertex then fragment: four indices from its start. a
+// pass sampled only at its end has a start of MTLCounterDontSample, which no count is taken from: as a number it is
+// all ones, and index 2 would be four from it
+static bool
+SamplesVertexStage(const struct WMTSampleBufferAttachmentInfo *sample) {
+  return sample->start_of_encoder_sample_index != MTLCounterDontSample &&
+         sample->end_of_encoder_sample_index - sample->start_of_encoder_sample_index + 1 == WMTRenderTimestampSamples;
+}
+
 static NTSTATUS
 renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *sample) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
@@ -589,8 +598,7 @@ renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *samp
 
   if (sample) {
     MTLRenderPassSampleBufferAttachmentDescriptor *samples = descriptor.sampleBufferAttachments[0];
-    bool vertex = sample->start_of_encoder_sample_index != MTLCounterDontSample &&
-        sample->end_of_encoder_sample_index - sample->start_of_encoder_sample_index + 1 == WMTRenderTimestampSamples;
+    bool vertex = SamplesVertexStage(sample);
     samples.sampleBuffer = (id<MTLCounterSampleBuffer>)sample->sample_buffer;
     samples.startOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index : MTLCounterDontSample;
     samples.endOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index + 1 : MTLCounterDontSample;
@@ -5803,7 +5811,7 @@ API_AVAILABLE(macos(26.0)) metal4_begin_samples(
   if (state->samples.sample_buffer && state->samples.start_of_encoder_sample_index != MTLCounterDontSample) {
     uint64_t first = state->samples.start_of_encoder_sample_index;
     if (state->render) {
-      bool vertex = state->samples.end_of_encoder_sample_index - first + 1 == WMTRenderTimestampSamples;
+      bool vertex = SamplesVertexStage(&state->samples);
       if (vertex)
         [(id<MTL4RenderCommandEncoder>)state->encoder
             writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
@@ -5990,8 +5998,7 @@ _MTL4CommandEncoder_endEncoding(void *obj) {
       return STATUS_SUCCESS;
     if (state->samples.sample_buffer) {
       if (state->render) {
-        if (state->samples.end_of_encoder_sample_index - state->samples.start_of_encoder_sample_index + 1 ==
-            WMTRenderTimestampSamples)
+        if (SamplesVertexStage(&state->samples))
           [(id<MTL4RenderCommandEncoder>)state->encoder
               writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
                                  afterStage:MTLRenderStageVertex
