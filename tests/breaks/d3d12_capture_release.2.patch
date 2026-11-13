@@ -1,0 +1,14 @@
+# a queue made after the last one went captures the frame again.
+diff --git a/src/mullion/mullion_capture.cpp b/src/mullion/mullion_capture.cpp
+--- a/src/mullion/mullion_capture.cpp
++++ b/src/mullion/mullion_capture.cpp
+@@ -118,8 +118,7 @@
+   if (--capture.holds)
+     return;
+   if (capture.state == State::Capturing) {
+-    capture.state = State::Idle;
+-    capture.next_capture_frame = 0;
++    capture.state = State::WillCapture;
+     WMT::CaptureManager::sharedCaptureManager().stopCapture();
+   }
+   if (capture.stopping_.joinable())

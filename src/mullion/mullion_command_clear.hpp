@@ -22,6 +22,8 @@
 #include "mullion_command_context.hpp"
 #include "mullion_format.hpp"
 #include <bit>
+#include <cmath>
+#include <limits>
 
 namespace mullion {
 
@@ -100,6 +102,20 @@ public:
       for (unsigned i = 0; i < 4; i++)
         values[i] = write == UIntClearWrite::Float ? std::bit_cast<float>(color[i]) : float(color[i] & ones[i]) / ones[i];
       return begin(values, texture, view);
+    }
+    if (write == UIntClearWrite::SmallFloat) {
+      // an unsigned float of a 5-bit exponent (bias 15) and `m` bits of mantissa, which Metal stores back as these bits
+      // but for a NaN's payload: Direct3D 12 writes a clear with a NaN before this, with a blit (BlitNaNClear)
+      auto decode = [](uint32_t bits, int m) {
+        uint32_t e = bits >> m, mantissa = bits & ((1u << m) - 1);
+        if (e == 31)
+          return mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+        return e ? std::ldexp(float(mantissa | 1u << m), int(e) - 15 - m) : std::ldexp(float(mantissa), -14 - m);
+      };
+      return begin(
+          std::array<float, 4>{decode(color[0] & 0x7ff, 6), decode(color[1] & 0x7ff, 6), decode(color[2] & 0x3ff, 5), 1.0f},
+          texture, view
+      );
     }
 
     clearing_texture_ = texture;

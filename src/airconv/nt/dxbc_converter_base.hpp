@@ -661,10 +661,14 @@ public:
     Texture.kind = Descriptor.ResourceKind;
     Texture.memory_access = Descriptor.MemoryAccess;
     Texture.sample_type = Descriptor.SampleType;
-    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms)
+    if (llvm::air::AIRBuilder::getTextureInfo(Texture.kind).is_ms) {
       Texture.SingleSample = ir.CreateICmpNE(
           ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE), ir.getInt64(0)
       );
+      Texture.Paired = ir.CreateICmpNE(
+          ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED), ir.getInt64(0)
+      );
+    }
     Texture.Unbound = ir.CreateICmpNE(ir.CreateAnd(Descriptor.Metadata, SM50_TEXTURE_METADATA_UNBOUND), ir.getInt64(0));
     return {
         Texture,
@@ -678,11 +682,16 @@ public:
     };
   }
 
-  // a multisample texture's sample offset: the pattern of no samples places every one at the center
+  // a multisample texture's sample offset, of D3D's count and index: the pattern of no samples places every one at
+  // the center, and paired samples are the texture's half as many
   llvm::Value *
   TextureSamplePos(const TextureResourceHandle &Tex, llvm::Value *Samples, llvm::Value *Index) {
     auto Centered =
         ir.CreateICmpNE(ir.CreateAnd(Tex.Metadata, SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED), ir.getInt64(0));
+    if (Tex.Texture.Paired) {
+      Samples = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Samples, 1), Samples);
+      Index = ir.CreateSelect(Tex.Texture.Paired, ir.CreateLShr(Index, 1), Index);
+    }
     return air.CreateSamplePos(ir.CreateSelect(Centered, ir.getInt32(0), Samples), Index);
   }
 
@@ -733,8 +742,10 @@ public:
   // a mesh threadgroup's group of workloads, `First` to `End`: its vertex `ThreadIndex`'s domain location, whether
   // the group has it, and whether every thread of the SIMD group has one; and its primitives, which all its threads
   // make together, `Lane` being each one's
-  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
-  DomainGetGroupLocation(llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *DataPtr);
+  llvm::Value *DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Value *Lane, llvm::Value *DataPtr);
+  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *> DomainGetGroupLocation(
+      llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *Layout, llvm::Value *DataPtr
+  );
   void DomainGenerateGroup(
       llvm::Value *First, llvm::Value *End, llvm::Value *DataPtr, TessellatorOutputPrimitive Primitive,
       llvm::Value *Behind, llvm::Value *Lane
@@ -776,8 +787,11 @@ public:
       BufferResourceHandle &Buffer, llvm::Value *Base, llvm::Value *Last, uint32_t UnitBytes,
       llvm::function_ref<llvm::Value *(llvm::Value *, bool)> Read
   );
+  // Within, when given, bounds the whole load in place of each word's own bound (InstLoadStructured), and Index is at
+  // the view's start where it fails
   void LoadBufferWords(
-      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+      BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+      llvm::Value *Within = nullptr
   );
 
   llvm::Value * CreateGEPInt32WithBoundCheck(AtomicBufferResourceHandle &Buffer, llvm::Value* Index);

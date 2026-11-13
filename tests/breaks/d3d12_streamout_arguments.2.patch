@@ -1,9 +1,9 @@
 # enhanced stream-output barriers leave the writer in the render pass
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -3566,7 +3566,7 @@
-   void STDMETHODCALLTYPE
-   Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) {
+@@ -5159,7 +5159,7 @@ public:
+       return;
+     }
      constexpr auto uav = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, draw_writes = uav | D3D12_BARRIER_ACCESS_RENDER_TARGET |
 -                       D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE | D3D12_BARRIER_ACCESS_STREAM_OUTPUT;
 +                       D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;

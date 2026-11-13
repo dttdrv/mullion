@@ -434,8 +434,13 @@ void main(uint3 id : SV_DispatchThreadID) {
         }
         if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
           for (UINT count = 0; count <= D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT + 1; ++count) {
+            // of the device that makes the texture: the Direct3D 10 one, of feature level 10_0, need not have the 8
+            // samples a feature level 11_0 device has whatever the GPU
             UINT qualities = 0;
-            device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, count, &qualities);
+            if (route == 10)
+              device10->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, count, &qualities);
+            else
+              device->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, count, &qualities);
             for (UINT quality :
                  {0u, qualities, qualities + 1, UINT(D3D11_STANDARD_MULTISAMPLE_PATTERN),
                   UINT(D3D11_CENTER_MULTISAMPLE_PATTERN)}) {

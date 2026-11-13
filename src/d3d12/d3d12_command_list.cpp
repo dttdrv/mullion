@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <bit>
 #include <functional>
 #include "d3d12_command_allocator.hpp"
 #include "d3d12_acceleration_structure.hpp"
@@ -264,10 +265,14 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // the overlap of a pass a draw or dispatch just began, after the passes before it are in the list
   void
   Overlap(EncoderData *pass, std::span<const Texture *const> targets) {
-    bool follows = plain_pass_ && allocator_->encoder_last == plain_pass_ && order_serial_ == plain_serial_;
+    // a list's first pass with nothing before it follows the last pass of the list before, whose targets it may share
+    // ("the second command list (D) may begin executing work before all work from the first (C) has finished",
+    // ID3D12CommandQueue::ExecuteCommandLists): Close orders it where that pass does not end its list
+    bool first = !plain_pass_ && allocator_->encoder_last == entry && !order_serial_;
+    bool follows = first || (plain_pass_ && allocator_->encoder_last == plain_pass_ && order_serial_ == plain_serial_);
     if (!follows)
       overlap_targets_.clear();
-    bool shared = std::ranges::any_of(targets, [&](auto texture) {
+    bool shared = first || std::ranges::any_of(targets, [&](auto texture) {
       return texture && std::ranges::find(overlap_targets_, texture) != overlap_targets_.end();
     });
     pass->overlap = !follows ? PassOverlap::Ordered : shared ? PassOverlap::Shared : PassOverlap::Independent;
@@ -440,7 +445,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       draw.threads = draw.step == 1 ? device_->GetSIMDWidth() : 1;
     if (predication_region_)
       draw.skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
     auto [result, result_offset] =
         allocator_->AllocateGPUHeap(sizeof(PipelineStatisticsResult), alignof(PipelineStatisticsResult));
     if (allocator_->records_)
@@ -463,7 +468,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     vertices *= instances;
     if (predication_region_) {
       auto skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
       predicated_statistics_.push_back({vertices, primitives, 0, skips});
       return;
     }
@@ -508,13 +513,25 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     uint32_t word, value, skipped;
   };
   std::vector<PredicatedWord> predicated_;
-  uint32_t *predication_region_ = nullptr;
+  // a region's header, which its kernel reads (mullion_command.metal, PredicationRegion)
+  struct PredicationRegion {
+    uint32_t count, views, skip_if_zero, skips;
+    uint64_t entries;
+    MTLD3D12CommandAllocatorImpl::ArgumentsView view[MTLD3D12CommandAllocatorImpl::kArgumentsViews];
+  };
+  // the kernel's header has room for seven
+  static_assert(std::size(PredicationRegion{}.view) <= 7);
+  PredicationRegion *predication_region_ = nullptr;
   EncoderData *predication_pass_ = nullptr;
 
   void
   EndPredication() {
     if (!predication_region_)
       return;
+    // what says whether the region was skipped is a word of the region's as the others are
+    predicated_.push_back(
+        {uint32_t((reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_)) / 4), 0, 1}
+    );
     auto [mapped, offset] = allocator_->AllocateGPUHeap(predicated_.size() * sizeof(PredicatedWord), 4);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(
@@ -522,8 +539,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       );
     if (mapped)
       memcpy(mapped, predicated_.data(), predicated_.size() * sizeof(PredicatedWord));
-    predication_region_[0] = predicated_.size();
-    predication_region_[1] = offset / 4;
+    predication_region_->count = predicated_.size();
+    predication_region_->entries = allocator_->gpu_heap_buffer_address_ + offset;
+    // the list may have gone on in another buffer since the region began (MTLD3D12CommandAllocatorImpl::Allocate),
+    // and what reads a word reads it through the buffer the list was in then: the kernel writes it through each
+    predication_region_->views = allocator_->ArgumentsViews(predication_region_->view);
     predication_region_ = nullptr;
     predicated_.clear();
   }
@@ -540,7 +560,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       allocator->InvalidateCurrentPass();
       predicate = allocator->AllocatePass<PredicateEncoderData>();
       predicate->type = EncoderType::Predicate;
-      predicate->skips = list->predication_region_ + 3;
+      predicate->skips = &list->predication_region_->skips;
       allocator->InvalidateCurrentPass();
     }
 
@@ -782,6 +802,7 @@ public:
     clears_.clear();
     markers_.clear();
     plain_pass_ = nullptr;
+    order_serial_ = 0;
     overlap_targets_.clear();
     named_.clear();
     hoisted_ = nullptr;
@@ -851,6 +872,13 @@ public:
     SumOcclusion();
     SumStatistics();
     EndPredication();
+    // the next list of the call follows this one's last pass as a pass of this list would (Overlap), or a pass that
+    // encodes nothing orders it after all before
+    auto last = allocator_->encoder_current ? allocator_->encoder_current : allocator_->encoder_last;
+    if (!plain_pass_ || last != plain_pass_ || order_serial_ != plain_serial_) {
+      allocator_->InvalidateCurrentPass();
+      allocator_->AllocatePass<EncoderData>()->type = EncoderType::Null;
+    }
     HRESULT hr = allocator_->EndRecord(&encoder_count);
     recorded_on = allocator_.ptr();
     if (SUCCEEDED(recording_error_))
@@ -1128,6 +1156,7 @@ public:
       unsigned render_target_width = 16384, render_target_height = 16384, render_target_array_length = 0;
 
       unsigned effective_rtvs = 0, samples = 0;
+      bool paired = false;
       render_serial_ = barrier_serial_;
       targets_pass_ = render;
       targets_.fill(nullptr);
@@ -1141,6 +1170,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_[i] = AttachmentDesc.Texture;
         auto &rt = render->colors[i];
         rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
@@ -1157,6 +1187,7 @@ public:
         if (AttachmentDesc.Texture->centered || pso_graphics_->forced_sample_count == 1)
           render->programmed_samples = AttachmentDesc.Texture->sampleCount();
         samples = AttachmentDesc.Texture->sampleCount();
+        paired = AttachmentDesc.Texture->paired;
         targets_.back() = AttachmentDesc.Texture;
         auto dsv_planar_flags =
             DepthStencilPlanarFlags(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View)) & pso_graphics_->dsv_mask;
@@ -1189,10 +1220,12 @@ public:
       render->render_target_width = render_target_width;
       render->render_target_height = render_target_height;
       render->render_target_array_length = render_target_array_length;
-      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined
-      if (programmed_samples_ && programmed_samples_ == samples) {
-        render->programmed_samples = programmed_samples_;
-        render->sample_positions = sample_positions_;
+      // SetSamplePositions' pattern is for targets of its sample count; with others what the draws sample is undefined.
+      // paired samples lie where the even ones of their pairs do
+      if (programmed_samples_ && programmed_samples_ == samples << paired) {
+        render->programmed_samples = samples;
+        for (unsigned i = 0; i < samples; i++)
+          render->sample_positions[i] = sample_positions_[i << paired];
       }
       if (effective_rtvs == 0) {
         render->default_raster_sample_count = std::max(1u, pso_graphics_->forced_sample_count);
@@ -1625,6 +1658,7 @@ public:
   // for each that only counts
   WMT::RenderPipelineState
   Pipeline(bool counting = false) {
+    pso_graphics_->WaitPipeline();
     bool strip = Strip(topology_);
     if (PassesAdjacency() || pso_graphics_->patches)
       return RenderTargets(pso_graphics_->TopologyPipeline(topology_, counting));
@@ -1969,6 +2003,10 @@ public:
     }
     if (!pso_compute_)
         return false;
+    // a pipeline whose Metal compile failed on a compile thread dispatches nothing
+    pso_compute_->WaitPipeline();
+    if (!pso_compute_->pso)
+      return false;
 
     if (dirty_state_.test(DirtyState::ComputePipelineState)) {
       auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
@@ -2035,7 +2073,7 @@ public:
     uint64_t threads = uint64_t(X) * Y * Z * group.width * group.height * group.depth;
     if (predication_region_ && !active_statistics_.empty()) {
       auto skips = allocator_->gpu_heap_buffer_address_ +
-                   (reinterpret_cast<char *>(predication_region_ + 3) - static_cast<char *>(allocator_->gpu_heap_));
+                   (reinterpret_cast<char *>(&predication_region_->skips) - static_cast<char *>(allocator_->gpu_heap_));
       predicated_statistics_.push_back({0, 0, threads, skips});
     } else {
       for (auto &[_, sum] : active_statistics_)
@@ -3290,6 +3328,64 @@ public:
     return true;
   }
 
+  // a uint clear that gives an RG11B10Float texture without an integer view (PopulateWMTTextureInfo) a NaN: Metal
+  // stores every NaN a kernel writes as one pattern (ClearUAV, UIntClearWrite::SmallFloat), and a blit from a buffer
+  // stores the clear's bits as they are. rows of the texel, as many as kBytes hold, go over each rectangle
+  bool
+  BlitNaNClear(
+      const UAVTextureCPUStorage &View, const std::array<uint32_t, 4> &Color, UINT RectCount, const D3D12_RECT *pRects
+  ) {
+    auto texture = View.texture;
+    auto nan = [](uint32_t bits, unsigned mantissa) {
+      return (bits >> mantissa & 31) == 31 && (bits & ((1u << mantissa) - 1));
+    };
+    if (texture->pixelFormat(View.view) != WMTPixelFormatRG11B10Float ||
+        (texture->usage() & WMTTextureUsagePixelFormatView) ||
+        !(nan(Color[0], 6) || nan(Color[1], 6) || nan(Color[2], 5)))
+      return false;
+    auto type = texture->textureType(View.view);
+    bool volume = type == WMTTextureType3D;
+    if (!volume && type != WMTTextureType2D && type != WMTTextureType2DArray)
+      return false;
+    const uint32_t texel = decltype(allocator_->clear_uav_)::clearColor(Color, WMTPixelFormatRG11B10Float)[0];
+    const int64_t width = texture->width(View.view), height = texture->height(View.view);
+    // a 3D texture's W slices, or the view's array slices
+    const uint32_t first = volume ? View.first_slice : uint32_t(View.view.array_start),
+                   count = !volume ? texture->arrayLength(View.view)
+                                   : View.slice_count ? View.slice_count : texture->depth(View.view);
+    constexpr int64_t kBytes = 65536;
+    D3D12_RECT whole{0, 0, LONG(width), LONG(height)};
+    for (auto &rect : RectCount ? std::span(pRects, RectCount) : std::span(&whole, 1)) {
+      const int64_t left = std::max<int64_t>(rect.left, 0), top = std::max<int64_t>(rect.top, 0),
+                    right = std::min<int64_t>(rect.right, width), bottom = std::min<int64_t>(rect.bottom, height);
+      if (right <= left || bottom <= top)
+        continue;
+      const int64_t wide = right - left, rows = std::min(bottom - top, std::max<int64_t>(kBytes / (wide * 4), 1));
+      auto [mapped, offset] = allocator_->AllocateGPUHeap(wide * rows * sizeof(texel), alignof(uint32_t));
+      if (!mapped)
+        return false;
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(mapped, wide * rows * sizeof(texel), "NaN clear texels");
+      std::fill_n(static_cast<uint32_t *>(mapped), wide * rows, texel);
+      PreBlit();
+      for (uint32_t slice = first; slice < first + count; slice++)
+        for (int64_t y = top; y < bottom; y += rows) {
+          auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
+          copy.type = WMTBlitCommandCopyFromBufferToTexture;
+          copy.src = allocator_->gpu_heap_buffer_;
+          copy.src_offset = offset;
+          copy.bytes_per_row = wide * sizeof(texel);
+          copy.bytes_per_image = wide * rows * sizeof(texel);
+          copy.size = {uint64_t(wide), uint64_t(std::min(rows, bottom - y)), 1};
+          copy.dst = texture->current()->texture();
+          copy.level = View.view.mip_start;
+          copy.slice = volume ? 0 : slice;
+          copy.origin = {uint64_t(left), uint64_t(y), volume ? slice : 0};
+        }
+    }
+    return true;
+  }
+
   // the clear's kernel joins the open compute pass (share_compute_), and the list's next dispatch binds its own
   // pipeline and arguments again
   struct SharedComputePass {
@@ -3331,6 +3427,9 @@ public:
     }
     if (Descriptor.type == ShaderVisibleDescriptorType::UAVBuffer &&
         FillBufferClear(Descriptor.UAVBuffer, color[0], RectCount, pRects))
+      return;
+    if (Descriptor.type == ShaderVisibleDescriptorType::UAVTexture &&
+        BlitNaNClear(Descriptor.UAVTexture, color, RectCount, pRects))
       return;
     SharedComputePass shared(this);
     D3D12_RECT full_rect;
@@ -3677,14 +3776,14 @@ public:
     if (!pBuffer)
       return;
     StartComputePass();
-    auto [mapped, offset] = allocator_->AllocateGPUHeap(4 * sizeof(uint32_t), 4);
+    auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(PredicationRegion), alignof(PredicationRegion));
     if (allocator_->records_) {
-      allocator_->RecordGPUHeap(mapped, 4 * sizeof(uint32_t), "predicate header", 3 * sizeof(uint32_t), sizeof(uint32_t));
+      allocator_->RecordGPUHeap(mapped, sizeof(PredicationRegion), "predicate header", offsetof(PredicationRegion, skips),
+                                sizeof(uint32_t));
       predication_pass_ = allocator_->encoder_current;
     }
-    predication_region_ = static_cast<uint32_t *>(mapped);
-    predication_region_[0] = predication_region_[1] = predication_region_[3] = 0;
-    predication_region_[2] = Op == D3D12_PREDICATION_OP_EQUAL_ZERO;
+    predication_region_ = new (mapped) PredicationRegion{};
+    predication_region_->skip_if_zero = Op == D3D12_PREDICATION_OP_EQUAL_ZERO;
     auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
     cmd_setpso.type = WMTComputeCommandSetPSO;
     cmd_setpso.pso = device_->predicate;
@@ -3692,7 +3791,6 @@ public:
     const std::pair<obj_handle_t, uint64_t> buffers[] = {
         {static_cast<MTLD3D12Resource *>(pBuffer)->buffer->current()->buffer(), AlignedBufferOffset},
         {allocator_->gpu_heap_buffer_, offset},
-        {allocator_->gpu_heap_buffer_, 0},
     };
     for (uint8_t i = 0; i < std::size(buffers); i++) {
       auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
@@ -3901,8 +3999,11 @@ public:
       auto [first, step] = get_primitive_vertex_count(topology_);
       statistics_cuts = step != first && pso_graphics_->strip_cut != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
     }
+    // a count buffer and predication change the count on the GPU, and an indexed signature's extras add to it
+    bool runs_max_count =
+        !CountBufferAddress && !predication_region_ && sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
     auto cmd = allocator_->EncodeIndirectRenderCommand(sig, pso_graphics_.ptr(), Pipeline(), MaxCommandCount,
-                                                       tessellation, statistics_cuts);
+                                                       tessellation, statistics_cuts, runs_max_count);
     ForgetBuffers();
     cmd->statistics = statistics;
     cmd->pixel_statistics = pixel_statistics;
@@ -4024,6 +4125,10 @@ public:
           );
         EncodeBuffer(stage, at + offsetof(IndirectMeshDraw, arguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       }
+      // a geometry stage adds its counts to its command's, as a direct draw's does (CountDraw)
+      if (cmd->statistics)
+        EncodeBuffer(WMTRenderCommandSetMeshBuffer, cmd->statistics - heap + i * sizeof(PipelineStatisticsResult),
+                     SM50_BINDING_INDEX_PIPELINE_STATISTICS);
       auto draw = [&] {
         auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups_indirect>();
         draw.type = WMTRenderCommandDrawMeshThreadgroupsIndirect;
@@ -4615,6 +4720,42 @@ public:
       geometries[i].buffer = repeated.first;
       geometries[i].offset = repeated.second;
     }
+    // a GPU that takes no row-major transforms builds from column-major copies of them, made before the build
+    uint32_t transforms = 0;
+    for (UINT i = 0; !top && !device_->row_major_transforms && i < inputs.NumDescs; i++)
+      transforms += geometries[i].transform_buffer != 0;
+    if (transforms) {
+      auto [sources, sources_offset] = allocator_->AllocateGPUHeap(transforms * sizeof(uint64_t), sizeof(uint64_t));
+      auto [transposed, transposed_offset] = allocator_->AllocateGPUHeap(
+          transforms * 12 * sizeof(float), D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT
+      );
+      for (UINT i = 0, k = 0; i < inputs.NumDescs; i++) {
+        if (!geometries[i].transform_buffer)
+          continue;
+        auto &desc = inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY ? inputs.pGeometryDescs[i] : *inputs.ppGeometryDescs[i];
+        static_cast<uint64_t *>(sources)[k] = desc.Triangles.Transform3x4;
+        geometries[i].transform_buffer = allocator_->gpu_heap_buffer_;
+        geometries[i].transform_offset = transposed_offset + k++ * 12 * sizeof(float);
+        geometries[i].transform_column_major = true;
+      }
+      if (allocator_->records_)
+        allocator_->RecordGPUHeap(sources, transforms * sizeof(uint64_t), "transform addresses");
+      StartComputePass();
+      auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+      pso.type = WMTComputeCommandSetPSO;
+      pso.pso = device_->acceleration_structure_transforms;
+      pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
+      for (auto [offset, index] : {std::pair{sources_offset, 0}, std::pair{transposed_offset, 1}}) {
+        auto &buffer = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        buffer.type = WMTComputeCommandSetBuffer;
+        buffer.buffer = allocator_->gpu_heap_buffer_;
+        buffer.offset = offset;
+        buffer.index = index;
+      }
+      auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+      dispatch.type = WMTComputeCommandDispatchThreads;
+      dispatch.size = {transforms, 1, 1};
+    }
     uint64_t size = source ? source->size : 0;
     if (!source) {
       auto sizes = info;
@@ -5071,7 +5212,39 @@ public:
     std::array<uint32_t, 14> key{};
     Rc<TemporalScaler> temporal;
     Rc<DenoisedScaler> denoised;
+    // display-resolution motion vectors brought to the input resolution (DownscaleMotion)
+    WMT::Reference<WMT::Texture> motion;
   };
+
+  // MetalFX reads motion vectors at the input resolution, in its pixels: those DLSS was given at the output resolution
+  // (MotionVectorInDisplayRes) are read at each input pixel's place, scaled to pixels by `scale` and then to the input
+  // resolution, into the cache's texture, in a pass before the upscale (as D3D11's MTLFXMVScaleContext)
+  void
+  DownscaleMotion(Texture *motion, WMT::Texture view, UpscalerCache *cache, float scale_x, float scale_y) {
+    UsedTexture(motion);
+    StartComputePass();
+    auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+    pso.type = WMTComputeCommandSetPSO;
+    pso.pso = device_->downscale_motion;
+    pso.threadgroup_size = {8, 4, 1};
+    auto &from = allocator_->EncodeComputeCommand<wmtcmd_compute_settexture>();
+    from.type = WMTComputeCommandSetTexture;
+    from.texture = view.handle;
+    from.index = 0;
+    auto &to = allocator_->EncodeComputeCommand<wmtcmd_compute_settexture>();
+    to.type = WMTComputeCommandSetTexture;
+    to.texture = cache->motion.handle;
+    to.index = 1;
+    const float scale[2] = {scale_x, scale_y};
+    auto &bytes = allocator_->EncodeComputeCommand<wmtcmd_compute_setbytes>();
+    bytes.type = WMTComputeCommandSetBytes;
+    bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(scale), 16), scale, sizeof(scale)));
+    bytes.length = sizeof(scale);
+    bytes.index = 0;
+    auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+    dispatch.type = WMTComputeCommandDispatchThreads;
+    dispatch.size = {uint32_t(cache->motion.width()), uint32_t(cache->motion.height()), 1};
+  }
 
   static Texture *
   UpscaleTexture(ID3D12Resource *resource) {
@@ -5145,11 +5318,10 @@ public:
       ERR("TemporalUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
       return E_INVALIDARG;
     }
-    if (pDesc->MotionVectorInDisplayRes) {
-      static bool warned = false;
-      if (!std::exchange(warned, true))
-        WARN("TemporalUpscale: motion vectors at the output resolution are not supported yet");
-    }
+    // motion vectors at the output resolution are brought to the input's (DownscaleMotion), as 32-bit floats
+    bool display_motion = pDesc->MotionVectorInDisplayRes && device_->downscale_motion &&
+                          (motion->width() != color->width() || motion->height() != color->height());
+    auto scaler_motion_format = display_motion ? WMTPixelFormatRG32Float : motion_format;
     auto depth_format = ScalarFloatFormat(depth->pixelFormat());
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
@@ -5162,14 +5334,15 @@ public:
                                  uint32_t(color->pixelFormat()),
                                  uint32_t(output->pixelFormat()),
                                  uint32_t(depth_format),
-                                 uint32_t(motion_format),
-                                 uint32_t(!!pDesc->AutoExposure)};
+                                 uint32_t(scaler_motion_format),
+                                 uint32_t(!!pDesc->AutoExposure),
+                                 uint32_t(display_motion)};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
       info.output_format = output->pixelFormat();
       info.depth_format = depth_format;
-      info.motion_format = motion_format;
+      info.motion_format = scaler_motion_format;
       info.input_width = color->width();
       info.input_height = color->height();
       info.output_width = output->width();
@@ -5186,10 +5359,31 @@ public:
             info.output_width, "x", info.output_height);
         return E_FAIL;
       }
+      cache->motion = {};
+      if (display_motion) {
+        WMTTextureInfo motion_info{};
+        motion_info.type = WMTTextureType2D;
+        motion_info.pixel_format = WMTPixelFormatRG32Float;
+        motion_info.width = info.input_width;
+        motion_info.height = info.input_height;
+        motion_info.depth = 1;
+        motion_info.array_length = 1;
+        motion_info.mipmap_level_count = 1;
+        motion_info.sample_count = 1;
+        motion_info.usage = WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite;
+        motion_info.options = WMTResourceStorageModePrivate;
+        cache->motion = device_->GetMTLDevice().newTexture(motion_info);
+        if (!cache->motion) {
+          cache->temporal = nullptr;
+          ERR("TemporalUpscale: no texture for motion vectors at ", info.input_width, "x", info.input_height);
+          return E_FAIL;
+        }
+      }
       cache->key = key;
       Logger::info(str::format(
           "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
-          info.output_height, device_->UsesMetal4() ? " (Metal 4)" : ""
+          info.output_height, device_->UsesMetal4() ? " (Metal 4)" : "",
+          display_motion ? ", motion vectors brought from the output resolution" : ""
       ));
       // MULLION_LOG_LEVEL=debug: what the game gives the scaler, for an image that comes out wrong
       if (Logger::logLevel() <= LogLevel::Debug)
@@ -5204,12 +5398,16 @@ public:
             ", motion at output resolution ", pDesc->MotionVectorInDisplayRes
         ));
     }
+    if (display_motion)
+      DownscaleMotion(
+          motion, UpscaleView(motion, motion_format), cache, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY
+      );
     auto pass = RecordUpscale();
     pass->temporal = cache->temporal;
     pass->color = UpscaleView(color);
     pass->output = UpscaleView(output);
     pass->depth = UpscaleView(depth, depth_format);
-    pass->motion = UpscaleView(motion, motion_format);
+    pass->motion = display_motion ? WMT::Texture(cache->motion) : UpscaleView(motion, motion_format);
     pass->exposure =
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
     pass->props = WMTFXTemporalScalerProps{
@@ -5217,8 +5415,8 @@ public:
         pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
         bool(pDesc->InReset),
         bool(pDesc->DepthReversed),
-        pDesc->MotionVectorScaleX,
-        pDesc->MotionVectorScaleY,
+        display_motion ? 1.0f : pDesc->MotionVectorScaleX,
+        display_motion ? 1.0f : pDesc->MotionVectorScaleY,
         pDesc->JitterOffsetX,
         pDesc->JitterOffsetY,
         pDesc->PreExposure,

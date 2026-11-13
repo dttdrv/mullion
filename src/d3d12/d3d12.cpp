@@ -28,6 +28,9 @@
 #include "util_string.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <map>
+#include <optional>
 
 // ID3D12SDKConfiguration (d3d12.idl), which include/native/directx/d3d12.h only forward-declares (mingw's d3d12.h,
 // which some targets build with, defines it). "Sets the SDK version and the path to the Direct3D 12 runtime"
@@ -97,6 +100,17 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
     return hr;
   if (levels.MaxSupportedFeatureLevel != MinimumFeatureLevel) {
     WARN("D3D12CreateDevice: feature level ", MinimumFeatureLevel, " is not supported");
+    // an application may end over this with no word of ours, so the flight recorder has what the device reaches, and
+    // the first refusal of a process writes its records. level 12_0 needs tiled resources tier 2, which the device
+    // has where Metal has placement sparse resources (macOS 26.4)
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+    FLIGHT("D3D12CreateDevice refuses feature level %#llx: the device reaches %#llx, tiled resources tier %llu",
+           uint64_t(MinimumFeatureLevel), uint64_t(static_cast<mullion::MTLD3D12Device *>(device.ptr())->GetFeatureLevel()),
+           uint64_t(options.TiledResourcesTier));
+    static std::atomic_flag written;
+    if (!written.test_and_set())
+      WMTFlightDump("a refused feature level");
     return E_INVALIDARG;
   }
   return ppDevice ? device->QueryInterface(riid, ppDevice) : S_FALSE;
@@ -158,12 +172,52 @@ ExperimentalShaderModelsEnabled() {
   return experimental_shader_models;
 }
 
+// the SHA1s of the containers that held, by their own hash and size: once a container's hash is checked against its
+// bytes it names them, so pipelines that share shaders hash each with SHA1 once in the process. every creation still
+// checks the hash (Direct3D refuses a container whose bytes it does not match). a hash of one byte value 0, 1 or 2 is
+// none (md5::checkDxbcHash) and tells containers apart by nothing, so theirs are hashed each time
+using OwnHash = std::pair<decltype(md5::Digest::data), size_t>;
+static mullion::shared_mutex known_lock;
+static std::map<OwnHash, Sha1Digest> known;
+
+static std::optional<OwnHash>
+Own(const void *container, size_t size) {
+  OwnHash own{{}, size};
+  auto &[hash, length] = own;
+  if (!container || size < sizeof(uint32_t) + hash.size())
+    return {};
+  std::memcpy(hash.data(), static_cast<const uint8_t *>(container) + sizeof(uint32_t), hash.size());
+  if (hash[0] <= 2 && std::ranges::all_of(hash, [&](uint8_t byte) { return byte == hash[0]; }))
+    return {};
+  return own;
+}
+
 bool
 ShaderContainerHolds(const void *container, size_t size) {
   if (FAILED(microsoft::CDXBCParser().ReadDXBC(container, size)))
     return false;
   auto hash = md5::checkDxbcHash(container, size);
+  if (auto own = Own(container, size); hash == md5::DxbcHash::Holds && own) {
+    {
+      std::shared_lock lock(known_lock);
+      if (known.contains(*own))
+        return true;
+    }
+    auto digest = Sha1HashState::compute(container, size);
+    std::lock_guard lock(known_lock);
+    known.emplace(*own, digest);
+  }
   return hash == md5::DxbcHash::Holds || (hash == md5::DxbcHash::None && experimental_shader_models);
+}
+
+Sha1Digest
+ShaderDigest(const void *code, size_t size) {
+  if (auto own = Own(code, size)) {
+    std::shared_lock lock(known_lock);
+    if (auto found = known.find(*own); found != known.end())
+      return found->second;
+  }
+  return Sha1HashState::compute(code, size);
 }
 
 bool
@@ -181,6 +235,21 @@ ShaderFeaturesSupported(MTLD3D12Device *device, const void *container, size_t si
   device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options14, sizeof(options14));
   return !(flags & AdvancedTextureOps && !options14.AdvancedTextureOpsSupported) &&
          !(flags & WriteableMSAATextures && !options14.WriteableMSAATexturesSupported);
+}
+
+int
+ShaderProgramType(const void *container, size_t size) {
+  microsoft::CDXBCParser parser;
+  if (FAILED(parser.ReadDXBC(container, size)))
+    return -1;
+  for (auto name : {microsoft::DXBC_DXIL, microsoft::DXBC_GenericShaderEx, microsoft::DXBC_GenericShader})
+    if (auto part = parser.FindNextMatchingBlob(name);
+        part != DXBC_BLOB_NOT_FOUND && parser.GetBlobSize(part) >= sizeof(uint32_t)) {
+      uint32_t version;
+      memcpy(&version, parser.GetBlob(part), sizeof(version));
+      return version >> 16;
+    }
+  return -1;
 }
 
 // features outside the released API, asked for before a device is made and granted all or none

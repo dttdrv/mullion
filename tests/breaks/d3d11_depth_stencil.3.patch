@@ -1,7 +1,7 @@
 # D3D11 binds no depth ranges
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -5828,7 +5828,7 @@
+@@ -5919,7 +5919,7 @@ public:
          cmd.type = WMTRenderCommandSetFragmentBytes;
          cmd.bytes.set(ranges.data());
          cmd.length = ranges.size() * sizeof(float);
@@ -9,4 +9,4 @@
 +        cmd.index = SM50_BINDING_INDEX_DEPTH_RANGES + 1;
        });
      }
-     if (dirty_state.any(DirtyState::Scissors)) {
+     if (dirty_state.any(DirtyState::Viewport)) {

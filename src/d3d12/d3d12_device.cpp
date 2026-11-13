@@ -29,10 +29,13 @@
 #include "mullion_format.hpp"
 #include "util_env.hpp"
 #include "mullion_info.hpp"
+#include "mullion_shader_cache.hpp"
+#include "util_string.hpp"
 #include "log/log.hpp"
 #include "config/config.hpp"
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <map>
 #include <iomanip>
 #include <limits>
@@ -273,6 +276,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   uint32_t next_ray_function_ = SM50_RAY_FUNCTION_FIRST_SHADER;
   WMT::Reference<WMT::ResidencySet> residency_set_;
   WMT::Reference<WMT::Heap> spare_tile_;
+  // SparseTailHolds' answers, by texture type, pixel format, size, mips and page size
+  mullion::mutex sparse_tails_lock_;
+  std::map<std::array<uint64_t, 7>, std::pair<bool, std::pair<uint64_t, uint64_t>>> sparse_tails_;
   // allocations were added or removed since the set was last committed (CommitResidency)
   bool residency_dirty_ = false;
   // the buffers by GPU address and the sparse ones' mapped tiles, under a lock of their own: every index buffer, root
@@ -286,15 +292,50 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
+  // what pipelines are converted for and with, read once: every pipeline asks
+  const SM50_SHADER_METAL_VERSION metal_version_;
+  const SM50_SHADER_FLAG shader_flags_;
+  std::once_flag archive_opened_;
+  // Metal's copy of a loaded archive grows with the square of its pipelines (macOS 27.3, render pipelines: 3.5 MB a
+  // pipeline and 6 s to load in one archive of 4,000; 12 KB and 0.07 s for 4,096 in shards of 32, where a lookup that
+  // misses takes 0.021 ms against 0.013 ms in one archive)
+  static constexpr uint32_t kPipelinesPerArchive = 32;
+  // as many as a pipeline's lookup names
+  static constexpr size_t kMaxArchives =
+      std::numeric_limits<decltype(WMTRenderPipelineInfo::num_binary_archives_for_lookup)>::max();
+  // the archive's shards: those earlier launches wrote, then the one pipelines are added to (Archived)
+  std::vector<WMT::Reference<WMT::BinaryArchive>> archives_;
+  std::vector<obj_handle_t> archive_handles_;
+  std::string archive_path_;
+  mullion::mutex archive_mutex_;
+  mullion::condition_variable archive_changed_;
+  // pipelines added to the archive so far, and of them to its last shard
+  uint64_t archived_ = 0;
+  uint32_t shard_archived_ = 0;
+  bool archive_closing_ = false;
+  mullion::thread archive_writer_;
+  mullion::mutex depth_stencil_lock_;
+  std::map<std::array<uint32_t, 16>, WMT::Reference<WMT::DepthStencilState>> depth_stencil_states_;
   std::once_flag listening_;
   std::unique_ptr<EventListener> event_listener_;
 
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter)
+      : adapter_(adapter), command_library(adapter_->GetMTLDevice()),
+        metal_version_(SM50_SHADER_METAL_VERSION(ShaderMetalVersion(adapter_->GetMTLDevice()))),
+        shader_flags_(GPUShaderFlags(adapter_->GetMTLDevice())) {
     mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
   }
 
   ~MTLD3D12DeviceImpl() {
+    if (archive_writer_.joinable()) {
+      {
+        std::lock_guard lock(archive_mutex_);
+        archive_closing_ = true;
+      }
+      archive_changed_.notify_one();
+      archive_writer_.join();
+    }
     std::lock_guard lock(device_singletons_lock);
     std::erase_if(device_singletons, [this](auto &entry) { return entry.second == this; });
   }
@@ -345,7 +386,17 @@ public:
     acceleration_structure_instances = GetMTLDevice().newComputePipelineState(
         command_library.getLibrary().newFunction("acceleration_structure_instances"), err
     );
+    downscale_motion = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("cs_downscale_dilated_mv"), err
+    );
+    // Metal feature set tables: "Acceleration structures containing row-major matrices", Apple9 and later
+    row_major_transforms = GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
+    if (!row_major_transforms)
+      acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
+          command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
+      );
     if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+        (!row_major_transforms && !acceleration_structure_transforms) ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
       return E_FAIL;
@@ -466,7 +517,121 @@ public:
         SM50_SHADER_METAL_310 == uint32_t(WMTMetal310) && SM50_SHADER_METAL_320 == uint32_t(WMTMetal320) &&
         SM50_SHADER_METAL_400 == uint32_t(WMTMetal400)
     );
-    return SM50_SHADER_METAL_VERSION(ShaderMetalVersion(GetMTLDevice()));
+    return metal_version_;
+  }
+
+  SM50_SHADER_FLAG
+  GetShaderFlags() override {
+    return shader_flags_;
+  }
+
+  std::string
+  ShardPath(size_t shard) {
+    return str::format(archive_path_, shard, ".metallib");
+  }
+
+  std::span<const obj_handle_t>
+  PipelineArchives() override {
+    std::call_once(archive_opened_, [this] {
+      auto directory = ShaderCacheDirectory();
+      // Metal captures no mesh pipeline made with a binary archive ("Capturing Mesh Shaders with Binary Archives is
+      // not supported"): a process that may be captured makes its pipelines without one
+      if (env::getEnvVar("MTL_CAPTURE_ENABLED") == "1")
+        return;
+      WMT::Reference<WMT::Error> error;
+      WMT::Reference<WMT::BinaryArchive> added;
+      if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
+        return;
+      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+      // shards are read in order up to the first one Metal cannot read (none yet, or a damaged one), where this
+      // launch's shards start
+      while (archives_.size() + 1 < kMaxArchives)
+        if (auto read = GetMTLDevice().newBinaryArchive(ShardPath(archives_.size()).c_str(), error))
+          archives_.push_back(std::move(read));
+        else
+          break;
+      archives_.push_back(std::move(added));
+      for (auto &archive : archives_)
+        archive_handles_.push_back(archive.handle);
+      archive_writer_ = mullion::thread([this] { WriteArchive(); });
+    });
+    return archive_handles_;
+  }
+
+  void
+  PipelineArchived() override {
+    {
+      std::lock_guard lock(archive_mutex_);
+      archived_++;
+      shard_archived_++;
+    }
+    archive_changed_.notify_one();
+  }
+
+  // writes the last shard once additions stop for as long as its last write took, or once it is full: a burst of new
+  // pipelines is written once, and pipelines wait on a write (archive_lock) only between bursts. the device's end
+  // writes what is left
+  void
+  WriteArchive() {
+    env::setThreadName("mullion-archive-thread");
+    std::unique_lock lock(archive_mutex_);
+    uint64_t written = 0;
+    std::chrono::steady_clock::duration took{};
+    for (;;) {
+      archive_changed_.wait(lock, [&] { return archive_closing_ || archived_ != written; });
+      auto full = [&] { return shard_archived_ >= kPipelinesPerArchive; };
+      for (uint64_t seen = written; !archive_closing_ && !full() && seen != archived_;) {
+        seen = archived_;
+        archive_changed_.wait_for(lock, took, [&] { return archive_closing_ || full(); });
+      }
+      if (archived_ == written)
+        return;
+      bool closing = archive_closing_;
+      lock.unlock();
+      auto start = std::chrono::steady_clock::now();
+      WMT::Reference<WMT::Error> error;
+      auto path = ShardPath(archives_.size() - 1);
+      uint64_t target;
+      {
+        std::lock_guard whole(archive_lock);
+        archives_.back().serialize(path.c_str(), error);
+        // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
+        // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")
+        WMT::Reference<WMT::Error> unused;
+        if (!closing && archives_.size() < kMaxArchives)
+          if (auto next = GetMTLDevice().newBinaryArchive(nullptr, unused)) {
+            archive_handles_.push_back(next.handle);
+            archives_.push_back(std::move(next));
+          }
+        // no pipeline is added while the archive is written whole
+        std::lock_guard counts(archive_mutex_);
+        target = archived_;
+        shard_archived_ = 0;
+      }
+      took = std::chrono::steady_clock::now() - start;
+      if (error)
+        ERR("Failed to write the pipeline archive ", path, ": ", error.description().getUTF8String());
+      lock.lock();
+      written = target;
+    }
+  }
+
+  WMT::Reference<WMT::DepthStencilState>
+  DepthStencilState(const WMTDepthStencilInfo &info) override {
+    // whole bindings make header additions visible. a face without the test is one state whatever its operations
+    auto &[compare, write, front, back] = info;
+    std::array<uint32_t, 16> key{compare, write};
+    for (auto [i, stencil] : {std::pair(2, &front), std::pair(9, &back)}) {
+      auto &[enabled, pass, fail, depth_fail, function, write_mask, read_mask] = *stencil;
+      if (enabled)
+        std::ranges::copy(std::array<uint32_t, 7>{enabled, pass, fail, depth_fail, function, write_mask, read_mask},
+                          key.begin() + i);
+    }
+    std::lock_guard lock(depth_stencil_lock_);
+    auto &state = depth_stencil_states_[key];
+    if (!state)
+      state = GetMTLDevice().newDepthStencilState(info);
+    return state;
   }
 
   WMT::Device
@@ -507,7 +672,8 @@ public:
         riid == __uuidof(ID3D12Device1) || riid == __uuidof(ID3D12Device2) || riid == __uuidof(ID3D12Device3) ||
         riid == __uuidof(ID3D12Device4) || riid == __uuidof(ID3D12Device5) || riid == __uuidof(ID3D12Device6) ||
         riid == __uuidof(ID3D12Device7) || riid == __uuidof(ID3D12Device8) || riid == __uuidof(ID3D12Device9) ||
-        riid == __uuidof(ID3D12Device10)) {
+        riid == __uuidof(ID3D12Device10) || riid == __uuidof(ID3D12Device11) || riid == __uuidof(ID3D12Device12) ||
+        riid == __uuidof(ID3D12Device13) || riid == __uuidof(ID3D12Device14) || riid == __uuidof(ID3D12Device15)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -662,7 +828,7 @@ public:
           metal, out->Format, [this](WMTPixelFormat f) { return GetMTLPixelFormatCapability(f); }, support1, support2
       );
       bool multisample = support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-      if (out->SampleCount == 1 || (!out->Flags && multisample && metal.supportsTextureSampleCount(out->SampleCount)))
+      if (out->SampleCount == 1 || (!out->Flags && multisample && HasSampleCount(metal, format_desc, out->SampleCount, true)))
         out->NumQualityLevels = 1;
       return S_OK;
     }
@@ -670,11 +836,12 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_ROOT_SIGNATURE))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_ROOT_SIGNATURE *>(pFeatureData);
-      /* the highest version both know: newer ones (1.2) come down to 1.1, as the runtime answers */
+      /* the highest version both know, up to 1.2: a device of ID3D12Device15 is one of an Agility SDK that has root
+         signature 1.2, whose static samplers' flags (UINT border colors, non-normalized coordinates) come down to
+         1.1's samplers (RootSignatureDeserializer), and applications that see ID3D12Device15 serialize 1.2 (NRI) */
       if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1 ||
           out->HighestVersion > sdk::D3D_ROOT_SIGNATURE_VERSION_1_2)
         return FAIL(E_INVALIDARG);
-      out->HighestVersion = std::min(out->HighestVersion, D3D_ROOT_SIGNATURE_VERSION_1_1);
       return S_OK;
     }
     case D3D12_FEATURE_FEATURE_LEVELS: {
@@ -858,7 +1025,8 @@ public:
       out->SRVOnlyTiledResourceTier3 = FALSE;
       out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
       // MULLION_D3D12_RAYTRACING=0: none, for an application whose ray tracing is its own choice (DXR spec,
-      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest
+      // "Ray tracing is a feature an application checks for"); its pipelines link every shader and compile longest.
+      // the device then reaches 12_1: 12_2 has ray tracing tier 1.1, so an application that asks for 12_2 is refused
       static const bool rays = env::getEnvVar("MULLION_D3D12_RAYTRACING") != "0";
       out->RaytracingTier = rays ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
       return S_OK;
@@ -1162,11 +1330,14 @@ public:
 
   void STDMETHODCALLTYPE
   CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    TryCreateConstantBufferView(pDesc, Descriptor);
+  };
+
+  // E_INVALIDARG for a slot the heap does not have, as the other TryCreate* answer
+  HRESULT STDMETHODCALLTYPE
+  TryCreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
-    if (pDesc)
-      Heap->AddConstantBufferView(Index, pDesc->BufferLocation, pDesc->SizeInBytes);
-    else
-      Heap->AddConstantBufferView(Index, 0, 0);
+    return Heap->AddConstantBufferView(Index, pDesc ? pDesc->BufferLocation : 0, pDesc ? pDesc->SizeInBytes : 0);
   };
 
   // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
@@ -1201,20 +1372,31 @@ public:
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateShaderResourceView(pResource, pDesc, Descriptor);
+  };
+
+  // ID3D12Device15's TryCreate*: the view Create* makes, and E_INVALIDARG where the device refused it (the slot then
+  // holds a null view, as after Create*)
+  HRESULT STDMETHODCALLTYPE
+  TryCreateShaderResourceView(
+      ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource || (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       if (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)
         Heap->AddAccelerationStructureView(Index, pDesc->RaytracingAccelerationStructure.Location);
       else
         Heap->AddShaderResourceView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddShaderResourceView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
@@ -1222,55 +1404,115 @@ public:
       ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
       D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateUnorderedAccessView(pResource, pCounter, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateUnorderedAccessView(
+      ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+      D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       Heap->AddUnorderedAccessView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddUnorderedAccessView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateRenderTargetView(
       ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateRenderTargetView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateRenderTargetView(
+      ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateDepthStencilView(
       ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateDepthStencilView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateDepthStencilView(
+      ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateDepthStencilView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    TryCreateSampler(pDesc, Descriptor);
+  };
+
+  HRESULT
+  TryCreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
-    Heap->AddSampler(Index, pDesc);
+    return Heap->AddSampler(Index, pDesc);
+  };
+
+  // ID3D12Device11: a sampler of a uint border color takes the color of its values, each 0 or 1 as a float (the
+  // borders Metal has are transparent black, opaque black and opaque white). non-normalized coordinates are not one
+  // Metal's samplers of argument buffers take, and are sampled as normalized
+  void STDMETHODCALLTYPE
+  CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    TryCreateSampler2(pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    if (!pDesc)
+      return E_INVALIDARG;
+    D3D12_SAMPLER_DESC desc{pDesc->Filter,         pDesc->AddressU,      pDesc->AddressV, pDesc->AddressW,
+                            pDesc->MipLODBias,     pDesc->MaxAnisotropy, pDesc->ComparisonFunc, {},
+                            pDesc->MinLOD,         pDesc->MaxLOD};
+    for (unsigned i = 0; i < 4; i++)
+      desc.BorderColor[i] = (pDesc->Flags & D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR)
+                                ? FLOAT(std::min(pDesc->UintBorderColor[i], 1u))
+                                : pDesc->FloatBorderColor[i];
+    if (pDesc->Flags & D3D12_SAMPLER_FLAG_NON_NORMALIZED_COORDINATES) {
+      static std::atomic<bool> told{false};
+      if (!told.exchange(true))
+        WARN("CreateSampler2: non-normalized coordinates are sampled as normalized");
+    }
+    return TryCreateSampler(&desc, Descriptor);
   };
 
   void STDMETHODCALLTYPE
@@ -1793,6 +2035,80 @@ public:
     return OpenHeap(this, pAddress, nullptr, riid, ppHeap);
   }
 
+  // ID3D12Device13: the address's allocation, whose size the heap takes as OpenExistingHeapFromAddress does
+  HRESULT STDMETHODCALLTYPE
+  OpenExistingHeapFromAddress1(const void *pAddress, SIZE_T size, REFIID riid, void **ppHeap) final {
+    return OpenExistingHeapFromAddress(pAddress, riid, ppHeap);
+  }
+
+  // ID3D12Device14: root signatures of DXIL libraries' subobjects are not read
+  HRESULT STDMETHODCALLTYPE
+  CreateRootSignatureFromSubobjectInLibrary(
+      UINT nodeMask, const void *pLibraryBlob, SIZE_T blobLengthInBytes, LPCWSTR subobjectName, REFIID riid,
+      void **ppvRootSignature
+  ) final {
+    InitReturnPtr(ppvRootSignature);
+    WARN("CreateRootSignatureFromSubobjectInLibrary: not supported");
+    return E_NOTIMPL;
+  }
+
+  // ID3D12Device15: no memory budget is trimmed, so a callback is registered and never called
+  HRESULT STDMETHODCALLTYPE
+  RegisterTrimNotificationCallback(D3D12_REGISTER_TRIM_NOTIFICATION *pData) final {
+    if (!pData || !pData->pfnCallback)
+      return E_INVALIDARG;
+    static std::atomic<DWORD> cookie{0};
+    pData->CallbackCookie = ++cookie;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  UnregisterTrimNotificationCallback(DWORD CallbackCookie) final {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSamplerFeedbackUnorderedAccessView(
+      ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
+  ) final {
+    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
+    // permitted")
+    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
+    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
+    if (!pTargetedResource || !map || !map->feedback) {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
+      return Heap->AddUnorderedAccessView(Index, &null);
+    }
+    TextureViewDescriptor view{
+        .format = WMTPixelFormatR32Uint,
+        .type = WMTTextureType2DArray,
+        .arraySize = map->feedback->DepthOrArraySize,
+    };
+    return Heap->AddUnorderedAccessView(
+        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
+        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
+    );
+  }
+
+  // a query heap's results the CPU resolves (D3D12_QUERY_HEAP_FLAG_CPU_RESOLVE) are not kept: such a heap is refused,
+  // and ResolveQueryData has none to read
+  HRESULT STDMETHODCALLTYPE
+  CreateQueryHeap1(const D3D12_QUERY_HEAP_DESC *pDesc, D3D12_QUERY_HEAP_FLAGS Flags, REFIID riid, void **ppHeap) final {
+    if (Flags & ~D3D12_QUERY_HEAP_FLAG_NONE) {
+      InitReturnPtr(ppHeap);
+      WARN("CreateQueryHeap1: flags ", uint32_t(Flags), " not supported");
+      return E_NOTIMPL;
+    }
+    return CreateQueryHeap(pDesc, riid, ppHeap);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  ResolveQueryData(
+      ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT NumQueries, void *pResolvedQueryData
+  ) final {
+    return E_INVALIDARG;
+  }
+
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromFileMapping(HANDLE hFileMapping, REFIID riid, void **ppHeap) {
     return hFileMapping ? OpenHeap(this, nullptr, hFileMapping, riid, ppHeap) : FAIL(E_INVALIDARG);
@@ -2027,6 +2343,16 @@ public:
     return *GetResourceAllocationInfo2(&ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
   }
 
+  // ID3D12Device12: castable formats change no texture's size or alignment here
+  D3D12_RESOURCE_ALLOCATION_INFO *STDMETHODCALLTYPE
+  GetResourceAllocationInfo3(
+      D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescsCount,
+      const D3D12_RESOURCE_DESC1 *pResourceDescs, const UINT32 *pNumCastableFormats,
+      const DXGI_FORMAT *const *ppCastableFormats, D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
+  ) final {
+    return GetResourceAllocationInfo2(__ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
+  }
+
   HRESULT STDMETHODCALLTYPE
   CreateCommittedResource2(
       const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc,
@@ -2103,24 +2429,7 @@ public:
   CreateSamplerFeedbackUnorderedAccessView(
       ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
   ) {
-    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
-    // permitted")
-    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
-    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
-    if (!pTargetedResource || !map || !map->feedback) {
-      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
-      Heap->AddUnorderedAccessView(Index, &null);
-      return;
-    }
-    TextureViewDescriptor view{
-        .format = WMTPixelFormatR32Uint,
-        .type = WMTTextureType2DArray,
-        .arraySize = map->feedback->DepthOrArraySize,
-    };
-    Heap->AddUnorderedAccessView(
-        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
-        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
-    );
+    TryCreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, DestDescriptor);
   }
 
   void STDMETHODCALLTYPE
@@ -2204,15 +2513,13 @@ public:
         auto requested_alignment = desc->Alignment              ? desc->Alignment
                                    : desc->SampleDesc.Count > 1 ? D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
                                                                 : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-        resource_info.Alignment = std::max(resource_info.Alignment, requested_alignment);
-        // an alignment D3D12 has: "Alignment may be one of 0, 4KB, 64KB, or 4MB" (D3D12_RESOURCE_DESC), the next one
-        // up from Metal's, which can lie between them where 4KB was asked for
-        if (resource_info.Alignment > D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT &&
-            resource_info.Alignment < D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
-          resource_info.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-        else if (resource_info.Alignment > D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT &&
-                 resource_info.Alignment < D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT)
-          resource_info.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+        // the alignment asked for is the one given, as native drivers give it, and a game places by it (Marvel's
+        // Spider-Man 2 puts a 4KB texture at a multiple of 4KB, dttdrv/mullion#204). where Metal's is more, the size has
+        // room for the texture to begin at Metal's next multiple, where it is then placed (MTLD3D12Texture::Initialize),
+        // as vkd3d-proton pads for Vulkan's alignment (vkd3d_get_image_allocation_info)
+        if (resource_info.Alignment > requested_alignment)
+          resource_info.SizeInBytes += resource_info.Alignment - requested_alignment;
+        resource_info.Alignment = requested_alignment;
       }
 
       resource_info.SizeInBytes = align(resource_info.SizeInBytes, resource_info.Alignment);
@@ -2290,6 +2597,11 @@ public:
   PipelineMade(const std::string &name, const char *kind, std::chrono::steady_clock::time_point start) {
     auto end = std::chrono::steady_clock::now(), present = first_present.load();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    // the profile's pipeline time (tools/mullion-diag), on the thread that made it
+    if (diag::profile) {
+      uint64_t took = std::chrono::nanoseconds(end - start).count();
+      diag::Write(diag::Line("span", "pipeline", str::format(kind, " ", name), GetCurrentThreadId(), diag::Now() - took, took));
+    }
     bool late = present != std::chrono::steady_clock::time_point() && end >= present;
     // MULLION_TRACE_SHADER: 1 has the pipelines that take 20 ms or more or are made after the first present (a
     // stutter), heavy every one
@@ -2350,6 +2662,14 @@ public:
 
   HRESULT
   UnregisterResidencyAndVA(BufferAllocation *allocation) {
+    UnregisterVA(allocation);
+    if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+      return S_OK;
+    return UnregisterResidency(allocation->buffer());
+  }
+
+  void
+  UnregisterVA(BufferAllocation *allocation) {
     // the buffer's acceleration structures, up to the next buffer's address, end with it and after the locks: they
     // give back what they hold
     std::vector<std::shared_ptr<AccelerationStructure>> ended;
@@ -2366,14 +2686,6 @@ public:
     }
     interval_map_.erase(allocation->gpuAddress());
     sparse_buffer_mappings_.erase(allocation->gpuAddress());
-    va_lock.unlock();
-    if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
-      return S_OK;
-    std::unique_lock<mullion::mutex> lock(residency_lock_);
-    auto buffer = allocation->buffer();
-    residency_set_.removeAllocations(&buffer, 1);
-    residency_dirty_ = true;
-    return S_OK;
   }
 
   BufferAllocation *
@@ -2513,6 +2825,28 @@ public:
       residency_dirty_ = true;
     }
     return spare_tile_;
+  }
+
+  bool
+  SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) final {
+    std::array<uint64_t, 7> key{uint64_t(Info.type), uint64_t(Info.pixel_format), Info.width, Info.height,
+                                uint64_t(Info.depth) << 32 | Info.array_length, Info.mipmap_level_count,
+                                uint64_t(Info.placement_sparse_page_size)};
+    std::unique_lock<mullion::mutex> lock(sparse_tails_lock_);
+    if (auto found = sparse_tails_.find(key); found != sparse_tails_.end()) {
+      Tail = found->second.second;
+      return found->second.first;
+    }
+    MTL_DXGI_FORMAT_DESC format{};
+    bool compressed = SUCCEEDED(MTLQueryDXGIFormat(GetMTLDevice(), Format, format)) && (format.Flag & MTL_DXGI_FORMAT_BC);
+    // a format with no size of its own, a planar one, tests nothing and holds
+    bool holds = GetMTLDevice().sparseTailHolds(Info, compressed ? 4 : 1, compressed ? 4 : 1, format.BytesPerTexel, Tail);
+    if (!holds)
+      WARN("D3D12Device: Metal keeps nothing in some mips of the sparse tail of a ", Info.width, "x", Info.height,
+           " texture of format ", uint32_t(Format), " with ", Info.mipmap_level_count, " mips, from mip ", Tail.first,
+           ": such reserved textures hold all their memory");
+    sparse_tails_[key] = {holds, Tail};
+    return holds;
   }
 
   virtual FormatCapability

@@ -23,8 +23,29 @@
 #include "airconv_public.h"
 #include "mullion_sampler.hpp"
 #include "log/log.hpp"
+#include "log/trace.hpp"
+#include "util_env.hpp"
+#include <bit>
+#include <set>
 
 namespace mullion {
+
+// MULLION_TRACE_SHADER: each distinct sampler that makes pipelines take a slower path (a custom border color or a
+// minimum or maximum filter, which remake them, or an anisotropic filter with a bias, whose samples take gradients)
+static void
+TraceSampler(const D3D12_SAMPLER_DESC &d, bool custom) {
+  static mullion::mutex lock;
+  static std::set<std::string> seen;
+  auto line = str::format(
+      "sampler: filter ", uint32_t(d.Filter), ", address ", uint32_t(d.AddressU), " ", uint32_t(d.AddressV), " ",
+      uint32_t(d.AddressW), ", bias ", d.MipLODBias, ", anisotropy ", d.MaxAnisotropy, ", comparison ",
+      uint32_t(d.ComparisonFunc), ", border ", custom ? "custom " : "", d.BorderColor[0], " ", d.BorderColor[1], " ",
+      d.BorderColor[2], " ", d.BorderColor[3], ", lod ", d.MinLOD, " to ", d.MaxLOD
+  );
+  std::lock_guard<mullion::mutex> guard(lock);
+  if (seen.insert(line).second)
+    TRACE_IN(Shader, line);
+}
 
 struct SRVTextureGPUStorage {
   uint64_t resource_id;
@@ -125,7 +146,9 @@ class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHea
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
-  std::vector<ShaderVisibleDescriptorCPUStorage> descriptors_;
+  // zero bytes are a null descriptor, so the system's zeroed pages hold them: a page becomes memory once one of its
+  // descriptors is written, which in a large heap of few used ones is a small part
+  std::span<ShaderVisibleDescriptorCPUStorage> descriptors_;
   Rc<Buffer> buffer_;
   ShaderVisibleDescriptorGPUStorage *mapped_argument_buffer_ = nullptr;
   uint64_t argument_buffer_gpu_address_ = 0;
@@ -145,7 +168,13 @@ public:
     default:
       return FAIL(E_INVALIDARG);
     }
-    descriptors_.resize(pDesc->NumDescriptors);
+    static_assert(ShaderVisibleDescriptorType::Null == ShaderVisibleDescriptorType{});
+    if (UINT count = pDesc->NumDescriptors) {
+      auto storage = VirtualAlloc(nullptr, count * sizeof(descriptors_[0]), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+      if (!storage)
+        return FAIL(E_OUTOFMEMORY);
+      descriptors_ = {(ShaderVisibleDescriptorCPUStorage *)storage, count};
+    }
 
     if (pDesc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) {
       buffer_ = new Buffer(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), device_->GetMTLDevice());
@@ -169,6 +198,8 @@ public:
   };
 
   ~MTLD3D12DescriptorHeapImpl() {
+    if (!descriptors_.empty())
+      VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
       device_->UnregisterResidencyAndVA(buffer_->current());
     } else {
@@ -235,7 +266,8 @@ public:
         gpu_storage.SRVTexture.metadata =
             TextureMetadata(Texture->arrayLength(View), 0) |
             (Texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
-            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0) |
+            (Texture->paired ? SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED : 0);
       gpu_storage.SRVTexture.padding[0] = std::bit_cast<uint64_t>(BorderRange);
       // the view's place in its resource, which sampler feedback is recorded for: the first mip and how many mips the
       // resource has, a byte each, then 16 bits each for the first slice and the resource's width and height
@@ -692,15 +724,23 @@ public:
   
     WMTSamplerInfo info;
     bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-    if (custom)
+    // MULLION_AIRCONV_SKIP=custom-border keeps pipelines without the custom border path, so such a sampler reads a
+    // border Metal has (the skip is in the shader cache's key)
+    static const bool borders = env::getEnvVar("MULLION_AIRCONV_SKIP").find("custom-border") == std::string::npos;
+    if (custom && borders)
       device_->sampler_emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
     auto sampler = Sampler::createSampler(
         device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
         SamplerReduction(pDesc->Filter)
     );
 
-    if (sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
+    bool minmax =
+        sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1);
+    if (minmax)
       device_->sampler_emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+    if (trace::On(trace::Shader) &&
+        (custom || minmax || (D3D12_DECODE_IS_ANISOTROPIC_FILTER(pDesc->Filter) && pDesc->MipLODBias != 0)))
+      TraceSampler(*pDesc, custom);
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
       auto &gpu_storage = mapped_argument_buffer_[Index];

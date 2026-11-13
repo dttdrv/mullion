@@ -25,16 +25,17 @@ next is in the [roadmap](https://github.com/dttdrv/mullion/discussions/categorie
 
 ## Results
 
-On the same Mac, the Black Myth: Wukong benchmark runs at 28 FPS on Mullion and 34 FPS on D3DMetal 4.0 beta 3, at the
-High preset and 1512 × 982. [Results](https://github.com/dttdrv/mullion/wiki/Results) has God of War Ragnarök and 3DMark
-too, with screenshots.
+On the same Mac, the Black Myth: Wukong benchmark at the High preset runs at 37 FPS on Mullion at 1800 × 1169, and at
+34 FPS on D3DMetal 4.0 beta 3 at 1512 × 982, about 30 % fewer pixels. [Results](https://github.com/dttdrv/mullion/wiki/Results)
+has God of War Ragnarök and 3DMark too, with screenshots.
 
 ## Requirements
 
 - A Mac with Apple silicon, M1 or later, on macOS 15 or later.
 - Wine for x86_64 or CrossOver, with [Rosetta](https://support.apple.com/en-us/102527), or Wine for arm64, whose x86_64
   programs load Mullion's ARM64X libraries as ARM64EC. Stock Wine works, without patches or DLL overrides.
-- A 64-bit game. 32-bit games are not supported yet.
+- A 64-bit game, or a 32-bit one that uses Direct3D 10 or 11, on a Wine that runs 32-bit programs. Direct3D 12 needs a
+  64-bit game.
 
 ## Install
 

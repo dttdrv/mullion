@@ -4,6 +4,7 @@
 #include "nt/air_builder.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "tessellation_limits.hpp"
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1050,7 +1051,7 @@ convert_dxbc_tesselator_domain_shader(
 
   // TESS TODO: 17e30e0855effcaa4da9a05c018a3ba7189d7653 changes
 
-  auto &ds_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto ds_output_handlers = pShaderInternal->mesh_handlers(func_signature);
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D11_SB_DOMAIN_SHADER, rootsig->bytecode,
@@ -1279,6 +1280,8 @@ convert_dxbc_tesselator_domain_shader(
     }
     air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   }
+  // where each of the group's workloads' points start, one a lane
+  auto layout = group_limit ? dxbc.DomainGetGroupLayout(workload_index, group_end, thread_index, data) : nullptr;
   auto preheader = builder.GetInsertBlock();
   builder.CreateBr(vertex_start);
 
@@ -1294,8 +1297,9 @@ convert_dxbc_tesselator_domain_shader(
                               workload_index, first_primitive, actual_thread_index, pieces.primitives,
                               get_output_primitive(pHullStage), data
                           )
-                        : group_limit ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, data)
-                                      : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
+                        : group_limit
+                            ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, layout, data)
+                            : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
 
   resource_map.domain = domain_location(location, builder, air);
 

@@ -1,13 +1,17 @@
 // each palette component is an independently encoded value; sample reads must retain its index and conversion.
 #pragma once
 #include "format_values.hpp"
+#include "stored_samples.hpp"
 
 namespace format_msaa {
+// a value for each sample, and one for each stored sample where the GPU stores fewer (stored_samples)
 inline std::vector<uint8_t>
 palette(const format_values::Format &f, unsigned samples) {
   std::vector<uint8_t> bytes(samples * f.bytes);
-  for (unsigned s = 0; s < samples; s++)
+  const unsigned together = samples / stored_samples(samples);
+  for (unsigned at = 0; at < samples; at++)
     for (auto &c : f.components) {
+      const unsigned s = at / together * together;
       if (c.channel >= 4)
         continue;
       uint32_t value;
@@ -25,7 +29,7 @@ palette(const format_values::Format &f, unsigned samples) {
           value = -value & format_values::mask(c.bits);
       }
       for (unsigned b = 0; b < c.bits; b++)
-        bytes[s * f.bytes + (c.offset + b) / CHAR_BIT] |= ((value >> b) & 1) << ((c.offset + b) % CHAR_BIT);
+        bytes[at * f.bytes + (c.offset + b) / CHAR_BIT] |= ((value >> b) & 1) << ((c.offset + b) % CHAR_BIT);
     }
   return bytes;
 }

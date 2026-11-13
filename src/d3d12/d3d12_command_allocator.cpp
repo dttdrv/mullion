@@ -223,6 +223,58 @@ MTLD3D12CommandAllocatorImpl::Discard(EncoderData *Root) {
   }
 }
 
+bool
+MTLD3D12CommandAllocatorImpl::NewArgumentsBuffer(size_t Length) {
+  auto &recording = device_->recording;
+  WMTBufferInfo buffer_info;
+  buffer_info.memory.set(recording.arguments.base);
+  buffer_info.length = Length;
+  buffer_info.options = WMTResourceHazardTrackingModeUntracked;
+  WMT::Reference<WMT::Buffer> buffer = device_->GetMTLDevice().newBuffer(buffer_info);
+  if (!buffer) {
+    ERR("CommandAllocator: failed to allocate gpu buffer");
+    return false;
+  }
+  // resident with the device's, as a list may use addresses in any of them, not only the one it binds
+  device_->RegisterResidency(buffer);
+  recording.buffers.push_back({std::move(buffer), buffer_info.gpu_address, Length});
+  return true;
+}
+
+bool
+MTLD3D12CommandAllocatorImpl::GrowArguments(size_t Seen) {
+  auto &recording = device_->recording;
+  std::lock_guard<mullion::mutex> lock(recording.mutex);
+  // another allocator made it grow since
+  if (recording.arguments.Usable() > Seen)
+    return true;
+  if (Seen >= RecordingArena::kSize)
+    return false;
+  auto usable = std::min(Seen * 2, RecordingArena::kSize);
+  if (!NewArgumentsBuffer(usable))
+    return false;
+  // handed out only once a buffer covers it
+  recording.arguments.Grow(usable);
+  Logger::info(str::format("CommandAllocator: what the GPU reads of command lists grows to ", usable >> 20, " MB"));
+  return true;
+}
+
+unsigned
+MTLD3D12CommandAllocatorImpl::ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]) {
+  std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
+  unsigned count = 0;
+  for (auto &buffer : device_->recording.buffers)
+    views[count++] = {buffer.address, buffer.length};
+  return count;
+}
+
+void
+MTLD3D12CommandAllocatorImpl::TakeLastArgumentsBuffer() {
+  std::lock_guard<mullion::mutex> lock(device_->recording.mutex);
+  auto &last = device_->recording.buffers.back();
+  gpu_heap_buffer_ = last.buffer, gpu_heap_buffer_address_ = last.address, gpu_heap_buffer_length_ = last.length;
+}
+
 void
 MTLD3D12CommandAllocatorImpl::ReleaseRuns() {
   for (auto &list : encoder_lists_)
@@ -244,11 +296,7 @@ MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevi
     records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
-    clear_rtv_(device_->GetMTLDevice(), *this),
-    copy_temp_allocator_(
-        {device_->GetMTLDevice(), WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate}
-    ),
-    copy_temp_version_(0) {}
+    clear_rtv_(device_->GetMTLDevice(), *this) {}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
@@ -271,29 +319,20 @@ CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, RE
 HRESULT
 MTLD3D12CommandAllocatorImpl::Initialize() {
 
-  // the device's arenas, and the one Metal buffer over what the GPU reads: there from the first allocator on
+  // the device's arenas, and the first Metal buffer over what the GPU reads: there from the first allocator on
   auto &recording = device_->recording;
   {
     std::lock_guard<mullion::mutex> lock(recording.mutex);
-    if (!recording.commands.Initialize() || !recording.arguments.Initialize())
+    if (!recording.commands.Initialize() || !recording.arguments.Initialize(kFirstArguments))
       return FAIL(E_OUTOFMEMORY);
-    if (!recording.buffer) {
-      WMTBufferInfo buffer_info;
-      buffer_info.memory.set(recording.arguments.base);
-      buffer_info.length = RecordingArena::kSize;
-      buffer_info.options = WMTResourceHazardTrackingModeUntracked;
-      recording.buffer = device_->GetMTLDevice().newBuffer(buffer_info);
-      if (!recording.buffer) {
-        ERR("CommandAllocator: failed to allocate gpu buffer");
-        return E_FAIL;
-      }
-      recording.address = buffer_info.gpu_address;
-    }
+    if (recording.buffers.empty() && !NewArgumentsBuffer(recording.arguments.Usable()))
+      return E_FAIL;
     if (!recording.zeros && !(recording.zeros = recording.arguments.Acquire(1)))
       return FAIL(E_OUTOFMEMORY);
+    auto &last = recording.buffers.back();
+    gpu_heap_buffer_ = last.buffer, gpu_heap_buffer_address_ = last.address, gpu_heap_buffer_length_ = last.length;
   }
   cpu_heap_ = recording.commands.base, gpu_heap_ = recording.arguments.base;
-  gpu_heap_buffer_ = recording.buffer, gpu_heap_buffer_address_ = recording.address;
   ReleaseRuns();
   exhausted_ = false;
   spill_.clear();
@@ -318,7 +357,13 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   acceleration_structures_.clear();
   acceleration_structure_inputs_.clear();
 
-  copy_temp_allocator_.free_blocks(copy_temp_version_++);
+  // the next lists copy in the last buffer while the last lists took half of it: an allocator keeps at most twice what
+  // its last lists copied
+  if (!temp_buffers_.empty() && 2 * temp_used_ >= temp_buffers_.back().length)
+    temp_buffers_.erase(temp_buffers_.begin(), temp_buffers_.end() - 1);
+  else
+    temp_buffers_.clear();
+  temp_offset_ = temp_used_ = 0;
 
   return S_OK;
 }
@@ -441,7 +486,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.max_fragment_buffer_binding = 0;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
-  info.max_kernel_buffer_binding = 31;
+  info.max_kernel_buffer_binding = pCmdSig->KernelBufferBindCount;
   info.max_kernel_threadgroup_memory_binding = 0;
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
@@ -479,7 +524,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
 IndirectRenderCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-    size_t MaxCount, bool tessellation, bool statistics_cuts
+    size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
 ) {
   // for a tessellated, geometry or mesh command (`tessellation`) the resolver leaves an IndirectMeshDraw, and the
   // caller draws each: mesh commands in indirect command buffers come only with Apple9 GPUs, and one way serves all
@@ -498,8 +543,8 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.support_ray_tracing = 0;
   info.type = pCmdSig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? WMTIndirectCommandTypeDrawIndexed
                                                                                  : WMTIndirectCommandTypeDraw;
-  info.max_vertex_buffer_binding = 31;
-  info.max_fragment_buffer_binding = 31;
+  info.max_vertex_buffer_binding = pCmdSig->VertexBufferBindCount;
+  info.max_fragment_buffer_binding = pCmdSig->FragmentBufferBindCount;
   info.max_object_buffer_binding = 0;
   info.max_mesh_buffer_binding = 0;
   info.max_kernel_buffer_binding = 0;
@@ -636,6 +681,17 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd_use_icb.stages = WMTRenderStageVertex;
   cmd_use_icb.usage = WMTResourceUsageRead;
   cmd_use_icb.resource = icb;
+
+  // Metal 4's shader validation zeroes the loads of a render pass's commands run with a range the GPU reads (#165): a
+  // range known now needs none
+  if (runs_max_count) {
+    auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
+    cmd.type = WMTRenderCommandExecuteCommandsInBuffer;
+    cmd.indirect_command_buffer = icb;
+    cmd.location = 0;
+    cmd.length = MaxCount;
+    return data;
+  }
 
   auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands_indirect>();
   cmd.type = WMTRenderCommandExecuteCommandsInBufferIndirect;

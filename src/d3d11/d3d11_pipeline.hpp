@@ -29,6 +29,8 @@ struct MTL_GRAPHICS_PIPELINE_DESC {
   bool CenteredSamples;
   // one sample rasterizes for multisampled targets (ForcedSampleCount 1)
   bool SingleRasterSample;
+  // each raster sample stands for two of D3D's (RasterSampleCount)
+  bool PairedSamples;
   // the last pre-raster stage's clip distances, which the pixel shader tests (SM50_SHADER_PSO_PIXEL_SHADER_DATA)
   uint32_t ClipDistances;
   uint32_t GSPassthrough;
@@ -86,6 +88,7 @@ template <> struct hash<MTL_GRAPHICS_PIPELINE_DESC> {
     state.add((size_t)v.SampleMask);
     state.add(v.CenteredSamples);
     state.add(v.SingleRasterSample);
+    state.add(v.PairedSamples);
     state.add(v.ClipDistances);
     state.add((size_t)v.GSPassthrough);
     state.add((size_t)v.SOLayout);
@@ -162,7 +165,8 @@ template <> struct equal_to<MTL_GRAPHICS_PIPELINE_DESC> {
            (x.SampleCount == y.SampleCount) &&
            (x.IndexBufferFormat == y.IndexBufferFormat) &&
            (x.SampleMask == y.SampleMask) && (x.CenteredSamples == y.CenteredSamples) &&
-           (x.SingleRasterSample == y.SingleRasterSample) && (x.ClipDistances == y.ClipDistances) &&
+           (x.SingleRasterSample == y.SingleRasterSample) && (x.PairedSamples == y.PairedSamples) &&
+           (x.ClipDistances == y.ClipDistances) &&
            (x.GSPassthrough == y.GSPassthrough) && (x.SOLayout == y.SOLayout) &&
            (x.InputPrimitive == y.InputPrimitive) && (x.PassThrough == y.PassThrough) && (x.QuadLines == y.QuadLines) &&
            (x.PipelineStatistics == y.PipelineStatistics);

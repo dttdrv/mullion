@@ -101,6 +101,12 @@ flight_ticks(void) {
 #endif
 }
 static const void *flight_exception_site;
+// the registers of a thread whose exception dumps, four to a record (x86_64 and ARM64EC)
+static const void *flight_registers_site[4];
+// the words on its stack that point into a module: return addresses, which say what it was called from
+static const void *flight_stack_site;
+// flight_exception, registered while the DLL is loaded
+static void *flight_handler;
 
 WINEMETAL_API const void *
 WMTFlightSite(const char *format) {
@@ -201,6 +207,76 @@ WMTFlightDump(const char *reason) {
   ReleaseSRWLockExclusive(&flight_dump_lock);
 }
 
+// the dump's heading: what fits of `text` after what it has. a heading has no commas (it ends at the first)
+static void
+reason_append(char *reason, size_t size, const char *text) {
+  size_t used = strlen(reason), more = strlen(text);
+  if (used + more < size)
+    memcpy(reason + used, text, more + 1);
+}
+
+static void
+reason_hex(char *reason, size_t size, uint64_t value) {
+  char text[19] = "0x", digits[16];
+  int count = 0;
+  do
+    digits[count++] = "0123456789abcdef"[value & 15];
+  while ((value >>= 4) && count < 16);
+  for (int i = 0; i < count; i++)
+    text[2 + i] = digits[count - 1 - i];
+  text[2 + count] = 0;
+  reason_append(reason, size, text);
+}
+
+// "<module>+<offset>" of an address in a loaded module; FALSE when no module holds it
+static BOOL
+reason_module(char *reason, size_t size, const void *address) {
+  HMODULE module;
+  char path[MAX_PATH];
+  // the first 64 KB never hold code, and a null address would name the executable
+  if ((uintptr_t)address < 0x10000)
+    return FALSE;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          address, &module))
+    return FALSE;
+  DWORD length = GetModuleFileNameA(module, path, sizeof(path));
+  if (!length || length >= sizeof(path))
+    return FALSE;
+  reason_append(reason, size, strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path);
+  reason_append(reason, size, "+");
+  reason_hex(reason, size, (uintptr_t)address - (uintptr_t)module);
+  return TRUE;
+}
+
+// the dump's heading: "exception in <module>+<offset>", as the records give only an address and a module the loader
+// relocated could be any of them. code no module holds (a JIT's, an unpacker's) is named by its memory, and by the
+// modules of `callers`, the first return addresses on its stack (flight_exception's walk), which say who called into it
+static void
+flight_exception_reason(char *reason, size_t size, const void *address, const uint64_t *callers, int count) {
+  MEMORY_BASIC_INFORMATION memory;
+  strcpy(reason, "exception in ");
+  if (reason_module(reason, size, address))
+    return;
+  if (!VirtualQuery(address, &memory, sizeof(memory))) {
+    strcpy(reason, "exception");
+    return;
+  }
+  reason_append(reason, size, "memory ");
+  reason_hex(reason, size, (uintptr_t)memory.AllocationBase);
+  reason_append(reason, size, "+");
+  reason_hex(reason, size, (uintptr_t)address - (uintptr_t)memory.AllocationBase);
+  reason_append(reason, size, " type ");
+  reason_hex(reason, size, memory.Type);
+  reason_append(reason, size, " protect ");
+  reason_hex(reason, size, memory.Protect);
+  for (int i = 0; i < count; i++) {
+    size_t used = strlen(reason);
+    reason_append(reason, size, " from ");
+    if (!reason_module(reason, size, (const void *)(uintptr_t)callers[i]))
+      reason[used] = 0;
+  }
+}
+
 // the exceptions that end a process unless it catches them: the first dumps the records before its handlers run
 static LONG CALLBACK
 flight_exception(EXCEPTION_POINTERS *pointers) {
@@ -220,8 +296,41 @@ flight_exception(EXCEPTION_POINTERS *pointers) {
   case EXCEPTION_STACK_OVERFLOW:
   case EXCEPTION_INT_DIVIDE_BY_ZERO:
   case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
-    if (!InterlockedExchange(&dumped, 1))
-      WMTFlightDump("exception");
+    if (!InterlockedExchange(&dumped, 1)) {
+      // the first of the stack's return addresses, for the dump's heading
+      uint64_t callers[8];
+      int called = 0;
+#if defined(__x86_64__) || defined(__arm64ec__)
+      // the faulting thread's registers: what pointer it held when it faulted
+      const CONTEXT *context = pointers->ContextRecord;
+      WMTFlightRecord(flight_registers_site[0], context->Rip, context->Rsp, context->Rbp, context->Rax);
+      WMTFlightRecord(flight_registers_site[1], context->Rbx, context->Rcx, context->Rdx, context->Rsi);
+      WMTFlightRecord(flight_registers_site[2], context->Rdi, context->R8, context->R9, context->R10);
+      WMTFlightRecord(flight_registers_site[3], context->R11, context->R12, context->R13, context->R14);
+      MEMORY_BASIC_INFORMATION stack;
+      if (VirtualQuery((const void *)context->Rsp, &stack, sizeof(stack)) && stack.State == MEM_COMMIT) {
+        const uint64_t *start = (const uint64_t *)(context->Rsp & ~7ull), *at = start;
+        const uint64_t *end = (const uint64_t *)((uintptr_t)stack.BaseAddress + stack.RegionSize);
+        if (end - at > 4096)
+          end = at + 4096;
+        for (int found = 0; at < end && found < 24; at++) {
+          HMODULE base;
+          if (*at < 0x10000 || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                   (const char *)(uintptr_t)*at, &base))
+            continue;
+          WMTFlightRecord(flight_stack_site, (uint64_t)((at - start) * 8), *at, (uint64_t)(uintptr_t)base,
+                          *at - (uint64_t)(uintptr_t)base);
+          if (called < 8)
+            callers[called++] = *at;
+          found++;
+        }
+      }
+#endif
+      char reason[1024];
+      flight_exception_reason(reason, sizeof(reason), record->ExceptionAddress, callers, called);
+      WMTFlightDump(reason);
+    }
   }
   return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -237,7 +346,12 @@ wmt_flight_main(DWORD reason, BOOL exiting) {
     flight_started = flight_ticks();
     flight_started_qpc = started.QuadPart;
     flight_exception_site = WMTFlightSite("exception %#llx at %#llx, information %#llx %#llx");
-    AddVectoredExceptionHandler(1, flight_exception);
+    flight_registers_site[0] = WMTFlightSite("registers rip %#llx rsp %#llx rbp %#llx rax %#llx");
+    flight_registers_site[1] = WMTFlightSite("registers rbx %#llx rcx %#llx rdx %#llx rsi %#llx");
+    flight_registers_site[2] = WMTFlightSite("registers rdi %#llx r8 %#llx r9 %#llx r10 %#llx");
+    flight_registers_site[3] = WMTFlightSite("registers r11 %#llx r12 %#llx r13 %#llx r14 %#llx");
+    flight_stack_site = WMTFlightSite("stack rsp+%#llx: %#llx, module %#llx +%#llx");
+    flight_handler = AddVectoredExceptionHandler(1, flight_exception);
     break;
   case DLL_THREAD_DETACH: {
     struct flight_ring *ring = TlsGetValue(flight_slot);
@@ -250,6 +364,17 @@ wmt_flight_main(DWORD reason, BOOL exiting) {
     DWORD length = GetEnvironmentVariableA("MULLION_FLIGHT", mode, sizeof(mode));
     if (exiting && (flight_dumps || (length < sizeof(mode) && !strcmp(mode, "exit"))))
       WMTFlightDump("exit");
+    // unloaded while the process goes on (a launcher that loads D3D only to read the GPU's details, the Rockstar
+    // Games Launcher among them): the handler must go with the DLL, or the next exception calls into freed memory,
+    // faults there, and faults again in each fault until the thread's stack runs out
+    if (!exiting) {
+      if (flight_handler)
+        RemoveVectoredExceptionHandler(flight_handler);
+      flight_handler = NULL;
+      if (flight_slot != TLS_OUT_OF_INDEXES)
+        TlsFree(flight_slot);
+      flight_slot = TLS_OUT_OF_INDEXES;
+    }
     break;
   }
   }
@@ -1515,6 +1640,23 @@ MTLTexture_sparseTail(obj_handle_t texture, uint64_t *first_mip, uint64_t *bytes
   *bytes = params.bytes;
 }
 
+WINEMETAL_API bool
+MTLDevice_sparseTailHolds(
+    obj_handle_t device, const struct WMTTextureInfo *info, uint32_t block_width, uint32_t block_height,
+    uint32_t block_bytes, uint64_t *first_mip, uint64_t *bytes
+) {
+  struct unixcall_sparse_tail_holds params = {0};
+  params.device = device;
+  WMT_MEMPTR_SET(params.info, info);
+  params.block_width = block_width;
+  params.block_height = block_height;
+  params.block_bytes = block_bytes;
+  UNIX_CALL(WMTUnixTextureSparseTailHolds, &params);
+  *first_mip = params.first_mip;
+  *bytes = params.bytes;
+  return params.ret;
+}
+
 WINEMETAL_API obj_handle_t
 MTLDevice_newMTL4CommandQueue(obj_handle_t device) {
   struct unixcall_generic_obj_uint64_ret params;
@@ -1904,6 +2046,17 @@ WMTGPUStatistics(obj_handle_t device, char *buffer, uint64_t size) {
   params.size = size;
   params.ret = 0;
   UNIX_CALL(WMTUnixGPUStatistics, &params);
+  return params.ret;
+}
+
+WINEMETAL_API uint64_t
+WMTDeviceReport(obj_handle_t device, char *buffer, uint64_t size) {
+  struct unixcall_wmtgpu_statistics params;
+  params.device = device;
+  WMT_MEMPTR_SET(params.buffer, buffer);
+  params.size = size;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixDeviceReport, &params);
   return params.ret;
 }
 

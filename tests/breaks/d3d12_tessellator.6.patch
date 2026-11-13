@@ -1,0 +1,12 @@
+# a vertex that starts a workload's own points is looked up in the workload before it
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -819,7 +819,7 @@
+   int k = 0;
+   for (int step = 16; step; step >>= 1) {
+     int start = group_lane(layout, min(k + step, 31), first, end, data).x;
+-    if (k + step < count && start <= thread_index)
++    if (k + step < count && start < thread_index)
+       k += step;
+   }
+   int4 base = group_lane(layout, k, first, end, data);

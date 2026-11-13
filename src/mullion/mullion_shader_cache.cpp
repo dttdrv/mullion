@@ -18,17 +18,20 @@ ShaderCache::getInstance(WMTMetalVersion version) {
   return *iter->second;
 }
 
-ShaderCache::ShaderCache(WMTMetalVersion metal_version) {
+std::string
+ShaderCacheDirectory() {
   if (env::getEnvVar("MULLION_SHADER_CACHE") == "0")
+    return {};
+  if (auto path = env::getEnvVar("MULLION_SHADER_CACHE_PATH"); !path.empty() && path.starts_with("/"))
+    return path.ends_with('/') ? path : path + "/";
+  // Mullion's shaders differ from stock DXMT's at the same AIRCONV_VERSION, so the caches never share a directory
+  return str::format("mullion/", env::getExeName(), "/");
+}
+
+ShaderCache::ShaderCache(WMTMetalVersion metal_version) {
+  auto path = ShaderCacheDirectory();
+  if (path.empty())
     return;
-  std::string path;
-  if (path = env::getEnvVar("MULLION_SHADER_CACHE_PATH"); !path.empty() && path.starts_with("/")) {
-    if (!path.ends_with('/'))
-      path += "/";
-  } else {
-    // Mullion's shaders differ from stock DXMT's at the same AIRCONV_VERSION, so the caches never share a directory
-    path = str::format("mullion/", env::getExeName(), "/");
-  }
   path += str::format("shaders_", (unsigned int)metal_version, ".db");
   scache_writer_ = WMT::CacheWriter::alloc_init(path.c_str(), kMullionShaderCacheVersion);
   scache_reader_ = WMT::CacheReader::alloc_init(path.c_str(), kMullionShaderCacheVersion);
