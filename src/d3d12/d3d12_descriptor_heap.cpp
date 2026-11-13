@@ -55,13 +55,13 @@ struct SRVTextureGPUStorage {
 
 static_assert(D3D12_REQ_MIP_LEVELS <= (1u << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS));
 
-// the bits of a view's place that say how to read a writable sparse texture's residency. macOS 27.2 reads it in texels
-// on every GPU, and macOS 27.0 and 27.1 have not been tried
+// the bits of a view's place that say how to read a writable sparse texture's residency: none where the GPU reads it
+// by texel, as it says itself when first asked (MTLDevice_sparseResidencyInTiles). an M3 Max read it by tile with
+// macOS 26.6 and reads it by texel with 27.2
 static uint64_t
 ResidencyTile(WMT::Device device, Texture *texture) {
-  uint64_t macos_major = 0;
-  WMTGetOSVersion(&macos_major, nullptr, nullptr);
-  if (macos_major >= 27 || device.supportsFamily(WMTGPUFamilyApple10))
+  static const bool tiles = device.sparseResidencyInTiles();
+  if (!tiles)
     return 0;
   auto tile = device.sparseTileSize(texture->textureType(), texture->pixelFormat(), texture->sampleCount(), WMTSparsePageSize16);
   uint64_t depth = std::countr_zero(tile.depth);

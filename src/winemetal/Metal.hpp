@@ -1455,6 +1455,11 @@ public:
   }
 
   bool
+  sparseResidencyInTiles() {
+    return MTLDevice_sparseResidencyInTiles(handle);
+  }
+
+  bool
   supportsTextureSampleCount(uint8_t sample_count) {
     return MTLDevice_supportsTextureSampleCount(handle, sample_count);
   }
