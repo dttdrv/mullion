@@ -862,7 +862,9 @@ struct WMTRenderPipelineInfo {
   uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[4];
+  // every target's format, write mask and blending left to MTLDevice_newSpecializedRenderPipelineState
+  bool unspecialized_colors;
+  uint8_t padding[3];
 };
 
 struct WMTMeshRenderPipelineInfo {
@@ -896,6 +898,11 @@ MTLDevice_newRenderPipelineState(obj_handle_t device, const struct WMTRenderPipe
 
 WINEMETAL_API obj_handle_t MTLDevice_newMeshRenderPipelineState(
     obj_handle_t device, const struct WMTMeshRenderPipelineInfo *info, obj_handle_t *err_out
+);
+
+/* a pipeline of `colors` made from one of unspecialized_colors, by the device's MTL4Compiler (macOS 26) */
+WINEMETAL_API obj_handle_t MTLDevice_newSpecializedRenderPipelineState(
+    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], obj_handle_t *err_out
 );
 
 struct WMTSize {
@@ -2612,7 +2619,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
-       WMTUnixDeviceSparseResidencyInTiles,
+       WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline,
        WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,

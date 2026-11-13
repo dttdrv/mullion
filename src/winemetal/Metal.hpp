@@ -1370,6 +1370,14 @@ public:
   }
 
   Reference<RenderPipelineState>
+  newSpecializedRenderPipelineState(RenderPipelineState pipeline, const WMTRenderPipelineInfo &info,
+                                    Reference<Error> &error) {
+    return Reference<RenderPipelineState>(
+        MTLDevice_newSpecializedRenderPipelineState(handle, pipeline.handle, info.colors, error.out())
+    );
+  }
+
+  Reference<RenderPipelineState>
   newRenderPipelineState(const WMTTileRenderPipelineInfo &info, Reference<Error> &error) {
     return Reference<RenderPipelineState>(MTLDevice_newTileRenderPipelineState(handle, &info, error.out()));
   }
@@ -1709,6 +1717,7 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
   info.support_indirect_command_buffers = false;
+  info.unspecialized_colors = false;
 }
 
 inline void
