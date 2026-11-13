@@ -1516,6 +1516,8 @@ GetUIntClearWrite(WMTPixelFormat format) {
   case WMTPixelFormatRG32Float:
   case WMTPixelFormatRGBA32Float:
     return UIntClearWrite::Float;
+  case WMTPixelFormatRG11B10Float:
+    return UIntClearWrite::SmallFloat;
   default:
     return UIntClearWrite::IntegerView;
   }
@@ -1958,6 +1960,19 @@ MTLQueryDXGIFormatSupport(
   }
 
   return S_OK;
+}
+
+uint32_t
+RasterSampleCount(WMT::Device device, uint32_t count) {
+  if (device.supportsTextureSampleCount(count))
+    return count;
+  return count == 8 && device.supportsTextureSampleCount(4) ? 4 : 0;
+}
+
+bool
+HasSampleCount(WMT::Device device, const MTL_DXGI_FORMAT_DESC &format, uint32_t count, bool level_11) {
+  uint32_t raster = RasterSampleCount(device, count);
+  return raster == count || (raster && level_11 && format.BytesPerTexel < 16);
 }
 
 } // namespace mullion

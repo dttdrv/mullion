@@ -300,6 +300,7 @@ Converter::LoadOperand(const SrcOperandAttribute &SrcOp, mask_t Mask) {
     Ret = ctx.pso_single_raster_sample ? ir.CreateZExt(ir.CreateICmpNE(res.coverage_mask_arg, ir.getInt32(0)), ir.getInt32Ty())
           : ctx.pso_sample_mask != 0xffffffff ? ir.CreateAnd(res.coverage_mask_arg, ctx.pso_sample_mask)
                                               : res.coverage_mask_arg;
+    Ret = air.D3DCoverage(Ret);
     break;
   }
   case InputAttribute::InnerCoverage: {
@@ -635,7 +636,7 @@ void
 Converter::StoreOperand(const DstOperandOutputCoverageMask &DstOp, llvm::Value *Value) {
   auto ValueInt = ZExtAndBitcastToInt32(Value);
   auto Ptr = ir.CreateConstGEP1_32(ir.getInt32Ty(), res.coverage_mask_reg, 0);
-  ir.CreateStore(ExtractElement(ValueInt, 0), Ptr);
+  ir.CreateStore(air.MetalCoverage(ExtractElement(ValueInt, 0)), Ptr);
 }
 
 void
@@ -2420,6 +2421,10 @@ Converter::SampleImplicit(
   auto Isotropic = ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
   if (auto Known = dyn_cast<ConstantInt>(Isotropic); Known && Known->isOne())
     return Biased();
+  // as for a static sampler, a sample whose only bias is the sampler's own and that is none reads Metal's own LOD
+  if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)
+    Isotropic =
+        ir.CreateOr(Isotropic, ir.CreateICmpEQ(ir.CreateTrunc(SamplerMetadata, ir.getInt16Ty()), ir.getInt16(0)));
   auto Gradients = [&] {
     auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
     return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
@@ -2432,11 +2437,11 @@ Converter::SampleImplicit(
   }();
   if (!Selects || isa<Constant>(Isotropic))
     return Gradients();
-  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic
-  // reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29 ms on an M1 Max). the
-  // whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a lane's sampler need not
-  // be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the branches of a sampler's samples
-  // that follow each other
+  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic,
+  // or is unbiased as above, reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29
+  // ms on an M1 Max). the whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a
+  // lane's sampler need not be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the
+  // branches of a sampler's samples that follow each other
   auto &Context = air.getContext();
   auto QuadAll = air.getModule()->getOrInsertFunction(
       "air.quad_all", FunctionType::get(ir.getInt1Ty(), {ir.getInt1Ty()}, false),
@@ -2623,7 +2628,7 @@ Converter::MinMaxFilter(
     Own.Range = Custom ? Reducer->getArg(4) : nullptr;
     Own.Metadata = nullptr;
     // an unbound texture's answers are dropped where it is called
-    Own.Texture.Unbound = Own.Texture.SingleSample = nullptr;
+    Own.Texture.Unbound = Own.Texture.SingleSample = Own.Texture.Paired = nullptr;
     Value *Sampler = Reducer->getArg(1), *Metadata = Reducer->getArg(2), *Border = Reducer->getArg(3);
     Value *Coord = Reducer->getArg(5), *ArrayIndex = Reducer->getArg(6), *LOD = Reducer->getArg(7);
     auto Field = [&](unsigned Shift, unsigned Bits) {
@@ -3190,7 +3195,7 @@ Converter::operator()(const InstSampleInfo &sample) {
     if (sample.src.has_value()) {
       SampleCount = ir.getInt32(0);
     } else {
-      SampleCount = air.CreateGetNumSamples();
+      SampleCount = air.CreateD3DSampleCount();
     }
   } else {
     SampleCount = air.CreateTextureQuery(Tex->Texture, Tex->Handle, Texture::num_samples, ir.getInt32(0));
@@ -3222,7 +3227,7 @@ Converter::operator()(const InstSamplePos &sample) {
                          Index
                      )
       : sample.src ? air.CreateSamplePos(ir.getInt32(0), Index)
-                   : air.CreateRasterizerSamplePos(Index);
+                   : air.CreateRasterizerSamplePos(air.MetalSampleIndex(Index));
   ValueVec4 = ir.CreateShuffleVector(Pos, ValueVec4, {0, 1, 2, 3});
 
   StoreOperand(sample.dst, MaskSwizzle(ValueVec4, GetMask(sample.dst), sample.read_swizzle));
@@ -3248,13 +3253,25 @@ Converter::operator()(const InstBufferInfo &bufinfo) {
 
 void
 Converter::LoadBufferWords(
-    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+    llvm::Value *Within
 ) {
   mask_t Mask = GetMask(Dst), Words = MemoryAccessMask(Mask, Buf.Swizzle);
   llvm::Value *Residency = ir.getInt32(0);
   auto At = [&](unsigned Word, llvm::Value *Index) {
     return ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Word));
   };
+  if (Within) {
+    llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
+    for (auto [DstComp, _] : EnumerateComponents(Words))
+      ValueVec = ir.CreateInsertElement(
+          ValueVec,
+          LoadBufferValue(Buf, ir.getInt32Ty(), CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), true), true),
+          DstComp
+      );
+    auto Value = ir.CreateSelect(Within, ValueVec, llvm::Constant::getNullValue(ValueVec->getType()));
+    return StoreOperand(Dst, MaskSwizzle(Value, Mask, Buf.Swizzle));
+  }
   if (auto Comp = ComponentFromScalarMask(Mask, Buf.Swizzle); Comp >= 0) {
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf, At(Comp, Index));
     if (Feedback)
@@ -3287,11 +3304,26 @@ Converter::operator()(const InstLoadStructured &load) {
   auto Buf = LoadBuffer(load.src);
   if (!Buf)
     return;
+  auto Element = LoadOperand(load.src_address, kMaskComponentX);
+  auto Inner = LoadOperand(load.src_byte_offset, kMaskComponentX);
+  // a load that a constant offset keeps inside its element is inside a bounded view where its element is (an offset
+  // past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every word, and the address
+  // in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping. a view without bounds
+  // may pass 4 GB and keeps the 64-bit address
+  auto Words = MemoryAccessMask(GetMask(load.dst), Buf->Swizzle);
+  if (auto Fixed = dyn_cast<llvm::ConstantInt>(Inner);
+      Fixed && !load.feedback && Words && Buf->Bounds() &&
+      Fixed->getZExtValue() + 4 * (llvm::Log2_32(Words) + 1) <= Buf->StructureStride) {
+    auto At = ir.CreateLShr(ir.CreateAdd(ir.CreateMul(Element, ir.getInt32(Buf->StructureStride)), Fixed), 2);
+    auto Within = ir.CreateICmpULT(
+        Element, ir.CreateUDiv(DecodeRawBufferByteLength(Buf->Metadata), ir.getInt32(Buf->StructureStride))
+    );
+    At = ir.CreateSelect(Within, At, ir.getInt32(0));
+    return LoadBufferWords(*Buf, ir.CreateZExt(At, ir.getInt64Ty()), load.dst, load.feedback, Within);
+  }
   // in 64 bits: an element index scaled by the stride can wrap 32 and pass the bounds check
-  auto IndexStruct = ir.CreateMul(
-      ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(LoadOperand(load.src_address, kMaskComponentX), ir.getInt64Ty())
-  );
-  auto Offset = ir.CreateZExt(ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2), ir.getInt64Ty());
+  auto IndexStruct = ir.CreateMul(ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(Element, ir.getInt64Ty()));
+  auto Offset = ir.CreateZExt(ir.CreateLShr(Inner, 2), ir.getInt64Ty());
   LoadBufferWords(*Buf, ir.CreateAdd(IndexStruct, Offset), load.dst, load.feedback);
 }
 
@@ -3536,7 +3568,7 @@ Converter::operator()(const InstInterpolateSample &eval) {
   if (!Itp)
     return;
 
-  auto Sample = LoadOperand(eval.sample_index, kMaskComponentX);
+  auto Sample = air.MetalSampleIndex(LoadOperand(eval.sample_index, kMaskComponentX));
   auto Value = Interpolate(*Itp, [&](auto Handle) { return air.CreateInterpolateAtSample(Handle, Sample, Itp->Perspective); });
   StoreOperand(eval.dst, MaskSwizzle(Value, GetMask(eval.dst), eval.read_swizzle));
 }

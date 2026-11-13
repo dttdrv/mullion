@@ -636,11 +636,12 @@ struct WMTComputePipelineInfo {
   obj_handle_t compute_function;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   obj_handle_t binary_archive_for_serialization;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
   bool tgsize_is_multiple_of_sgwidth;
   uint32_t immutable_buffers;
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t MTLDevice_newComputePipelineState(
@@ -858,10 +859,10 @@ struct WMTRenderPipelineInfo {
   enum WMTTessellationFactorStepFunction tessellation_factor_step;
   obj_handle_t binary_archive_for_serialization;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  uint8_t padding[4];
 };
 
 struct WMTMeshRenderPipelineInfo {
@@ -884,10 +885,10 @@ struct WMTMeshRenderPipelineInfo {
   bool object_tgsize_is_multiple_of_sgwidth;
   obj_handle_t binary_archive_for_serialization;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t
@@ -2452,7 +2453,8 @@ WINEMETAL_API void MTLTexture_getBytes(
     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
 );
 
-/* acceleration structures. matrices are row-major 3x4 (MTLMatrixLayoutRowMajor), as Direct3D's are */
+/* acceleration structures. instances' matrices are column-major 3x4, Metal's default; a geometry's transform is
+   row-major (MTLMatrixLayoutRowMajor, as Direct3D's are) unless transform_column_major */
 enum WMTAccelerationStructureUsage : uint32_t {
   WMTAccelerationStructureUsageRefit = 1 << 0,
   WMTAccelerationStructureUsagePreferFastBuild = 1 << 1,
@@ -2473,7 +2475,8 @@ struct WMTAccelerationStructureGeometry {
   enum WMTIndexType index_type;
   bool opaque;
   bool no_duplicate_any_hit;
-  uint8_t padding[5];
+  bool transform_column_major;
+  uint8_t padding[4];
 };
 
 STATIC_ASSERT(sizeof(WMTAccelerationStructureGeometry) == 72);
@@ -2596,7 +2599,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
-       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixCallCount };
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
@@ -2619,6 +2622,9 @@ WINEMETAL_API int64_t WMTDiagSemaphoreCount(void *semaphore);
 // the statistics the device's driver keeps in its IORegistry entry (PerformanceStatistics), as tab-separated
 // name=value pairs: their length, written to buffer when it holds them
 WINEMETAL_API uint64_t WMTGPUStatistics(obj_handle_t device, char *buffer, uint64_t size);
+// what the bridge answers of the device (as the family of MULLION_GPU_FAMILY, when one is set), `name=value` lines.
+// their length, written to buffer when it holds them
+WINEMETAL_API uint64_t WMTDeviceReport(obj_handle_t device, char *buffer, uint64_t size);
 WINEMETAL_API void MTLCommandBuffer_pushDebugGroup(obj_handle_t cmdbuf, obj_handle_t name);
 WINEMETAL_API void MTLCommandBuffer_popDebugGroup(obj_handle_t cmdbuf);
 WINEMETAL_API uint64_t DispatchData_getBytes(obj_handle_t data, void *buffer, uint64_t size);

@@ -1064,23 +1064,35 @@ struct PredicatedWord {
   uint skipped;
 };
 
+struct ArgumentsView {
+  ulong address;
+  ulong length;
+};
+
+// `view`: the buffers over the GPU heap, each covering those before it. what reads a dword reads it through the one
+// the list was in when it recorded it, and sees what was written through that one: a dword is written through each
+// that covers it
 struct PredicationRegion {
   uint count;
-  uint entries;
+  uint views;
   uint skip_if_zero;
   uint skips;
+  ulong entries;
+  ArgumentsView view[7];
 };
 
 [[kernel]] void predicate(
     device const ulong *predicate [[buffer(0)]],
-    device PredicationRegion *region [[buffer(1)]],
-    device uint *heap [[buffer(2)]]
+    device const PredicationRegion *region [[buffer(1)]]
 ) {
   bool skip = (*predicate == 0) == bool(region->skip_if_zero);
-  region->skips = skip;
-  device const PredicatedWord *entries = (device const PredicatedWord *)(heap + region->entries);
-  for (uint i = 0; i < region->count; i++)
-    heap[entries[i].word] = skip ? entries[i].skipped : entries[i].value;
+  device const PredicatedWord *entries = (device const PredicatedWord *)region->entries;
+  for (uint i = 0; i < region->count; i++) {
+    ulong at = ulong(entries[i].word) * sizeof(uint);
+    for (uint v = 0; v < region->views; v++)
+      if (at < region->view[v].length)
+        *(device uint *)(region->view[v].address + at) = skip ? entries[i].skipped : entries[i].value;
+  }
 }
 
 // sampler feedback transcoding (TranscodeFeedback in mullion_command_feedback.hpp): a map has one texel per mip region of
@@ -1166,7 +1178,9 @@ static uint feedback_byte(constant MullionFeedbackMetadata &meta, uint3 pos) {
 }
 
 // a top-level acceleration structure's instances, from Direct3D 12's (D3D12_RAYTRACING_INSTANCE_DESC) to Metal's
-// (MTLIndirectAccelerationStructureInstanceDescriptor). both start with a row-major 3x4 matrix, and Direct3D's
+// (MTLIndirectAccelerationStructureInstanceDescriptor). both start with a 3x4 matrix, Direct3D's row-major and
+// Metal's column-major, its default, which every GPU takes (row-major ones only Apple9 and later, Metal feature set
+// tables), and Direct3D's
 // instance flags are Metal's instance options bit for bit. an instance names its bottom-level structure by the
 // address of its memory, which starts with the resource ID of the Metal structure (AccelerationStructureHeader);
 // one without a structure is inactive (DXR spec, "Inactive primitives and instances"), which a mask of 0 makes it
@@ -1193,6 +1207,19 @@ struct MetalInstance {
   ulong structure;
 };
 
+// a bottom-level structure's geometry transforms, Direct3D's row-major 3x4 matrices at the addresses `sources` holds,
+// as column-major ones for a GPU that takes no row-major ones (Metal feature set tables: Apple9 and later)
+[[kernel]] void acceleration_structure_transforms(
+    device const ulong *sources [[buffer(0)]],
+    device float *transposed [[buffer(1)]],
+    uint index [[thread_position_in_grid]]
+) {
+  device const float *transform = (device const float *)sources[index];
+  for (uint r = 0; r < 3; r++)
+    for (uint c = 0; c < 4; c++)
+      transposed[12 * index + 3 * c + r] = transform[4 * r + c];
+}
+
 [[kernel]] void acceleration_structure_instances(
     constant MullionInstanceConversion &conversion [[buffer(0)]],
     device MetalInstance *converted [[buffer(1)]],
@@ -1202,8 +1229,9 @@ struct MetalInstance {
       conversion.pointers ? (device const D3D12Instance *)(((device const ulong *)conversion.instances)[index])
                           : (device const D3D12Instance *)conversion.instances + index;
   device MetalInstance &out = converted[index];
-  for (uint i = 0; i < 12; i++)
-    out.transform[i] = instance->transform[i];
+  for (uint r = 0; r < 3; r++)
+    for (uint c = 0; c < 4; c++)
+      out.transform[3 * c + r] = instance->transform[4 * r + c];
   ulong structure = instance->structure;
   out.options = instance->hit_group_and_flags >> 24 & 0xf;
   out.mask = structure ? instance->id_and_mask >> 24 : 0;

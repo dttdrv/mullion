@@ -1,12 +1,12 @@
 # an indirect draw takes the most commands whatever its count buffer says
 --- a/src/d3d12/d3d12_command_signature.cpp
 +++ b/src/d3d12/d3d12_command_signature.cpp
-@@ -270,7 +270,7 @@
+@@ -393,7 +393,7 @@ public:
      // each thread resolves one command
      source << "ulong i = x;\n";
      source << "uint count = command_data.max_count_buffer ? "
 -              "command_data.max_count_buffer[0] : command_data.max_count;\n";
 +              "command_data.max_count : command_data.max_count;\n";
-     if (!rays) {
+     if (!rays && !indexed) {
        source << "if (i == 0) command_data.execution_range = uint2(0, "
                  "min(count, uint(command_data.max_count))";

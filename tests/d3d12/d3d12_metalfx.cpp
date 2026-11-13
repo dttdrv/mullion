@@ -4,7 +4,10 @@
 // output must be the input's color in every texel, within one unit of the 8-bit output. the inputs are cleared by the
 // same list right before the upscale, and the output is copied right after it, so a pass out of order reads or leaves
 // the bytes of the frame before. depth and exposure are R32_TYPELESS and motion vectors R16G16_TYPELESS, as games
-// create them; DLSS takes motion vectors as floats only, so normalized ones are refused rather than misread
+// create them; DLSS takes motion vectors as floats only, so normalized ones are refused rather than misread. motion
+// vectors at the output resolution (DLSS without NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) are taken too: frames of one
+// color, the second not in reset, come out that color with them, and a square that moves between two frames comes out
+// the same image whether its motion is given at the input resolution or, as the same motion, at the output's
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -16,6 +19,13 @@
 struct Texture {
   ComPtr<ID3D12Resource> resource;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+};
+
+// a square of `side` input pixels at x, y, with the motion vector `motion` at each of its input pixels and `given` at
+// each of its output pixels; no motion around it
+struct Moved {
+  LONG x, y, side;
+  float motion[4], given[4];
 };
 
 using init_t = NVNGX_RESULT (*)(unsigned long long, const wchar_t *, ID3D12Device *, const void *, unsigned int);
@@ -73,12 +83,14 @@ main(int argc, char **argv) {
   auto color = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, width, height, target, input);
   auto depth = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, width, height, target, input);
   auto motion = texture(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_FLOAT, width, height, target, input);
+  auto display_motion =
+      texture(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_FLOAT, out_width, out_height, target, input);
   auto exposure = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, 1, 1, target, input);
   auto normalized = texture(DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_UNKNOWN, width, height, target, input);
   auto output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, out_width, out_height,
                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   CHECK(color.resource && depth.resource && motion.resource && exposure.resource && normalized.resource &&
-                output.resource
+                output.resource && display_motion.resource
             ? S_OK
             : E_FAIL);
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
@@ -88,8 +100,10 @@ main(int argc, char **argv) {
   auto read_back = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, bytes, D3D12_RESOURCE_STATE_COPY_DEST);
 
   // one frame upscaled by what `record` records into the list: the color is `a` in the squares of a checkerboard of
-  // `square` texels and `b` between them (one color when `square` is 0); the output's texels, tightly
-  auto upscaled = [&](const BYTE *a, const BYTE *b, UINT square, const std::function<bool()> &record) {
+  // `square` texels and `b` between them (one color when `square` is 0), or in the one square of `moved`; the
+  // output's texels, tightly
+  auto upscaled = [&](const BYTE *a, const BYTE *b, UINT square, const std::function<bool()> &record,
+                      const Moved *moved = nullptr) {
     std::vector<BYTE> texels;
     if (FAILED(forget(read_back.Get())) || FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr)))
       return texels;
@@ -99,13 +113,29 @@ main(int argc, char **argv) {
     for (UINT y = 0; square && y < height; y += square)
       for (UINT x = (y / square % 2) * square; x < width; x += 2 * square)
         squares.push_back({LONG(x), LONG(y), LONG(x + square), LONG(y + square)});
-    const float half[] = {0.5f, 0, 0, 0}, zero[] = {0, 0, 0, 0}, one[] = {1, 0, 0, 0};
-    std::pair<Texture *, const float *> clears[] = {{&color, fb.data()}, {&depth, half}, {&motion, zero}, {&exposure, one}};
-    for (auto [t, value] : clears) {
+    // the output-resolution motion vectors: some pixels' worth of motion, which a uniform image does not show
+    const float half[] = {0.5f, 0, 0, 0}, zero[] = {0, 0, 0, 0}, one[] = {1, 0, 0, 0}, some[] = {6, -4, 0, 0};
+    // each texture's value, and its value in `rects` where it has any
+    struct Clear {
+      Texture *texture;
+      const float *value, *inside;
+      std::vector<D3D12_RECT> rects;
+    };
+    Clear clears[] = {{&color, fb.data(), fa.data(), squares}, {&depth, half}, {&motion, zero}, {&exposure, one},
+                      {&display_motion, some}};
+    if (moved) {
+      const D3D12_RECT at{moved->x, moved->y, moved->x + moved->side, moved->y + moved->side};
+      const LONG times = scale;
+      clears[0].rects = {at};
+      clears[2] = {&motion, zero, moved->motion, {at}};
+      clears[4] = {&display_motion, zero, moved->given,
+                   {{at.left * times, at.top * times, at.right * times, at.bottom * times}}};
+    }
+    for (auto &[t, value, inside, rects] : clears) {
       transition(list.Get(), t->resource.Get(), input, D3D12_RESOURCE_STATE_RENDER_TARGET);
       list->ClearRenderTargetView(t->rtv, value, 0, nullptr);
-      if (t == &color && !squares.empty())
-        list->ClearRenderTargetView(t->rtv, fa.data(), squares.size(), squares.data());
+      if (!rects.empty())
+        list->ClearRenderTargetView(t->rtv, inside, rects.size(), rects.data());
       transition(list.Get(), t->resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, input);
     }
     if (!expect(record(), "the upscale was refused")) {
@@ -131,19 +161,22 @@ main(int argc, char **argv) {
     return texels;
   };
   // through the extension, as the NGX bridge records it
-  auto frame = [&](const BYTE *a, const BYTE *b, UINT square, BOOL reset, IMTLD3D12Upscaler *&scaler) {
-    return upscaled(a, b, square, [&] {
+  auto frame = [&](const BYTE *a, const BYTE *b, UINT square, BOOL reset, IMTLD3D12Upscaler *&scaler,
+                   bool at_output = false, const Moved *moved = nullptr) {
+    auto record = [&] {
       MTL_TEMPORAL_UPSCALE_D3D12_DESC desc{};
       desc.InReset = reset;
       desc.Color = color.resource.Get();
       desc.Depth = depth.resource.Get();
-      desc.MotionVector = motion.resource.Get();
+      desc.MotionVector = (at_output ? display_motion : motion).resource.Get();
+      desc.MotionVectorInDisplayRes = at_output;
       desc.ExposureTexture = exposure.resource.Get();
       desc.Output = output.resource.Get();
       desc.MotionVectorScaleX = desc.MotionVectorScaleY = 1;
       desc.PreExposure = 1;
       return SUCCEEDED(ext->TemporalUpscale(&desc, &scaler));
-    });
+    };
+    return upscaled(a, b, square, record, moved);
   };
   // how many color channels of two images are more than one unit apart
   auto apart = [](const std::vector<BYTE> &x, const std::vector<BYTE> &y) {
@@ -196,6 +229,42 @@ main(int argc, char **argv) {
   for (auto scaler : {fresh, continued})
     if (scaler)
       scaler->Destroy();
+
+  IMTLD3D12Upscaler *display = nullptr;
+  for (BOOL reset : {TRUE, FALSE}) {
+    step("a frame of one color with motion vectors at the output resolution, %s", reset ? "in reset" : "not in reset");
+    if (!uniform(frame(frames[0], frames[0], 0, reset, display, true), frames[0]))
+      return verdict();
+  }
+  if (display)
+    display->Destroy();
+
+  // a light square on dark moves `by` input pixels between a frame in reset and the next. its motion at the output
+  // resolution is `scale` times its motion at the input's, in every output pixel of the square: the same motion, so
+  // the same image. half that, the numbers of the input's vectors taken as the output's, is another motion: the
+  // test's own check that the image shows which motion it was given
+  const LONG side = 32, x = 64, y = 56, by = 12;
+  const float there = -float(by), there_output = there * scale;
+  const Moved start{x, y, side}, moved{x + by, y, side, {there}, {there_output}}, halved{x + by, y, side, {there}, {there}};
+  auto moving = [&](bool at_output, const Moved &second) {
+    IMTLD3D12Upscaler *scaler = nullptr;
+    frame(light, dark, 0, TRUE, scaler, at_output, &start);
+    auto image = frame(light, dark, 0, FALSE, scaler, at_output, &second);
+    if (scaler)
+      scaler->Destroy();
+    return image;
+  };
+  step("a square that moves %ld pixels, its motion given at the input resolution", by);
+  auto at_input = moving(false, moved);
+  step("the same motion given at the output resolution");
+  auto at_output = moving(true, moved);
+  step("half that motion given at the output resolution");
+  auto other = moving(true, halved);
+  if (expect(!at_input.empty() && !at_output.empty() && !other.empty(), "no image")) {
+    expect(!apart(at_input, at_output), "%u channels differ between the motion given at the input resolution and at the output's",
+           apart(at_input, at_output));
+    expect(apart(at_input, other), "half the motion gives the same image: the motion vectors do not show in it");
+  }
 
   step("normalized motion vectors, which hold no float to read");
   CHECK(allocator->Reset());

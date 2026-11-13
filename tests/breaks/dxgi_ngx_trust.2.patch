@@ -1,14 +1,13 @@
 diff --git a/src/dxgi/dxgi.cpp b/src/dxgi/dxgi.cpp
-index d87c767c..6ffe08d9 100644
 --- a/src/dxgi/dxgi.cpp
 +++ b/src/dxgi/dxgi.cpp
-@@ -40,8 +40,7 @@ static void TrustNGXCertificate() {
- 
- void TrustVendorExtension() {
+@@ -131,8 +131,7 @@ void InitializeVendorExtension() {
+ #ifdef _WIN32
    static std::once_flag once;
+   std::call_once(nvext_init, InitializeVendorExtensionNV);
 -  if (g_extension_enabled == VendorExtension::Nvidia)
 -    std::call_once(once, TrustNGXCertificate);
 +  std::call_once(once, TrustNGXCertificate);
+ #endif
  }
  
- // NVEXT is on with MULLION_ENABLE_NVEXT=1, or where the configuration shows the program an NVIDIA GPU

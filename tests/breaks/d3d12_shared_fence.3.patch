@@ -1,12 +1,12 @@
 # returns from a Direct3D 11 fence wait without an event at once
 --- a/src/d3d11/d3d11_fence.cpp
 +++ b/src/d3d11/d3d11_fence.cpp
-@@ -59,8 +59,6 @@ public:
+@@ -54,8 +54,6 @@ public:
    HRESULT STDMETHODCALLTYPE SetEventOnCompletion(UINT64 Value,
                                                   HANDLE Event) final {
      // a null event blocks until the value, as ID3D12Fence's does
 -    if (!Event)
 -      return event.waitUntilSignaledValue(Value, ~0ull) ? S_OK : E_FAIL;
-     auto shared_event_listener = this->m_parent->GetMullionDevice().queue().GetSharedEventListener();
-     MTLSharedEvent_setWin32EventAtValue(event.handle, shared_event_listener, Event, Value, true);
-     return S_OK;
+     // a value the event already has raises the event at once, as Windows does, not when a notification of it comes
+     // back from Metal's listener. a value reached after this is notified, as Metal notifies at once of one it has
+     if (Value <= event.signaledValue()) {

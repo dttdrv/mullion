@@ -638,7 +638,7 @@ def known(path=None):
     entries = {}
     for number, line in enumerate(path.read_text().splitlines() if path.exists() else [], 1):
         if line.strip() and not line.startswith("#"):
-            fields = re.fullmatch(r"(native\([^)]*\)|\S+) (\S+) (failed: \d+ wrong results \[[0-9a-f]{8}\]|skipped: .+) -- (.*\S.*)", line)
+            fields = re.fullmatch(r"(native\(.*?\)|\S+) (\S+) (failed: \d+ wrong results \[[0-9a-f]{8}\]|skipped: .+) -- (.*\S.*)", line)
             if not fields:
                 sys.exit(f"{path}:{number}: not '<family> <test> <verdict or skip> -- <cause>'")
             entries[fields[1], fields[2]] = fields[3]
@@ -689,6 +689,9 @@ def own(args, tests, builds, binary, base):
         sys.exit("--late must be nonnegative milliseconds")
     logs = builds[0] / "meson-logs" / ("benchmarks" if getattr(args, "benchmark", False) else "tests")
     logs.mkdir(parents=True, exist_ok=True)
+    # a test's flight records (WMTFlightDump) go with its logs, not where a game's go (~/Library/Logs/Mullion)
+    base = dict(base)
+    base.setdefault("MULLION_DIAG_PATH", str(logs))
     families = args.family.split(",")
     verdicts, said_by = {}, {}
     printing = threading.Lock()
@@ -697,7 +700,6 @@ def own(args, tests, builds, binary, base):
     # shader compiler the prefix lacks for its architecture: a missing compiler is missing coverage (docs/TESTING.md,
     # section 4)
     runs = machines(binary)
-    prefix = Path(base["WINEPREFIX"])
     present = {}
     not_run = {}
     for test in tests:
@@ -707,7 +709,7 @@ def own(args, tests, builds, binary, base):
                 not_run[test["name"]] = (f"the Wine runs no {kind} programs" if binary is not None
                                          else "no Wine runs here")
                 continue
-            missing = needs(test) - present.setdefault(kind, compilers(prefix, kind))
+            missing = needs(test) - present.setdefault(kind, compilers(Path(base["WINEPREFIX"]), kind))
             if missing:
                 not_run[test["name"]] = (f"the prefix has no Microsoft {' or '.join(COMPILERS[name] for name in sorted(missing))} "
                                          f"for {kind} programs (--compilers)")

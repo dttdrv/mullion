@@ -178,7 +178,25 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   WMT::Reference<WMT::Buffer> gpu_heap_buffer_;
   void *gpu_heap_ = nullptr;
   Cursor gpu_cursor_;
-  uint64_t gpu_heap_buffer_address_;
+  uint64_t gpu_heap_buffer_address_, gpu_heap_buffer_length_ = 0;
+  // what the GPU reads of the arguments arena at first: a buffer of it this long, twice as long each time it fills
+  static constexpr size_t kFirstArguments = size_t(16) << 20;
+  // the buffers over the arguments (MTLD3D12Device::recording), each covering those before it: as many as there can
+  // be, and where each is. a barrier makes what the GPU wrote through one visible through that one, not through the
+  // others ("Flushes caches to ensure that aliased virtual addresses are memory consistent" is
+  // MTL4VisibilityOptions' resourceAlias, which the passes' barriers do not ask for)
+  static constexpr unsigned kArgumentsViews = std::bit_width(RecordingArena::kSize / kFirstArguments);
+  struct ArgumentsView {
+    uint64_t address, length;
+  };
+  unsigned ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]);
+  // a Metal buffer over the arguments arena's first `Length` bytes, the device's last (under its recording lock)
+  bool NewArgumentsBuffer(size_t Length);
+  // hands out twice what the arguments arena did when it had `Seen` bytes, with a buffer over it: false where it
+  // hands out all of it
+  bool GrowArguments(size_t Seen);
+  // records into the device's last buffer over the arguments arena, which covers all that is handed out of it
+  void TakeLastArgumentsBuffer();
   // the scratch area the recording list's indirect stream output commands share, one after another, at an offset in
   // the GPU heap; no size until the first
   uint64_t so_scratch_offset_ = 0, so_scratch_size_ = 0;
@@ -345,6 +363,13 @@ public:
     if (unlikely(Length > cursor.end - std::min(aligned, cursor.end))) {
       // a run starts at a block, which is aligned for anything recorded
       auto run = arena.Acquire(Length);
+      // what the GPU reads grows, and a list goes on in a buffer that covers its new run (GrowArguments)
+      if (&arena == &device_->recording.arguments) {
+        for (size_t seen = arena.Usable(); !run && GrowArguments(seen); seen = arena.Usable())
+          run = arena.Acquire(Length);
+        if (run && run->offset + run->length > gpu_heap_buffer_length_)
+          TakeLastArgumentsBuffer();
+      }
       if (!run) {
         if (!std::exchange(exhausted_, true))
           ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
@@ -537,7 +562,7 @@ public:
   // `Pipeline` is the variant of pPSO that the commands draw with
   IndirectRenderCommandData *EncodeIndirectRenderCommand(
       MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-      size_t MaxCount, bool tessellation, bool statistics_cuts
+      size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
   );
 };
 
