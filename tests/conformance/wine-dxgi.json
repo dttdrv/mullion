@@ -123,8 +123,7 @@
   "verdict": "passed"
  },
  "test_swapchain_present": {
-  "verdict": "timeout",
-  "at": "1 in dxgi_test.exe: test_swapchain_present at dxgi.c:5064:34; 2 in D3D11.DLL: void std::__1::__contention_wait<8ull, std::__1::NoTimeout>(std::__1::__cxx_atomic_impl<long long, std::__1::__cxx_atomic_base_impl<long long>>*, void const*, void const*, std::__1::NoTimeout) at ??:0:0; 2 in D3D11.DLL: mullion::task_scheduler<mullion::ThreadpoolWork*>::worker_func() at ??:0:0; 1 in winemetal.dll: SharedEventListener_start at ??:0:0"
+  "verdict": "failed"
  },
  "test_swapchain_present_count": {
   "verdict": "crashed",
