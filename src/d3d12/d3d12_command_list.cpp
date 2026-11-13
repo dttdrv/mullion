@@ -4482,6 +4482,7 @@ public:
       const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC *pDepthStencil, D3D12_RENDER_PASS_FLAGS Flags
   ) {
     D3D12_CPU_DESCRIPTOR_HANDLE targets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
+    UINT target_count = 0;
     pass_resolves_.clear();
     auto resolve = [&](const D3D12_RENDER_PASS_ENDING_ACCESS &end) {
       if (end.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE)
@@ -4496,24 +4497,31 @@ public:
                  : type != D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS &&
                        type != sdk::D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE_LOCAL_UAV;
     };
+    // a pipeline's render targets are the bound ones, in "the order the raster bound surfaces appear in the render
+    // pass RTV list without any gaps"
     for (UINT i = 0; i < NumRenderTargets; i++) {
-      targets[i] = bound(pRenderTargets[i].BeginningAccess, false) ? pRenderTargets[i].cpuDescriptor
-                                                                    : D3D12_CPU_DESCRIPTOR_HANDLE{};
+      if (bound(pRenderTargets[i].BeginningAccess, false))
+        targets[target_count++] = pRenderTargets[i].cpuDescriptor;
       resolve(pRenderTargets[i].EndingAccess);
     }
     bool depth_stencil = pDepthStencil &&
                          (bound(pDepthStencil->DepthBeginningAccess, Flags & D3D12_RENDER_PASS_FLAG_BIND_READ_ONLY_DEPTH) ||
                           bound(pDepthStencil->StencilBeginningAccess, Flags & D3D12_RENDER_PASS_FLAG_BIND_READ_ONLY_STENCIL));
-    OMSetRenderTargets(NumRenderTargets, targets, FALSE, depth_stencil ? &pDepthStencil->cpuDescriptor : nullptr);
-    for (UINT i = 0; i < NumRenderTargets; i++)
+    OMSetRenderTargets(target_count, targets, FALSE, depth_stencil ? &pDepthStencil->cpuDescriptor : nullptr);
+    // a pass that resumes one goes on with what that one left, and clears nothing again: suspending and resuming
+    // "results in no rendering difference (versus ENDING_PRESERVE/BEGINNING_PRESERVE)" (Render Passes, HLK Testing)
+    bool clears = !(Flags & D3D12_RENDER_PASS_FLAG_RESUMING_PASS);
+    for (UINT i = 0; clears && i < NumRenderTargets; i++)
       if (pRenderTargets[i].BeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
-        ClearRenderTargetView(targets[i], pRenderTargets[i].BeginningAccess.Clear.ClearValue.Color, 0, nullptr);
+        ClearRenderTargetView(
+            pRenderTargets[i].cpuDescriptor, pRenderTargets[i].BeginningAccess.Clear.ClearValue.Color, 0, nullptr
+        );
     if (!pDepthStencil)
       return;
     auto &depth = pDepthStencil->DepthBeginningAccess, &stencil = pDepthStencil->StencilBeginningAccess;
     auto flags = (depth.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR ? D3D12_CLEAR_FLAG_DEPTH : 0) |
                  (stencil.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR ? D3D12_CLEAR_FLAG_STENCIL : 0);
-    if (flags)
+    if (clears && flags)
       ClearDepthStencilView(
           pDepthStencil->cpuDescriptor, (D3D12_CLEAR_FLAGS)flags, depth.Clear.ClearValue.DepthStencil.Depth,
           stencil.Clear.ClearValue.DepthStencil.Stencil, 0, nullptr
@@ -4530,6 +4538,8 @@ public:
           const_cast<D3D12_RECT *>(&sub.SrcRect), r.Format, r.ResolveMode
       );
     pass_resolves_.clear();
+    // the pass's targets "are not propagated out to the Command List": a draw after it has none
+    OMSetRenderTargets(0, nullptr, FALSE, nullptr);
   }
 
   // the device reports no meta commands, ray tracing, variable rate shading or mesh shaders, so a valid list never
