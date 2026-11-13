@@ -32,7 +32,7 @@ main() {
   CHECK(device->CreateRasterizerState(&raster, &scissored));
   constexpr UINT width = 3, height = 2;
   const UINT bit_values[] = {0, 1, UINT_MAX, UINT(1) << (sizeof(UINT) * CHAR_BIT - 1), 0xa53c19e7};
-  UINT exercised = 0;
+  UINT exercised = 0, buffer_views = 0;
   for (const auto &format : copy_formats) {
     const auto kind = clear_values::kind(format);
     const bool snorm = kind.snorm, unorm = kind.unorm, sint = kind.sint, uint = kind.uint, floating = kind.floating;
@@ -132,7 +132,64 @@ main() {
           exercised++;
         }
     }
+    // a typed view of a buffer takes the same bits, in its own elements only (Wine's
+    // test_clear_buffer_unordered_access_view clears an R8G8B8A8_SINT one with values past a signed byte)
+    if ((support & D3D11_FORMAT_SUPPORT_BUFFER) && (support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW)) {
+      constexpr UINT elements = 16, first = 5, count = 6;
+      const std::vector<unsigned char> seed(elements * format.bytes, 0x5a);
+      D3D11_BUFFER_DESC desc{UINT(seed.size()), D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS};
+      const D3D11_SUBRESOURCE_DATA data{seed.data()};
+      ComPtr<ID3D11Buffer> target, staging;
+      CHECK(device->CreateBuffer(&desc, &data, &target));
+      desc.Usage = D3D11_USAGE_STAGING;
+      desc.BindFlags = 0;
+      desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      CHECK(device->CreateBuffer(&desc, nullptr, &staging));
+      D3D11_UNORDERED_ACCESS_VIEW_DESC view_desc{format.id, D3D11_UAV_DIMENSION_BUFFER};
+      view_desc.Buffer = {first, count, 0};
+      ComPtr<ID3D11UnorderedAccessView> uav;
+      CHECK(device->CreateUnorderedAccessView(target.Get(), &view_desc, &uav));
+      for (UINT route = 0; route < std::size(contexts); route++)
+        for (UINT index = 0; index < std::size(bit_values); index++) {
+          std::array<UINT, 4> bits;
+          for (UINT c = 0; c < bits.size(); c++)
+            bits[c] = bit_values[(index + c) % std::size(bit_values)];
+          step("clear %s buffer view route %u values %u", format.name, route, index);
+          auto context = contexts[route].Get();
+          context->UpdateSubresource(target.Get(), 0, nullptr, seed.data(), 0, 0);
+          context->ClearUnorderedAccessViewUint(uav.Get(), bits.data());
+          context->CopyResource(staging.Get(), target.Get());
+          if (route) {
+            ComPtr<ID3D11CommandList> commands;
+            CHECK(deferred->FinishCommandList(FALSE, &commands));
+            immediate->ExecuteCommandList(commands.Get(), FALSE);
+          }
+          D3D11_MAPPED_SUBRESOURCE mapped;
+          CHECK(immediate->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+          bool ok = true;
+          for (UINT element = 0; element < elements && ok; element++) {
+            auto pixel = static_cast<unsigned char *>(mapped.pData) + element * format.bytes;
+            if (element < first || element >= first + count) {
+              for (UINT byte = 0; byte < format.bytes && ok; byte++)
+                ok &= expect(pixel[byte] == 0x5a, "element %u outside the view, byte %u is %#x", element, byte, pixel[byte]);
+              continue;
+            }
+            UINT at = 0;
+            for (auto channel : channels) {
+              UINT64 encoded = 0;
+              for (UINT bit = 0; bit < channel.bits; bit++, at++)
+                encoded |= UINT64((pixel[at / CHAR_BIT] >> (at % CHAR_BIT)) & 1) << bit;
+              const UINT64 mask = (UINT64(1) << channel.bits) - 1;
+              ok &= expect(encoded == (bits[channel.component] & mask), "element %u channel %u bits %#llx", element,
+                           channel.component, encoded);
+            }
+          }
+          immediate->Unmap(staging.Get(), 0);
+          buffer_views++;
+        }
+    }
   }
   expect(exercised != 0, "no clear conversion was exercised");
+  expect(buffer_views != 0, "no typed buffer view was cleared");
   return verdict();
 }

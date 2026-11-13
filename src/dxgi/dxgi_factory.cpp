@@ -245,8 +245,10 @@ public:
         !IsFlipSwapChainFormat(pDesc->Format))
       return FAIL(DXGI_ERROR_INVALID_CALL);
 
-    // every effect but DISCARD "cannot be used with multisampling" (Microsoft Learn, DXGI_SWAP_EFFECT)
-    if (pDesc->SwapEffect != DXGI_SWAP_EFFECT_DISCARD && (pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality))
+    // a flip effect "cannot be used with multisampling" (Microsoft Learn, DXGI_SWAP_EFFECT). the page says it of
+    // SEQUENTIAL too, which Windows creates multisampled all the same (Wine's test_swapchain_parameters)
+    if ((pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD) &&
+        (pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality))
       return FAIL(DXGI_ERROR_INVALID_CALL);
 
     Com<IMTLSwapChainFactory> swapchain_factory;

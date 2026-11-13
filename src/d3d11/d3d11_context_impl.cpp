@@ -718,8 +718,20 @@ public:
     UseWrappedView(pUAV, true);
     D3D11_UNORDERED_ACCESS_VIEW_DESC desc;
     pUAV->GetDesc(&desc);
-    if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER)
-      EmitOP([=, buffer = pUAV->buffer(), viewId = pUAV->viewId(), slice = pUAV->bufferSlice(),
+    if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER) {
+      // a typed view takes the value's low bits as they are (D3D11.3 5.2.3.2), which a write through the format's
+      // unsigned integer view stores: through a signed one Metal clamps them
+      auto viewId = pUAV->viewId();
+      WMTPixelFormat typed = WMTPixelFormatInvalid;
+      if (desc.Format != DXGI_FORMAT_UNKNOWN && !(desc.Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW)) {
+        typed = pUAV->buffer()->pixelFormat(viewId);
+        // RG11B10Float's three channels are the bits of one R32Uint, as for a texture below
+        auto unsigned_format =
+            typed == WMTPixelFormatRG11B10Float ? WMTPixelFormatR32Uint : MTLGetUnsignedIntegerFormat(typed);
+        if (unsigned_format != WMTPixelFormatInvalid && unsigned_format != typed)
+          viewId = pUAV->buffer()->createView({.format = unsigned_format, .write = true});
+      }
+      EmitOP([=, buffer = pUAV->buffer(), slice = pUAV->bufferSlice(),
             value = std::array<uint32_t, 4>({Values[0], Values[1], Values[2], Values[3]}),
             is_raw = desc.Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW,
             format = desc.Format](ArgumentEncodingContext &enc) {
@@ -733,13 +745,12 @@ public:
           } else {
             auto [view, first] = enc.accessView(buffer, viewId, ResourceAccess::Write, slice.firstElement);
             enc.emulated_cmd.ClearTextureBufferUint(
-                view.texture, first, slice.elementCount,
-                ClearUAV<ArgumentEncodingContext>::clearColor(value, buffer->pixelFormat(viewId))
+                view.texture, first, slice.elementCount, ClearUAV<ArgumentEncodingContext>::clearColor(value, typed)
             );
           }
         }
       });
-    else
+    } else
       EmitOP([=, texture = pUAV->texture(), viewId = pUAV->viewId(),
             value = std::array<uint32_t, 4>({Values[0], Values[1], Values[2], Values[3]})](
                  ArgumentEncodingContext &enc
