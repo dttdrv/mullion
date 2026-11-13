@@ -1,0 +1,49 @@
+name: Sign NGX cores
+
+# Signs NGX cores (nvngx.dll) built elsewhere with MetalSharp's NGX key, the MULLION_NGX_SIGNING_KEY secret.
+# Upload the unsigned DLLs as assets named unsigned-<lane>-nvngx.dll to a draft release of this repository,
+# run this with that release's tag, and the signed DLLs are added to it as <lane>-nvngx.dll.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag holding the unsigned-*-nvngx.dll assets
+        required: true
+      ref:
+        description: Branch whose src/nvngx/signing/mullion-ngx.pem is the certificate
+        default: metalsharp-2.1-main
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: src/nvngx/signing
+      - name: Install osslsigncode
+        run: sudo apt-get update -q && sudo apt-get install -y -q osslsigncode
+      - name: Sign
+        env:
+          KEY: ${{ secrets.MULLION_NGX_SIGNING_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/ngx.key"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'unsigned-*-nvngx.dll' -D in
+          mkdir out
+          for f in in/unsigned-*-nvngx.dll; do
+            o=out/$(basename "$f" | sed 's/^unsigned-//')
+            osslsigncode sign -certs src/nvngx/signing/mullion-ngx.pem -key "$RUNNER_TEMP/ngx.key" -n "Mullion NGX" \
+              -h sha256 -in "$f" -out "$o"
+            osslsigncode verify -CAfile src/nvngx/signing/mullion-ngx.pem -in "$o"
+          done
+          rm -f "$RUNNER_TEMP/ngx.key"
+          sha256sum out/*
+      - name: Upload
+        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber out/*
