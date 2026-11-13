@@ -1640,6 +1640,23 @@ MTLTexture_sparseTail(obj_handle_t texture, uint64_t *first_mip, uint64_t *bytes
   *bytes = params.bytes;
 }
 
+WINEMETAL_API bool
+MTLDevice_sparseTailHolds(
+    obj_handle_t device, const struct WMTTextureInfo *info, uint32_t block_width, uint32_t block_height,
+    uint32_t block_bytes, uint64_t *first_mip, uint64_t *bytes
+) {
+  struct unixcall_sparse_tail_holds params = {0};
+  params.device = device;
+  WMT_MEMPTR_SET(params.info, info);
+  params.block_width = block_width;
+  params.block_height = block_height;
+  params.block_bytes = block_bytes;
+  UNIX_CALL(WMTUnixTextureSparseTailHolds, &params);
+  *first_mip = params.first_mip;
+  *bytes = params.bytes;
+  return params.ret;
+}
+
 WINEMETAL_API obj_handle_t
 MTLDevice_newMTL4CommandQueue(obj_handle_t device) {
   struct unixcall_generic_obj_uint64_ret params;

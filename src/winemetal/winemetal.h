@@ -2294,6 +2294,15 @@ WINEMETAL_API obj_handle_t MTLDevice_newPlacementSparseBuffer(
 
 /* the first mip in the texture's tail, and the tail's size */
 WINEMETAL_API void MTLTexture_sparseTail(obj_handle_t texture, uint64_t *first_mip, uint64_t *bytes);
+// whether Metal keeps what is copied into each mip of the tail of a placement sparse texture described by `info`, in
+// its first slice: a test on the GPU, on a heap and queues of its own, which the call waits for. `block_*` are the
+// format's texel block, in texels and bytes. it also gives the tail: its first mip, and its bytes. Metal (macOS 27.2,
+// tier 2) keeps nothing in some tail mips of some block compressed textures whose height is not a power of two, such
+// as mips 6 and 7 of a 2048x1080 BC6H or BC7 texture, however the tail is mapped
+WINEMETAL_API bool MTLDevice_sparseTailHolds(
+    obj_handle_t device, const struct WMTTextureInfo *info, uint32_t block_width, uint32_t block_height,
+    uint32_t block_bytes, uint64_t *first_mip, uint64_t *bytes
+);
 
 WINEMETAL_API obj_handle_t MTLDevice_newMTL4CommandQueue(obj_handle_t device);
 
@@ -2599,7 +2608,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
-       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixCallCount };
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
+       WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

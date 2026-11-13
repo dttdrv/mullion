@@ -278,6 +278,8 @@ class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_HEAP_PROPERTIES heap_props_;
   D3D12_HEAP_FLAGS heap_flags_;
   bool reserved_ = false; // its tiles are mapped to heaps (UpdateTileMappings)
+  // a reserved texture with all its memory (dense_tiles): the tail its sparse texture would have, first mip and bytes
+  std::pair<uint64_t, uint64_t> dense_tail_{};
   // the heap a placed texture is on, which it keeps: the heap's residency is the texture's
   // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
   Com<MTLD3D12Heap, false> heap_;
@@ -354,6 +356,12 @@ public:
           return FAIL(E_INVALIDARG);
         texture_info.placement_sparse_page_size = device_->GetSparsePageSize();
         flags.set(TextureAllocationFlag::CpuInvisible);
+        // where Metal would lose what the tail holds, the texture is an ordinary one, whose tiles the application maps
+        // all the same (GetResourceTiling gives the sparse texture's): CONTROL Resonant's window interiors
+        if (!device_->SparseTailHolds(texture_info, desc_.Format, dense_tail_)) {
+          texture_info.placement_sparse_page_size = WMTSparsePageSize(0);
+          dense_tiles = true;
+        }
       }
       WMTSizeAndAlign size_and_align{};
       if (pHeap) {
@@ -1203,7 +1211,7 @@ public:
         texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
     );
     shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
-    auto [first, bytes] = texture->current()->texture().sparseTail();
+    auto [first, bytes] = dense_tiles ? dense_tail_ : texture->current()->texture().sparseTail();
     packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
     packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
     packed.NumTilesForPackedMips =

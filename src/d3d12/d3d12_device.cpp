@@ -276,6 +276,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   uint32_t next_ray_function_ = SM50_RAY_FUNCTION_FIRST_SHADER;
   WMT::Reference<WMT::ResidencySet> residency_set_;
   WMT::Reference<WMT::Heap> spare_tile_;
+  // SparseTailHolds' answers, by texture type, pixel format, size, mips and page size
+  mullion::mutex sparse_tails_lock_;
+  std::map<std::array<uint64_t, 7>, std::pair<bool, std::pair<uint64_t, uint64_t>>> sparse_tails_;
   // allocations were added or removed since the set was last committed (CommitResidency)
   bool residency_dirty_ = false;
   // the buffers by GPU address and the sparse ones' mapped tiles, under a lock of their own: every index buffer, root
@@ -669,7 +672,8 @@ public:
         riid == __uuidof(ID3D12Device1) || riid == __uuidof(ID3D12Device2) || riid == __uuidof(ID3D12Device3) ||
         riid == __uuidof(ID3D12Device4) || riid == __uuidof(ID3D12Device5) || riid == __uuidof(ID3D12Device6) ||
         riid == __uuidof(ID3D12Device7) || riid == __uuidof(ID3D12Device8) || riid == __uuidof(ID3D12Device9) ||
-        riid == __uuidof(ID3D12Device10)) {
+        riid == __uuidof(ID3D12Device10) || riid == __uuidof(ID3D12Device11) || riid == __uuidof(ID3D12Device12) ||
+        riid == __uuidof(ID3D12Device13) || riid == __uuidof(ID3D12Device14) || riid == __uuidof(ID3D12Device15)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -832,11 +836,12 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_ROOT_SIGNATURE))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_ROOT_SIGNATURE *>(pFeatureData);
-      /* the highest version both know: newer ones (1.2) come down to 1.1, as the runtime answers */
+      /* the highest version both know, up to 1.2: a device of ID3D12Device15 is one of an Agility SDK that has root
+         signature 1.2, whose static samplers' flags (UINT border colors, non-normalized coordinates) come down to
+         1.1's samplers (RootSignatureDeserializer), and applications that see ID3D12Device15 serialize 1.2 (NRI) */
       if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1 ||
           out->HighestVersion > sdk::D3D_ROOT_SIGNATURE_VERSION_1_2)
         return FAIL(E_INVALIDARG);
-      out->HighestVersion = std::min(out->HighestVersion, D3D_ROOT_SIGNATURE_VERSION_1_1);
       return S_OK;
     }
     case D3D12_FEATURE_FEATURE_LEVELS: {
@@ -1325,11 +1330,14 @@ public:
 
   void STDMETHODCALLTYPE
   CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    TryCreateConstantBufferView(pDesc, Descriptor);
+  };
+
+  // E_INVALIDARG for a slot the heap does not have, as the other TryCreate* answer
+  HRESULT STDMETHODCALLTYPE
+  TryCreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
-    if (pDesc)
-      Heap->AddConstantBufferView(Index, pDesc->BufferLocation, pDesc->SizeInBytes);
-    else
-      Heap->AddConstantBufferView(Index, 0, 0);
+    return Heap->AddConstantBufferView(Index, pDesc ? pDesc->BufferLocation : 0, pDesc ? pDesc->SizeInBytes : 0);
   };
 
   // a view the device refuses leaves its slot a null view, as vkd3d-proton's do, and never the view the slot held
@@ -1364,20 +1372,31 @@ public:
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateShaderResourceView(pResource, pDesc, Descriptor);
+  };
+
+  // ID3D12Device15's TryCreate*: the view Create* makes, and E_INVALIDARG where the device refused it (the slot then
+  // holds a null view, as after Create*)
+  HRESULT STDMETHODCALLTYPE
+  TryCreateShaderResourceView(
+      ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource || (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       if (pDesc && pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE)
         Heap->AddAccelerationStructureView(Index, pDesc->RaytracingAccelerationStructure.Location);
       else
         Heap->AddShaderResourceView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateShaderResourceView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddShaderResourceView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
@@ -1385,55 +1404,115 @@ public:
       ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
       D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateUnorderedAccessView(pResource, pCounter, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateUnorderedAccessView(
+      ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+      D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       Heap->AddUnorderedAccessView(Index, pDesc);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateUnorderedAccessView(pCounter, pDesc, Descriptor))) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       auto null_desc = RefusedViewDesc(pResource, pDesc);
       Heap->AddUnorderedAccessView(Index, &null_desc);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateRenderTargetView(
       ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateRenderTargetView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateRenderTargetView(
+      ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateRenderTargetView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateDepthStencilView(
       ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    TryCreateDepthStencilView(pResource, pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateDepthStencilView(
+      ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+  ) final {
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
-      return;
+      return S_OK;
     }
     auto d3d12res = static_cast<MTLD3D12Resource *>(pResource);
     if (FAILED(d3d12res->CreateDepthStencilView(pDesc, Descriptor))) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
+      return E_INVALIDARG;
     }
+    return S_OK;
   };
 
   void STDMETHODCALLTYPE
   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    TryCreateSampler(pDesc, Descriptor);
+  };
+
+  HRESULT
+  TryCreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
-    Heap->AddSampler(Index, pDesc);
+    return Heap->AddSampler(Index, pDesc);
+  };
+
+  // ID3D12Device11: a sampler of a uint border color takes the color of its values, each 0 or 1 as a float (the
+  // borders Metal has are transparent black, opaque black and opaque white). non-normalized coordinates are not one
+  // Metal's samplers of argument buffers take, and are sampled as normalized
+  void STDMETHODCALLTYPE
+  CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    TryCreateSampler2(pDesc, Descriptor);
+  };
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) final {
+    if (!pDesc)
+      return E_INVALIDARG;
+    D3D12_SAMPLER_DESC desc{pDesc->Filter,         pDesc->AddressU,      pDesc->AddressV, pDesc->AddressW,
+                            pDesc->MipLODBias,     pDesc->MaxAnisotropy, pDesc->ComparisonFunc, {},
+                            pDesc->MinLOD,         pDesc->MaxLOD};
+    for (unsigned i = 0; i < 4; i++)
+      desc.BorderColor[i] = (pDesc->Flags & D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR)
+                                ? FLOAT(std::min(pDesc->UintBorderColor[i], 1u))
+                                : pDesc->FloatBorderColor[i];
+    if (pDesc->Flags & D3D12_SAMPLER_FLAG_NON_NORMALIZED_COORDINATES) {
+      static std::atomic<bool> told{false};
+      if (!told.exchange(true))
+        WARN("CreateSampler2: non-normalized coordinates are sampled as normalized");
+    }
+    return TryCreateSampler(&desc, Descriptor);
   };
 
   void STDMETHODCALLTYPE
@@ -1956,6 +2035,80 @@ public:
     return OpenHeap(this, pAddress, nullptr, riid, ppHeap);
   }
 
+  // ID3D12Device13: the address's allocation, whose size the heap takes as OpenExistingHeapFromAddress does
+  HRESULT STDMETHODCALLTYPE
+  OpenExistingHeapFromAddress1(const void *pAddress, SIZE_T size, REFIID riid, void **ppHeap) final {
+    return OpenExistingHeapFromAddress(pAddress, riid, ppHeap);
+  }
+
+  // ID3D12Device14: root signatures of DXIL libraries' subobjects are not read
+  HRESULT STDMETHODCALLTYPE
+  CreateRootSignatureFromSubobjectInLibrary(
+      UINT nodeMask, const void *pLibraryBlob, SIZE_T blobLengthInBytes, LPCWSTR subobjectName, REFIID riid,
+      void **ppvRootSignature
+  ) final {
+    InitReturnPtr(ppvRootSignature);
+    WARN("CreateRootSignatureFromSubobjectInLibrary: not supported");
+    return E_NOTIMPL;
+  }
+
+  // ID3D12Device15: no memory budget is trimmed, so a callback is registered and never called
+  HRESULT STDMETHODCALLTYPE
+  RegisterTrimNotificationCallback(D3D12_REGISTER_TRIM_NOTIFICATION *pData) final {
+    if (!pData || !pData->pfnCallback)
+      return E_INVALIDARG;
+    static std::atomic<DWORD> cookie{0};
+    pData->CallbackCookie = ++cookie;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  UnregisterTrimNotificationCallback(DWORD CallbackCookie) final {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  TryCreateSamplerFeedbackUnorderedAccessView(
+      ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
+  ) final {
+    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
+    // permitted")
+    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
+    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
+    if (!pTargetedResource || !map || !map->feedback) {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
+      return Heap->AddUnorderedAccessView(Index, &null);
+    }
+    TextureViewDescriptor view{
+        .format = WMTPixelFormatR32Uint,
+        .type = WMTTextureType2DArray,
+        .arraySize = map->feedback->DepthOrArraySize,
+    };
+    return Heap->AddUnorderedAccessView(
+        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
+        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
+    );
+  }
+
+  // a query heap's results the CPU resolves (D3D12_QUERY_HEAP_FLAG_CPU_RESOLVE) are not kept: such a heap is refused,
+  // and ResolveQueryData has none to read
+  HRESULT STDMETHODCALLTYPE
+  CreateQueryHeap1(const D3D12_QUERY_HEAP_DESC *pDesc, D3D12_QUERY_HEAP_FLAGS Flags, REFIID riid, void **ppHeap) final {
+    if (Flags & ~D3D12_QUERY_HEAP_FLAG_NONE) {
+      InitReturnPtr(ppHeap);
+      WARN("CreateQueryHeap1: flags ", uint32_t(Flags), " not supported");
+      return E_NOTIMPL;
+    }
+    return CreateQueryHeap(pDesc, riid, ppHeap);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  ResolveQueryData(
+      ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT NumQueries, void *pResolvedQueryData
+  ) final {
+    return E_INVALIDARG;
+  }
+
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromFileMapping(HANDLE hFileMapping, REFIID riid, void **ppHeap) {
     return hFileMapping ? OpenHeap(this, nullptr, hFileMapping, riid, ppHeap) : FAIL(E_INVALIDARG);
@@ -2190,6 +2343,16 @@ public:
     return *GetResourceAllocationInfo2(&ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
   }
 
+  // ID3D12Device12: castable formats change no texture's size or alignment here
+  D3D12_RESOURCE_ALLOCATION_INFO *STDMETHODCALLTYPE
+  GetResourceAllocationInfo3(
+      D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescsCount,
+      const D3D12_RESOURCE_DESC1 *pResourceDescs, const UINT32 *pNumCastableFormats,
+      const DXGI_FORMAT *const *ppCastableFormats, D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
+  ) final {
+    return GetResourceAllocationInfo2(__ret, VisibleMask, ResourceDescsCount, pResourceDescs, pAllocationInfos);
+  }
+
   HRESULT STDMETHODCALLTYPE
   CreateCommittedResource2(
       const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc,
@@ -2266,24 +2429,7 @@ public:
   CreateSamplerFeedbackUnorderedAccessView(
       ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
   ) {
-    // without a paired texture the view is a null one, and writes to it do nothing ("Null feedback map binding is
-    // permitted")
-    auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, DestDescriptor);
-    auto map = static_cast<MTLD3D12Resource *>(pFeedbackResource);
-    if (!pTargetedResource || !map || !map->feedback) {
-      D3D12_UNORDERED_ACCESS_VIEW_DESC null{};
-      Heap->AddUnorderedAccessView(Index, &null);
-      return;
-    }
-    TextureViewDescriptor view{
-        .format = WMTPixelFormatR32Uint,
-        .type = WMTTextureType2DArray,
-        .arraySize = map->feedback->DepthOrArraySize,
-    };
-    Heap->AddUnorderedAccessView(
-        Index, map->texture.ptr(), map->texture->createView(view), 0, 0,
-        map->feedback->Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE
-    );
+    TryCreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, DestDescriptor);
   }
 
   void STDMETHODCALLTYPE
@@ -2679,6 +2825,28 @@ public:
       residency_dirty_ = true;
     }
     return spare_tile_;
+  }
+
+  bool
+  SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) final {
+    std::array<uint64_t, 7> key{uint64_t(Info.type), uint64_t(Info.pixel_format), Info.width, Info.height,
+                                uint64_t(Info.depth) << 32 | Info.array_length, Info.mipmap_level_count,
+                                uint64_t(Info.placement_sparse_page_size)};
+    std::unique_lock<mullion::mutex> lock(sparse_tails_lock_);
+    if (auto found = sparse_tails_.find(key); found != sparse_tails_.end()) {
+      Tail = found->second.second;
+      return found->second.first;
+    }
+    MTL_DXGI_FORMAT_DESC format{};
+    bool compressed = SUCCEEDED(MTLQueryDXGIFormat(GetMTLDevice(), Format, format)) && (format.Flag & MTL_DXGI_FORMAT_BC);
+    // a format with no size of its own, a planar one, tests nothing and holds
+    bool holds = GetMTLDevice().sparseTailHolds(Info, compressed ? 4 : 1, compressed ? 4 : 1, format.BytesPerTexel, Tail);
+    if (!holds)
+      WARN("D3D12Device: Metal keeps nothing in some mips of the sparse tail of a ", Info.width, "x", Info.height,
+           " texture of format ", uint32_t(Format), " with ", Info.mipmap_level_count, " mips, from mip ", Tail.first,
+           ": such reserved textures hold all their memory");
+    sparse_tails_[key] = {holds, Tail};
+    return holds;
   }
 
   virtual FormatCapability

@@ -20,6 +20,7 @@
 #include "d3d12.h"
 #include "d3d12_command_encoder.hpp"
 #include "d3d12_descriptor_heap.hpp"
+#include "d3d12_device_interfaces.hpp"
 #include "d3d12_recording_arena.hpp"
 #include "dxgi1_2.h"
 #include "dxgi_interfaces.h"
@@ -194,6 +195,9 @@ public:
   Rc<Buffer> buffer;
   // which of a reserved texture's tiles are mapped, as D3D12 numbers them (MTLD3D12CommandQueue::Settle)
   std::vector<bool> mapped_tiles;
+  // a reserved texture whose Metal texture is not sparse, as Metal would keep nothing in some mips of the sparse one's
+  // tail (MTLD3D12Device::SparseTailHolds): it holds all of its memory, and mapping its tiles changes nothing in Metal
+  bool dense_tiles = false;
   // a sampler feedback map's description as its application gave it: `texture` has one R32_UINT texel per mip region
   // (TranscodeFeedback in mullion_command_feedback.hpp)
   std::optional<D3D12_RESOURCE_DESC1> feedback;
@@ -643,7 +647,7 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
-class MTLD3D12Device : public ID3D12Device10 {
+class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
   TimestampSamples timestamp_samples;
@@ -874,6 +878,10 @@ public:
   // a tile of memory that sparse resources map where they hold none of their own (MTLD3D12CommandQueueImpl::Settle):
   // the device's, as they may outlive the queue that mapped them
   virtual WMT::Heap SpareTile() = 0;
+  // whether Metal keeps what a placement sparse texture described by `Info` holds in its tail, and the tail: its first
+  // mip and its bytes. a test on the GPU the first time a texture of its shape and format is reserved
+  // (MTLDevice_sparseTailHolds)
+  virtual bool SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) = 0;
 
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 
