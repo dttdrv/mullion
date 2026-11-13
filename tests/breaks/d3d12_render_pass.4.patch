@@ -1,0 +1,12 @@
+# a target whose beginning access is CLEAR is cleared only where the pass draws to it
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4511,7 +4511,7 @@
+     // a pass that resumes one goes on with what that one left, and clears nothing again: suspending and resuming
+     // "results in no rendering difference (versus ENDING_PRESERVE/BEGINNING_PRESERVE)" (Render Passes, HLK Testing)
+     bool clears = !(Flags & D3D12_RENDER_PASS_FLAG_RESUMING_PASS);
+-    for (UINT i = 0; clears && i < NumRenderTargets; i++)
++    for (UINT i = 0; false && i < NumRenderTargets; i++)
+       if (pRenderTargets[i].BeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+         ClearRenderTargetView(
+             pRenderTargets[i].cpuDescriptor, pRenderTargets[i].BeginningAccess.Clear.ClearValue.Color, 0, nullptr
