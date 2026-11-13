@@ -1,10 +1,10 @@
 # first lane from simd_is_first
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2314,9 +2314,7 @@
+@@ -2742,9 +2742,7 @@ convert_dxil(
            "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
        );
-       auto mask = simd("simd_ballot", ir.getInt64Ty(), {ir.getTrue()}, ir.getInt64Ty());
+       auto mask = ballot(ir.getTrue());
 -      ret = ir.CreateICmpEQ(
 -          ir.CreateZExtOrTrunc(lane_index(), ir.getInt64Ty()), ir.CreateCall(ctz, {mask, ir.getFalse()})
 -      );
