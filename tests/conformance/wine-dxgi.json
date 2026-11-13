@@ -123,13 +123,10 @@
   "verdict": "passed"
  },
  "test_swapchain_present": {
-  "verdict": "failed"
+  "verdict": "timeout"
  },
  "test_swapchain_present_count": {
-  "verdict": "crashed",
-  "at": "dxgi_test.exe: test_swapchain_present_count at dxgi.c:8151:14",
-  "failed": 1,
-  "first": "dxgi.c:8148: Test failed: d3d12: test 2: Failed to create swapchain, hr 0x887a0001."
+  "verdict": "passed"
  },
  "test_swapchain_resize": {
   "verdict": "failed",
