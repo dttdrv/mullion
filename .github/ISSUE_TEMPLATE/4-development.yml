@@ -60,8 +60,9 @@ body:
       label: Output
       description: >-
         The first error, with the whole build or test log attached as a file, or what shows the documentation
-        problem. A file that could not be obtained is named, with the reason. For a test: {suite: where the test
-        report is and how it is attached, filled in from v0.5 on}. Attachments are public, so they are checked for
+        problem. A file that could not be obtained is named, with the reason. For a test: what tests/run.py
+        printed, and the test's log, whose path it prints under each test that did not pass.
+        Attachments are public, so they are checked for
         personal information first.
     validations:
       required: true
