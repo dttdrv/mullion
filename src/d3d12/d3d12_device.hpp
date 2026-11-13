@@ -915,6 +915,7 @@ public:
 
   // sums occlusion queries' visibility counts into their heaps (sum_occlusion)
   WMT::Reference<WMT::ComputePipelineState> occlusion_sum;
+  WMT::Reference<WMT::ComputePipelineState> binary_occlusion_resolve;
   // writes pipeline statistics queries' results into their heaps (sum_pipeline_statistics)
   WMT::Reference<WMT::ComputePipelineState> pipeline_statistics_sum;
   // applies a predication region to its draws' and dispatches' arguments (predicate)

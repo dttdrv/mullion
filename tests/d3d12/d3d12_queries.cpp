@@ -2,7 +2,9 @@
 // render passes and while other queries overlap them; timestamps read the GPU clock in order, inside the window the
 // queue's clock calibration brackets. results resolve into a buffer from a later command list. the draws fill
 // scissor rectangles of a one-sample target, so each count is an area. a query ended, begun and ended again before a
-// resolve holds its second count, however long the first took to sum. a pipeline whose sample description is left
+// resolve holds its second count, however long the first took to sum. resolved as binary occlusion queries, the same
+// queries write 0 or 1, whether they counted or not: "The least significant bit is either 0 ... or 1 ... The rest of
+// the bits are 0" (ID3D12GraphicsCommandList::ResolveQueryData). a pipeline whose sample description is left
 // at zero draws with one sample, as applications leave it (Unreal Engine 5): the scissored query's draw has one.
 // timestamp queries are as many as their heaps say, and heaps as many as the application makes. Metal has 32
 // counter sample buffers at once, of 4096 samples each: the test has more heaps than that, a heap of more queries
@@ -74,7 +76,8 @@ main(int argc, char **argv) {
   // heap's, and its last
   const UINT burst = 33 * 4096, clocks = 1 + std::size(small) + burst + 1;
   // results land after a gap, to show the offset is honored
-  const UINT64 gap = 16, bytes = gap + (Queries + clocks) * sizeof(UINT64);
+  const UINT64 gap = 16, binary_at = gap + (Queries + clocks) * sizeof(UINT64),
+               bytes = binary_at + Queries * sizeof(UINT64);
   auto results = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, bytes, D3D12_RESOURCE_STATE_COPY_DEST);
 
   ComPtr<ID3D12CommandQueue> queue;
@@ -166,6 +169,7 @@ main(int argc, char **argv) {
     clock(heap.Get(), 0, 1);
   clock(timestamps.Get(), 1, burst);
   clock(timestamps.Get(), timestamp_desc.Count - 1, 1);
+  resolve->ResolveQueryData(occlusion.Get(), D3D12_QUERY_TYPE_BINARY_OCCLUSION, 0, Queries, results.Get(), binary_at);
   CHECK(list->Close());
   UINT64 cpu, before, after;
   CHECK(queue->GetClockCalibration(&before, &cpu));
@@ -181,6 +185,9 @@ main(int argc, char **argv) {
   for (UINT q = 0; q < Queries; q++)
     if (got[gap / 8 + q] != want[q] && ++failures)
       printf("%s query: %llu, want %llu\n", names[q], got[gap / 8 + q], want[q]);
+  for (UINT q = 0; q < Queries; q++)
+    if (got[binary_at / 8 + q] != (want[q] != 0) && ++failures)
+      printf("%s query resolved as binary: %llu, want %u\n", names[q], got[binary_at / 8 + q], want[q] != 0);
   auto t = got + gap / 8 + Queries;
   if (!(before <= t[0] && t[clocks - 1] <= after) && ++failures)
     printf("timestamps %llu to %llu not inside %llu to %llu\n", t[0], t[clocks - 1], before, after);

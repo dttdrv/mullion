@@ -3759,6 +3759,31 @@ public:
       allocator_->InvalidateCurrentPass();
       return;
     }
+    // "Binary occlusion queries write 64-bits per query. The least significant bit is either 0 ... or 1 ... The rest
+    // of the bits are 0" (ID3D12GraphicsCommandList::ResolveQueryData), also of a query that counted its samples
+    if (Type == D3D12_QUERY_TYPE_BINARY_OCCLUSION) {
+      StartComputePass();
+      auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+      cmd_setpso.type = WMTComputeCommandSetPSO;
+      cmd_setpso.pso = device_->binary_occlusion_resolve;
+      cmd_setpso.threadgroup_size = {1, 1, 1};
+      const std::pair<obj_handle_t, uint64_t> buffers[] = {
+          {heap->results, uint64_t(StartIndex) * heap->result_size},
+          {dst, AlignedDstBufferOffset},
+      };
+      for (uint8_t i = 0; i < std::size(buffers); i++) {
+        auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        cmd.type = WMTComputeCommandSetBuffer;
+        cmd.buffer = buffers[i].first;
+        cmd.offset = buffers[i].second;
+        cmd.index = i;
+      }
+      auto &cmd_dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+      cmd_dispatch.type = WMTComputeCommandDispatch;
+      cmd_dispatch.size = {QueryCount, 1, 1};
+      allocator_->InvalidateCurrentPass();
+      return;
+    }
     PreBlit();
     auto &cmd = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
     cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
