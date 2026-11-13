@@ -1,0 +1,12 @@
+# a binary occlusion resolve writes what the heap holds, a count where the query counted
+--- a/src/mullion/mullion_command.metal
++++ b/src/mullion/mullion_command.metal
+@@ -996,7 +996,7 @@
+     device ulong *resolved [[buffer(1)]],
+     uint i [[thread_position_in_grid]]
+ ) {
+-  resolved[i] = results[i] != 0;
++  resolved[i] = results[i];
+ }
+ 
+ // a pipeline statistics query's result (D3D12_QUERY_DATA_PIPELINE_STATISTICS or ..._STATISTICS1, `size` counts): the

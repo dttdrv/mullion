@@ -166,8 +166,7 @@ def alone():
     # waits for one test of a long run, not for its turns
     urgent = lock and os.environ.get("MULLION_TEST_URGENT")
     with HOLDERS:
-        # a waiter, which says so in the lock's .waiting directory (crossover/tools/lock.sh), gets the lock once the
-        # tests that hold it end
+        # a waiter, which says so in the lock's .waiting directory, gets the lock once the tests that hold it end
         while lock and HOLDERS.count and not urgent and waiting(lock + ".waiting"):
             HOLDERS.wait(1)
         if urgent and not hasattr(alone, "marker"):

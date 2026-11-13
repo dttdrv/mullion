@@ -373,6 +373,9 @@ public:
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
 
     occlusion_sum = GetMTLDevice().newComputePipelineState(command_library.getLibrary().newFunction("sum_occlusion"), err);
+    binary_occlusion_resolve = GetMTLDevice().newComputePipelineState(
+        command_library.getLibrary().newFunction("resolve_binary_occlusion"), err
+    );
     for (uint32_t i = 0; i < 4; i++) {
       const char *names[] = {"depth_bounds_samples_2d", "depth_bounds_samples_2d_array", "depth_bounds_samples_2d_ms",
                              "depth_bounds_samples_2d_ms_array"};
@@ -395,7 +398,7 @@ public:
       acceleration_structure_transforms = GetMTLDevice().newComputePipelineState(
           command_library.getLibrary().newFunction("acceleration_structure_transforms"), err
       );
-    if (!occlusion_sum || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
+    if (!occlusion_sum || !binary_occlusion_resolve || !pipeline_statistics_sum || !predicate || !acceleration_structure_instances ||
         (!row_major_transforms && !acceleration_structure_transforms) ||
         !depth_bounds_samples[0] || !depth_bounds_samples[1] || !depth_bounds_samples[2] || !depth_bounds_samples[3]) {
       ERR("Failed to create the query pipelines: ", err.description().getUTF8String());
