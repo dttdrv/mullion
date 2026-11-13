@@ -3,7 +3,7 @@
 
 source and test selection are read-only. `collect` runs the coverage build's tests, each with its own hook notes
 and shader directory; `list` preprocesses the build's translation units, without compiling, and lists mutations.
-`run` copies the source to ta-mut-src and uses the existing ta-mut build, as lanes/t-gate.sh's caught does.
+`run` copies the source to ta-mut-src and uses the existing ta-mut build beside it.
 source lines absent from the preprocessor, directives, literals, assertions and logging calls are excluded.
 lexical operators are deliberately conservative; this is a mutation score, not a proof of correctness.
 
@@ -14,10 +14,11 @@ measured function coverage. only functions with a measured selection, or such a 
 
 source, coverage and test changes invalidate old results. skipped tests cannot kill a mutant or establish survival.
 the baseline must pass in ta-mut before a test may kill a mutant. run.py owns the GPU lock and the Wine process;
-this runner owns only its subprocesses. do not run t-gate.sh concurrently: it uses the same copy, build and Wine.
+this runner owns only its subprocesses. nothing else may use the same copy, build and Wine while it runs.
 
-source/build paths default to the Mullion project beside lanes/t-gate.sh. source globs include the src/ prefix.
-examples (after sourcing crossover/tools/env.sh):
+the builds are in --build-root (default: build beside the source's directory), each under the name the options
+below default to. a file at --stop ends the run after the mutant under way. source globs include the src/ prefix.
+examples, with the toolchain of the builds on PATH:
   python3 tests/mutate.py collect --budget 3600
   python3 tests/mutate.py list --files 'src/d3d11/*'
   python3 tests/mutate.py run --files 'src/**' --budget 28800
@@ -453,7 +454,8 @@ def execute(args, test, build, log, control, env=None):
                "--wine", args.wine, "--prefix", args.prefix, "--exact", "--family", family, name]
     if args.validate:
         command.append("--validate")
-    environment = dict(os.environ, MULLION_TEST_LOCK=str(args.lock))
+    # run.py takes the machine's lock where MULLION_TEST_LOCK names one
+    environment = dict(os.environ)
     environment.pop("MULLION_COVERAGE", None)
     environment.pop("MULLION_TEST_SHADERS", None)
     environment.update(env or {})
@@ -773,8 +775,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("collect", "list", "run", "report"))
     parser.add_argument("--source", type=Path, default=ROOT)
-    parser.add_argument("--lanes", type=Path)
-    parser.add_argument("--build-root", type=Path)
+    parser.add_argument("--build-root", type=Path,
+                        help="the directory of the builds (default: build beside the source)")
+    parser.add_argument("--stop", type=Path,
+                        help="a file that ends the run when it appears (default: ta-mutations/STOP there)")
     parser.add_argument("--compile-commands", dest="commands", type=Path)
     parser.add_argument("--include", action="append", type=Path, default=[],
                         help="extra read-only preprocessing headers; does not change the mutation build")
@@ -795,20 +799,13 @@ def main():
     args = parser.parse_args()
     args.source = args.source.resolve()
     args.include = [p.resolve() for p in args.include]
-    if not args.lanes:
-        args.lanes = next((p for a in args.source.parents for p in (a, a / "lanes")
-                           if (p / "t-gate.sh").is_file()), None)
-    if not args.lanes:
-        parser.error("cannot find lanes/t-gate.sh; set --lanes")
-    args.lanes = args.lanes.resolve()
-    base = (args.build_root or args.lanes.parent / "build").resolve()
+    base = (args.build_root or args.source.parent / "build").resolve()
     for name, default in {"build": base / "ta-mut", "commands": base / "ta-mut/compile_commands.json",
                           "coverage": base / "ta-mutations/coverage.json",
-                          "results": base / "ta-mutations/results.json",
+                          "results": base / "ta-mutations/results.json", "stop": base / "ta-mutations/STOP",
                           "wine": base / "ta-wine-break", "prefix": base / "ta-pfx-break",
                           "coverage_build": base / "ta-cov", "tests_build": base / "ta-tests"}.items():
         setattr(args, name, (getattr(args, name, None) or default).resolve())
-    args.lock = Path(os.environ.get("MULLION_TEST_LOCK", str(args.lanes.parent / "crossover/tools/gpu.lock"))).resolve()
     if not args.budget > 0 or any(not p.startswith("src/") or ".." in Path(p).parts for p in args.files):
         parser.error("budget must be positive and globs must be under src/")
     if args.sample and args.sample[0] <= 0:
@@ -816,7 +813,7 @@ def main():
     if args.command == "report":
         report(args.results)
         return
-    control = Control(args.budget, args.lanes / "STOP")
+    control = Control(args.budget, args.stop)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda number, _: setattr(control, "reason", signal.Signals(number).name))
     with tempfile.TemporaryDirectory(prefix="mutate-") as tmp:

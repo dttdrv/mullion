@@ -1,0 +1,12 @@
+# a pass that resumes one clears again
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4510,7 +4510,7 @@
+     OMSetRenderTargets(target_count, targets, FALSE, depth_stencil ? &pDepthStencil->cpuDescriptor : nullptr);
+     // a pass that resumes one goes on with what that one left, and clears nothing again: suspending and resuming
+     // "results in no rendering difference (versus ENDING_PRESERVE/BEGINNING_PRESERVE)" (Render Passes, HLK Testing)
+-    bool clears = !(Flags & D3D12_RENDER_PASS_FLAG_RESUMING_PASS);
++    bool clears = true;
+     for (UINT i = 0; clears && i < NumRenderTargets; i++)
+       if (pRenderTargets[i].BeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+         ClearRenderTargetView(

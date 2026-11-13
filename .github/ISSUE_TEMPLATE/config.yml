@@ -3,6 +3,9 @@ contact_links:
   - name: Questions
     url: https://github.com/dttdrv/mullion/discussions/categories/q-a
     about: Questions about installing, setting up and using Mullion.
+  - name: Discord
+    url: https://discord.gg/azNpVAj34r
+    about: Talk, quick questions and help with a game.
   - name: Games that work
     url: https://github.com/dttdrv/mullion/discussions/categories/game-reports
     about: >-

@@ -1,0 +1,14 @@
+# a target that is not bound for raster leaves a gap in the pipeline's targets
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4500,8 +4500,8 @@
+     // a pipeline's render targets are the bound ones, in "the order the raster bound surfaces appear in the render
+     // pass RTV list without any gaps"
+     for (UINT i = 0; i < NumRenderTargets; i++) {
+-      if (bound(pRenderTargets[i].BeginningAccess, false))
+-        targets[target_count++] = pRenderTargets[i].cpuDescriptor;
++      targets[target_count++] = bound(pRenderTargets[i].BeginningAccess, false) ? pRenderTargets[i].cpuDescriptor
++                                                                               : D3D12_CPU_DESCRIPTOR_HANDLE{};
+       resolve(pRenderTargets[i].EndingAccess);
+     }
+     bool depth_stencil = pDepthStencil &&

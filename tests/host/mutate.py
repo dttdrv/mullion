@@ -29,13 +29,15 @@ spec.loader.exec_module(tool)
 
 class Mutations(unittest.TestCase):
     def setUp(self):
-        # the runner keeps the peaks of this machine's tests, which these tests' commands are not
+        # the runner keeps the peaks of this machine's tests, which these tests' commands are not, and starts no test
+        # while this machine is short of memory, which these tests do not ask about
         import run
         peaks = tempfile.TemporaryDirectory()
         self.addCleanup(peaks.cleanup)
-        patcher = patch.object(run, "PEAKS", Path(peaks.name) / "peaks.json")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in [("PEAKS", Path(peaks.name) / "peaks.json"), ("pressure", lambda: 1)]:
+            patcher = patch.object(run, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def make(self, source, active=None):
         return tool.mutations(source, "src/example.cpp", active)[1]
@@ -224,7 +226,7 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
     def test_sample_arguments(self):
         funcs, made = tool.mutations("int f() { return true; }", "src/test.cpp")
         with tempfile.TemporaryDirectory() as tmp:
-            argv = ["mutate.py", "list", "--lanes", tmp, "--coverage", str(Path(tmp) / "coverage.json"),
+            argv = ["mutate.py", "list", "--build-root", tmp, "--coverage", str(Path(tmp) / "coverage.json"),
                     "--sample", "1", "17"]
             out = StringIO()
             with patch.object(sys, "argv", argv), patch.object(tool, "inventory", return_value=(funcs, made, [])), \

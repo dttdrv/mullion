@@ -190,6 +190,10 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
     uint64_t address, length;
   };
   unsigned ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]);
+  // the buffer over the arguments an address was made in, and where in it. the list records into the device's last,
+  // which a longer one follows in the middle of a command (GrowArguments): an address made before that stays the
+  // earlier buffer's, and is bound and read through that one
+  std::pair<obj_handle_t, uint64_t> ArgumentsAt(uint64_t Address);
   // a Metal buffer over the arguments arena's first `Length` bytes, the device's last (under its recording lock)
   bool NewArgumentsBuffer(size_t Length);
   // hands out twice what the arguments arena did when it had `Seen` bytes, with a buffer over it: false where it

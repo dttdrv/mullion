@@ -90,7 +90,8 @@ to the console each second, and `MTL_HUD_LOG_SHADER_ENABLED=1` logs each shader 
 logs show whether frame time spikes coincide with shader compilation.
 
 Validation of the test suite is described in [TESTING.md 6.1](TESTING.md#6-running-tests-and-reading-results):
-{suite: the validation command and the diagnostics it records}.
+`tests/run.py --validate` runs the tests under Metal's API and shader validation, and what the validation reports is
+in each test's log.
 
 ## 5. Capture a Metal frame
 
@@ -162,7 +163,8 @@ the bridge, with the loaded modules recorded so that the stacks can be matched t
   [Sample Process](https://support.apple.com/en-us/guide/activity-monitor/actmntr2225/mac), or `thread backtrace all`
   in [LLDB](https://lldb.llvm.org/use/map.html)
 
-{suite: collecting every Windows and macOS thread stack, symbolized against the loaded binaries}.
+`tests/run.py` collects both for a test that outlives its time: the test's log then says where each thread of its
+program was, and a sample of its processes' macOS stacks is written beside the log.
 
 Mullion adds its own observations. At `trace`, the D3D12 queue logs each submission with its time and thread, and a
 command buffer still awaited after ten seconds is reported with its Metal status
@@ -214,4 +216,5 @@ back in the next. It does not report corruption that persists, or changes that a
 show that rendering was correct. Neither shows the commands that drew a frame.
 
 The reduction becomes a test written as [TESTING.md 5](TESTING.md#5-writing-a-test) describes, seen failing before
-the fix: {suite: adding a reduced case, with its control}.
+the fix: it is registered in its directory's `meson.build`, and its control is a fault in `tests/breaks` that
+`tests/faults.py` shows caught ([TESTING.md 7.1](TESTING.md#7-failing-controls-and-repeats)).
