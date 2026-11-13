@@ -16,7 +16,8 @@ reports](https://github.com/dttdrv/mullion/discussions/categories/game-reports),
 | Direct3D 11 | 11_1 | |
 | Direct3D 10 and 10.1 | 10_1 | Runs on the Direct3D 11 implementation. |
 
-This describes the main branch. Feature levels 12_1 and 12_2 and Metal 4 come to a release with v0.5.
+This describes the main branch. Feature levels 12_1 and 12_2 and Metal 4 are in the v0.5 alphas, and come to a full
+release with v0.5.
 
 Direct3D 12 runs on Metal 4 where the GPU has it, and on Metal 3 otherwise. Feature levels 12_0 and above need macOS
 26.4 or later, for Metal's placement sparse resources; on earlier versions Direct3D 12 reports 11_1. Not done yet:
@@ -69,6 +70,12 @@ meson install -C build
 ```
 
 `install/` then has the layout of a release. The tests are described in [TESTING.md](docs/TESTING.md).
+
+## Community
+
+The [Discord server](https://discord.gg/azNpVAj34r) is for talk, quick questions and help with a game. A bug still
+needs an [issue](https://github.com/dttdrv/mullion/issues/new/choose), where it is not lost in chat, and a game that
+works goes in [Game reports](https://github.com/dttdrv/mullion/discussions/categories/game-reports).
 
 ## Contributing
 
