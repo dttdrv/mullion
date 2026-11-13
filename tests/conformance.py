@@ -196,11 +196,18 @@ def arguments(parser):
     parser.add_argument("--seconds", type=int, default=120, help="how long one test may run (default: %(default)s)")
     parser.add_argument("--only", action="append", default=[], help="only this suite, test, or suite:test (may repeat)")
     parser.add_argument("--skip", action="append", default=[], help="not this suite, test, or suite:test (may repeat)")
+    parser.add_argument("--conformance-family", default="native", metavar="FAMILY",
+                        help="the Apple GPU family the suites run as, as --family of tests/run.py names one; the "
+                             "verdicts are held to the recorded ones, the GPU's own (default: %(default)s)")
 
 
 def conformance(args, builds, binary, base):
     """runs the suites the arguments name; the number of verdicts that differ from the recorded ones"""
     out = builds[0] / "conformance"
+    family = args.conformance_family
+    if args.update and family != "native":
+        sys.exit("--update records the GPU's own verdicts: not with --conformance-family")
+    base = run.as_family(base, family)
     pe = {path.name: path for path in run.libraries(builds)[1].values()}
     suites = {}
     if args.wine_source and args.wine_build:
@@ -219,7 +226,7 @@ def conformance(args, builds, binary, base):
     changed = 0
     for suite, (names, command) in suites.items():
         names = [name for name in names if wanted(suite, name)]
-        logs = out / "logs" / suite
+        logs = out / "logs" / (suite if family == "native" else f"{suite}@{family}")
         logs.mkdir(parents=True, exist_ok=True)
 
         def one(name):
