@@ -278,6 +278,12 @@ public:
       Com<FlipWindow> window;
       if (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD) {
         window = Com<FlipWindow>::transfer(new FlipWindow(hWnd));
+        // a chain the application has released may still be kept by a present its queue has not run yet (Wine's
+        // test_swapchain_present_count replaces a chain so, on Windows): the window is asked for again after those
+        if (!window->acquired()) {
+          swapchain_factory->ReleasedSwapChains();
+          window = Com<FlipWindow>::transfer(new FlipWindow(hWnd));
+        }
         if (!window->acquired())
           return DXGI_ERROR_INVALID_CALL;
       }

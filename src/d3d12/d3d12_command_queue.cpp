@@ -2636,6 +2636,14 @@ public:
     return mullion::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
   }
 
+  // the presents the queue holds back keep their swap chains: they are run first, unless the queue waits for a fence,
+  // which only the application ends
+  void STDMETHODCALLTYPE
+  ReleasedSwapChains() override {
+    std::unique_lock<mullion::mutex> lock(held_mutex_);
+    held_changed_.wait(lock, [&] { return held_.empty() || gate_->closed; });
+  }
+
   HRESULT
   Present(
       IUnknown *swapchain, Presenter *presenter, ID3D12Resource *backbuffer, TextureViewKey view,
