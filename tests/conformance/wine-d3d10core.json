@@ -3,7 +3,7 @@
   "verdict": "passed"
  },
  "test_blend": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_buffer_srv": {
   "verdict": "passed"
@@ -27,7 +27,9 @@
   "verdict": "passed"
  },
  "test_clear_state": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "d3d10core.c:5938: Test failed: Got unexpected stream output offset 16 in slot 0."
  },
  "test_clip_distance": {
   "verdict": "passed"
@@ -39,7 +41,7 @@
   "verdict": "passed"
  },
  "test_compressed_format_compatibility": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_copy_subresource_region": {
   "verdict": "passed"
@@ -51,14 +53,15 @@
   "verdict": "passed"
  },
  "test_create_buffer": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "d3d10core.c:2564: Test failed: Got unexpected hr 0."
  },
  "test_create_depthstencil_state": {
   "verdict": "passed"
  },
  "test_create_depthstencil_view": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: check_interface_ at d3d10core.c:176:10"
+  "verdict": "passed"
  },
  "test_create_input_layout": {
   "verdict": "passed"
@@ -70,8 +73,7 @@
   "verdict": "passed"
  },
  "test_create_rendertarget_view": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: test_create_rendertarget_view at d3d10core.c:3050:5"
+  "verdict": "passed"
  },
  "test_create_sampler_state": {
   "verdict": "passed"
@@ -80,32 +82,36 @@
   "verdict": "passed"
  },
  "test_create_shader_resource_view": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: check_interface_ at d3d10core.c:176:10"
+  "verdict": "passed"
  },
  "test_create_texture1d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_texture2d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_create_texture3d": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_cube_maps": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_ddy": {
   "verdict": "passed"
  },
  "test_depth_bias": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 205,
+  "first": "d3d10core.c:16198: Test failed: Format 0x2d: z 0.125000, bias -10000, clamp 0.000000: Got 0x1ff63c, expected 0x1fd8f0 at (0, 0), sub-resource 0."
  },
  "test_depth_clip": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_depth_stencil_sampling": {
-  "verdict": "partly"
+  "verdict": "partly",
+  "skipped": [
+   "Some AMD drivers have a bug affecting the test."
+  ]
  },
  "test_depthstencil_view_interfaces": {
   "verdict": "passed"
@@ -114,13 +120,13 @@
   "verdict": "passed"
  },
  "test_device_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_device_removed_reason": {
   "verdict": "passed"
  },
  "test_draw_depth_only": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_dual_source_blend": {
   "verdict": "passed"
@@ -135,7 +141,9 @@
   "verdict": "passed"
  },
  "test_format_compatibility": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 54,
+  "first": "d3d10core.c:16453: Test failed: Test 26: Got unexpected colour 0x00ff0000 at (0, 1), expected 0x00000000."
  },
  "test_format_support": {
   "verdict": "passed"
@@ -147,7 +155,9 @@
   "verdict": "passed"
  },
  "test_generate_mips": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 15,
+  "first": "d3d10core.c:17454: Test failed: Test 2: unexpectedly succeeded to create shader resource view, hr 0."
  },
  "test_geometry_shader": {
   "verdict": "passed"
@@ -171,10 +181,12 @@
   "verdict": "passed"
  },
  "test_input_assembler": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_input_layout_alignment": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 6,
+  "first": "d3d10core.c:12650: Test failed: Test 1: Got unexpected hr 0, expected 0x80070057."
  },
  "test_instanced_draw": {
   "verdict": "passed"
@@ -183,7 +195,7 @@
   "verdict": "passed"
  },
  "test_layered_rtv_mismatch": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_line_antialiasing_blending": {
   "verdict": "passed"
@@ -192,20 +204,23 @@
   "verdict": "passed"
  },
  "test_multiple_viewports": {
-  "verdict": "crashed",
-  "at": "d3d10core_test.exe: test_multiple_viewports at d3d10core.c:18026:5"
+  "verdict": "passed"
  },
  "test_multisample_resolve": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 2,
+  "first": "d3d10core.c:18312: Test failed: Got 0xffbcffbc, expected 0xff80ff80 at (0, 0), sub-resource 0."
  },
  "test_null_sampler": {
   "verdict": "passed"
  },
  "test_occlusion_query": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 1,
+  "first": "d3d10core.c:4841: Test failed: Got unexpected query result 0x0000000090000000."
  },
  "test_pipeline_statistics_query": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_primitive_restart": {
   "verdict": "passed"
@@ -226,7 +241,7 @@
   "verdict": "passed"
  },
  "test_resource_access": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_rtv_depth_slice": {
   "verdict": "passed"
@@ -268,10 +283,12 @@
   "verdict": "passed"
  },
  "test_staging_buffers": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_state_refcounting": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 4,
+  "first": "d3d10core.c:8986: Test failed: Got unexpected pointer 00000000007301F0, expected NULL."
  },
  "test_stencil_only_write_after_clear": {
   "verdict": "passed"
@@ -280,7 +297,9 @@
   "verdict": "passed"
  },
  "test_stream_output": {
-  "verdict": "failed"
+  "verdict": "failed",
+  "failed": 28,
+  "first": "d3d10core.c:15676: Test failed: Test 15: Got unexpected hr 0."
  },
  "test_stream_output_resume": {
   "verdict": "passed"
@@ -295,16 +314,16 @@
   "verdict": "passed"
  },
  "test_swapchain_views": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture1d": {
   "verdict": "passed"
  },
  "test_texture1d_interfaces": {
-  "verdict": "failed"
+  "verdict": "passed"
  },
  "test_texture2d_interfaces": {
   "verdict": "passed"

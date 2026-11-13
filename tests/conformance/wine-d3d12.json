@@ -1,7 +1,6 @@
 {
  "test_create_device": {
-  "verdict": "crashed",
-  "at": "d3d12_test.exe: func_d3d12 at d3d12.c:1577:38"
+  "verdict": "passed"
  },
  "test_desktop_window": {
   "verdict": "passed"
