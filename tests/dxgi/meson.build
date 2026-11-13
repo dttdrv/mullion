@@ -14,7 +14,7 @@ test('dxgi_vblank', executable('dxgi_vblank', ['dxgi_vblank.cpp'], dependencies 
 test('dxgi_ngx_trust', executable('dxgi_ngx_trust', ['dxgi_ngx_trust.cpp'], dependencies : dxgi_test_deps + [cpp.find_library('crypt32')]),
      args : get_option('enable_nvngx') ? ['ngx'] : [], is_parallel : false, timeout : 300)
 # these present to a real window
-foreach name : ['buffers', 'color_space', 'composition', 'factory', 'formats', 'gamma', 'latency', 'object', 'output', 'present', 'present_regions', 'resize_queues', 'swapchain_flags']
+foreach name : ['buffers', 'color_space', 'composition', 'factory', 'formats', 'gamma', 'latency', 'object', 'output', 'present', 'present_regions', 'replace', 'resize_queues', 'swapchain_flags']
   test('dxgi_' + name, executable('dxgi_' + name, ['dxgi_' + name + '.cpp'], dependencies : dxgi_test_deps),
        suite : 'window', timeout : 300)
 endforeach
