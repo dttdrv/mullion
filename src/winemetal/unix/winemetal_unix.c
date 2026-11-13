@@ -263,6 +263,10 @@ CREATES(_MTLDevice_newBuffer)(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// the Apple GPU family the bridge answers as (MULLION_GPU_FAMILY), below
+static bool family_has(unsigned first);
+static void family_needs(unsigned first, const char *what);
+
 static NTSTATUS
 CREATES(_MTLDevice_newSamplerState)(void *obj) {
   struct unixcall_mtldevice_newsamplerstate *params = obj;
@@ -285,6 +289,7 @@ CREATES(_MTLDevice_newSamplerState)(void *obj) {
   sampler_desc.normalizedCoordinates = info->normalized_coords;
   sampler_desc.supportArgumentBuffers = info->support_argument_buffers;
   if (info->reduction_mode != WMTSamplerReductionModeWeightedAverage) {
+    family_needs(10, "sampler minimum and maximum reduction");
     if (@available(macOS 26.0, *))
       sampler_desc.reductionMode = (MTLSamplerReductionMode)info->reduction_mode;
   }
@@ -342,6 +347,8 @@ fill_texture_descriptor(MTLTextureDescriptor *desc, struct WMTTextureInfo *info)
   desc.depth = info->depth;
   desc.arrayLength = info->array_length;
   desc.mipmapLevelCount = info->mipmap_level_count;
+  if (info->sample_count > 4)
+    family_needs(10, "textures of 8 samples");
   desc.sampleCount = info->sample_count;
   desc.usage = (MTLTextureUsage)info->usage;
   desc.resourceOptions = (MTLResourceOptions)info->options;
@@ -798,15 +805,13 @@ empty_fragment_function(id<MTLDevice> device) {
   }
 }
 
-static unsigned emulated_family(void);
 
 static NTSTATUS
 CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
   struct unixcall_mtldevice_newmeshrenderpso *params = obj;
   const struct WMTMeshRenderPipelineInfo *info = params->info.ptr;
   // family emulation must also reject requests that the host GPU accepts (Metal Feature Set Tables, mesh draws in ICBs)
-  unsigned family = emulated_family();
-  if (info->support_indirect_command_buffers && family && family < MTLGPUFamilyApple9 - MTLGPUFamilyApple1 + 1) {
+  if (info->support_indirect_command_buffers && !family_has(9)) {
     params->ret_pso = 0;
     params->ret_error = (obj_handle_t)[[NSError
         errorWithDomain:NSCocoaErrorDomain
@@ -1339,6 +1344,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTRenderCommandSetDepthTestBounds: {
       struct wmtcmd_render_setdepthtestbounds *body = (struct wmtcmd_render_setdepthtestbounds *)next;
+      family_needs(10, "depth bounds testing");
       if (@available(macOS 26.0, *))
         [encoder setDepthTestMinBound:body->min maxBound:body->max];
       break;
@@ -1674,12 +1680,31 @@ emulated_family(void) {
   return family;
 }
 
+// whether the family the bridge answers as has what Apple family `first` brought ("Metal feature availability by GPU
+// family" and "GPU implementation limits by family", Apple's Metal feature set tables): everything, on the GPU's own.
+// each answer below that a later family changes is cut by it, and the GPU's own answer stands where it is less
+static bool
+family_has(unsigned first) {
+  unsigned family = emulated_family();
+  return !family || family >= first;
+}
+
+// ends the process at a use of what the family the bridge answers as lacks, naming it: the GPU here would take it,
+// so a check Mullion lacks would pass as that family and fail on its GPUs
+static void
+family_needs(unsigned first, const char *what) {
+  if (family_has(first))
+    return;
+  fprintf(stderr, "mullion: MULLION_GPU_FAMILY=%u has no %s (Apple%u)\n", emulated_family(), what, first);
+  abort();
+}
+
 static NTSTATUS
 _MTLDevice_supportsFamily(void *obj) {
   struct unixcall_generic_obj_uint64_uint64_ret *params = obj;
   MTLGPUFamily family = (MTLGPUFamily)params->arg;
   // the Apple families are numbered from Apple1, before the Mac ones
-  bool newer = emulated_family() && family < MTLGPUFamilyMac2 && family - MTLGPUFamilyApple1 >= emulated_family();
+  bool newer = family < MTLGPUFamilyMac2 && !family_has(family - MTLGPUFamilyApple1 + 1);
   params->ret = !newer && [(id<MTLDevice>)params->handle supportsFamily:family];
   return STATUS_SUCCESS;
 }
@@ -1772,7 +1797,8 @@ _MTLDevice_supportsShaderBarycentricCoordinates(void *obj) {
   static dispatch_once_t once;
   static bool works;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
-  if (![device supportsShaderBarycentricCoordinates]) {
+  // what is asked is whether a pixel reads its inputs at each vertex: "Access to pre-raster per-vertex values", Apple10
+  if (![device supportsShaderBarycentricCoordinates] || !family_has(10)) {
     params->ret = false;
     return STATUS_SUCCESS;
   }
@@ -1854,6 +1880,11 @@ _MTLDevice_supportsSamplerReduction(void *obj) {
   static unsigned count;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   uint64_t registry = device.registryID;
+  // "Sampler minimum and maximum reduction", Apple10
+  if (!family_has(10)) {
+    params->ret = false;
+    return STATUS_SUCCESS;
+  }
   pthread_mutex_lock(&mutex);
   unsigned i = 0;
   while (i < count && measured[i].id != registry)
@@ -1876,7 +1907,7 @@ _MTLDevice_maxArgumentBufferSamplerCount(void *obj) {
   params->ret = [(id<MTLDevice>)params->handle maxArgumentBufferSamplerCount];
   // an emulated Apple7 or Apple8 holds what they do: 1024 samplers a stage reaches from an argument buffer (Metal
   // feature set tables), which an M1 Pro reports here too
-  if (emulated_family() && emulated_family() < MTLGPUFamilyApple9 - MTLGPUFamilyApple1 + 1)
+  if (!family_has(9))
     params->ret = MIN(params->ret, 1024);
   return STATUS_SUCCESS;
 }
@@ -1886,7 +1917,7 @@ _MTLDevice_supportsTextureSampleCount(void *obj) {
   struct unixcall_generic_obj_uint64_uint64_ret *params = obj;
   params->ret = [(id<MTLDevice>)params->handle supportsTextureSampleCount:params->arg];
   // render passes take 8 samples from Apple10 on, 4 before (Metal feature set tables)
-  if (emulated_family() && emulated_family() < MTLGPUFamilyApple10 - MTLGPUFamilyApple1 + 1)
+  if (!family_has(10))
     params->ret &= params->arg <= 4;
   return STATUS_SUCCESS;
 }
@@ -1915,7 +1946,18 @@ _MTLCaptureManager_startCapture(void *obj) {
   NSString *path_str = [[NSString alloc] initWithCString:info->output_url.ptr encoding:NSUTF8StringEncoding];
   NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
   desc.outputURL = url;
-  [(MTLCaptureManager *)params->capture_manager startCaptureWithDescriptor:desc error:nil];
+  NSError *error = nil;
+  MTLCaptureManager *manager = (MTLCaptureManager *)params->capture_manager;
+  // a capture that does not start says why in <trace>.error.txt (and on stderr): Metal starts none without
+  // MTL_CAPTURE_ENABLED=1 in the process's environment, or where the trace already exists
+  if (![manager startCaptureWithDescriptor:desc error:&error]) {
+    NSString *why = [NSString stringWithFormat:@"Metal did not start the capture (trace documents supported: %d): %@\n",
+                                               (int)[manager supportsDestination:desc.destination],
+                                               error ? error.localizedDescription : @"no error given"];
+    fprintf(stderr, "mullion: %s", why.UTF8String);
+    [why writeToFile:[path_str stringByAppendingString:@".error.txt"] atomically:YES encoding:NSUTF8StringEncoding
+               error:nil];
+  }
   [url release];
   [path_str release];
   [desc release];
@@ -2155,8 +2197,8 @@ CREATES(_MTLDevice_newDenoisedScaler)(void *obj) {
     MTLFXTemporalDenoisedScalerDescriptor *desc;
     id<MTL4Compiler> compiler = nil;
 
-    if (params->metal4 ? ![MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
-                       : ![MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device])
+    if (!family_has(9) || (params->metal4 ? ![MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
+                                          : ![MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device]))
       return STATUS_SUCCESS;
     if (params->metal4 && !(compiler = metalfx_compiler(device)))
       return STATUS_SUCCESS;
@@ -2299,9 +2341,10 @@ _MTLDevice_supportsFXDenoisedScaler(void *obj) {
   struct unixcall_generic_obj_uint64_uint64_ret *params = obj;
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   params->ret = 0;
+  // "MetalFX denoised upscaling", Apple9
   if (@available(macOS 26.0, *))
-    params->ret = params->arg ? [MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
-                              : [MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device];
+    params->ret = family_has(9) && (params->arg ? [MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
+                                                : [MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device]);
   return STATUS_SUCCESS;
 }
 
@@ -2715,6 +2758,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool alpha_to_coverage;
   bool centered_samples;
   bool single_raster_sample;
+  bool paired_samples;
   uint32_t clip_distances;
   uint32_t cull_distances;
   bool cull_depth;
@@ -2832,6 +2876,7 @@ sm50_compilation_argument32_convert(
       data->alpha_to_coverage = src->alpha_to_coverage;
       data->centered_samples = src->centered_samples;
       data->single_raster_sample = src->single_raster_sample;
+      data->paired_samples = src->paired_samples;
       data->clip_distances = src->clip_distances;
       data->cull_distances = src->cull_distances;
       data->cull_depth = src->cull_depth;
@@ -4187,6 +4232,120 @@ _MTLTexture_sparseTail(void *obj) {
 }
 
 static NTSTATUS
+_MTLDevice_sparseTailHolds(void *obj) {
+  struct unixcall_sparse_tail_holds *params = obj;
+  params->ret = 1;
+  params->first_mip = 0;
+  params->bytes = 0;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      id<MTLDevice> device = (id<MTLDevice>)params->device;
+      struct WMTTextureInfo info = *(const struct WMTTextureInfo *)params->info.ptr;
+      MTLSparsePageSize page_size = (MTLSparsePageSize)info.placement_sparse_page_size;
+      if (!page_size || info.sample_count > 1 || !params->block_bytes || !params->block_width || !params->block_height)
+        return STATUS_SUCCESS;
+      MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
+      fill_texture_descriptor(desc, &info);
+      desc.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+      [desc release];
+      if (!texture)
+        return STATUS_SUCCESS;
+      NSUInteger first = texture.firstMipmapInTail, mips = texture.mipmapLevelCount;
+      params->first_mip = first;
+      params->bytes = texture.tailSizeInBytes;
+      NSUInteger page = [device sparseTileSizeInBytesForSparsePageSize:page_size];
+      if (first >= mips || !params->bytes || !page) {
+        [texture release];
+        return STATUS_SUCCESS;
+      }
+      // the tail's pages, along x, as the queue maps a texture's packed tiles (Tiling::place)
+      NSUInteger pages = (params->bytes + page - 1) / page;
+      MTLHeapDescriptor *heap_desc = [[MTLHeapDescriptor alloc] init];
+      heap_desc.type = MTLHeapTypePlacement;
+      heap_desc.storageMode = MTLStorageModePrivate;
+      heap_desc.maxCompatiblePlacementSparsePageSize = page_size;
+      heap_desc.size = pages * page;
+      id<MTLHeap> heap = [device newHeapWithDescriptor:heap_desc];
+      [heap_desc release];
+      MTLResidencySetDescriptor *set_desc = [[MTLResidencySetDescriptor alloc] init];
+      id<MTLResidencySet> set = heap ? [device newResidencySetWithDescriptor:set_desc error:nil] : nil;
+      [set_desc release];
+      id<MTL4CommandQueue> mapper = set ? [device newMTL4CommandQueue] : nil;
+      id<MTLCommandQueue> queue = mapper ? [device newCommandQueue] : nil;
+      id<MTLSharedEvent> mapped = queue ? [device newSharedEvent] : nil;
+      // each tail mip's blocks, one after the other, every byte of a mip its own value
+      NSUInteger offsets[32] = {0}, rows[32] = {0}, images[32] = {0}, total = 0;
+      for (NSUInteger m = first; m < mips && m < 32; m++) {
+        NSUInteger w = MAX(1, info.width >> m), h = MAX(1, info.height >> m);
+        NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+        rows[m] = (w + params->block_width - 1) / params->block_width * params->block_bytes;
+        images[m] = (h + params->block_height - 1) / params->block_height * rows[m];
+        offsets[m] = total;
+        total += images[m] * d;
+      }
+      id<MTLBuffer> upload = mapped ? [device newBufferWithLength:total options:MTLResourceStorageModeShared] : nil;
+      id<MTLBuffer> readback = upload ? [device newBufferWithLength:total options:MTLResourceStorageModeShared] : nil;
+      if (readback) {
+        [set addAllocation:heap];
+        [set commit];
+        MTL4UpdateSparseTextureMappingOperation op = {};
+        op.mode = MTLSparseTextureMappingModeMap;
+        op.textureRegion = MTLRegionMake3D(0, 0, 0, pages, 1, 1);
+        op.textureLevel = first;
+        op.textureSlice = 0;
+        op.heapOffset = 0;
+        [mapper updateTextureMappings:texture heap:heap operations:&op count:1];
+        [mapper signalEvent:mapped value:1];
+        id<MTLCommandBuffer> cmdbuf = [queue commandBuffer];
+        [cmdbuf useResidencySet:set];
+        [cmdbuf encodeWaitForEvent:mapped value:1];
+        for (int pass = 0; pass < 2; pass++) {
+          id<MTLBlitCommandEncoder> blit = [cmdbuf blitCommandEncoder];
+          for (NSUInteger m = first; m < mips && m < 32; m++) {
+            NSUInteger w = MAX(1, info.width >> m), h = MAX(1, info.height >> m);
+            NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+            if (!pass) {
+              memset((char *)upload.contents + offsets[m], 0x40 + (int)m, images[m] * d);
+              [blit copyFromBuffer:upload sourceOffset:offsets[m] sourceBytesPerRow:rows[m] sourceBytesPerImage:images[m]
+                        sourceSize:MTLSizeMake(w, h, d) toTexture:texture destinationSlice:0 destinationLevel:m
+                 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            } else {
+              [blit copyFromTexture:texture sourceSlice:0 sourceLevel:m sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(w, h, d) toBuffer:readback destinationOffset:offsets[m]
+             destinationBytesPerRow:rows[m] destinationBytesPerImage:images[m]];
+            }
+          }
+          [blit endEncoding];
+        }
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+        if (cmdbuf.status == MTLCommandBufferStatusCompleted) {
+          const unsigned char *bytes = readback.contents;
+          for (NSUInteger m = first; m < mips && m < 32 && params->ret; m++) {
+            NSUInteger d = info.type == WMTTextureType3D ? MAX(1, info.depth >> m) : 1;
+            for (NSUInteger i = 0; i < images[m] * d; i++)
+              if (bytes[offsets[m] + i] != (unsigned char)(0x40 + m)) {
+                params->ret = 0;
+                break;
+              }
+          }
+        }
+      }
+      [readback release];
+      [upload release];
+      [mapped release];
+      [queue release];
+      [mapper release];
+      [set release];
+      [heap release];
+      [texture release];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 CREATES(_MTLDevice_newMTL4CommandQueue)(void *obj) {
   struct unixcall_generic_obj_uint64_ret *params = obj;
   params->ret = 0;
@@ -4677,7 +4836,6 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = (id<MTLBuffer>)info->instance_count_buffer;
     desc.instanceCountBufferOffset = info->instance_count_offset;
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -4706,7 +4864,9 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = (id<MTLBuffer>)g->transform_buffer;
       triangles.transformationMatrixBufferOffset = g->transform_offset;
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      if (g->transform_buffer && !g->transform_column_major)
+        family_needs(9, "acceleration structures containing row-major matrices");
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -5106,6 +5266,161 @@ _WMTGPUStatistics(void *obj) {
   [statistics release];
   if (entry)
     IOObjectRelease(entry);
+  return STATUS_SUCCESS;
+}
+
+/* whether a sparse read of a writable placement sparse texture answers for residency by tile where the shader gave a
+ * texel: an M3 Max with macOS 26.6 did (sparse_read(p) told of tile p, and of the texel only as sparse_read(p / tile
+ * size)), the same GPU with macOS 27.2 does not, and Apple documents neither. so the GPU is asked: of a texture of
+ * four tiles by four the second tile of the first row is mapped alone, and a kernel reads the texel in that tile's
+ * middle and the texel whose coordinates are the tile's, (1, 0), which lies in the first tile. where texels are read
+ * the first is resident and the second is not, where tiles are read it is the other way round. any other answer, or
+ * a GPU without such textures, says texels */
+static NTSTATUS
+_MTLDevice_sparseResidencyInTiles(void *obj) {
+  struct unixcall_generic_obj_uint64_ret *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  params->ret = 0;
+  if (@available(macOS 26.0, *)) {
+    @autoreleasepool {
+      const MTLSparsePageSize page_size = MTLSparsePageSize16;
+      NSUInteger page = [device supportsPlacementSparse] ? [device sparseTileSizeInBytesForSparsePageSize:page_size] : 0;
+      if (!page)
+        return STATUS_SUCCESS;
+      MTLSize tile = [device sparseTileSizeWithTextureType:MTLTextureType2D
+                                               pixelFormat:MTLPixelFormatR32Uint
+                                               sampleCount:1
+                                            sparsePageSize:page_size];
+      MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Uint
+                                                                                      width:tile.width * 4
+                                                                                     height:tile.height * 4
+                                                                                  mipmapped:NO];
+      desc.storageMode = MTLStorageModePrivate;
+      desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+      desc.placementSparsePageSize = page_size;
+      id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+      MTLHeapDescriptor *heap_desc = [[MTLHeapDescriptor alloc] init];
+      heap_desc.type = MTLHeapTypePlacement;
+      heap_desc.storageMode = MTLStorageModePrivate;
+      heap_desc.maxCompatiblePlacementSparsePageSize = page_size;
+      heap_desc.size = page;
+      id<MTLHeap> heap = texture ? [device newHeapWithDescriptor:heap_desc] : nil;
+      [heap_desc release];
+      MTLResidencySetDescriptor *set_desc = [[MTLResidencySetDescriptor alloc] init];
+      id<MTLResidencySet> set = heap ? [device newResidencySetWithDescriptor:set_desc error:nil] : nil;
+      [set_desc release];
+      id<MTL4CommandQueue> mapper = set ? [device newMTL4CommandQueue] : nil;
+      id<MTLCommandQueue> queue = mapper ? [device newCommandQueue] : nil;
+      id<MTLSharedEvent> mapped = queue ? [device newSharedEvent] : nil;
+      id<MTLLibrary> library =
+          mapped ? [device newLibraryWithSource:@"#include <metal_stdlib>\n"
+                                                 "using namespace metal;\n"
+                                                 "kernel void residency(texture2d<uint> t [[texture(0)]],\n"
+                                                 "                      constant uint2 *at [[buffer(0)]],\n"
+                                                 "                      device uint *out [[buffer(1)]]) {\n"
+                                                 "  out[0] = t.sparse_read(at[0]).resident();\n"
+                                                 "  out[1] = t.sparse_read(at[1]).resident();\n"
+                                                 "}\n"
+                                        options:nil
+                                          error:nil]
+                 : nil;
+      id<MTLFunction> function = [library newFunctionWithName:@"residency"];
+      id<MTLComputePipelineState> pipeline = function ? [device newComputePipelineStateWithFunction:function error:nil] : nil;
+      id<MTLBuffer> at = pipeline ? [device newBufferWithLength:4 * sizeof(uint32_t) options:MTLResourceStorageModeShared] : nil;
+      id<MTLBuffer> out = at ? [device newBufferWithLength:2 * sizeof(uint32_t) options:MTLResourceStorageModeShared] : nil;
+      if (out) {
+        uint32_t *coordinates = at.contents, *answers = out.contents;
+        coordinates[0] = tile.width + tile.width / 2, coordinates[1] = tile.height / 2;
+        coordinates[2] = 1, coordinates[3] = 0;
+        answers[0] = answers[1] = ~0u;
+        [set addAllocation:heap];
+        [set commit];
+        MTL4UpdateSparseTextureMappingOperation op = {};
+        op.mode = MTLSparseTextureMappingModeMap;
+        op.textureRegion = MTLRegionMake3D(1, 0, 0, 1, 1, 1);
+        op.heapOffset = 0;
+        [mapper updateTextureMappings:texture heap:heap operations:&op count:1];
+        [mapper signalEvent:mapped value:1];
+        id<MTLCommandBuffer> cmdbuf = [queue commandBuffer];
+        [cmdbuf useResidencySet:set];
+        [cmdbuf encodeWaitForEvent:mapped value:1];
+        id<MTLComputeCommandEncoder> encoder = [cmdbuf computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+        [encoder setTexture:texture atIndex:0];
+        [encoder setBuffer:at offset:0 atIndex:0];
+        [encoder setBuffer:out offset:0 atIndex:1];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        [cmdbuf commit];
+        [cmdbuf waitUntilCompleted];
+        if (cmdbuf.status == MTLCommandBufferStatusCompleted)
+          params->ret = answers[0] == 0 && answers[1] == 1;
+        if (answers[0] + answers[1] != 1)
+          fprintf(stderr, "mullion: a sparse read's residency is neither by texel nor by tile here (%u, %u)\n", answers[0],
+                  answers[1]);
+      } else {
+        fprintf(stderr, "mullion: how a sparse read answers for residency could not be asked\n");
+      }
+      [out release];
+      [at release];
+      [pipeline release];
+      [function release];
+      [library release];
+      [mapped release];
+      [queue release];
+      [mapper release];
+      [set release];
+      [heap release];
+      [texture release];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
+// what the bridge answers of a device, a `name=value` line each, as the family it answers as (`family`, 0 for the
+// GPU's own): every capability call above, so one read shows what Mullion is told (tests/d3d11/d3d11_gpu_family.cpp
+// holds the answers to Apple's tables)
+static NTSTATUS
+_WMTDeviceReport(void *obj) {
+  struct unixcall_wmtgpu_statistics *params = obj;
+  NSMutableString *text = [NSMutableString stringWithFormat:@"family=%u\n", emulated_family()];
+  typedef struct unixcall_generic_obj_uint64_ret one;
+  typedef struct unixcall_generic_obj_uint64_uint64_ret two;
+  #define ANSWER(call, type, argument, ...)                                                                            \
+    do {                                                                                                               \
+      type asked = {params->device, argument};                                                                         \
+      _MTLDevice_##call(&asked);                                                                                       \
+      [text appendFormat:@"%s", #call];                                                                                \
+      [text appendFormat:@"" __VA_ARGS__];                                                                             \
+      [text appendFormat:@"=%llu\n", (unsigned long long)asked.ret];                                                   \
+    } while (0)
+  for (unsigned n = 7; n <= 11; n++)
+    ANSWER(supportsFamily, two, MTLGPUFamilyApple1 + n - 1, ".apple%u", n);
+  ANSWER(supportsFamily, two, MTLGPUFamilyMac2, ".mac2");
+  ANSWER(supportsFamily, two, MTLGPUFamilyMetal3, ".metal3");
+  ANSWER(supportsFamily, two, 5002 /* MTLGPUFamilyMetal4 */, ".metal4");
+  for (unsigned samples = 1; samples <= 16; samples *= 2)
+    ANSWER(supportsTextureSampleCount, two, samples, ".%u", samples);
+  ANSWER(maxArgumentBufferSamplerCount, one, );
+  ANSWER(supportsSamplerReduction, one, );
+  ANSWER(supportsShaderBarycentricCoordinates, one, );
+  ANSWER(supportsFXSpatialScaler, one, );
+  ANSWER(supportsFXTemporalScaler, one, );
+  ANSWER(supportsFXDenoisedScaler, two, 0, ".metal3");
+  ANSWER(supportsFXDenoisedScaler, two, 1, ".metal4");
+  ANSWER(supportsBCTextureCompression, one, );
+  ANSWER(supports32BitFloatFiltering, one, );
+  ANSWER(supports32BitMSAA, one, );
+  ANSWER(supportsPlacementSparse, one, );
+  ANSWER(maxThreadgroupMemoryLength, one, );
+  ANSWER(maxThreadsPerThreadgroup, one, );
+  #undef ANSWER
+  // no answer of the bridge, the GPU's own: converted shaders query a texture's LOD on every GPU (air_builder.cpp,
+  // CreateCalculateLOD), which the tables leave to the device before Apple8
+  [text appendFormat:@"device.supportsQueryTextureLOD=%d\n", [(id<MTLDevice>)params->device supportsQueryTextureLOD]];
+  params->ret = text.length;
+  if (params->buffer.ptr && params->size >= params->ret)
+    memcpy(params->buffer.ptr, text.UTF8String, params->ret);
   return STATUS_SUCCESS;
 }
 
@@ -6160,6 +6475,7 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
     }
     case WMTRenderCommandSetDepthTestBounds: {
       struct wmtcmd_render_setdepthtestbounds *body = (struct wmtcmd_render_setdepthtestbounds *)next;
+      family_needs(10, "depth bounds testing");
       if (@available(macOS 26.0, *))
         [encoder setDepthTestMinBound:body->min maxBound:body->max];
       break;
@@ -6714,7 +7030,6 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
     desc.instanceDescriptorStride = sizeof(MTLIndirectAccelerationStructureInstanceDescriptor);
     desc.maxInstanceCount = info->max_instance_count;
     desc.instanceCountBuffer = metal4_range(state, info->instance_count_buffer, info->instance_count_offset);
-    desc.instanceTransformationMatrixLayout = MTLMatrixLayoutRowMajor;
     return desc;
   }
   const struct WMTAccelerationStructureGeometry *geometries = info->geometries.ptr;
@@ -6739,7 +7054,9 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
       triangles.indexType = (MTLIndexType)g->index_type;
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = metal4_range(state, g->transform_buffer, g->transform_offset);
-      triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      if (g->transform_buffer && !g->transform_column_major)
+        family_needs(9, "acceleration structures containing row-major matrices");
+      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -7058,6 +7375,9 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_WMTDeviceReport,
+    &_MTLDevice_sparseTailHolds,
+    &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
 };
 
@@ -7272,6 +7592,9 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLComputePipelineState_staticThreadgroupMemoryLength,
     &_MTLDevice_maxThreadgroupMemoryLength,
     &_MTLDevice_maxThreadsPerThreadgroup,
+    &_WMTDeviceReport,
+    &_MTLDevice_sparseTailHolds,
+    &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,

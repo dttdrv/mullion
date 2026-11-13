@@ -295,6 +295,8 @@ public:
   float minLOD = 0;
   // its samples all lie at the pixel center (D3D11_CENTER_MULTISAMPLE_PATTERN, D3D11.3 19.2.4.1)
   bool centered = false;
+  // each of its samples is two of the resource's (RasterSampleCount)
+  bool paired = false;
 
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset = 0);

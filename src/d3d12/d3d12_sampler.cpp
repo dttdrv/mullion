@@ -124,6 +124,8 @@ PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_STATIC
     InfoOut.border_color = WMTSamplerBorderColorTransparentBlack;
     break;
   case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
+  // root signature 1.2's for a sampler of D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT
+  case D3D12_STATIC_BORDER_COLOR(3):
     InfoOut.border_color = WMTSamplerBorderColorOpaqueBlack;
     break;
   default:

@@ -1,0 +1,12 @@
+# a draw without a vertex shader goes on to make its pipeline
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -5764,8 +5764,6 @@
+   FinalizeCurrentRenderPipeline() {
+     // "The vertex shader stage must always be active for the pipeline to execute" (Graphics pipeline, Microsoft
+     // Learn): a draw without one runs nothing, as when an application binds the shader it failed to create
+-    if (!state_.ShaderStages[PipelineStage::Vertex].Shader)
+-      return DrawCallStatus::Invalid;
+     if (state_.ShaderStages[PipelineStage::Hull].Shader) {
+       return FinalizeTessellationRenderPipeline<IndexedDraw>();
+     }

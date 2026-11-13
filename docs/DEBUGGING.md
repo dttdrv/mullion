@@ -101,8 +101,15 @@ Mullion has a path for writing a GPU trace that Xcode opens
   [describes](https://developer.apple.com/documentation/xcode/capturing-a-metal-workload-programmatically)
 - `MULLION_CAPTURE_EXECUTABLE` names the executable to capture, without `.exe`
 - `MULLION_CAPTURE_FRAME` names the frame to capture, or F10 captures the next one
-- the trace is written as a `.gputrace` in `MULLION_LOG_PATH`, or in the working directory when that is unset or
-  `none`
+- `MULLION_CAPTURE_TRIGGER` names a file (a Unix or a Windows path) whose appearance captures the next frames, from
+  outside the game (`echo 4 > /tmp/mullion-capture`); it may hold the number of frames, and Mullion deletes it
+- `MULLION_CAPTURE_FRAMES` is how many frames a capture holds, 1 by default (frame generation needs at least 2)
+- with `MTL_CAPTURE_ENABLED=1` a queue encodes on one thread (`MULLION_D3D12_ENCODE_THREADS` overrides it), because a
+  capture copies every buffer and heap the CPU writes for each command buffer that uses them. For the same reason the
+  D3D12 arguments the GPU reads are Metal buffers of 16 MB, then 32 MB and so on as a program uses more, rather than
+  one of 1 GB
+- the trace is written as a `.gputrace` in `MULLION_CAPTURE_PATH`, else in `MULLION_LOG_PATH`, or in the working
+  directory when both are unset (or `MULLION_LOG_PATH` is `none`)
 
 Both the D3D11 and the D3D12 queues take part. Metal captures only command buffers created and committed while the
 capture runs, and a message naming the trace file does not show that the capture succeeded: {logging: capture start
@@ -128,6 +135,13 @@ holding the bytecode, the stages, the root signature, the conversion options and
 while a game's come from the device and the configuration, so its output is not necessarily what the game ran.
 Converted IR passes the LLVM verifier before optimization ([CODE.md 4.1](CODE.md#4-shaders)), except with `-O0`,
 whose output is unverified and is checked with the verifier before anything else reads it.
+
+**What the converter leaves out.** `MULLION_AIRCONV_SKIP` holds names, separated by commas, of paths the converter
+leaves out of every shader, to find which one a shader goes wrong with or what one costs; each name is described where
+it is read in the source. It is part of the shader cache's key. `custom-border` leaves out the path that samples a
+border color Metal lacks, so such a sampler reads a border Metal has, and `anisotropic-gradients` lets an anisotropic
+sampler with a bias read Metal's own level of detail, whose bias Metal drops once the footprint passes the sampler's
+anisotropy. `MULLION_TRACE_SHADER=1` names the samplers that need either path.
 
 **Caches.** Mullion keeps its converted shaders in a cache of its own
 ([`mullion_shader_cache.cpp`](../src/mullion/mullion_shader_cache.cpp)). `MULLION_SHADER_CACHE=0` turns it off, and
@@ -163,8 +177,8 @@ can hide the synchronization fault being sought.
 its last records in memory: D3D12 submissions, command buffers with their Metal identities and completion status,
 fence signals and waits, presents, D3D11 command buffers, the device's removal and exceptions. A record costs its
 thread about 10 ns, and nothing is written while the game runs. A removed device, a Metal command buffer error, a D3D12
-command buffer still awaited after ten seconds, or an exception that ends a process unless it is caught writes the
-records in time order to `~/Library/Logs/Mullion/<executable>.flight`, or to `MULLION_DIAG_PATH` when it is set, and
+command buffer still awaited after ten seconds, a feature level `D3D12CreateDevice` refuses (the record says which
+level the device reaches), or an exception that ends a process unless it is caught writes the records in time order to `~/Library/Logs/Mullion/<executable>.flight`, or to `MULLION_DIAG_PATH` when it is set, and
 Wine's console output names the file. A process that ends after such a dump adds what was recorded since, and
 `MULLION_FLIGHT=exit` writes one at the end of every process, for a failure Mullion does not see.
 

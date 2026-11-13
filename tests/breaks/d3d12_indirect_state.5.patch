@@ -1,7 +1,7 @@
 # accept a root-constant parameter one slot beyond the root signature.
 --- a/src/d3d12/d3d12_command_signature.cpp
 +++ b/src/d3d12/d3d12_command_signature.cpp
-@@ -198,6 +198,9 @@
+@@ -205,6 +205,9 @@ public:
        // DirectX-Specs, Indirect Drawing, Validation: root slots and constant ranges are ordered and compatible.
        if (parameter_type) {
          UINT index = arg.Constant.RootParameterIndex;
@@ -9,5 +9,5 @@
 +            index == root_desc->Desc_1_1.NumParameters)
 +          return S_OK;
          if (!root_desc || index >= root_desc->Desc_1_1.NumParameters || index < next_root)
-           return E_INVALIDARG;
+           return FAIL(E_INVALIDARG);
          auto &parameter = root_desc->Desc_1_1.pParameters[index];

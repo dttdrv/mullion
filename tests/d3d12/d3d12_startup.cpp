@@ -63,7 +63,7 @@ main() {
   const std::string name = std::string(exe).substr(std::string(exe).find_last_of("\\/") + 1);
   const std::string base = std::string(directory) + "\\" + name.substr(0, name.find_last_of('.')) + "_";
   for (auto [log, line] : {std::pair{"d3d12.log", "CheckFeatureSupport: E_INVALIDARG"},
-                           std::pair{"dxgi.log", "CreateSwapChainForHwnd: DXGI_ERROR_INVALID_CALL"}}) {
+                           std::pair{"dxgi.log", "CreateSwapChain: DXGI_ERROR_INVALID_CALL"}}) {
     std::ifstream file(base + log);
     const std::string lines{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     expect(file.is_open(), "%s%s was not written", base.c_str(), log);

@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 101
+#define AIRCONV_VERSION 103
 
 #ifdef __cplusplus
 #include <string>
@@ -475,14 +475,23 @@ enum SM50_SAMPLER_METADATA {
 enum SM50_TEXTURE_VIEW_METADATA : uint64_t {
   SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS = 7,
   SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE = 1ull << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS,
+  /* the spare bits above the other fields: log2 of the 16 KB page's tile width, height and depth, where Metal takes a
+     writable sparse texture's residency coordinates in such tiles. a width of 0 is no such GPU */
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH = 12,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT = 28,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0 = 15,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1 = 31,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2 = 47,
 };
 
 /* the low word of a multisample texture's metadata: a one-sample view, which reads a regular texture since Metal's
-   MS textures need more than one sample (D3D11.3 22.4.7), and the center pattern, whose samples all lie at the pixel
-   center (19.2.4.1) */
+   MS textures need more than one sample (D3D11.3 22.4.7), the center pattern, whose samples all lie at the pixel
+   center (19.2.4.1), and paired samples, each of the texture's standing for two of the resource's: a count every
+   device has (8 at feature level 11_0) where the GPU has half of it */
 enum SM50_TEXTURE_MULTISAMPLE_METADATA : uint64_t {
   SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE = 1 << 0,
   SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED = 1 << 1,
+  SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED = 1 << 2,
 };
 
 /* a minimum or maximum filter (D3D12_FILTER_REDUCTION_TYPE_MINIMUM, _MAXIMUM): the texels the filter would weight
@@ -579,6 +588,9 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   bool centered_samples;
   /** one sample rasterizes for render targets of more (ForcedSampleCount 1, D3D11.3 3.5.6.2) */
   bool single_raster_sample;
+  /** each raster sample stands for two of the pipeline's (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED): the sample
+      indices, coverage and sample count the shader sees are the pipeline's */
+  bool paired_samples;
   /* how many clip distances reach the shader as varyings, to test at each sample (D3D11.3 15.4.1) */
   uint32_t clip_distances;
   /* how many cull distances reach the shader as SM50_CULL_VARYING's: it discards every pixel of a primitive they cull,

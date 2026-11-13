@@ -2,7 +2,9 @@
 #include "log/log.hpp"
 #include "thread.hpp"
 #include "util_env.hpp"
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <ctime>
 
 #ifdef __WIN32
@@ -31,6 +33,15 @@ struct Capture {
   mullion::mutex mutex;
   State state = State::Idle;
   uint64_t next_capture_frame = 0;
+  // how many frames a capture holds: MULLION_CAPTURE_FRAMES, or the count a trigger file gives
+  uint64_t frame_count = 1;
+  uint64_t default_frame_count = 1;
+  // MULLION_CAPTURE_TRIGGER: a file whose appearance captures the next frames (and which is then deleted), so a
+  // capture can start from outside the game; it may hold the number of frames. A Unix path or a Windows one.
+  std::string trigger_path;
+#ifdef _WIN32
+  ULONGLONG trigger_checked = 0;
+#endif
   bool capture_key_pressed_ = false;
   unsigned holds = 0;
   mullion::thread stopping_;
@@ -41,10 +52,25 @@ struct Capture {
       return;
     WARN("Mullion capture enabled");
     try {
+      if (auto count = env::getEnvVar("MULLION_CAPTURE_FRAMES"); !count.empty())
+        default_frame_count = std::max<uint64_t>(std::stoull(count), 1);
+    } catch (const std::exception &) {
+    }
+    frame_count = default_frame_count;
+    try {
       if (auto frame = env::getEnvVar("MULLION_CAPTURE_FRAME"); !frame.empty())
         scheduleNextFrameCapture(std::stoull(frame));
     } catch (const std::exception &) {
     }
+    trigger_path = env::getEnvVar("MULLION_CAPTURE_TRIGGER");
+    if (!trigger_path.empty() && trigger_path.front() == '/') {
+      for (auto &c : trigger_path)
+        if (c == '/')
+          c = '\\';
+      trigger_path = "Z:" + trigger_path;
+    }
+    if (!trigger_path.empty())
+      WARN("Mullion capture: a capture starts when ", trigger_path, " appears");
   }
 
   NextAction
@@ -59,7 +85,7 @@ struct Capture {
       }
       break;
     case State::Capturing:
-      if (frame > next_capture_frame) {
+      if (frame >= next_capture_frame + frame_count) {
         next_capture_frame = 0;
         state = State::Idle;
         return NextAction::StopCapture;
@@ -70,11 +96,39 @@ struct Capture {
   }
 
   void
-  scheduleNextFrameCapture(uint64_t next = 0) {
+  scheduleNextFrameCapture(uint64_t next = 0, uint64_t count = 0) {
     if (state != State::Idle)
       return;
     state = State::WillCapture;
     next_capture_frame = next;
+    frame_count = count ? count : default_frame_count;
+  }
+
+  // the number of frames the trigger file asks for (the default where it gives none), or 0 where there is no file;
+  // looked for at most four times a second
+  uint64_t
+  triggeredFrameCount() {
+#ifdef _WIN32
+    if (trigger_path.empty() || state != State::Idle)
+      return 0;
+    ULONGLONG now = GetTickCount64();
+    if (now - trigger_checked < 250)
+      return 0;
+    trigger_checked = now;
+    if (GetFileAttributesA(trigger_path.c_str()) == INVALID_FILE_ATTRIBUTES)
+      return 0;
+    uint64_t count = default_frame_count;
+    if (auto file = std::fopen(trigger_path.c_str(), "r")) {
+      unsigned long long n = 0;
+      if (std::fscanf(file, "%llu", &n) == 1 && n)
+        count = n;
+      std::fclose(file);
+    }
+    DeleteFileA(trigger_path.c_str());
+    return count;
+#else
+    return 0;
+#endif
   }
 
   bool
@@ -149,14 +203,17 @@ CaptureState::frame(WMT::Device device, uint64_t frame) {
     std::time_t now;
     std::time(&now);
     std::strftime(filename, 1024, "_%H'%M'%S_%m-%d-%y.gputrace", std::localtime(&now));
-    // a trace is large: it goes where the logs go, not next to the executable, when MULLION_LOG_PATH names a directory
-    auto directory = env::getEnvVar("MULLION_LOG_PATH");
+    // a trace is large: it goes to MULLION_CAPTURE_PATH, else where the logs go when MULLION_LOG_PATH names a
+    // directory, not next to the executable
+    auto directory = env::getEnvVar("MULLION_CAPTURE_PATH");
+    if (directory.empty())
+      directory = env::getEnvVar("MULLION_LOG_PATH");
     if (directory == "none")
       directory.clear();
     if (!directory.empty() && directory.back() != '/' && directory.back() != '\\')
       directory += '\\';
     auto fileUrl = env::getUnixPath(directory + env::getExeBaseName() + "_F." + std::to_string(frame) + filename);
-    WARN("A new capture will be saved to ", fileUrl);
+    WARN("A new capture of ", capture.frame_count, " frame(s) will be saved to ", fileUrl);
     info.output_url.set(fileUrl.c_str());
     WMT::CaptureManager::sharedCaptureManager().startCapture(info);
     break;
@@ -172,6 +229,8 @@ CaptureState::frame(WMT::Device device, uint64_t frame) {
   case NextAction::Nothing:
     if (capture.shouldCaptureNextFrame())
       capture.scheduleNextFrameCapture(frame + 1);
+    else if (auto count = capture.triggeredFrameCount())
+      capture.scheduleNextFrameCapture(frame + 1, count);
     break;
   }
 }

@@ -300,6 +300,7 @@ Converter::LoadOperand(const SrcOperandAttribute &SrcOp, mask_t Mask) {
     Ret = ctx.pso_single_raster_sample ? ir.CreateZExt(ir.CreateICmpNE(res.coverage_mask_arg, ir.getInt32(0)), ir.getInt32Ty())
           : ctx.pso_sample_mask != 0xffffffff ? ir.CreateAnd(res.coverage_mask_arg, ctx.pso_sample_mask)
                                               : res.coverage_mask_arg;
+    Ret = air.D3DCoverage(Ret);
     break;
   }
   case InputAttribute::InnerCoverage: {
@@ -635,7 +636,7 @@ void
 Converter::StoreOperand(const DstOperandOutputCoverageMask &DstOp, llvm::Value *Value) {
   auto ValueInt = ZExtAndBitcastToInt32(Value);
   auto Ptr = ir.CreateConstGEP1_32(ir.getInt32Ty(), res.coverage_mask_reg, 0);
-  ir.CreateStore(ExtractElement(ValueInt, 0), Ptr);
+  ir.CreateStore(air.MetalCoverage(ExtractElement(ValueInt, 0)), Ptr);
 }
 
 void
@@ -1562,6 +1563,54 @@ Converter::operator()(const InstLoad &load) {
   StoreFeedback(load.feedback, Residency);
 }
 
+// Metal takes a writable sparse texture's residency coordinates in tiles of a 16 KB page
+llvm::Value *
+Converter::WritableResidency(
+    const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+    llvm::Value *Residency
+) {
+  auto Place = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Bits = [&](unsigned Shift, unsigned Mask) {
+    return ir.CreateAnd(ir.CreateTrunc(ir.CreateLShr(Place, Shift), ir.getInt32Ty()), ir.getInt32(Mask));
+  };
+  auto Width = Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH, 7);
+  auto From = ir.GetInsertBlock();
+  auto Done = ir.GetInsertPoint() == From->end() ? llvm::BasicBlock::Create(ctx.llvm, "", From->getParent())
+                                                 : llvm::SplitBlock(From, &*ir.GetInsertPoint());
+  if (auto Branch = From->getTerminator())
+    Branch->eraseFromParent();
+  auto Tiles = llvm::BasicBlock::Create(ctx.llvm, "residency_tiles", From->getParent(), Done);
+  ir.SetInsertPoint(From);
+  auto Writable = ir.CreateICmpNE(ir.CreateAnd(Place, SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE), ir.getInt64(0));
+  ir.CreateCondBr(ir.CreateAnd(Writable, ir.CreateICmpNE(Width, ir.getInt32(0))), Tiles, Done);
+  ir.SetInsertPoint(Tiles);
+  auto Scaled = Address;
+  auto Count = llvm::cast<llvm::FixedVectorType>(Address->getType())->getNumElements();
+  Scaled = ir.CreateInsertElement(Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, uint64_t(0)), Width), uint64_t(0));
+  Scaled = ir.CreateInsertElement(
+      Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, 1), Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT, 7)), 1
+  );
+  if (Count > 2) {
+    auto Depth = ir.CreateOr(
+        Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0, 1),
+        ir.CreateOr(
+            ir.CreateShl(Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1, 1), 1),
+            ir.CreateShl(Bits(SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2, 1), 2)
+        )
+    );
+    Scaled = ir.CreateInsertElement(Scaled, ir.CreateLShr(ir.CreateExtractElement(Scaled, 2), Depth), 2);
+  }
+  auto InTiles = air.CreateRead(Tex.Texture, Tex.Handle, Scaled, ArrayIndex, nullptr, Level, Tex.GlobalCoherent).second;
+  ir.CreateBr(Done);
+  auto Last = ir.GetInsertBlock();
+  ir.SetInsertPoint(Done, Done->begin());
+  auto Merged = ir.CreatePHI(Residency->getType(), 2);
+  Merged->addIncoming(Residency, From);
+  Merged->addIncoming(InTiles, Last);
+  ir.SetInsertPoint(Done, std::next(Done->begin()));
+  return Merged;
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::ReadTexel(
     const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
@@ -1569,6 +1618,8 @@ Converter::ReadTexel(
 ) {
   auto [Value, Residency] =
       air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+  if (Tex.Range && Residency && !Tex.IsUAV && !SampleIndex && Address->getType()->isVectorTy())
+    Residency = WritableResidency(Tex, Address, ArrayIndex, Level, Residency);
   if (Tex.Logical != llvm::air::Texture::texture_buffer || Tex.IsUAV || !(Used & (kMaskComponentY | kMaskComponentZ)))
     return {Value, Residency};
   // an R32G32B32 element's green and blue are the next two R32 texels; its alpha is R32's 1, the default of a
@@ -2149,6 +2200,15 @@ Converter::operator()(const InstSampleCompare &sample) {
     std::tie(Value, Residency) = SamplingResidency(
         *Tex, SamplerHandle, Sampler->Metadata, Coord, ArrayIndex, sample.offsets, {Value, Residency}, Read,
         sample.level_zero ? ClampMinLOD(Tex->Metadata, Sampler->Bias) : nullptr, Sampler->Bias, MinLODClamp);
+  if (sample.level_zero)
+    Value = ComparePointAtZero(*Tex, Sampler->Metadata, Reference, Value, [&] {
+      return air
+          .CreateSample(
+              Tex->Texture, Tex->Handle, SamplerHandle, Coord, ArrayIndex, sample.offsets,
+              sample_level{ClampMinLOD(Tex->Metadata, Sampler->Bias)}
+          )
+          .first;
+    });
   Value = CustomBorder(
       *Tex, SamplerHandle, Sampler->Border, Sampler->Metadata, Value,
       [&](llvm::Value *S) {
@@ -2398,7 +2458,13 @@ Converter::SampleImplicit(
   // only 2D textures filter anisotropically (7.18.11), and only pixel shaders have derivatives
   bool Planar = Tex.Logical == Texture::texture2d || Tex.Logical == Texture::texture2d_array ||
                 Tex.Logical == Texture::depth2d || Tex.Logical == Texture::depth2d_array;
-  if (!Planar || ctx.shader_type != microsoft::D3D10_SB_PIXEL_SHADER)
+  // MULLION_AIRCONV_SKIP=anisotropic-gradients: every sample reads Metal's own LOD, whose bias Metal drops once the
+  // footprint passes the sampler's anisotropy, to measure what the gradients below cost
+  static const bool Exact = [] {
+    auto Skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return !Skip || !strstr(Skip, "anisotropic-gradients");
+  }();
+  if (!Planar || ctx.shader_type != microsoft::D3D10_SB_PIXEL_SHADER || !Exact)
     return Biased();
   // a static sampler is known when the pipeline is made: one that is not anisotropic, or a sample whose only bias is
   // the sampler's own and that is none, reads Metal's own LOD. Metal's gradient sample below costs about twice its
@@ -2414,6 +2480,10 @@ Converter::SampleImplicit(
   auto Isotropic = ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
   if (auto Known = dyn_cast<ConstantInt>(Isotropic); Known && Known->isOne())
     return Biased();
+  // as for a static sampler, a sample whose only bias is the sampler's own and that is none reads Metal's own LOD
+  if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)
+    Isotropic =
+        ir.CreateOr(Isotropic, ir.CreateICmpEQ(ir.CreateTrunc(SamplerMetadata, ir.getInt16Ty()), ir.getInt16(0)));
   auto Gradients = [&] {
     auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
     return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
@@ -2426,11 +2496,11 @@ Converter::SampleImplicit(
   }();
   if (!Selects || isa<Constant>(Isotropic))
     return Gradients();
-  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic
-  // reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29 ms on an M1 Max). the
-  // whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a lane's sampler need not
-  // be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the branches of a sampler's samples
-  // that follow each other
+  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic,
+  // or is unbiased as above, reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29
+  // ms on an M1 Max). the whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a
+  // lane's sampler need not be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the
+  // branches of a sampler's samples that follow each other
   auto &Context = air.getContext();
   auto QuadAll = air.getModule()->getOrInsertFunction(
       "air.quad_all", FunctionType::get(ir.getInt1Ty(), {ir.getInt1Ty()}, false),
@@ -2617,7 +2687,7 @@ Converter::MinMaxFilter(
     Own.Range = Custom ? Reducer->getArg(4) : nullptr;
     Own.Metadata = nullptr;
     // an unbound texture's answers are dropped where it is called
-    Own.Texture.Unbound = Own.Texture.SingleSample = nullptr;
+    Own.Texture.Unbound = Own.Texture.SingleSample = Own.Texture.Paired = nullptr;
     Value *Sampler = Reducer->getArg(1), *Metadata = Reducer->getArg(2), *Border = Reducer->getArg(3);
     Value *Coord = Reducer->getArg(5), *ArrayIndex = Reducer->getArg(6), *LOD = Reducer->getArg(7);
     auto Field = [&](unsigned Shift, unsigned Bits) {
@@ -3056,6 +3126,46 @@ Converter::SamplerCompare(llvm::Value *SamplerMetadata, llvm::Value *Reference, 
 }
 
 llvm::Value *
+Converter::ComparePointAtZero(
+    const TextureResourceHandle &Tex, llvm::Value *SamplerMetadata, llvm::Value *Reference, llvm::Value *Value,
+    llvm::function_ref<llvm::Value *()> Read
+) {
+  using namespace llvm;
+  if (Value->getType()->isVectorTy())
+    return Value;
+  // CompareReference leaves a zero only for Equal and NotEqual, which no reference makes Metal flush a denormal texel
+  // for (D3D11.3 22.4.3). a point read has one texel, which is compared here
+  auto Filters = ir.CreateAnd(
+      SamplerMetadata, (1ull << SM50_SAMPLER_METADATA_MIN_LINEAR) | (1ull << SM50_SAMPLER_METADATA_MAG_LINEAR)
+  );
+  auto Head = ir.GetInsertBlock();
+  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
+  if (auto Branch = Head->getTerminator())
+    Branch->eraseFromParent();
+  auto Exact = llvm::BasicBlock::Create(ctx.llvm, "sample_compare_zero", Head->getParent(), Tail);
+  ir.SetInsertPoint(Head);
+  ir.CreateCondBr(
+      ir.CreateAnd(
+          ir.CreateFCmpOEQ(Reference, ConstantFP::get(air.getFloatTy(), 0)), ir.CreateICmpEQ(Filters, ir.getInt64(0))
+      ),
+      Exact, Tail
+  );
+  ir.SetInsertPoint(Exact);
+  auto Compared = SamplerCompare(SamplerMetadata, Reference, air.getDenormToZero(Read()));
+  // an unbound resource returns 0 (D3D11.3 22.4.3), and has no width
+  auto Width = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::width, ir.getInt32(0));
+  Compared = ir.CreateSelect(ir.CreateICmpEQ(Width, ir.getInt32(0)), Constant::getNullValue(Compared->getType()), Compared);
+  auto Last = ir.GetInsertBlock();
+  ir.CreateBr(Tail);
+  ir.SetInsertPoint(Tail, Tail->begin());
+  auto Result = ir.CreatePHI(Value->getType(), 2);
+  Result->addIncoming(Value, Head);
+  Result->addIncoming(Compared, Last);
+  return Result;
+}
+
+llvm::Value *
 Converter::CompareReference(llvm::Value *SamplerMetadata, llvm::Value *Reference) {
   // a comparison takes denormal texels and references as zeros (D3D11.3 22.4.3), where Metal orders them. beside the
   // largest denormal such a texel compares as less or equal, and as greater or equal beside its negation: a function
@@ -3184,7 +3294,7 @@ Converter::operator()(const InstSampleInfo &sample) {
     if (sample.src.has_value()) {
       SampleCount = ir.getInt32(0);
     } else {
-      SampleCount = air.CreateGetNumSamples();
+      SampleCount = air.CreateD3DSampleCount();
     }
   } else {
     SampleCount = air.CreateTextureQuery(Tex->Texture, Tex->Handle, Texture::num_samples, ir.getInt32(0));
@@ -3216,7 +3326,7 @@ Converter::operator()(const InstSamplePos &sample) {
                          Index
                      )
       : sample.src ? air.CreateSamplePos(ir.getInt32(0), Index)
-                   : air.CreateRasterizerSamplePos(Index);
+                   : air.CreateRasterizerSamplePos(air.MetalSampleIndex(Index));
   ValueVec4 = ir.CreateShuffleVector(Pos, ValueVec4, {0, 1, 2, 3});
 
   StoreOperand(sample.dst, MaskSwizzle(ValueVec4, GetMask(sample.dst), sample.read_swizzle));
@@ -3242,13 +3352,25 @@ Converter::operator()(const InstBufferInfo &bufinfo) {
 
 void
 Converter::LoadBufferWords(
-    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback
+    BufferResourceHandle &Buf, llvm::Value *Index, const DstOperand &Dst, const std::optional<DstOperand> &Feedback,
+    llvm::Value *Within
 ) {
   mask_t Mask = GetMask(Dst), Words = MemoryAccessMask(Mask, Buf.Swizzle);
   llvm::Value *Residency = ir.getInt32(0);
   auto At = [&](unsigned Word, llvm::Value *Index) {
     return ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Word));
   };
+  if (Within) {
+    llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
+    for (auto [DstComp, _] : EnumerateComponents(Words))
+      ValueVec = ir.CreateInsertElement(
+          ValueVec,
+          LoadBufferValue(Buf, ir.getInt32Ty(), CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), true), true),
+          DstComp
+      );
+    auto Value = ir.CreateSelect(Within, ValueVec, llvm::Constant::getNullValue(ValueVec->getType()));
+    return StoreOperand(Dst, MaskSwizzle(Value, Mask, Buf.Swizzle));
+  }
   if (auto Comp = ComponentFromScalarMask(Mask, Buf.Swizzle); Comp >= 0) {
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf, At(Comp, Index));
     if (Feedback)
@@ -3281,11 +3403,26 @@ Converter::operator()(const InstLoadStructured &load) {
   auto Buf = LoadBuffer(load.src);
   if (!Buf)
     return;
+  auto Element = LoadOperand(load.src_address, kMaskComponentX);
+  auto Inner = LoadOperand(load.src_byte_offset, kMaskComponentX);
+  // a load that a constant offset keeps inside its element is inside a bounded view where its element is (an offset
+  // past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every word, and the address
+  // in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping. a view without bounds
+  // may pass 4 GB and keeps the 64-bit address
+  auto Words = MemoryAccessMask(GetMask(load.dst), Buf->Swizzle);
+  if (auto Fixed = dyn_cast<llvm::ConstantInt>(Inner);
+      Fixed && !load.feedback && Words && Buf->Bounds() &&
+      Fixed->getZExtValue() + 4 * (llvm::Log2_32(Words) + 1) <= Buf->StructureStride) {
+    auto At = ir.CreateLShr(ir.CreateAdd(ir.CreateMul(Element, ir.getInt32(Buf->StructureStride)), Fixed), 2);
+    auto Within = ir.CreateICmpULT(
+        Element, ir.CreateUDiv(DecodeRawBufferByteLength(Buf->Metadata), ir.getInt32(Buf->StructureStride))
+    );
+    At = ir.CreateSelect(Within, At, ir.getInt32(0));
+    return LoadBufferWords(*Buf, ir.CreateZExt(At, ir.getInt64Ty()), load.dst, load.feedback, Within);
+  }
   // in 64 bits: an element index scaled by the stride can wrap 32 and pass the bounds check
-  auto IndexStruct = ir.CreateMul(
-      ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(LoadOperand(load.src_address, kMaskComponentX), ir.getInt64Ty())
-  );
-  auto Offset = ir.CreateZExt(ir.CreateLShr(LoadOperand(load.src_byte_offset, kMaskComponentX), 2), ir.getInt64Ty());
+  auto IndexStruct = ir.CreateMul(ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(Element, ir.getInt64Ty()));
+  auto Offset = ir.CreateZExt(ir.CreateLShr(Inner, 2), ir.getInt64Ty());
   LoadBufferWords(*Buf, ir.CreateAdd(IndexStruct, Offset), load.dst, load.feedback);
 }
 
@@ -3530,7 +3667,7 @@ Converter::operator()(const InstInterpolateSample &eval) {
   if (!Itp)
     return;
 
-  auto Sample = LoadOperand(eval.sample_index, kMaskComponentX);
+  auto Sample = air.MetalSampleIndex(LoadOperand(eval.sample_index, kMaskComponentX));
   auto Value = Interpolate(*Itp, [&](auto Handle) { return air.CreateInterpolateAtSample(Handle, Sample, Itp->Perspective); });
   StoreOperand(eval.dst, MaskSwizzle(Value, GetMask(eval.dst), eval.read_swizzle));
 }

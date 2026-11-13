@@ -382,8 +382,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     static const unsigned threads = [] {
       auto set = env::getEnvVar("MULLION_D3D12_ENCODE_THREADS");
       unsigned count = 0;
+      // a GPU capture keeps a copy of every buffer and heap the CPU writes for each command buffer that uses them, and
+      // each thread encodes into a command buffer of its own: a process that may be captured encodes on one
       if (std::from_chars(set.data(), set.data() + set.size(), count).ec != std::errc{} || !count)
-        count = std::clamp(mullion::thread::hardware_concurrency() / 2, 1u, 4u);
+        count = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1"
+                    ? 1u
+                    : std::clamp(mullion::thread::hardware_concurrency() / 2, 1u, 4u);
       return std::min(count, kMaxEncodeThreads);
     }();
     return threads;
@@ -628,6 +632,32 @@ public:
         queue->SettleFeedback(true);
   }
 
+  static void
+  OutlastAll(MTLD3D12Device *device, const std::shared_ptr<void> &kept) {
+    std::lock_guard<mullion::mutex> lock(queues_mutex_);
+    for (auto queue : queues_)
+      if (queue->device_ == device)
+        queue->Outlast(kept);
+  }
+
+  // `kept` lives until what the queue was given before now has completed: the work held for its thread, which is
+  // encoded there, and the command buffers on the GPU. the wait is the thread's, behind that work, so the caller
+  // takes no lock a submission holds
+  void
+  Outlast(const std::shared_ptr<void> &kept) {
+    {
+      std::unique_lock<mullion::mutex> lock(held_mutex_);
+      if (!holding_ && !gate_->closed && !inflight_cmdbuf_count_.load())
+        return;
+    }
+    Hold([this, kept]() mutable {
+      // ends after the lock, where the work has completed already
+      std::function<void()> keeps = [kept = std::move(kept)] {};
+      std::lock_guard<mullion::mutex> lock(mutex_commit_);
+      retired_.Expect(inflight_cmdbuf_seq_ - 1, std::move(keeps));
+    }, true);
+  }
+
 private:
 
   std::string
@@ -676,7 +706,11 @@ private:
       if constexpr (Metal4)
         if (!scope.inflight->cmdbuf)
           return;
-      scope.inflight->cmdbuf.encodeWaitForEvent(mapped_->sharedEvent(), mapping_value_);
+      // a process that may be captured has only the CPU wait above: Metal's capture never sees the mapping queue's
+      // signal, so a captured command buffer waiting for it is never scheduled, and every queue stops behind it
+      static const bool capturable = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1";
+      if (!capturable)
+        scope.inflight->cmdbuf.encodeWaitForEvent(mapped_->sharedEvent(), mapping_value_);
       Trace("tile mappings: done");
     };
     if (!Hold(work))
@@ -1387,7 +1421,8 @@ public:
       if (++region_tile == size.NumTiles)
         region++, region_tile = 0;
     }
-    if (operations.empty())
+    // a texture with all its memory has nothing to map in Metal (MTLD3D12Resource::dense_tiles)
+    if (operations.empty() || static_cast<MTLD3D12Resource *>(resource)->dense_tiles)
       return;
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (operations.back().mode == WMTSparseMappingModeUnmap)
@@ -1442,6 +1477,9 @@ public:
         destination.index(*dst_region_start_coordinate, *region_size, 0) >
             source.index(*src_region_start_coordinate, *region_size, 0))
       std::reverse(operations.begin(), operations.end());
+    // nor between textures of which either has all its memory: such a texture keeps its own
+    if (src->dense_tiles || dst->dense_tiles)
+      return;
     // a copy of a tile that is not mapped unmaps; which of a buffer's are is not kept here
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (unmaps || !source.texture)
@@ -2446,9 +2484,15 @@ public:
     std::vector<MTLD3D12Fence::Opener> due;
     {
       std::lock_guard<mullion::mutex> lock(fence->following_mutex);
-      // gates open on other threads, so a later Signal of this queue's may be followed first
-      if (fence->following.event.handle != event.handle || fence->following.seq <= seq)
-        fence->following = {Value, device, event, seq};
+      // gates open on other threads, so a later Signal of this queue's may be followed first: the Signals stay in the
+      // order of their values. those the CPU has seen reached need no GPU wait, and the oldest go past kFollowed
+      auto &followed = fence->following;
+      uint64_t reached = fence->completion->value.load();
+      std::erase_if(followed, [&](auto &signal) { return signal.value <= reached; });
+      auto at = std::find_if(followed.begin(), followed.end(), [&](auto &signal) { return signal.value > Value; });
+      followed.insert(at, {Value, device, event, seq});
+      while (followed.size() > MTLD3D12Fence::kFollowed)
+        followed.pop_front();
       std::erase_if(fence->openers, [&](auto &opener) {
         if (!*opener.closed)
           return true;
@@ -2498,14 +2542,21 @@ public:
     gate->closed = true;
     // a value a Signal of this device's has given, after work it has committed, is waited for on the GPU: what the
     // queue commits from here on waits for the Signal's command buffer, which can only take as long as its work. a
-    // value no such Signal has given yet closes the gate, which that Signal opens the same way once it is committed
-    if constexpr (Metal4) {
+    // value no such Signal has given yet closes the gate, which that Signal opens the same way once it is committed.
+    // only with MULLION_D3D12_GPU_WAITS=1 (read once): otherwise the CPU sees the value, as on Metal 3. Unreal's async
+    // compute (Subnautica 2) had a queue's GPU wait for the other's completion event stall the GPU 4 seconds in every
+    // 5 (Metal's limit on a wait, no error): about one frame in a hundred got through. waits on the CPU have none
+    static const bool gpu_waits = env::getEnvVar("MULLION_D3D12_GPU_WAITS") == "1";
+    if constexpr (Metal4) if (gpu_waits) {
       auto fence = static_cast<MTLD3D12Fence *>(pFence);
       auto open = [gate, queue = queue_](const WMT::Reference<WMT::SharedEvent> &event, uint64_t seq) mutable {
         gate->OpenOnGPU(event, seq, [&](auto &signal, uint64_t number) { queue.waitForEvent(signal, number); });
       };
       std::unique_lock<mullion::mutex> lock(fence->following_mutex);
-      auto following = fence->following;
+      // the first Signal to reach the value, not a later one (MTLD3D12Fence::following)
+      auto first = std::find_if(fence->following.begin(), fence->following.end(),
+                                [&](auto &signal) { return signal.value >= Value; });
+      MTLD3D12Fence::Following following = first != fence->following.end() ? *first : MTLD3D12Fence::Following{};
       if (fence->completion->value < Value && following.value >= Value && following.device == device_) {
         lock.unlock();
         open(following.event, following.seq);
@@ -2783,6 +2834,12 @@ void
 SettleCommandQueueFeedback(MTLD3D12Device *pDevice) {
   MTLD3D12CommandQueueImpl<true>::SettleAll(pDevice);
   MTLD3D12CommandQueueImpl<false>::SettleAll(pDevice);
+}
+
+void
+OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept) {
+  MTLD3D12CommandQueueImpl<true>::OutlastAll(pDevice, kept);
+  MTLD3D12CommandQueueImpl<false>::OutlastAll(pDevice, kept);
 }
 
 HRESULT

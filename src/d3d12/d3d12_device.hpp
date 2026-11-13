@@ -19,7 +19,9 @@
 #pragma once
 #include "d3d12.h"
 #include "d3d12_command_encoder.hpp"
+#include "d3d12_deferred_pipeline.hpp"
 #include "d3d12_descriptor_heap.hpp"
+#include "d3d12_device_interfaces.hpp"
 #include "d3d12_recording_arena.hpp"
 #include "dxgi1_2.h"
 #include "dxgi_interfaces.h"
@@ -194,6 +196,9 @@ public:
   Rc<Buffer> buffer;
   // which of a reserved texture's tiles are mapped, as D3D12 numbers them (MTLD3D12CommandQueue::Settle)
   std::vector<bool> mapped_tiles;
+  // a reserved texture whose Metal texture is not sparse, as Metal would keep nothing in some mips of the sparse one's
+  // tail (MTLD3D12Device::SparseTailHolds): it holds all of its memory, and mapping its tiles changes nothing in Metal
+  bool dense_tiles = false;
   // a sampler feedback map's description as its application gave it: `texture` has one R32_UINT texel per mip region
   // (TranscodeFeedback in mullion_command_feedback.hpp)
   std::optional<D3D12_RESOURCE_DESC1> feedback;
@@ -410,7 +415,12 @@ public:
     std::function<void(const WMT::Reference<WMT::SharedEvent> &, uint64_t)> open;
   };
   mullion::mutex following_mutex;
-  Following following;
+  // the Signals of Metal 4 queues not yet seen reached, oldest first: a Wait follows the first that reaches its value.
+  // following the last alone made a Wait for an older value wait for a later Signal's command buffer, which can wait
+  // on the GPU for work behind that Wait: two queues that signal each other a frame apart (Unreal's async compute)
+  // then waited for each other until Metal gave up, some 4 seconds on, every few hundred frames (Subnautica 2)
+  std::deque<Following> following;
+  static constexpr size_t kFollowed = 64;
   std::vector<Opener> openers;
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
@@ -427,6 +437,8 @@ public:
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
+  // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT, which a pipeline with stream output needs of it
+  bool StreamOutput;
   uint32_t UploadQwords;
   uint32_t ParameterSlots;
   uint32_t const *SlotQwordOffsets;
@@ -531,6 +543,14 @@ public:
 class MTLD3D12GraphicsPipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::RenderPipelineState> pso;
+  // `pso` while a compile thread makes it (DeferredPipeline): a draw reads it after WaitPipeline
+  std::shared_ptr<DeferredPipeline> deferred;
+
+  void
+  WaitPipeline() {
+    if (deferred)
+      deferred->Wait();
+  }
   // the threads each patch takes in a tessellation pipeline's object stage; zero for ordinary pipelines
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
@@ -596,7 +616,10 @@ public:
   // it rasterizes points or lines, which take no depth bias (D3D11.3 15.10); Metal gives them one with a stray slope
   // when an indirect command buffer draws them, so none is set
   bool unbiased = false;
+  // the samples a pass without targets rasterizes (RasterSampleCount of ForcedSampleCount), 0 for its targets'
   uint32_t forced_sample_count;
+  // each raster sample stands for two of the description's (RasterSampleCount)
+  bool paired_samples = false;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
   // pixel shader tests the samples a kernel finds in the bounds before the draw (SM50_SHADER_PSO_PIXEL_SHADER_DATA's
   // depth_bounds); and whether the pipeline writes depth, which changes what passes
@@ -621,6 +644,13 @@ public:
 class MTLD3D12ComputePipelineState : public MTLD3D12PipelineState {
 public:
   WMT::Reference<WMT::ComputePipelineState> pso;
+  // `pso` while a compile thread makes it (DeferredPipeline): a dispatch reads it after WaitPipeline
+  std::shared_ptr<DeferredPipeline> deferred;
+  void
+  WaitPipeline() {
+    if (deferred)
+      deferred->Wait();
+  }
   WMTSize threadgroup_size;
   // see MTL_SHADER_REFLECTION::GroupsWorkTogether and DeviceAtomics64
   bool groups_work_together = false;
@@ -633,7 +663,7 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
-class MTLD3D12Device : public ID3D12Device10 {
+class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
   TimestampSamples timestamp_samples;
@@ -668,24 +698,25 @@ public:
   auto
   Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
     std::shared_lock lock(archive_lock);
-    obj_handle_t archive = PipelineArchive();
-    if (!archive)
+    auto archives = PipelineArchives();
+    if (archives.empty())
       return make(info, error);
-    info.binary_archives_for_lookup.set(&archive);
-    info.num_binary_archives_for_lookup = 1;
+    info.binary_archives_for_lookup.set(archives.data());
+    info.num_binary_archives_for_lookup = archives.size();
     info.fail_on_binary_archive_miss = true;
     if (auto found = make(info, error))
       return found;
     info.fail_on_binary_archive_miss = false;
-    info.binary_archive_for_serialization = archive;
+    info.binary_archive_for_serialization = archives.back();
     error = {};
     auto made = make(info, error);
     if (made)
       PipelineArchived();
     return made;
   }
-  // the device's archive, opened when the first pipeline is made; none without a shader cache (ShaderCacheDirectory)
-  virtual obj_handle_t PipelineArchive() = 0;
+  // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
+  // shader cache (ShaderCacheDirectory)
+  virtual std::span<const obj_handle_t> PipelineArchives() = 0;
   virtual void PipelineArchived() = 0;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
@@ -760,11 +791,18 @@ public:
   std::atomic<uint32_t> max_mesh_threadgroups{0};
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
-  // what the device's command allocators record into: commands, and what the GPU reads of them, through one buffer
+  // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads
+  // `arguments` through buffers over its start, each twice the last, as it is handed out (MTLD3D12CommandAllocator::
+  // GrowArguments): a GPU capture copies all of a buffer the CPU writes for each command buffer that uses it, which
+  // for 1 GB made traces of tens of GB. each covers what the ones before it do, which stay, as lists recorded addresses
+  // in them
+  struct ArgumentsBuffer {
+    WMT::Reference<WMT::Buffer> buffer;
+    uint64_t address = 0, length = 0;
+  };
   struct {
     RecordingArena commands, arguments;
-    WMT::Reference<WMT::Buffer> buffer;
-    uint64_t address = 0;
+    std::vector<ArgumentsBuffer> buffers;
     // blocks of `arguments` nothing writes: the zeros an indirect draw's indices past their view read
     std::optional<RecordingArena::Run> zeros;
     mullion::mutex mutex;
@@ -831,6 +869,8 @@ public:
   virtual HRESULT RegisterResidencyAndVA(BufferAllocation *allocation) = 0;
 
   virtual HRESULT UnregisterResidencyAndVA(BufferAllocation *allocation) = 0;
+  // the address alone, and what ends with it (the buffer's acceleration structures)
+  virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
   // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
   virtual BufferAllocation *
@@ -866,6 +906,10 @@ public:
   // a tile of memory that sparse resources map where they hold none of their own (MTLD3D12CommandQueueImpl::Settle):
   // the device's, as they may outlive the queue that mapped them
   virtual WMT::Heap SpareTile() = 0;
+  // whether Metal keeps what a placement sparse texture described by `Info` holds in its tail, and the tail: its first
+  // mip and its bytes. a test on the GPU the first time a texture of its shape and format is reserved
+  // (MTLDevice_sparseTailHolds)
+  virtual bool SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) = 0;
 
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 
@@ -877,6 +921,12 @@ public:
   WMT::Reference<WMT::ComputePipelineState> predicate;
   // converts a top-level acceleration structure's instances to Metal's (acceleration_structure_instances)
   WMT::Reference<WMT::ComputePipelineState> acceleration_structure_instances;
+  // display-resolution motion vectors at the input resolution, in its pixels, for MetalFX (cs_downscale_dilated_mv)
+  WMT::Reference<WMT::ComputePipelineState> downscale_motion;
+  // a bottom-level structure's geometry transforms as column-major matrices (acceleration_structure_transforms), for
+  // a GPU that takes no row-major ones
+  WMT::Reference<WMT::ComputePipelineState> acceleration_structure_transforms;
+  bool row_major_transforms = false;
   // the samples of a depth attachment in the depth bounds, for a GPU without the test (depth_bounds_samples_*): of a
   // 2D, 2D array, multisampled and multisampled array view
   WMT::Reference<WMT::ComputePipelineState> depth_bounds_samples[4];
@@ -909,6 +959,23 @@ HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);
 // reads the feedback of the device's command buffers whose work has finished: an error in one removes the device
 void SettleCommandQueueFeedback(MTLD3D12Device *pDevice);
+// `kept` lives until the work the device's queues were given before now has completed
+void OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept);
+
+// what a released resource has on the GPU ends, by `end`, once the work the device's queues were given before now
+// has completed: a queue's thread encodes that work from Metal handles, and the GPU then uses what they name. an
+// application may not release what work in flight uses, and some do, which Windows' drivers mostly survive
+// (vkd3d-proton keeps such resources as long for them: d3d12_device_add_queue_timeline_deferred_decref). `end` runs
+// on any thread, at once where no queue has such work, and what it captured goes after it
+template <typename End>
+void
+EndAfterWorkInFlight(MTLD3D12Device *pDevice, End &&end) {
+  struct Ended {
+    std::decay_t<End> end;
+    ~Ended() { end(); }
+  };
+  OutlastCommandQueues(pDevice, std::make_shared<Ended>(std::forward<End>(end)));
+}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator);
@@ -1131,6 +1198,9 @@ Sha1Digest ShaderDigest(const void *code, size_t size);
 // whether `device` has the features a shader container requires: the low bits of its feature info part (SFI0,
 // DxilContainer.h), which DxilConstants.h calls feature requirements
 bool ShaderFeaturesSupported(MTLD3D12Device *device, const void *container, size_t size);
+// the kind of program a shader container holds, a D3D10_SB_TOKENIZED_PROGRAM_TYPE, which the kinds of DXIL continue:
+// the first dword of its DXIL, SHEX or SHDR part from bit 16. -1 where it has none
+int ShaderProgramType(const void *container, size_t size);
 
 bool IsD3D12BoxInBounds(D3D12_BOX &box, D3D12_BOX &bounds);
 

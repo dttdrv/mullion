@@ -185,8 +185,8 @@ main() {
                       }
                     }
                     const auto got = static_cast<unsigned char *>(mapped.pData) + y * mapped.RowPitch + x * format.bytes;
-                    ok = expect(!memcmp(got, want.data(), want.size()), "sub %u pixel (%u,%u) differs: first byte %#x, want %#x",
-                                sub, x, y, got[0], want[0]);
+                    ok = expect(!memcmp(got, want.data(), want.size()), "sub %u pixel (%u,%u) differs: bytes %02x %02x, want %02x %02x",
+                                sub, x, y, got[0], format.bytes > 1 ? got[1] : 0, want[0], format.bytes > 1 ? want[1] : 0);
                   }
                 immediate->Unmap(staging.Get(), sub);
                 if (!ok)

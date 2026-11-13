@@ -24,6 +24,7 @@
 #include "mullion_query.hpp"
 #include "mullion_presenter.hpp"
 #include "wsi_platform.hpp"
+#include <bit>
 #include <cstdint>
 #include <cfloat>
 #include <cmath>
@@ -43,16 +44,18 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     timestamp_state_(device) {
   // Metal feature set tables, "Maximum visibility query offset": 256 KB from Apple7, 65,528 B before it
   visibility_result_size_ = device.supportsFamily(WMTGPUFamilyApple7) ? 256 * 1024 : 65528 + sizeof(uint64_t);
+  // the sampler of a slot that has none: "Any sampler may be set to NULL; this invokes the default state"
+  // (ID3D11DeviceContext::PSSetSamplers): linear in all three, clamped, every mip, a white border
   dummy_sampler_info_.support_argument_buffers = true;
-  dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
+  dummy_sampler_info_.border_color = WMTSamplerBorderColorOpaqueWhite;
   dummy_sampler_info_.compare_function = WMTCompareFunctionNever;
   dummy_sampler_info_.normalized_coords = true;
   dummy_sampler_info_.r_address_mode = WMTSamplerAddressModeClampToEdge;
   dummy_sampler_info_.s_address_mode = WMTSamplerAddressModeClampToEdge;
   dummy_sampler_info_.t_address_mode = WMTSamplerAddressModeClampToEdge;
-  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterNearest;
-  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterNearest;
-  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterNotMipmapped;
+  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterLinear;
+  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterLinear;
+  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterLinear;
   dummy_sampler_info_.lod_min_clamp = 0.0f;
   dummy_sampler_info_.lod_max_clamp = FLT_MAX;
   dummy_sampler_info_.max_anisotroy = 1;
@@ -444,7 +447,8 @@ ArgumentEncodingContext::encodeShaderResources(
               encoded_buffer[arg.StructurePtrOffset + 1] =
                   TextureMetadata(srv.texture->arrayLength(viewIdChecked), 0) |
                   (srv.texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
-                  (srv.texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+                  (srv.texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0) |
+                  (srv.texture->paired ? SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED : 0);
             makeResident<stage, kind>(srv.texture.ptr(), viewIdChecked);
           }
         } else {

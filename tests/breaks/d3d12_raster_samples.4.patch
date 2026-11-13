@@ -1,12 +1,12 @@
 # UAV-only rasterization loses its forced sample count.
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -793,7 +793,7 @@
-       render->render_target_height = render_target_height;
-       render->render_target_array_length = render_target_array_length;
+@@ -1213,7 +1213,7 @@ public:
+           render->sample_positions[i] = sample_positions_[i << paired];
+       }
        if (effective_rtvs == 0) {
 -        render->default_raster_sample_count = std::max(1u, pso_graphics_->forced_sample_count);
 +        render->default_raster_sample_count = 1;
        }
  
-       while (allocator_->encoder_last->type == EncoderType::Clear) {
+       FoldClears(render);

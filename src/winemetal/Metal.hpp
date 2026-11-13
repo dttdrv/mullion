@@ -1234,6 +1234,15 @@ public:
     return MTLDevice_sparseTileSizeInBytes(handle, page_size);
   }
 
+  // whether Metal keeps a placement sparse texture's tail (MTLDevice_sparseTailHolds), and the tail: first mip, bytes
+  bool
+  sparseTailHolds(
+      const WMTTextureInfo &info, uint32_t block_width, uint32_t block_height, uint32_t block_bytes,
+      std::pair<uint64_t, uint64_t> &tail
+  ) const {
+    return MTLDevice_sparseTailHolds(handle, &info, block_width, block_height, block_bytes, &tail.first, &tail.second);
+  }
+
   WMTSize
   sparseTileSize(WMTTextureType type, WMTPixelFormat format, uint32_t sample_count, WMTSparsePageSize page_size) const {
     return MTLDevice_sparseTileSize(handle, type, format, sample_count, page_size);
@@ -1451,6 +1460,11 @@ public:
   uint64_t
   maxArgumentBufferSamplerCount() {
     return MTLDevice_maxArgumentBufferSamplerCount(handle);
+  }
+
+  bool
+  sparseResidencyInTiles() {
+    return MTLDevice_sparseResidencyInTiles(handle);
   }
 
   bool
