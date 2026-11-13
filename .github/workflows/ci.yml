@@ -4,10 +4,19 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
+  # every pull request builds each variant, runs the host tests and leaves its archive as an artifact. the GPU tests
+  # do not run for one: GitHub's Macs have no GPU Mullion runs on, and a self-hosted one must not run a fork's code
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', '.github/ISSUE_TEMPLATE/**', '.github/DISCUSSION_TEMPLATE/**']
   # GitHub removes a cache nothing has read for 7 days, and a tag's run reads only the caches of the default branch:
   # every 5 days the toolchains are read there (keep-toolchains), and made again where one is gone
   schedule:
     - cron: '17 3 */5 * *'
+
+# a pull request's newer push ends the run of the one before
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -557,7 +566,7 @@ jobs:
         run: meson test -C build host_tessellator host_mutate host_install --print-errorlogs
 
   test-gpu:
-    if: vars.MULLION_WINE != '' && github.event_name != 'schedule'
+    if: vars.MULLION_WINE != '' && github.event_name != 'schedule' && github.event_name != 'pull_request'
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
@@ -725,8 +734,10 @@ jobs:
           name: clang-release-arm64ec-windows-cross
           path: install
 
+  # not for a pull request: the native library does not build yet (src/mullion uses Windows' clock and thread calls),
+  # and a check that always fails teaches nobody anything
   build-clang-release-arm64-macos:
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && github.event_name != 'pull_request'
     runs-on: macos-26
     needs: setup-llvm-darwin-arm64
     steps:
