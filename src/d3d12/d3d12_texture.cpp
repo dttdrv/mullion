@@ -19,6 +19,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include <bit>
+#include <cmath>
 #include "mullion_format.hpp"
 #include "com/com_pointer.hpp"
 
@@ -220,9 +221,8 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
       // "applications can create smaller aligned resources when the estimated size of the most-detailed mip level is a
       // total of the larger alignment restriction or less. The runtime will use an architecture-independent mechanism
       // of size-estimation" (D3D12_RESOURCE_DESC, Alignment): D3D12's estimate (SmallResourceEstimate), not Metal's
-      // size, which may be larger. GetResourceAllocationInfo then gives Metal's size, at Metal's alignment rounded up
-      // to one D3D12 has (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format, asked for
-      // by itself, was decided with its texture
+      // size, which may be larger (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format,
+      // asked for by itself, was decided with its texture
       if (Plane != ~0u)
         return S_OK;
       if (!(Format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR)) {
@@ -366,10 +366,9 @@ public:
       WMTSizeAndAlign size_and_align{};
       if (pHeap) {
         size_and_align = device_->GetMTLDevice().heapTextureSizeAndAlign(texture_info);
-        if (planes > 1 && !plane && offset % std::max<uint64_t>(desc_.Alignment, size_and_align.align))
-          return FAIL(E_INVALIDARG);
-        if (plane)
-          offset = align(offset, size_and_align.align);
+        // Metal's alignment may be more than the one the texture was placed by (4KB): its allocation has the room
+        // (GetResourceAllocationInfo)
+        offset = align(offset, size_and_align.align);
         if (offset > pHeap->GetDesc().SizeInBytes || size_and_align.size > pHeap->GetDesc().SizeInBytes - offset)
           return FAIL(E_INVALIDARG);
       }
@@ -405,9 +404,11 @@ public:
   };
 
   ~MTLD3D12Texture() {
-    for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
-      if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
-        device_->UnregisterResidency(storage->current()->texture());
+    EndAfterWorkInFlight(device_, [device = device_, texture = std::move(texture)] {
+      for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
+        if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(storage->current()->texture());
+    });
   }
 
   HRESULT
@@ -776,6 +777,11 @@ public:
 
     // into the view's mip numbering, keeping the fraction (D3D12_TEX2D_SRV: a clamp of 0.5 is not 0)
     ResourceMinLODClamp -= view_descriptor.firstMiplevel;
+    // a clamp past the view's last mip removes every mip of the view (D3D11.3 5.8.5), and a load of any reads zeros:
+    // Windows has that with the clamp counted in 256ths, rounded (vkd3d-proton, test_view_min_lod). the count of the
+    // view's mips stands for such a clamp: every mip is below it
+    if (std::floor(ResourceMinLODClamp * 256 + 0.5f) > (view_descriptor.miplevelCount - 1) * 256.0f)
+      ResourceMinLODClamp = view_descriptor.miplevelCount;
 
     return Heap->AddShaderResourceView(
         Index, texture, View, ResourceMinLODClamp, BorderColorRange(metal_format),

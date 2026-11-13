@@ -23,9 +23,29 @@
 #include "airconv_public.h"
 #include "mullion_sampler.hpp"
 #include "log/log.hpp"
+#include "log/trace.hpp"
+#include "util_env.hpp"
 #include <bit>
+#include <set>
 
 namespace mullion {
+
+// MULLION_TRACE_SHADER: each distinct sampler that makes pipelines take a slower path (a custom border color or a
+// minimum or maximum filter, which remake them, or an anisotropic filter with a bias, whose samples take gradients)
+static void
+TraceSampler(const D3D12_SAMPLER_DESC &d, bool custom) {
+  static mullion::mutex lock;
+  static std::set<std::string> seen;
+  auto line = str::format(
+      "sampler: filter ", uint32_t(d.Filter), ", address ", uint32_t(d.AddressU), " ", uint32_t(d.AddressV), " ",
+      uint32_t(d.AddressW), ", bias ", d.MipLODBias, ", anisotropy ", d.MaxAnisotropy, ", comparison ",
+      uint32_t(d.ComparisonFunc), ", border ", custom ? "custom " : "", d.BorderColor[0], " ", d.BorderColor[1], " ",
+      d.BorderColor[2], " ", d.BorderColor[3], ", lod ", d.MinLOD, " to ", d.MaxLOD
+  );
+  std::lock_guard<mullion::mutex> guard(lock);
+  if (seen.insert(line).second)
+    TRACE_IN(Shader, line);
+}
 
 struct SRVTextureGPUStorage {
   uint64_t resource_id;
@@ -687,15 +707,23 @@ public:
   
     WMTSamplerInfo info;
     bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-    if (custom)
+    // MULLION_AIRCONV_SKIP=custom-border keeps pipelines without the custom border path, so such a sampler reads a
+    // border Metal has (the skip is in the shader cache's key)
+    static const bool borders = env::getEnvVar("MULLION_AIRCONV_SKIP").find("custom-border") == std::string::npos;
+    if (custom && borders)
       device_->sampler_emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
     auto sampler = Sampler::createSampler(
         device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
         SamplerReduction(pDesc->Filter)
     );
 
-    if (sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
+    bool minmax =
+        sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1);
+    if (minmax)
       device_->sampler_emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+    if (trace::On(trace::Shader) &&
+        (custom || minmax || (D3D12_DECODE_IS_ANISOTROPIC_FILTER(pDesc->Filter) && pDesc->MipLODBias != 0)))
+      TraceSampler(*pDesc, custom);
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
       auto &gpu_storage = mapped_argument_buffer_[Index];

@@ -759,11 +759,12 @@ jobs:
           name: clang-release-arm64-macos
           path: install
 
-  # the release archive: x86_64 for Wine and CrossOver on Rosetta, and ARM64X for arm64 Wine, whose x86_64 programs load
-  # it as ARM64EC. a v tag makes a draft release with it, for its notes to be written
+  # the release archive: x86_64 for Wine and CrossOver on Rosetta with the 32-bit Direct3D 10 and 11 for their 32-bit
+  # programs, and ARM64X for arm64 Wine, whose x86_64 programs load it as ARM64EC. a v tag makes a draft release with
+  # it, for its notes to be written
   package:
     runs-on: macos-26
-    needs: [build-gcc-release-x86_64-windows-cross, build-clang-release-arm64ec-windows-cross]
+    needs: [build-gcc-release-x86_64-windows-cross, build-gcc-release-x86-windows-cross, build-clang-release-arm64ec-windows-cross]
     env:
       PACKAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
     steps:
@@ -774,6 +775,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: gcc-release-x86_64-windows-cross
+          path: ./combined/${{ env.PACKAGE_TAG }}
+
+      - name: Download WoW64 Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: gcc-release-x86-windows-cross
           path: ./combined/${{ env.PACKAGE_TAG }}
 
       - name: Download ARM64X Artifact

@@ -27,6 +27,7 @@
 #include "com/com_pointer.hpp"
 #include "sha1/sha1_util.hpp"
 #include "DXBCParser/BlobContainer.h"
+#include "DXBCParser/d3d12tokenizedprogramformat.hpp"
 #include "DXBCParser/DXBCUtils.h"
 #include "util_env.hpp"
 #include <bit>
@@ -713,7 +714,9 @@ protected:
   // from the others, and only a mesh stage can leave the adjacent vertices out (D3D11.3 8.15)
   struct GeometryInputs {
     std::string vs, gs;                      // bytecode
-    Com<ID3D12RootSignature> root_signature;
+    // private, as every reference a pipeline keeps to its root signature: on Windows the signature's count is the
+    // same after the pipeline is made (vkd3d-proton, test_create_graphics_pipeline_state)
+    Com<MTLD3D12RootSignature, false> root_signature;
     std::vector<SM50_IA_INPUT_ELEMENT> elements;
     SM50_SHADER_IA_INPUT_LAYOUT_DATA ia_layout;
     std::vector<SM50_STREAM_OUTPUT_ELEMENT2> so_elements;
@@ -1269,6 +1272,25 @@ public:
     if ((rasterizer.FillMode != D3D12_FILL_MODE_SOLID && rasterizer.FillMode != D3D12_FILL_MODE_WIREFRAME) ||
         rasterizer.CullMode < D3D12_CULL_MODE_NONE || rasterizer.CullMode > D3D12_CULL_MODE_BACK)
       return E_INVALIDARG;
+    // Windows refuses a shader given for a stage that is of another stage's kind (vkd3d-proton,
+    // test_mismatching_pso_stages); Metal's compiler ends on a vertex shader converted for the pixel stage
+    using namespace microsoft;
+    const std::pair<D3D12_SHADER_BYTECODE, int> stages[] = {
+        {pDesc->VS, D3D10_SB_VERTEX_SHADER}, {pDesc->PS, D3D10_SB_PIXEL_SHADER},        {pDesc->DS, D3D11_SB_DOMAIN_SHADER},
+        {pDesc->HS, D3D11_SB_HULL_SHADER},   {pDesc->GS, D3D10_SB_GEOMETRY_SHADER},     {AS, D3D12_SB_AMPLIFICATION_SHADER},
+        {MS, D3D12_SB_MESH_SHADER}};
+    for (auto &[code, kind] : stages)
+      if (code.pShaderBytecode && ShaderProgramType(code.pShaderBytecode, code.BytecodeLength) != kind)
+        return E_INVALIDARG;
+    // RTVFormats has eight. Windows refuses a format given for a render target past NumRenderTargets, and stream
+    // output with a root signature that does not allow it (vkd3d-proton, test_create_graphics_pipeline_state)
+    if (pDesc->NumRenderTargets > std::size(pDesc->RTVFormats))
+      return E_INVALIDARG;
+    for (unsigned i = pDesc->NumRenderTargets; i < std::size(pDesc->RTVFormats); i++)
+      if (pDesc->RTVFormats[i] != DXGI_FORMAT_UNKNOWN)
+        return E_INVALIDARG;
+    if (pDesc->StreamOutput.NumEntries && !static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->StreamOutput)
+      return E_INVALIDARG;
     // D3D12_RASTERIZER_DESC, ForcedSampleCount: only 0, 1, 4, 8 and optionally 16 are valid; Metal rasterizes the
     // sample counts its textures take
     if (rasterizer.ForcedSampleCount != 0 && rasterizer.ForcedSampleCount != 1 && rasterizer.ForcedSampleCount != 4 &&
@@ -1586,7 +1608,8 @@ public:
         return FAIL(E_INVALIDARG);
       pixel_shader_ =
           [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
-           signature = Com<ID3D12RootSignature>(pDesc->pRootSignature), data_ps, common,
+           signature = Com<MTLD3D12RootSignature, false>(static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)),
+           data_ps, common,
            ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
@@ -1634,7 +1657,7 @@ public:
       in->vs.assign((const char *)pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength);
       if (pDesc->GS.pShaderBytecode)
         in->gs.assign((const char *)pDesc->GS.pShaderBytecode, pDesc->GS.BytecodeLength);
-      in->root_signature = pDesc->pRootSignature;
+      in->root_signature = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature);
       in->elements = elements;
       in->ia_layout = data_ia_layout;
       in->so_elements = so_elements;
@@ -2058,7 +2081,7 @@ Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStre
     std::vector<D3D12_SO_DECLARATION_ENTRY> outputs;
     std::vector<UINT> strides;
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
-    Com<ID3D12RootSignature> signature;
+    Com<MTLD3D12RootSignature, false> signature;
   };
   auto owned = std::make_shared<Owned>();
   static_cast<PipelineStateStream &>(*owned) = stream;
@@ -2077,7 +2100,7 @@ Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStre
       code->pShaderBytecode = owned->shaders.emplace_back(std::move(shader))->data();
     }
   cs.CachedPSO = graphics.CachedPSO = {};
-  owned->signature = cs.pRootSignature ? cs.pRootSignature : graphics.pRootSignature;
+  owned->signature = static_cast<MTLD3D12RootSignature *>(cs.pRootSignature ? cs.pRootSignature : graphics.pRootSignature);
   auto &so = graphics.StreamOutput;
   owned->outputs.assign(so.pSODeclaration, so.pSODeclaration + so.NumEntries);
   for (auto &output : owned->outputs)

@@ -1,12 +1,12 @@
 # keeps the first sampler descriptor written to a heap slot.
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
-@@ -619,6 +619,8 @@
+@@ -685,6 +685,8 @@ public:
      if (Index >= samplers_.size())
-       return E_INVALIDARG;
+       return FAIL(E_INVALIDARG);
    
 +    if (samplers_[Index])
 +      return S_OK;
      WMTSamplerInfo info;
      bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-     auto sampler =
+     if (custom)

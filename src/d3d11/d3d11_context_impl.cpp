@@ -5762,6 +5762,10 @@ public:
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeCurrentRenderPipeline() {
+    // "The vertex shader stage must always be active for the pipeline to execute" (Graphics pipeline, Microsoft
+    // Learn): a draw without one runs nothing, as when an application binds the shader it failed to create
+    if (!state_.ShaderStages[PipelineStage::Vertex].Shader)
+      return DrawCallStatus::Invalid;
     if (state_.ShaderStages[PipelineStage::Hull].Shader) {
       return FinalizeTessellationRenderPipeline<IndexedDraw>();
     }

@@ -2049,6 +2049,17 @@ WMTGPUStatistics(obj_handle_t device, char *buffer, uint64_t size) {
   return params.ret;
 }
 
+WINEMETAL_API uint64_t
+WMTDeviceReport(obj_handle_t device, char *buffer, uint64_t size) {
+  struct unixcall_wmtgpu_statistics params;
+  params.device = device;
+  WMT_MEMPTR_SET(params.buffer, buffer);
+  params.size = size;
+  params.ret = 0;
+  UNIX_CALL(WMTUnixDeviceReport, &params);
+  return params.ret;
+}
+
 WINEMETAL_API void
 MTLCommandBuffer_pushDebugGroup(obj_handle_t cmdbuf, obj_handle_t name) {
   struct unixcall_generic_obj_obj_noret params;

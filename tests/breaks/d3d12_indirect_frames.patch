@@ -1,12 +1,12 @@
 # pixel UAV stores do not end the render pass before its indirect resolver
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1868,7 +1868,7 @@
-   }
-
+@@ -2847,7 +2847,7 @@ public:
    void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+     WriteMarkers();
+     OrderingPoint();
 -    constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |
 +    constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = D3D12_RESOURCE_STATE_RENDER_TARGET |
                         D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
-     // Metal orders nothing between passes that reach one memory through a reserved buffer and through another
-     // resource, in one command buffer or in two, until the earlier has completed (tests/native/alias_order)
+     // Metal orders passes that reach one memory through a reserved buffer and through another resource only with
+     // what the queue encodes for an aliasing barrier between them (EncoderType::Settle; d3d12_sparse_remap)

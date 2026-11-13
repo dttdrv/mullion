@@ -2608,7 +2608,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
-       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixTextureSparseTailHolds, WMTUnixCallCount };
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
+       WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
@@ -2631,6 +2632,9 @@ WINEMETAL_API int64_t WMTDiagSemaphoreCount(void *semaphore);
 // the statistics the device's driver keeps in its IORegistry entry (PerformanceStatistics), as tab-separated
 // name=value pairs: their length, written to buffer when it holds them
 WINEMETAL_API uint64_t WMTGPUStatistics(obj_handle_t device, char *buffer, uint64_t size);
+// what the bridge answers of the device (as the family of MULLION_GPU_FAMILY, when one is set), `name=value` lines.
+// their length, written to buffer when it holds them
+WINEMETAL_API uint64_t WMTDeviceReport(obj_handle_t device, char *buffer, uint64_t size);
 WINEMETAL_API void MTLCommandBuffer_pushDebugGroup(obj_handle_t cmdbuf, obj_handle_t name);
 WINEMETAL_API void MTLCommandBuffer_popDebugGroup(obj_handle_t cmdbuf);
 WINEMETAL_API uint64_t DispatchData_getBytes(obj_handle_t data, void *buffer, uint64_t size);
