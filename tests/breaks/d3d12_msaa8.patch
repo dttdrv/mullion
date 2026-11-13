@@ -1,0 +1,13 @@
+# a texture of 8 samples is made of 8 on a GPU that stores 4
+# family 9
+--- a/src/mullion/mullion_format.cpp
++++ b/src/mullion/mullion_format.cpp
+@@ -1964,7 +1964,7 @@
+ 
+ uint32_t
+ RasterSampleCount(WMT::Device device, uint32_t count) {
+-  if (device.supportsTextureSampleCount(count))
++  if (count <= 8)
+     return count;
+   return count == 8 && device.supportsTextureSampleCount(4) ? 4 : 0;
+ }

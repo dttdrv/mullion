@@ -20,6 +20,7 @@
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pipeline.hpp"
+#include "DXBCParser/d3d12tokenizedprogramformat.hpp"
 #include "d3d12_deferred_pipeline.hpp"
 #include "log/log.hpp"
 #include <array>
@@ -63,6 +64,9 @@ public:
     common.next = &rootsig;
 
     Name({pDesc->CS});
+    // as a graphics pipeline's stages (MTLD3D12GraphicsPipelineStateImpl::Initialize)
+    if (ShaderProgramType(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength) != microsoft::D3D11_SB_COMPUTE_SHADER)
+      return E_INVALIDARG;
     if (HRESULT hr = InitializeShader(device_, pDesc->CS, &shader_cs, &ref_cs); FAILED(hr))
       return hr;
 

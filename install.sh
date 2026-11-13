@@ -55,8 +55,11 @@ for kind in "$here"/*-windows "$here"/*-unix; do
   esac
 done
 [ -n "$native" ] || { echo "$wine has neither an x86_64 nor an arm64 Wine in lib/wine" >&2; exit 1; }
-# a prefix's system32 has the DLLs of Wine's own architecture
+# a prefix's system32 has the DLLs of Wine's own architecture, and its syswow64 the 32-bit ones a Wine that runs
+# 32-bit programs took above
 for prefix; do
   cp "$here/$native"/*.dll "$prefix/drive_c/windows/system32/"
+  [ ! -d "$here/i386-windows" ] || [ ! -d "$wine/lib/wine/i386-windows" ] ||
+    [ ! -d "$prefix/drive_c/windows/syswow64" ] || cp "$here"/i386-windows/*.dll "$prefix/drive_c/windows/syswow64/"
 done
 echo "Mullion is installed in $wine"

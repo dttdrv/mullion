@@ -1,0 +1,13 @@
+# a GPU of 4 writes the sample it stores for a pair only where the mask has the pair's even sample
+# family 9
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -1534,7 +1534,7 @@
+     if (paired_samples) {
+       uint32_t raster = mesh ? mesh_info.raster_sample_count : info.raster_sample_count, kept = ~0u << raster;
+       for (uint32_t i = 0; i < raster; i++)
+-        kept |= (sample_mask >> 2 * i & 3 ? 1u : 0u) << i;
++        kept |= (sample_mask >> 2 * i & 1) << i;
+       sample_mask = kept;
+     }
+     if (pDesc->PS.pShaderBytecode) {

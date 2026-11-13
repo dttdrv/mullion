@@ -689,6 +689,9 @@ def own(args, tests, builds, binary, base):
         sys.exit("--late must be nonnegative milliseconds")
     logs = builds[0] / "meson-logs" / ("benchmarks" if getattr(args, "benchmark", False) else "tests")
     logs.mkdir(parents=True, exist_ok=True)
+    # a test's flight records (WMTFlightDump) go with its logs, not where a game's go (~/Library/Logs/Mullion)
+    base = dict(base)
+    base.setdefault("MULLION_DIAG_PATH", str(logs))
     families = args.family.split(",")
     verdicts, said_by = {}, {}
     printing = threading.Lock()

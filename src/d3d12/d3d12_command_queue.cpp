@@ -632,6 +632,32 @@ public:
         queue->SettleFeedback(true);
   }
 
+  static void
+  OutlastAll(MTLD3D12Device *device, const std::shared_ptr<void> &kept) {
+    std::lock_guard<mullion::mutex> lock(queues_mutex_);
+    for (auto queue : queues_)
+      if (queue->device_ == device)
+        queue->Outlast(kept);
+  }
+
+  // `kept` lives until what the queue was given before now has completed: the work held for its thread, which is
+  // encoded there, and the command buffers on the GPU. the wait is the thread's, behind that work, so the caller
+  // takes no lock a submission holds
+  void
+  Outlast(const std::shared_ptr<void> &kept) {
+    {
+      std::unique_lock<mullion::mutex> lock(held_mutex_);
+      if (!holding_ && !gate_->closed && !inflight_cmdbuf_count_.load())
+        return;
+    }
+    Hold([this, kept]() mutable {
+      // ends after the lock, where the work has completed already
+      std::function<void()> keeps = [kept = std::move(kept)] {};
+      std::lock_guard<mullion::mutex> lock(mutex_commit_);
+      retired_.Expect(inflight_cmdbuf_seq_ - 1, std::move(keeps));
+    }, true);
+  }
+
 private:
 
   std::string
@@ -1395,7 +1421,8 @@ public:
       if (++region_tile == size.NumTiles)
         region++, region_tile = 0;
     }
-    if (operations.empty())
+    // a texture with all its memory has nothing to map in Metal (MTLD3D12Resource::dense_tiles)
+    if (operations.empty() || static_cast<MTLD3D12Resource *>(resource)->dense_tiles)
       return;
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (operations.back().mode == WMTSparseMappingModeUnmap)
@@ -1450,6 +1477,9 @@ public:
         destination.index(*dst_region_start_coordinate, *region_size, 0) >
             source.index(*src_region_start_coordinate, *region_size, 0))
       std::reverse(operations.begin(), operations.end());
+    // nor between textures of which either has all its memory: such a texture keeps its own
+    if (src->dense_tiles || dst->dense_tiles)
+      return;
     // a copy of a tile that is not mapped unmaps; which of a buffer's are is not kept here
     std::function<void(WMT::MTL4CommandQueue)> settle = [](auto) {};
     if (unmaps || !source.texture)
@@ -2804,6 +2834,12 @@ void
 SettleCommandQueueFeedback(MTLD3D12Device *pDevice) {
   MTLD3D12CommandQueueImpl<true>::SettleAll(pDevice);
   MTLD3D12CommandQueueImpl<false>::SettleAll(pDevice);
+}
+
+void
+OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept) {
+  MTLD3D12CommandQueueImpl<true>::OutlastAll(pDevice, kept);
+  MTLD3D12CommandQueueImpl<false>::OutlastAll(pDevice, kept);
 }
 
 HRESULT

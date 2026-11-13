@@ -19,6 +19,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include <bit>
+#include <cmath>
 #include "mullion_format.hpp"
 #include "com/com_pointer.hpp"
 
@@ -220,9 +221,8 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
       // "applications can create smaller aligned resources when the estimated size of the most-detailed mip level is a
       // total of the larger alignment restriction or less. The runtime will use an architecture-independent mechanism
       // of size-estimation" (D3D12_RESOURCE_DESC, Alignment): D3D12's estimate (SmallResourceEstimate), not Metal's
-      // size, which may be larger. GetResourceAllocationInfo then gives Metal's size, at Metal's alignment rounded up
-      // to one D3D12 has (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format, asked for
-      // by itself, was decided with its texture
+      // size, which may be larger (Starfield's 320x180 R8_TYPELESS, dttdrv/mullion#32). one plane of a planar format,
+      // asked for by itself, was decided with its texture
       if (Plane != ~0u)
         return S_OK;
       if (!(Format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR)) {
@@ -278,6 +278,8 @@ class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_HEAP_PROPERTIES heap_props_;
   D3D12_HEAP_FLAGS heap_flags_;
   bool reserved_ = false; // its tiles are mapped to heaps (UpdateTileMappings)
+  // a reserved texture with all its memory (dense_tiles): the tail its sparse texture would have, first mip and bytes
+  std::pair<uint64_t, uint64_t> dense_tail_{};
   // the heap a placed texture is on, which it keeps: the heap's residency is the texture's
   // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
   Com<MTLD3D12Heap, false> heap_;
@@ -354,14 +356,19 @@ public:
           return FAIL(E_INVALIDARG);
         texture_info.placement_sparse_page_size = device_->GetSparsePageSize();
         flags.set(TextureAllocationFlag::CpuInvisible);
+        // where Metal would lose what the tail holds, the texture is an ordinary one, whose tiles the application maps
+        // all the same (GetResourceTiling gives the sparse texture's): CONTROL Resonant's window interiors
+        if (!device_->SparseTailHolds(texture_info, desc_.Format, dense_tail_)) {
+          texture_info.placement_sparse_page_size = WMTSparsePageSize(0);
+          dense_tiles = true;
+        }
       }
       WMTSizeAndAlign size_and_align{};
       if (pHeap) {
         size_and_align = device_->GetMTLDevice().heapTextureSizeAndAlign(texture_info);
-        if (planes > 1 && !plane && offset % std::max<uint64_t>(desc_.Alignment, size_and_align.align))
-          return FAIL(E_INVALIDARG);
-        if (plane)
-          offset = align(offset, size_and_align.align);
+        // Metal's alignment may be more than the one the texture was placed by (4KB): its allocation has the room
+        // (GetResourceAllocationInfo)
+        offset = align(offset, size_and_align.align);
         if (offset > pHeap->GetDesc().SizeInBytes || size_and_align.size > pHeap->GetDesc().SizeInBytes - offset)
           return FAIL(E_INVALIDARG);
       }
@@ -397,9 +404,11 @@ public:
   };
 
   ~MTLD3D12Texture() {
-    for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
-      if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
-        device_->UnregisterResidency(storage->current()->texture());
+    EndAfterWorkInFlight(device_, [device = device_, texture = std::move(texture)] {
+      for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
+        if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(storage->current()->texture());
+    });
   }
 
   HRESULT
@@ -768,6 +777,11 @@ public:
 
     // into the view's mip numbering, keeping the fraction (D3D12_TEX2D_SRV: a clamp of 0.5 is not 0)
     ResourceMinLODClamp -= view_descriptor.firstMiplevel;
+    // a clamp past the view's last mip removes every mip of the view (D3D11.3 5.8.5), and a load of any reads zeros:
+    // Windows has that with the clamp counted in 256ths, rounded (vkd3d-proton, test_view_min_lod). the count of the
+    // view's mips stands for such a clamp: every mip is below it
+    if (std::floor(ResourceMinLODClamp * 256 + 0.5f) > (view_descriptor.miplevelCount - 1) * 256.0f)
+      ResourceMinLODClamp = view_descriptor.miplevelCount;
 
     return Heap->AddShaderResourceView(
         Index, texture, View, ResourceMinLODClamp, BorderColorRange(metal_format),
@@ -1197,7 +1211,7 @@ public:
         texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
     );
     shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
-    auto [first, bytes] = texture->current()->texture().sparseTail();
+    auto [first, bytes] = dense_tiles ? dense_tail_ : texture->current()->texture().sparseTail();
     packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
     packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
     packed.NumTilesForPackedMips =

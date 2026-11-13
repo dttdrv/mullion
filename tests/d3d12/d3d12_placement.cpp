@@ -237,9 +237,7 @@ int main(int, char **) {
       continue;
     }
     if (!expect(info.SizeInBytes != std::numeric_limits<UINT64>::max() &&
-                    (info.Alignment == D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT ||
-                     info.Alignment == D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) &&
-                    hr == S_OK,
+                    info.Alignment == D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT && hr == S_OK,
                 "an eligible 4KB alignment gives %llu bytes at alignment %llu, and %08lx", info.SizeInBytes,
                 info.Alignment, hr))
       continue;

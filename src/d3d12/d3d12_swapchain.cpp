@@ -316,7 +316,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present(UINT sync_interval, UINT flags) final {
-    return Present1(sync_interval, flags, nullptr);
+    return PresentFrame(sync_interval, flags, nullptr);
   };
 
   HRESULT
@@ -853,6 +853,14 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+    return PresentFrame(SyncInterval, PresentFlags, pPresentParameters);
+  }
+
+  // Present and Present1 share PresentFrame, as CreateSwapChain and CreateSwapChainForHwnd share a function
+  // (dxgi_factory.cpp, CreateSwapChainForWindow): on ARM64EC a call from Present to Present1 enters Present1's patchable
+  // x64 entry, so the Present hooks of overlays and of Streamline's Frame Generation ran twice for each frame
+  HRESULT
+  PresentFrame(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
     trace::PresentTrace traced(presents_, this, SyncInterval, PresentFlags);
     // TEST validates the interval too (IDXGISwapChain::Present, SyncInterval: 0 through 4).
     if (SyncInterval > 4)

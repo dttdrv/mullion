@@ -21,6 +21,7 @@
 #include "d3d12_command_encoder.hpp"
 #include "d3d12_deferred_pipeline.hpp"
 #include "d3d12_descriptor_heap.hpp"
+#include "d3d12_device_interfaces.hpp"
 #include "d3d12_recording_arena.hpp"
 #include "dxgi1_2.h"
 #include "dxgi_interfaces.h"
@@ -195,6 +196,9 @@ public:
   Rc<Buffer> buffer;
   // which of a reserved texture's tiles are mapped, as D3D12 numbers them (MTLD3D12CommandQueue::Settle)
   std::vector<bool> mapped_tiles;
+  // a reserved texture whose Metal texture is not sparse, as Metal would keep nothing in some mips of the sparse one's
+  // tail (MTLD3D12Device::SparseTailHolds): it holds all of its memory, and mapping its tiles changes nothing in Metal
+  bool dense_tiles = false;
   // a sampler feedback map's description as its application gave it: `texture` has one R32_UINT texel per mip region
   // (TranscodeFeedback in mullion_command_feedback.hpp)
   std::optional<D3D12_RESOURCE_DESC1> feedback;
@@ -433,6 +437,8 @@ public:
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
+  // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT, which a pipeline with stream output needs of it
+  bool StreamOutput;
   uint32_t UploadQwords;
   uint32_t ParameterSlots;
   uint32_t const *SlotQwordOffsets;
@@ -657,7 +663,7 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
-class MTLD3D12Device : public ID3D12Device10 {
+class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
   TimestampSamples timestamp_samples;
@@ -851,6 +857,8 @@ public:
   virtual HRESULT RegisterResidencyAndVA(BufferAllocation *allocation) = 0;
 
   virtual HRESULT UnregisterResidencyAndVA(BufferAllocation *allocation) = 0;
+  // the address alone, and what ends with it (the buffer's acceleration structures)
+  virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
   // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
   virtual BufferAllocation *
@@ -886,6 +894,10 @@ public:
   // a tile of memory that sparse resources map where they hold none of their own (MTLD3D12CommandQueueImpl::Settle):
   // the device's, as they may outlive the queue that mapped them
   virtual WMT::Heap SpareTile() = 0;
+  // whether Metal keeps what a placement sparse texture described by `Info` holds in its tail, and the tail: its first
+  // mip and its bytes. a test on the GPU the first time a texture of its shape and format is reserved
+  // (MTLDevice_sparseTailHolds)
+  virtual bool SparseTailHolds(const WMTTextureInfo &Info, DXGI_FORMAT Format, std::pair<uint64_t, uint64_t> &Tail) = 0;
 
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 
@@ -935,6 +947,23 @@ HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);
 // reads the feedback of the device's command buffers whose work has finished: an error in one removes the device
 void SettleCommandQueueFeedback(MTLD3D12Device *pDevice);
+// `kept` lives until the work the device's queues were given before now has completed
+void OutlastCommandQueues(MTLD3D12Device *pDevice, const std::shared_ptr<void> &kept);
+
+// what a released resource has on the GPU ends, by `end`, once the work the device's queues were given before now
+// has completed: a queue's thread encodes that work from Metal handles, and the GPU then uses what they name. an
+// application may not release what work in flight uses, and some do, which Windows' drivers mostly survive
+// (vkd3d-proton keeps such resources as long for them: d3d12_device_add_queue_timeline_deferred_decref). `end` runs
+// on any thread, at once where no queue has such work, and what it captured goes after it
+template <typename End>
+void
+EndAfterWorkInFlight(MTLD3D12Device *pDevice, End &&end) {
+  struct Ended {
+    std::decay_t<End> end;
+    ~Ended() { end(); }
+  };
+  OutlastCommandQueues(pDevice, std::make_shared<Ended>(std::forward<End>(end)));
+}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator);
@@ -1157,6 +1186,9 @@ Sha1Digest ShaderDigest(const void *code, size_t size);
 // whether `device` has the features a shader container requires: the low bits of its feature info part (SFI0,
 // DxilContainer.h), which DxilConstants.h calls feature requirements
 bool ShaderFeaturesSupported(MTLD3D12Device *device, const void *container, size_t size);
+// the kind of program a shader container holds, a D3D10_SB_TOKENIZED_PROGRAM_TYPE, which the kinds of DXIL continue:
+// the first dword of its DXIL, SHEX or SHDR part from bit 16. -1 where it has none
+int ShaderProgramType(const void *container, size_t size);
 
 bool IsD3D12BoxInBounds(D3D12_BOX &box, D3D12_BOX &bounds);
 
