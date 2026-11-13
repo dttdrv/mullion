@@ -102,6 +102,21 @@ main() {
         CHECK(bytes(back.Get(), expected * maximum));
       }
     }
+    // four samples: the flip effects refuse them, DISCARD and SEQUENTIAL take them (Wine's test_swapchain_parameters,
+    // on Windows)
+    for (auto effect :
+         {DXGI_SWAP_EFFECT_DISCARD, DXGI_SWAP_EFFECT_SEQUENTIAL, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+          DXGI_SWAP_EFFECT_FLIP_DISCARD}) {
+      step("D3D%u effect %u with four samples", api, effect);
+      bool flip = effect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || effect == DXGI_SWAP_EFFECT_FLIP_DISCARD;
+      DXGI_SWAP_CHAIN_DESC1 desc{width,    height, staging_desc.Format,  FALSE, {4, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                                 2,        DXGI_SCALING_STRETCH, effect};
+      ComPtr<IDXGISwapChain1> chain;
+      HRESULT hr = factory->CreateSwapChainForHwnd(device.input.Get(), window, &desc, nullptr, nullptr, &chain);
+      expect(hr == (flip ? DXGI_ERROR_INVALID_CALL : S_OK) && bool(chain) == !flip, "multisampled creation: %#lx", hr);
+      chain.Reset();
+      CHECK(device.idle());
+    }
     for (auto effect :
          {DXGI_SWAP_EFFECT_DISCARD, DXGI_SWAP_EFFECT_SEQUENTIAL, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
           DXGI_SWAP_EFFECT_FLIP_DISCARD})
