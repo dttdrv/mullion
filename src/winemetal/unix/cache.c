@@ -353,6 +353,31 @@ _CacheWriter_set(void *obj) {
 extern void MTLSetShaderCachePath(NSString* path);
 extern NSString* MTLGetShaderCachePath();
 
+// Metal keeps a working folder ("gpuarchiver-" and six digits) in its cache folder for every binary archive that is
+// added to, and leaves it there when the archive and its process are gone (macOS 27.3, 1.6 MB each). every process
+// holds the cache folder's lock shared for as long as it lives, so one that takes it alone finds only folders of
+// processes that ended: those are removed, off this thread. the lock is this process's alone: one it starts (Wine's
+// explorer) does not keep it
+static void
+remove_archive_folders(NSString *cache) {
+  int lock = open([cache stringByAppendingPathComponent:@"mullion.lock"].fileSystemRepresentation,
+                  O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+  if (lock < 0)
+    return;
+  NSMutableArray<NSString *> *ended = [NSMutableArray array];
+  if (!flock(lock, LOCK_EX | LOCK_NB))
+    for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:cache error:nil])
+      if ([name hasPrefix:@"gpuarchiver-"])
+        [ended addObject:[cache stringByAppendingPathComponent:name]];
+  while (flock(lock, LOCK_SH) && errno == EINTR)
+    ;
+  if (ended.count)
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      for (NSString *folder in ended)
+        [[NSFileManager defaultManager] removeItemAtPath:folder error:nil];
+    });
+}
+
 int
 _WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
@@ -360,6 +385,8 @@ _WMTSetMetalShaderCachePath(void *obj) {
   NSString *resolved_path = resolve_cache_dir(path, false);
   MTLSetShaderCachePath(resolved_path);
   params->ret_success = [MTLGetShaderCachePath() isEqualToString:resolved_path];
+  if (params->ret_success)
+    remove_archive_folders(resolved_path);
   [path release];
   return 0;
 };
