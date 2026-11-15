@@ -1016,6 +1016,16 @@ read_dxil(
   if (!module)
     return module.takeError();
   auto &M = **module;
+  // the device has no DoublePrecisionFloatShaderOps, as for a DXBC shader's double instructions, and Metal has no
+  // 64-bit float to compute them in: a shader that has a double value anywhere is refused here, by name, where
+  // Metal's compiler would refuse what it was converted to without one
+  auto is_double = [](const Value *v) { return v->getType()->getScalarType()->isDoubleTy(); };
+  for (auto &F : M)
+    for (auto &I : instructions(F))
+      if (is_double(&I) || any_of(I.operands(), [&](const Use &use) { return is_double(use.get()); }))
+        return make_error<UnsupportedFeature>(
+            std::format("unsupported: a double-precision operation ({}) in {}", I.getOpcodeName(), F.getName().str())
+        );
   auto entry = read_entry(M);
 
   read_resources(M, info);
