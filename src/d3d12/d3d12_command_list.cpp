@@ -4008,6 +4008,24 @@ public:
       IMPLEMENT_ME // TODO: (potential) emulated pipeline
     }
 
+    // a few commands that only draw, with no count for the GPU to read and nothing a resolver counts, are Metal's own
+    // indirect draws of the arguments where they are (they are D3D12_DRAW_ARGUMENTS, as in DrawInstanced): no
+    // resolver writing an indirect command buffer in a compute pass before this one, and the buffers stay bound. an
+    // indexed command stays with the resolver, which keeps its indices inside the view (D3D11.3 8.19.2), and Metal
+    // takes the arguments at a multiple of four bytes only
+    if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW && !encode_binding && !CountBufferAddress &&
+        !predication_region_ && active_statistics_.empty() && !diag::errors &&
+        MaxCommandCount <= kIndirectDrawsInPlace && !(ArgBufferOffset % sizeof(UINT))) {
+      for (UINT i = 0; i < MaxCommandCount; i++) {
+        auto &draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indirect>();
+        draw.type = WMTRenderCommandDrawIndirect;
+        draw.primitive_type = primitive_type;
+        draw.indirect_args_buffer = arg_buffer->buffer->current()->buffer();
+        draw.indirect_args_offset = ArgBufferOffset + uint64_t(i) * sig->ByteStride;
+      }
+      return;
+    }
+
     uint64_t statistics = 0, pixel_statistics = 0;
     if (!active_statistics_.empty() && MaxCommandCount) {
       auto size = (uint64_t(MaxCommandCount) + 1) * sizeof(PipelineStatisticsResult);
