@@ -1372,14 +1372,16 @@ MTLDevice_newBinaryArchive(obj_handle_t device, const char *url, obj_handle_t *e
   return params.ret_archive;
 }
 
-WINEMETAL_API void
+WINEMETAL_API bool
 MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out) {
   struct unixcall_mtlbinaryarchive_serialize params;
   params.archive = archive;
+  params.ret_error = NULL_OBJECT_HANDLE;
   WMT_MEMPTR_SET(params.url, url);
-  UNIX_CALL(113, &params);
+  NTSTATUS status = WINE_UNIX_CALL(113, &params);
   if (err_out)
-    *err_out = params.ret_error;
+    *err_out = status ? NULL_OBJECT_HANDLE : params.ret_error;
+  return !status;
 }
 
 WINEMETAL_API obj_handle_t

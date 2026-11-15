@@ -175,15 +175,11 @@ public:
   // a buffer SRV's GPU address, from its offset on, as the view was made (MULLION_D3D12_UPLOAD_CHECK, which keeps
   // them): read without the buffer, which may be gone from a descriptor no shader reads any more. 0 without
   virtual uint64_t GetCheckedAddress(UINT Index) = 0;
-
-  virtual void CopyDescriptors(UINT From, MTLD3D12DescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
 };
 
 class alignas(MULLION_PAGE_SIZE) MTLD3D12SamplerDescriptorHeap : public ID3D12DescriptorHeap {
 public:
   virtual HRESULT AddSampler(UINT Index, const D3D12_SAMPLER_DESC *Desc) = 0;
-
-  virtual void CopyDescriptors(UINT From, MTLD3D12SamplerDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
 };
 
 struct MTL_RENDER_TARGET_DESC {
@@ -204,8 +200,17 @@ class alignas(MULLION_PAGE_SIZE) MTLD3D12RenderTargetDescriptorHeap : public ID3
 public:
   virtual HRESULT AddRenderTarget(UINT Index, MTL_RENDER_TARGET_DESC const *pDesc) = 0;
   virtual MTL_RENDER_TARGET_DESC GetRenderTarget(UINT Index) = 0;
-
-  virtual void CopyDescriptors(UINT From, MTLD3D12RenderTargetDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
 };
+
+class MTLD3D12Device;
+
+// ID3D12Device::CopyDescriptors between heaps of `DescriptorHeapType`: the source ranges' descriptors in order, to
+// the destination ranges in order, where a range without sizes is one descriptor
+void CopyDescriptors(
+    MTLD3D12Device *pDevice, UINT DstDescriptorRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *DstDescriptorRangeOffsets,
+    const UINT *DstDescriptorRangeSizes, UINT SrcDescriptorRangeCount,
+    const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
+    D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
+);
 
 } // namespace mullion

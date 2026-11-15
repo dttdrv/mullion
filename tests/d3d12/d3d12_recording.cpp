@@ -191,10 +191,12 @@ main(int argc, char **argv) {
       filled = lists[0]->Close();
     }
     if (FAILED(filled)) {
-      // the allocator's next list, as long as the first, has no room either
+      // the allocator's next list has no room either: twice as long as the longest the allocator has recorded, so
+      // longer than what an allocator may still hold from its earlier lists
       ComPtr<ID3D12GraphicsCommandList> next;
       CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), pso.Get(), IID_PPV_ARGS(&next)));
-      record(next.Get(), 4, 0, kept);
+      for (UINT pass = 0; pass < 2; pass++)
+        record(next.Get(), 4, 0, width * height);
       HRESULT closed = next->Close();
       if ((filled != E_OUTOFMEMORY || closed != E_OUTOFMEMORY) && wrong++ < 4)
         printf("lists without room to record in close with %#lx and %#lx, want E_OUTOFMEMORY\n", filled, closed);

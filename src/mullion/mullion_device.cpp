@@ -3,6 +3,7 @@
 #include "mullion_command_queue.hpp"
 #include "Metal.hpp"
 #include "mullion_info.hpp"
+#include <mutex>
 
 namespace mullion {
 
@@ -23,6 +24,11 @@ public:
 
   virtual uint64_t maxObjectThreadgroups() final {
     return max_object_threadgroups_;
+  };
+
+  virtual uint32_t maxMeshThreadgroups() final {
+    std::call_once(mesh_grid_asked_, [&] { max_mesh_threadgroups_ = MeshGridLimit(device_); });
+    return max_mesh_threadgroups_;
   };
 
   DeviceImpl(const DEVICE_DESC &desc) : device_(desc.device), cmd_queue_(device_) {
@@ -46,6 +52,8 @@ private:
   CommandQueue cmd_queue_;
   WMTMetalVersion metal_version_;
   uint64_t max_object_threadgroups_;
+  std::once_flag mesh_grid_asked_;
+  uint32_t max_mesh_threadgroups_ = 0;
 };
 
 std::unique_ptr<Device>

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "mullion_command.hpp"
 #include "mullion_command_constants.hpp"
 #include "mullion_command_context.hpp"
 #include "mullion_format.hpp"
@@ -224,9 +225,11 @@ public:
     ctx_.setComputePSO(cs_clear_buffer_uint_, {32, 1, 1});
   }
 
+  // `offset_x` counts a buffer's words or a view's texels from the start of the buffer, which a Direct3D 12 view
+  // may be 4 GiB or more into
   void
   clear(
-      uint32_t offset_x, uint32_t offset_y, uint32_t width, uint32_t height, uint32_t first_slice = 0,
+      uint64_t offset_x, uint32_t offset_y, uint32_t width, uint32_t height, uint32_t first_slice = 0,
       uint32_t slice_count = 0
   ) {
     meta_temp_.offset[0] = offset_x;
@@ -246,6 +249,9 @@ public:
         auto dst_sub_offset = dst_->currentSuballocationOffset();
         ctx_.setComputeBuffer(0, clearing_buffer_, offset_x, width, ResourceAccess::Write);
         meta_temp_.offset[0] += dst_sub_offset;
+        // the kernel counts words in 32 bits: the binding starts as many whole 16 GiB in as the offset has
+        if (uint64_t high = offset_x >> 32)
+          ctx_.setComputeBuffer(0, dst_->buffer(), high << 32 << 2);
       }
     } else {
       return;
@@ -419,96 +425,15 @@ private:
 
 template <typename Context> class ClearRTV {
 public:
-  ClearRTV(WMT::Device device, Context &ctx) : device_(device), ctx_(ctx) {
-    auto library = ctx_.getDefaultLibrary();
-    vs_clear_ = library.newFunction("vs_clear_rt");
-    fs_clear_depth_ = library.newFunction("fs_clear_rt_depth");
-    fs_clear_float_ = library.newFunction("fs_clear_rt_float");
-    fs_clear_sint_ = library.newFunction("fs_clear_rt_sint");
-    fs_clear_uint_ = library.newFunction("fs_clear_rt_uint");
-    fs_resolve_depth_ = library.newFunction("fs_resolve_depth");
-    fs_resolve_stencil_ = library.newFunction("fs_resolve_stencil");
-    fs_resolve_float_ = library.newFunction("fs_resolve_float");
-    fs_resolve_sint_ = library.newFunction("fs_resolve_sint");
-    fs_resolve_uint_ = library.newFunction("fs_resolve_uint");
-
-    WMTDepthStencilInfo ds_info;
-    ds_info.front_stencil.enabled = false;
-    ds_info.back_stencil.enabled = false;
-    ds_info.depth_compare_function = WMTCompareFunctionAlways;
-    ds_info.depth_write_enabled = false;
-    depth_readonly_state_ = device.newDepthStencilState(ds_info);
-
-    ds_info.depth_write_enabled = true;
-    depth_write_state_ = device.newDepthStencilState(ds_info);
-
-    ds_info.front_stencil.enabled = true;
-    ds_info.front_stencil.depth_stencil_pass_op = WMTStencilOperationReplace;
-    ds_info.front_stencil.depth_fail_op = WMTStencilOperationReplace;
-    ds_info.front_stencil.stencil_fail_op = WMTStencilOperationReplace;
-    ds_info.front_stencil.stencil_compare_function = WMTCompareFunctionAlways;
-    ds_info.front_stencil.read_mask = 0xff;
-    ds_info.front_stencil.write_mask = 0xff;
-    depth_stencil_write_state_ = device.newDepthStencilState(ds_info);
-
-    ds_info.depth_write_enabled = false;
-    stencil_write_state_ = device.newDepthStencilState(ds_info);
-  }
+  // `lib` has the pipelines and depth stencil states, which every context of the device shares
+  ClearRTV(InternalCommandLibrary &lib, Context &ctx) : lib_(lib), ctx_(ctx) {}
 
   // `resolve`: the rectangles are resolved into, one plane at a time, instead of cleared
   void
   begin(Rc<Texture> texture, TextureViewKey view, uint32_t depth_plane, uint32_t dsv_flag = 0, bool resolve = false) {
     assert(!clearing_texture_);
 
-    WMT::Reference<WMT::Error> err;
-
-    auto format = texture->pixelFormat(view);
-
-    union {
-      uint64_t u64;
-      struct {
-        uint32_t dsv_flag     : 2;
-        uint32_t resolve      : 1;
-        uint32_t sample_count : 29;
-        WMTPixelFormat format;
-      };
-    } key;
-    static_assert(sizeof(key) == sizeof(uint64_t));
-    key.dsv_flag = dsv_flag;
-    key.resolve = resolve;
-    key.sample_count = texture->sampleCount();
-    key.format = format;
-
-    if (!pso_cache_.contains(key.u64)) {
-      WMTRenderPipelineInfo pipeline_info;
-      WMT::InitializeRenderPipelineInfo(pipeline_info);
-      pipeline_info.raster_sample_count = texture->sampleCount();
-      pipeline_info.vertex_function = vs_clear_;
-      if (dsv_flag) {
-        if (resolve)
-          pipeline_info.fragment_function = dsv_flag & 1 ? fs_resolve_depth_ : fs_resolve_stencil_;
-        else if (dsv_flag & 1)
-          pipeline_info.fragment_function = fs_clear_depth_;
-        pipeline_info.depth_pixel_format = dsv_flag & 1 ? format : WMTPixelFormatInvalid;
-        pipeline_info.stencil_pixel_format = dsv_flag & 2 ? format : WMTPixelFormatInvalid;
-      } else if (IsIntegerFormat(format)) {
-        pipeline_info.colors[0].pixel_format = format;
-        if (MTLGetUnsignedIntegerFormat(format) == format) {
-          pipeline_info.fragment_function = resolve ? fs_resolve_uint_ : fs_clear_uint_;
-        } else {
-          pipeline_info.fragment_function = resolve ? fs_resolve_sint_ : fs_clear_sint_;
-        }
-      } else {
-        pipeline_info.colors[0].pixel_format = format;
-        pipeline_info.fragment_function = resolve ? fs_resolve_float_ : fs_clear_float_;
-      }
-      pipeline_info.rasterization_enabled = true;
-      pipeline_info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
-      auto pso = device_.newRenderPipelineState(pipeline_info, err);
-      pso_cache_.emplace(key.u64, std::move(pso));
-    }
-
-    WMT::RenderPipelineState pso = pso_cache_.at(key.u64);
+    auto pso = lib_.ClearPipeline(texture->pixelFormat(view), texture->sampleCount(), dsv_flag, resolve);
 
     if (!pso)
       return;
@@ -524,20 +449,7 @@ public:
     ctx_.setRenderPSO(pso);
     ctx_.setViewport({0.0, 0.0, (double)width, (double)height, 0.0, 1.0});
 
-    switch (dsv_flag) {
-    case 3:
-      ctx_.setDepthStencilState(depth_stencil_write_state_);
-      break;
-    case 2:
-      ctx_.setDepthStencilState(stencil_write_state_);
-      break;
-    case 1:
-      ctx_.setDepthStencilState(depth_write_state_);
-      break;
-    default:
-      ctx_.setDepthStencilState(depth_readonly_state_);
-      break;
-    }
+    ctx_.setDepthStencilState(lib_.ClearDepthStencilState(dsv_flag));
 
     clearing_texture_ = std::move(texture);
     clearing_texture_view_ = view;
@@ -592,23 +504,8 @@ public:
     clearing_texture_view_ = 0;
   }
 
-  WMT::Device device_;
+  InternalCommandLibrary &lib_;
   SimpleCommandContext<Context> ctx_;
-  WMT::Reference<WMT::Function> vs_clear_;
-  WMT::Reference<WMT::Function> fs_clear_float_;
-  WMT::Reference<WMT::Function> fs_clear_uint_;
-  WMT::Reference<WMT::Function> fs_clear_sint_;
-  WMT::Reference<WMT::Function> fs_clear_depth_;
-  WMT::Reference<WMT::Function> fs_resolve_float_;
-  WMT::Reference<WMT::Function> fs_resolve_uint_;
-  WMT::Reference<WMT::Function> fs_resolve_sint_;
-  WMT::Reference<WMT::Function> fs_resolve_depth_;
-  WMT::Reference<WMT::Function> fs_resolve_stencil_;
-  WMT::Reference<WMT::DepthStencilState> depth_write_state_;
-  WMT::Reference<WMT::DepthStencilState> depth_stencil_write_state_;
-  WMT::Reference<WMT::DepthStencilState> stencil_write_state_;
-  WMT::Reference<WMT::DepthStencilState> depth_readonly_state_;
-  std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> pso_cache_;
   Rc<Texture> clearing_texture_;
   TextureViewKey clearing_texture_view_;
 };

@@ -1,0 +1,11 @@
+# an allocator reset with lists in flight gives their recording back at once, for the next lists to record over
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -462,7 +462,6 @@
+   // waiting for that work here could wait for a fence this thread is to signal
+   if (pending) {
+     ERR("CommandAllocator: Reset while ", pending.load(), " of its submitted lists have not completed");
+-    Retire();
+   }
+ 
+   return Initialize();

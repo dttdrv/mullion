@@ -1,0 +1,11 @@
+# the pass's targets stay bound after it
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4539,7 +4539,6 @@
+       );
+     pass_resolves_.clear();
+     // the pass's targets "are not propagated out to the Command List": a draw after it has none
+-    OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+   }
+ 
+   // the device reports no meta commands, ray tracing, variable rate shading or mesh shaders, so a valid list never

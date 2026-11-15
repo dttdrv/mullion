@@ -32,7 +32,9 @@ public:
   void incRef();
   void decRef();
 
-  // metal4: a scaler for Metal 4 command buffers (MTL4FXTemporalScaler)
+  // metal4: a scaler for Metal 4 command buffers (MTL4FXTemporalScaler). motion vectors that hold jitter
+  // (info.jittered_motion_vectors) have it taken out where MetalFX does that (macOS 27), and are read as they are
+  // elsewhere
   TemporalScaler(WMT::Device device, const WMTFXTemporalScalerInfo &info, bool metal4 = false);
 
   WMT::FXTemporalScaler scaler() {

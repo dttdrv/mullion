@@ -3,13 +3,16 @@
 // it to compile threads (DeferredPipeline), and a draw of it waits for that compile or does it itself.
 // - pipelines created on several threads at once, each drawn at once in one command list, draw what they write;
 // - pipelines released before their compile has run take nothing down with them, and later pipelines still draw;
-// - a pipeline created again from the same description, while the first is still compiling, draws too.
+// - a pipeline created again from the same description, while the first is still compiling, draws too;
+// - a tessellated pipeline and a mesh shader pipeline (DXIL), whose Metal pipelines are left to those threads as
+//   well, draw as soon as they are created, and ones released at once take nothing down.
 // the target is one row with a column per pipeline: pipeline n writes its own value into column n.
 #include "d3d12_test.hpp"
 #include <algorithm>
 #include <thread>
 
-static const char hlsl[] = R"hlsl(
+#define COVER \
+  R"hlsl(
 cbuffer C : register(b0) { uint column; };
 float4 cover(uint id : SV_VertexID) : SV_Position {
   // a triangle over the column's pixel, which is the middle of its pixel at this column
@@ -17,8 +20,48 @@ float4 cover(uint id : SV_VertexID) : SV_Position {
   float x = (column + 0.5) * 2 / WIDTH - 1;
   return float4(x + (uv.x - 0.5) * 4 / WIDTH, uv.y * -2 + 1, 0, 1);
 }
+)hlsl"
+
+static const char hlsl[] = COVER R"hlsl(
 uint ps() : SV_Target { return VALUE; }
+// the same triangle as a patch of three control points, tessellated at factor 1 into itself
+struct Point { float4 pos : POSITION; };
+Point corner(uint id : SV_VertexID) {
+  Point p;
+  p.pos = cover(id);
+  return p;
+}
+struct Factors { float edges[3] : SV_TessFactor; float inside : SV_InsideTessFactor; };
+Factors factors() {
+  Factors f;
+  f.edges[0] = f.edges[1] = f.edges[2] = f.inside = 1;
+  return f;
+}
+[domain("tri")] [partitioning("integer")] [outputtopology("triangle_cw")] [outputcontrolpoints(3)]
+[patchconstantfunc("factors")]
+Point hs(InputPatch<Point, 3> patch, uint id : SV_OutputControlPointID) { return patch[id]; }
+[domain("tri")]
+float4 ds(Factors f, float3 at : SV_DomainLocation, const OutputPatch<Point, 3> patch) : SV_Position {
+  return patch[0].pos * at.x + patch[1].pos * at.y + patch[2].pos * at.z;
+}
 )hlsl";
+
+// and as a mesh shader's one triangle
+static const char mesh_hlsl[] = COVER R"hlsl(
+struct Corner { float4 pos : SV_Position; };
+[outputtopology("triangle")] [numthreads(1, 1, 1)]
+void ms(out vertices Corner corners[3], out indices uint3 triangles[1]) {
+  SetMeshOutputCounts(3, 1);
+  for (uint i = 0; i < 3; i++)
+    corners[i].pos = cover(i);
+  triangles[0] = uint3(0, 1, 2);
+}
+)hlsl";
+
+template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, typename T> struct alignas(void *) Subobject {
+  D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
+  T data{};
+};
 
 int
 main(int argc, char **argv) {
@@ -34,7 +77,9 @@ main(int argc, char **argv) {
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
   const UINT drawn = 48, released = 48, threads = 4;
-  const UINT width = drawn + 1;
+  // after the plain pipelines' columns and the last one's: the tessellated pipeline's and the mesh shader pipeline's
+  const UINT tessellated_column = drawn + 1, mesh_column = drawn + 2, width = drawn + 3;
+  const UINT tessellated_value = 2000, mesh_value = 3000;
   const std::vector<std::string> width_define = {"WIDTH=" + std::to_string(width), "VALUE=0"};
   auto cover = compiler.compile(hlsl, "cover", "vs", width_define);
   // each pipeline a pixel shader of its own, so that each is a Metal pipeline of its own to compile
@@ -42,8 +87,26 @@ main(int argc, char **argv) {
   for (UINT i = 0; i < drawn + released; i++)
     pixel_shaders[i] =
         compiler.compile(hlsl, "ps", "ps", {"WIDTH=" + std::to_string(width), "VALUE=" + std::to_string(1000 + i)});
-  if (cover.empty() || std::any_of(pixel_shaders.begin(), pixel_shaders.end(), [](auto &s) { return s.empty(); })) {
+  auto value_defines = [&](UINT value) {
+    return std::vector<std::string>{"WIDTH=" + std::to_string(width), "VALUE=" + std::to_string(value)};
+  };
+  auto corner = compiler.compile(hlsl, "corner", "vs", width_define), hs = compiler.compile(hlsl, "hs", "hs", width_define),
+       ds = compiler.compile(hlsl, "ds", "ds", width_define);
+  // the ones drawn, then the ones released at once
+  std::string tessellated_ps[2] = {compiler.compile(hlsl, "ps", "ps", value_defines(tessellated_value)),
+                                   compiler.compile(hlsl, "ps", "ps", value_defines(tessellated_value + 1))};
+  std::string mesh_ps[2] = {compiler.compile(hlsl, "ps", "ps", value_defines(mesh_value)),
+                            compiler.compile(hlsl, "ps", "ps", value_defines(mesh_value + 1))};
+  if (cover.empty() || std::any_of(pixel_shaders.begin(), pixel_shaders.end(), [](auto &s) { return s.empty(); }) ||
+      corner.empty() || hs.empty() || ds.empty() || tessellated_ps[0].empty() || tessellated_ps[1].empty() ||
+      mesh_ps[0].empty() || mesh_ps[1].empty()) {
     printf("failed: HLSL did not compile\n");
+    return 1;
+  }
+  // mesh shaders are Shader Model 6.5's, which only the DXIL front end compiles
+  std::string ms;
+  if (compiler.dxc && (ms = compiler.compile(mesh_hlsl, "ms", "ms_6_5", width_define)).empty()) {
+    printf("failed: the mesh shader did not compile\n");
     return 1;
   }
   D3D12_ROOT_PARAMETER param{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
@@ -88,6 +151,49 @@ main(int argc, char **argv) {
   for (UINT i = 0; i < drawn + released; i++)
     if (FAILED(results[i]) && failures++ < 12)
       printf("pipeline %u: created with %#lx\n", i, results[i]);
+  // a tessellated pipeline to draw, after one released as soon as it is created
+  ComPtr<ID3D12PipelineState> tessellated;
+  for (UINT i : {1u, 0u}) {
+    auto own = desc;
+    own.VS = bytecode(corner);
+    own.HS = bytecode(hs);
+    own.DS = bytecode(ds);
+    own.PS = bytecode(tessellated_ps[i]);
+    own.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+    tessellated.Reset();
+    CHECK(device->CreateGraphicsPipelineState(&own, IID_PPV_ARGS(&tessellated)));
+  }
+  // and a mesh shader pipeline, likewise
+  ComPtr<ID3D12PipelineState> mesh;
+  ComPtr<ID3D12Device2> device2;
+  D3D12_FEATURE_DATA_D3D12_OPTIONS7 options{};
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options, sizeof(options)));
+  bool mesh_shaders = !ms.empty();
+  if (mesh_shaders && options.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED) {
+    printf("failed: mesh shaders are not supported\n");
+    return 1;
+  }
+  if (mesh_shaders) {
+    CHECK(device.As(&device2));
+    struct {
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, ID3D12RootSignature *> rs;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS, D3D12_SHADER_BYTECODE> ms;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_SHADER_BYTECODE> ps;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_RASTERIZER_DESC> raster;
+      Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_RT_FORMAT_ARRAY> targets;
+    } stream;
+    stream.rs.data = rs.Get();
+    stream.ms.data = bytecode(ms);
+    stream.raster.data = desc.RasterizerState;
+    stream.targets.data.NumRenderTargets = 1;
+    stream.targets.data.RTFormats[0] = DXGI_FORMAT_R32_UINT;
+    D3D12_PIPELINE_STATE_STREAM_DESC stream_desc{sizeof(stream), &stream};
+    for (UINT i : {1u, 0u}) {
+      stream.ps.data = bytecode(mesh_ps[i]);
+      mesh.Reset();
+      CHECK(device2->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&mesh)));
+    }
+  }
 
   D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
   D3D12_RESOURCE_DESC target_desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D,
@@ -138,6 +244,22 @@ main(int argc, char **argv) {
     list->RSSetScissorRects(1, &column);
     list->DrawInstanced(3, 1, 0, 0);
   }
+  auto column = [&](UINT at) {
+    list->SetGraphicsRoot32BitConstant(0, at, 0);
+    D3D12_RECT own{(LONG)at, 0, LONG(at + 1), 1};
+    list->RSSetScissorRects(1, &own);
+  };
+  list->SetPipelineState(tessellated.Get());
+  list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+  column(tessellated_column);
+  list->DrawInstanced(3, 1, 0, 0);
+  if (mesh_shaders) {
+    ComPtr<ID3D12GraphicsCommandList6> list6;
+    CHECK(list.As(&list6));
+    list->SetPipelineState(mesh.Get());
+    column(mesh_column);
+    list6->DispatchMesh(1, 1, 1);
+  }
   transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
   D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
   D3D12_TEXTURE_COPY_LOCATION src{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -152,10 +274,16 @@ main(int argc, char **argv) {
     if (got[i] != want && failures++ < 12)
       printf("column %u is %u, want %u\n", i, got[i], want);
   }
+  // without mesh shaders their column keeps the clear's zero
+  const std::pair<UINT, UINT> others[] = {{tessellated_column, tessellated_value},
+                                          {mesh_column, mesh_shaders ? mesh_value : 0}};
+  for (auto [at, want] : others)
+    if (got[at] != want && failures++ < 12)
+      printf("column %u is %u, want %u\n", at, got[at], want);
   readback->Unmap(0, nullptr);
   printf(
-      "%s: %u wrong over %u pipelines drawn as created on %u threads, %u released at once\n",
-      failures ? "failed" : "passed", failures, drawn + 1, threads, released
+      "%s: %u wrong over %u pipelines drawn as created on %u threads, %u released at once, a tessellated one%s\n",
+      failures ? "failed" : "passed", failures, drawn + 1, threads, released, mesh_shaders ? " and a mesh shader's" : ""
   );
   return failures != 0;
 }

@@ -385,7 +385,7 @@ convert_dxbc_vertex_hull_shader(
   auto [workload_primitives, geometry_instances] = mesh_threadgroups_per_workload(pHullStage, pArgs, factor_int);
   SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
   args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
-  // the most a grid has (tessellation_grids). left out while the pipeline is to tell what the device lets one have
+  // the most a grid has (tessellation_grids). left out when the device tells no limit, for Metal to apply its own
   uint32_t grid_limit = pso_tess ? pso_tess->max_mesh_threadgroups : 0;
   if (!pso_tess || grid_limit) {
     auto grids = tessellation_grids(max_workload_count * patch_per_group, workload_primitives, geometry_instances, grid_limit);

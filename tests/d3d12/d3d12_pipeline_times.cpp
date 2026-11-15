@@ -307,7 +307,7 @@ child(int argc, char **argv) {
   readback->Unmap(0, nullptr);
 
   if (rays) {
-    step("ray functions compile at state creation, stack variants at first dispatch, and reuse does not count");
+    step("a ray pipeline compiles at state creation, another stack size's when it is set, and a dispatch compiles none");
     for (UINT i = 0; i < variants; i++) {
       auto name = shader_name(libraries[i]);
       if (i) {
@@ -348,10 +348,11 @@ child(int argc, char **argv) {
       list->SetPipelineState1(states[i].Get());
       for (UINT variant = 0; variant < 2; variant++) {
         properties->SetPipelineStackSize(properties->GetPipelineStackSize() + variant);
+        if (variant && presents)
+          expected.insert("ray; " + name);
+        checkpoint();
         for (UINT reuse = 0; reuse < 2; reuse++) {
           list->DispatchRays(&dispatch);
-          if (!reuse && presents)
-            expected.insert("ray; " + name);
           checkpoint();
           D3D12_RESOURCE_BARRIER barrier{D3D12_RESOURCE_BARRIER_TYPE_UAV};
           barrier.UAV.pResource = stored.Get();

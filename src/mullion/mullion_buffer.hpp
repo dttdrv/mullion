@@ -259,7 +259,8 @@ private:
 };
 
 struct BufferSlice {
-  uint32_t byteOffset = 0;
+  // wide: a Direct3D 12 buffer, and so the place of a view in it, can pass 4 GiB
+  uint64_t byteOffset = 0;
   uint32_t byteLength = 0;
   uint32_t firstElement = 0;
   uint32_t elementCount = 0;

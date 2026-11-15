@@ -1,14 +1,12 @@
 # predication tests only the low 32 bits of its 64-bit value
-diff --git a/src/mullion/mullion_command.metal b/src/mullion/mullion_command.metal
-index fccd5fd..747711d 100644
 --- a/src/mullion/mullion_command.metal
 +++ b/src/mullion/mullion_command.metal
-@@ -819,7 +819,7 @@ struct PredicationRegion {
-     device PredicationRegion *region [[buffer(1)]],
-     device uint *heap [[buffer(2)]]
+@@ -1085,7 +1085,7 @@
+     device const ulong *predicate [[buffer(0)]],
+     device const PredicationRegion *region [[buffer(1)]]
  ) {
 -  bool skip = (*predicate == 0) == bool(region->skip_if_zero);
 +  bool skip = (uint(*predicate) == 0) == bool(region->skip_if_zero);
-   region->skips = skip;
-   device const PredicatedWord *entries = (device const PredicatedWord *)(heap + region->entries);
-   for (uint i = 0; i < region->count; i++)
+   device const PredicatedWord *entries = (device const PredicatedWord *)region->entries;
+   for (uint i = 0; i < region->count; i++) {
+     ulong at = ulong(entries[i].word) * sizeof(uint);
