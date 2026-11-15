@@ -5140,8 +5140,12 @@ public:
     copy.dst = structure->structure;
   }
 
+  // SetPipelineState1 and DispatchRays "can be called from graphics or compute command lists and bundles" (DXR spec,
+  // "SetPipelineState1", "DispatchRays"), the calls on acceleration structures "not from bundles"
   void STDMETHODCALLTYPE
   SetPipelineState1(ID3D12StateObject *pStateObject) {
+    if (Bundled() && Record([state = Com<ID3D12StateObject>(pStateObject)](auto *l) { l->SetPipelineState1(state.ptr()); }))
+      return;
     state_object_ = static_cast<MTLD3D12StateObject *>(pStateObject);
   }
 
@@ -5149,6 +5153,8 @@ public:
   // arguments as the global ones (dispatch_rays in mullion_command.metal)
   void STDMETHODCALLTYPE
   DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) {
+    if (Bundled() && Record([desc = *pDesc](auto *l) { l->DispatchRays(&desc); }))
+      return;
     // a grid with a dimension of zero has no ray generation shader to run: Metal takes no empty grid
     if (!pDesc->Width || !pDesc->Height || !pDesc->Depth)
       return;
