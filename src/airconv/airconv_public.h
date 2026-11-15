@@ -377,6 +377,24 @@ struct SM50_RAY_SHADER_INFO {
   uint32_t calls;          /* SM50_RAY_SHADER_CALLS */
 };
 
+/* the functions of a ray tracing pipeline's runtime that call its shaders (mullion_command.metal, MullionRayRole):
+   one for ray generation shaders, closest hit and miss shaders, any hit shaders, intersection shaders and callable
+   shaders */
+enum SM50_RAY_DISPATCHER {
+  SM50_RAY_DISPATCHER_GENERATION,
+  SM50_RAY_DISPATCHER_CLOSEST,
+  SM50_RAY_DISPATCHER_ANY_HIT,
+  SM50_RAY_DISPATCHER_INTERSECTION,
+  SM50_RAY_DISPATCHER_CALLABLE,
+  SM50_RAY_DISPATCHER_COUNT,
+};
+
+/* a shader a dispatcher calls directly: its slot in the pipeline's function table and its Metal function */
+struct SM50_RAY_DISPATCHED_SHADER {
+  uint32_t slot;
+  char name[60];
+};
+
 struct SM50_SHADER_STREAM_OUTPUT_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -894,6 +912,14 @@ AIRCONV_API void SM50GetArgumentsInfo(
    0 past the last one */
 AIRCONV_API int SM50GetRayShader(
   sm50_shader_t pShader, uint32_t Index, char *pName, size_t NameSize, struct SM50_RAY_SHADER_INFO *pInfo
+);
+
+/* a dispatcher of a ray tracing pipeline, as the Metal function its runtime calls by name: a switch of direct calls
+   of its shaders, by their slots. with `Table`, another slot is called through the pipeline's function table, and is
+   nothing otherwise */
+AIRCONV_API int SM50CompileRayDispatcher(
+  enum SM50_RAY_DISPATCHER Dispatcher, const struct SM50_RAY_DISPATCHED_SHADER *pShaders, uint32_t ShaderCount,
+  uint32_t Table, enum SM50_SHADER_METAL_VERSION MetalVersion, sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
 );
 
 #ifdef __cplusplus

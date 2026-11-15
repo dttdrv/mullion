@@ -319,56 +319,66 @@ SpecializedRays() {
 // the most shaders of one kind a dispatcher calls directly; it calls any more through the table
 constexpr size_t kMaxDirectRayCalls = 256;
 
-// the Metal source of a pipeline's dispatchers (mullion_command.metal, kRayFCIndex_DirectCalls), one for each kind
-// of shader the runtime calls: a switch of direct calls of the shaders of that kind, by their slots. a closest hit or
-// miss shader that may trace, and a callable shader that may trace or call one, is called through the table: a
-// direct call would make the dispatcher reach itself. a dispatcher of no such shader calls nothing for another slot,
-// which names none of the pipeline's shaders of its kind
-std::string
-RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shaders) {
-  static const char *const roles[] = {"generation", "closest", "any_hit", "intersection", "callable"};
-  std::string declarations, bodies;
-  std::vector<uint32_t> declared;
-  for (unsigned role = 0; role < std::size(roles); role++) {
-    std::string cases;
-    std::vector<uint32_t> direct;
+// a pipeline's dispatchers (mullion_command.metal, kRayFCIndex_DirectCalls), one for each kind of shader the runtime
+// calls: a switch of direct calls of the shaders of that kind, by their slots (SM50CompileRayDispatcher), each a
+// library of its one function. a closest hit or miss shader that may trace, and a callable shader that may trace or
+// call one, is called through the table: a direct call would make the dispatcher reach itself. a dispatcher of no
+// such shader calls nothing for another slot, which names none of the pipeline's shaders of its kind
+bool
+RayDispatchers(
+    MTLD3D12Device *device, const std::vector<std::pair<uint32_t, const RayFunction *>> &shaders,
+    std::vector<WMT::Reference<WMT::Function>> &dispatchers, std::string &error
+) {
+  static const char *const names[SM50_RAY_DISPATCHER_COUNT] = {
+      "mullion_ray_generation_shader", "mullion_ray_closest_shader", "mullion_ray_any_hit_shader",
+      "mullion_ray_intersection_shader", "mullion_ray_callable_shader",
+  };
+  for (uint32_t dispatcher = 0; dispatcher < SM50_RAY_DISPATCHER_COUNT; dispatcher++) {
+    std::vector<SM50_RAY_DISPATCHED_SHADER> direct;
     bool table = false;
     for (auto [kind, function] : shaders) {
-      unsigned of = kind == SM50_RAY_SHADER_RAY_GENERATION                              ? 0
-                    : kind == SM50_RAY_SHADER_CLOSEST_HIT || kind == SM50_RAY_SHADER_MISS ? 1
-                    : kind == SM50_RAY_SHADER_ANY_HIT                                    ? 2
-                    : kind == SM50_RAY_SHADER_INTERSECTION                               ? 3
-                                                                                         : 4;
-      if (of != role || std::find(direct.begin(), direct.end(), function->slot) != direct.end())
+      uint32_t of = kind == SM50_RAY_SHADER_RAY_GENERATION                              ? SM50_RAY_DISPATCHER_GENERATION
+                    : kind == SM50_RAY_SHADER_CLOSEST_HIT || kind == SM50_RAY_SHADER_MISS ? SM50_RAY_DISPATCHER_CLOSEST
+                    : kind == SM50_RAY_SHADER_ANY_HIT                                    ? SM50_RAY_DISPATCHER_ANY_HIT
+                    : kind == SM50_RAY_SHADER_INTERSECTION ? SM50_RAY_DISPATCHER_INTERSECTION
+                                                           : SM50_RAY_DISPATCHER_CALLABLE;
+      if (of != dispatcher ||
+          std::any_of(direct.begin(), direct.end(), [&](auto &other) { return other.slot == function->slot; }))
         continue;
-      uint32_t reaching = of == 1   ? SM50_RAY_SHADER_CALLS_TRACE
-                          : of == 4 ? SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE
-                                    : 0;
-      if ((function->calls & reaching) || direct.size() >= kMaxDirectRayCalls) {
+      uint32_t reaching = of == SM50_RAY_DISPATCHER_CLOSEST ? SM50_RAY_SHADER_CALLS_TRACE
+                          : of == SM50_RAY_DISPATCHER_CALLABLE
+                              ? SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE
+                              : 0;
+      auto name = function->Name();
+      if ((function->calls & reaching) || direct.size() >= kMaxDirectRayCalls ||
+          name.size() >= sizeof(SM50_RAY_DISPATCHED_SHADER::name)) {
         table = true;
         continue;
       }
-      direct.push_back(function->slot);
-      auto name = function->Name();
-      if (std::find(declared.begin(), declared.end(), function->slot) == declared.end()) {
-        declared.push_back(function->slot);
-        declarations += "[[visible]] void " + name + "(thread MullionRayContext &, thread void *, thread void *);\n";
-      }
-      cases += "  case " + std::to_string(function->slot) + ": return " + name + "(c, first, second);\n";
+      auto &shader = direct.emplace_back(SM50_RAY_DISPATCHED_SHADER{function->slot});
+      name.copy(shader.name, sizeof(shader.name) - 1);
     }
-    bodies += std::string("[[visible]] void mullion_ray_") + roles[role] +
-              "_shader(uint function, thread MullionRayContext &c, thread void *first, thread void *second) {\n"
-              "  switch (function) {\n" +
-              cases + "  default: " +
-              (table ? "return ((thread MullionRayTable *)&c)->shaders[function](c, first, second);\n" : "return;\n") +
-              "  }\n}\n";
+    SM50ShaderBitcode bitcode;
+    SM50Error conversion_error;
+    if (SM50CompileRayDispatcher(
+            SM50_RAY_DISPATCHER(dispatcher), direct.data(), direct.size(), table, device->GetMetalVersion(), &bitcode,
+            &conversion_error
+        )) {
+      error = SM50GetErrorMessageString(conversion_error);
+      return false;
+    }
+    SM50_COMPILED_BITCODE compiled;
+    SM50GetCompiledBitcode(bitcode, &compiled);
+    WMT::Reference<WMT::Error> metal_error;
+    auto library = device->GetMTLDevice().newLibrary(WMT::MakeDispatchData(compiled.Data, compiled.Size), metal_error);
+    auto function = library ? library.newFunction(names[dispatcher]) : WMT::Reference<WMT::Function>{};
+    if (!function) {
+      error = metal_error ? metal_error.description().getUTF8String() : "the library has no dispatcher";
+      return false;
+    }
+    dispatchers.push_back(std::move(function));
   }
-  // the context starts with the table (MullionRayContext)
-  return "#include <metal_stdlib>\n"
-         "struct MullionRayContext;\n"
-         "typedef void MullionRayShader(thread MullionRayContext &, thread void *, thread void *);\n"
-         "struct MullionRayTable { metal::visible_function_table<MullionRayShader> shaders; };\n" +
-         declarations + bodies;
+  return true;
 }
 
 // stack sizes are counted in calls: a shader runs under the runtime function that calls it, but the ray generation
@@ -1198,9 +1208,10 @@ public:
       for (unsigned attempt = SpecializedRays() ? 0 : 1; attempt < 2; attempt++) {
         bool direct = !attempt;
         WMT::Reference<WMT::Error> err;
-        WMT::Reference<WMT::Library> dispatchers;
-        if (direct && !(dispatchers = device_->GetMTLDevice().newLibraryWithSource(RayDispatchers(shaders), err))) {
-          ERR("Failed to compile a ray tracing pipeline's dispatchers: ", err ? err.description().getUTF8String() : "");
+        std::vector<WMT::Reference<WMT::Function>> dispatching;
+        std::string dispatchers_error;
+        if (direct && !RayDispatchers(device_, shaders, dispatching, dispatchers_error)) {
+          ERR("Failed to make a ray tracing pipeline's dispatchers: ", dispatchers_error);
           continue;
         }
         WMTFunctionConstant constants[] = {
@@ -1221,11 +1232,8 @@ public:
         for (auto function : slots)
           if (function)
             linked.push_back(function);
-        std::vector<WMT::Reference<WMT::Function>> dispatching;
-        if (direct)
-          for (auto name : {"mullion_ray_generation_shader", "mullion_ray_closest_shader", "mullion_ray_any_hit_shader",
-                            "mullion_ray_intersection_shader", "mullion_ray_callable_shader"})
-            linked.push_back(dispatching.emplace_back(dispatchers.newFunction(name)));
+        for (auto &dispatcher : dispatching)
+          linked.push_back(dispatcher);
         auto kernel = function("dispatch_rays");
         WMTLinkedComputePipelineInfo info{};
         info.compute_function = kernel;
