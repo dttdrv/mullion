@@ -448,6 +448,7 @@ CalculateRootSignatureQwordOffsets(const D3D12_ROOT_SIGNATURE_DESC1 &Desc) {
 class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignature> {
 
   std::vector<uint8_t> blob_;
+  LPCWSTR subobject_;
   std::vector<uint32_t> qword_offsets_;
   std::vector<D3D12_ROOT_PARAMETER_TYPE> slot_types_;
   std::vector<uint32_t> slot_constants_;
@@ -463,8 +464,12 @@ class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignatu
   WMT::Reference<WMT::Buffer> static_samplers_buffer_;
 
 public:
-  MTLD3D12RootSignatureImpl(MTLD3D12Device *pDevice, const void *pBytecode, SIZE_T BytecodeLength) :
-      MTLD3D12DeviceChild<MTLD3D12RootSignature>(pDevice) {
+  // of a container's root signature, or of the root signature subobject of that name in a library
+  MTLD3D12RootSignatureImpl(
+      MTLD3D12Device *pDevice, const void *pBytecode, SIZE_T BytecodeLength, LPCWSTR Subobject = nullptr
+  ) :
+      MTLD3D12DeviceChild<MTLD3D12RootSignature>(pDevice),
+      subobject_(Subobject) {
     blob_.resize(BytecodeLength);
     memcpy(blob_.data(), pBytecode, BytecodeLength);
   }
@@ -479,7 +484,10 @@ public:
     const void *pRawRootSig;
     UINT RawRootSigSize;
     bool from_library = false;
-    HRESULT hr = RootSignaturePart(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize, nullptr, &from_library);
+    HRESULT hr =
+        RootSignaturePart(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize, subobject_, &from_library);
+    // the name is the caller's, for the length of the call
+    subobject_ = nullptr;
     if (FAILED(hr))
       return hr;
 
@@ -677,6 +685,24 @@ CreateRootSignature(
   InitReturnPtr(ppRootSignature);
 
   auto root_sig = Com(new MTLD3D12RootSignatureImpl(pDevice, pBytecode, BytecodeLength));
+  HRESULT hr = root_sig->Initialize();
+  if (FAILED(hr))
+    return hr;
+  return root_sig->QueryInterface(riid, ppRootSignature);
+}
+
+HRESULT
+CreateLibraryRootSignature(
+    MTLD3D12Device *pDevice, const void *pLibrary, SIZE_T LibraryLength, LPCWSTR Name, REFIID riid,
+    void **ppRootSignature
+) {
+  InitReturnPtr(ppRootSignature);
+  if (!Name)
+    return FAIL(E_INVALIDARG);
+  if (!pLibrary || !LibraryLength)
+    return FAIL(E_INVALIDARG);
+
+  auto root_sig = Com(new MTLD3D12RootSignatureImpl(pDevice, pLibrary, LibraryLength, Name));
   HRESULT hr = root_sig->Initialize();
   if (FAILED(hr))
     return hr;

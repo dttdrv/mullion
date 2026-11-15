@@ -1998,15 +1998,13 @@ public:
     return OpenExistingHeapFromAddress(pAddress, riid, ppHeap);
   }
 
-  // ID3D12Device14: root signatures of DXIL libraries' subobjects are not read
+  // ID3D12Device14: the root signature a DXIL library's subobject of that name defines
   HRESULT STDMETHODCALLTYPE
   CreateRootSignatureFromSubobjectInLibrary(
       UINT nodeMask, const void *pLibraryBlob, SIZE_T blobLengthInBytes, LPCWSTR subobjectName, REFIID riid,
       void **ppvRootSignature
   ) final {
-    InitReturnPtr(ppvRootSignature);
-    WARN("CreateRootSignatureFromSubobjectInLibrary: not supported");
-    return E_NOTIMPL;
+    return CreateLibraryRootSignature(this, pLibraryBlob, blobLengthInBytes, subobjectName, riid, ppvRootSignature);
   }
 
   // ID3D12Device15: no memory budget is trimmed, so a callback is registered and never called
