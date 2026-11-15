@@ -3640,6 +3640,10 @@ public:
       return;
     }
     if (Type == D3D12_QUERY_TYPE_TIMESTAMP) {
+      // nothing an application draws reads a GPU time, and sampling one shapes the passes around it
+      // (d3d12.timestampQueries)
+      if (!device_->timestamp_queries)
+        return;
       // the clock "at the instant that the GPU is finished with all the preceding workload" (D3D11.3 20.4.3): the
       // pass that work ends with samples it as it ends, a render pass or the pass of the query before. an open pass
       // goes on, and its end is the clock, later than the query but not by more than its own work, as MoltenVK's
@@ -3741,6 +3745,9 @@ public:
     SumOcclusion();
     SumStatistics();
     if (!heap->timestamps.empty()) {
+      // no query sampled: the destination keeps what it holds, and every interval read from it is zero
+      if (!device_->timestamp_queries)
+        return;
       allocator_->InvalidateCurrentPass();
       auto resolve = allocator_->AllocatePass<ResolveTimestampsData>();
       resolve->type = EncoderType::ResolveTimestamps;
@@ -4439,7 +4446,10 @@ public:
     for (UINT i = 0; i < Count; i++) {
       auto &param = pParams[i];
       if (pModes && pModes[i] != D3D12_WRITEBUFFERIMMEDIATE_MODE_DEFAULT) {
-        markers_.push_back({param.Dest, param.Value});
+        // a marker says how far the GPU got, to an application that reads it after a device removal and at no other
+        // time (d3d12.immediateMarkers)
+        if (device_->immediate_markers)
+          markers_.push_back({param.Dest, param.Value});
         continue;
       }
       WriteMarkers();

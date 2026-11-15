@@ -117,6 +117,15 @@ see is read at execution. Shared mutable state has one clear owner of its synchr
 
 Reason: state read at the wrong time looks correct whenever commands run in the order they were recorded.
 
+**2.5 A hint, a diagnostic and a configured shortcut may do less.** A call may succeed without its work in two cases.
+First, when Direct3D gives the work no result an application can read back other than timing: residency and eviction,
+priorities, discards, debug events and names. Second, when a configuration option selects it: the option is documented
+in [`mullion.conf`](../mullion.conf) with what an application then reads, the complete implementation remains and is
+what the tests run, and the call site names the option. A feature left out of the capability reports this way is one
+whose emulation costs more than the path a title takes without it.
+
+Reason: work no application observes costs passes, waits and memory on every frame of every title.
+
 ## 3. Failure, ownership and limits
 
 **3.1 Carry failures through completely.** A failure is reported through the API that owns the operation, with the
