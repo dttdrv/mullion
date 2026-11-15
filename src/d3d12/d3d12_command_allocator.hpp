@@ -142,6 +142,10 @@ struct IndirectRenderCommandData {
 
 constexpr unsigned kIndexedCommands = 4;
 
+// the most commands of an ExecuteIndirect that the list draws one by one where their arguments are: more of them go
+// into an indirect command buffer, which Metal runs with one call
+constexpr unsigned kIndirectDrawsInPlace = 24;
+
 // the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were
 constexpr unsigned kMostWords = 6;
 
