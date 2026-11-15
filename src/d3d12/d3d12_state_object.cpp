@@ -407,9 +407,16 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     WMT::Reference<WMT::ComputePipelineState> pipeline;
     WMT::Reference<WMT::VisibleFunctionTable> table;
   };
-  // by call depth; commands in flight keep using the one they were recorded with
+  // by call depth, made when the state object is and when its stack size changes: a dispatch only binds one, and
+  // commands in flight keep using the one they were recorded with. one Metal could not make has no pipeline
   mullion::mutex pipeline_lock_;
   std::map<uint32_t, Pipeline> pipelines_;
+
+  // the call depth of the pipeline the stack size asks for
+  uint32_t
+  CallDepth() const {
+    return std::max<uint64_t>(std::min(stack_size_, max_call_depth_), 1);
+  }
 
   // the shaders `pExports` takes from `all` under their new names, or all of them without a list
   template <typename Value>
@@ -1072,7 +1079,13 @@ public:
       if (pParent)
         stack_size_ = pParent->stack_size_;
     }
-    if (device_->NamesPasses() && type_ == D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE)
+    if (type_ != D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE)
+      return S_OK;
+    // a state object that is made can dispatch rays: its pipeline is compiled here, where Direct3D 12 compiles one
+    // and reports what cannot be, and not in the first DispatchRays
+    if (!MakePipeline(CallDepth()).pipeline)
+      return FAIL(E_FAIL);
+    if (device_->NamesPasses())
       device_->PipelineMade(name, "ray", start);
     return S_OK;
   }
@@ -1129,20 +1142,41 @@ public:
     return stack_size_;
   }
 
+  // the pipeline of the new call depth is made here, in the application's set-up, and not in the next DispatchRays
+  // (the call is "not thread-safe" against a list's ray dispatches: ID3D12StateObjectProperties::SetPipelineStackSize)
   void STDMETHODCALLTYPE
   SetPipelineStackSize(UINT64 PipelineStackSizeInBytes) {
-    if (PipelineStackSizeInBytes < 0xffffffff)
+    if (PipelineStackSizeInBytes >= 0xffffffff)
+      return;
+    auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    bool known;
+    {
+      std::unique_lock<mullion::mutex> lock(pipeline_lock_);
       stack_size_ = PipelineStackSizeInBytes;
+      known = pipelines_.count(CallDepth());
+    }
+    if (type_ != D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE || known)
+      return;
+    if (MakePipeline(CallDepth()).pipeline && device_->NamesPasses())
+      device_->PipelineMade(name, "ray", start);
   }
 
   bool
   GetPipeline(WMT::ComputePipelineState &Pipeline, WMT::VisibleFunctionTable &Table, uint32_t &Flags) {
-    std::unique_lock<mullion::mutex> lock(pipeline_lock_);
     Flags = pipeline_config_.Flags;
-    uint32_t depth = std::max<uint64_t>(std::min(stack_size_, max_call_depth_), 1);
-    auto &made = pipelines_[depth];
-    if (!made.pipeline) {
-      auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    auto made = MakePipeline(CallDepth());
+    Pipeline = made.pipeline;
+    Table = made.table;
+    return made.pipeline;
+  }
+
+  // the pipeline of a call depth, compiled the first time it is asked for
+  Pipeline
+  MakePipeline(uint32_t depth) {
+    std::unique_lock<mullion::mutex> lock(pipeline_lock_);
+    auto [entry, first] = pipelines_.try_emplace(depth);
+    auto &made = entry->second;
+    if (first) {
       auto library = device_->GetLib().getLibrary();
       // the table has each function at its slot; the pipeline links them all
       std::vector<obj_handle_t> slots(SM50_RAY_FUNCTION_FIRST_SHADER), linked;
@@ -1206,14 +1240,8 @@ public:
         ERR("Failed to create a ray tracing pipeline", direct ? " that calls its shaders directly" : "", ": ",
             err ? err.description().getUTF8String() : "");
       }
-      if (!made.pipeline)
-        return false;
-      if (device_->NamesPasses())
-        device_->PipelineMade(name, "ray", start);
     }
-    Pipeline = made.pipeline;
-    Table = made.table;
-    return true;
+    return made;
   }
 };
 
