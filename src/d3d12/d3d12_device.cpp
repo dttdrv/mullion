@@ -640,8 +640,6 @@ public:
         std::lock_guard counts(archive_mutex_);
         target = archived_;
         shard_archived_ = 0;
-        std::lock_guard functions(shard_functions_mutex_);
-        shard_functions_.clear();
       }
       took = std::chrono::steady_clock::now() - start;
       if (error)
