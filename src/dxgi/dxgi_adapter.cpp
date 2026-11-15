@@ -2,10 +2,13 @@
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <map>
+#include <mutex>
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"
 #include "dxgi_options.hpp"
 #include "util_string.hpp"
+#include "thread.hpp"
 #include "log/log.hpp"
 #include "log/trace.hpp"
 #include "wsi_monitor.hpp"
@@ -46,10 +49,79 @@ LUID GetAdapterLuid(WMT::Device device) {
   return std::bit_cast<LUID>(__builtin_bswap64(device.registryID()));
 }
 
+// what an adapter reports of its Metal device before the configuration: the LUID, the GPU's name and the working set
+// Metal recommends. none of them changes while the process runs, and a factory makes a new adapter at every
+// enumeration, so they are found once for each device
+struct DeviceIdentity {
+  LUID luid;
+  WCHAR name[sizeof(DXGI_ADAPTER_DESC3::Description) / sizeof(WCHAR)];
+  uint64_t memory;
+};
+
+static DeviceIdentity
+IdentityOf(WMT::Device device) {
+  static mullion::mutex mutex;
+  static std::map<uint64_t, DeviceIdentity> identities;
+  std::lock_guard lock(mutex);
+  auto [known, added] = identities.try_emplace(device.registryID());
+  if (added) {
+    auto &identity = known->second;
+    identity.luid = GetAdapterLuid(device);
+    std::memset(identity.name, 0, sizeof(identity.name));
+    device.name().getCString((char *)identity.name, sizeof(identity.name), WMTUTF16StringEncoding);
+    identity.memory = device.recommendedMaxWorkingSetSize();
+  }
+  return known->second;
+}
+
 class MTLDXGIAdapter : public MTLDXGIObject<IMTLDXGIAdapter> {
 public:
   MTLDXGIAdapter(WMT::Device device, IDXGIFactory *factory, Config &config)
-      : device_(device), adapter_luid_(GetAdapterLuid(device)), factory_(factory), options_(config) {};
+      : device_(device), factory_(factory), options_(config) {
+    auto identity = IdentityOf(device);
+    // what Metal recommends the device's working set be, or less where the configuration says
+    memory_ = options_.maxDeviceMemory ? std::min(identity.memory, options_.maxDeviceMemory) : identity.memory;
+
+    if (!options_.customDeviceDesc.empty()) {
+      str::transcodeString(
+          desc_.Description, sizeof(desc_.Description) / sizeof(desc_.Description[0]) - 1,
+          options_.customDeviceDesc.c_str(), options_.customDeviceDesc.size());
+    } else {
+      std::memcpy(desc_.Description, identity.name, sizeof(desc_.Description));
+    }
+
+    // applications know the vendors of PC graphics cards and some leave when they meet another (God of War Ragnarök
+    // exits at startup unless it is AMD, Intel or NVIDIA: measured 2026-10-04 over eight IDs). the vendor is AMD's
+    // unless the configuration names one (dxgi.customVendorId; Apple's own is 106b); the name is the GPU's
+    if (options_.customVendorId >= 0) {
+      desc_.VendorId = options_.customVendorId;
+    } else {
+      desc_.VendorId = 0x1002;
+      if (g_extension_enabled == VendorExtension::Nvidia) {
+        desc_.VendorId = 0x10DE;
+      }
+    }
+
+    if (options_.customDeviceId >= 0) {
+      desc_.DeviceId = options_.customDeviceId;
+    } else {
+      desc_.DeviceId = 0;
+    }
+
+    desc_.SubSysId = 0;
+    desc_.Revision = 0;
+    // as much of it as a SIZE_T holds, which in a 32-bit process is less than there is
+    desc_.DedicatedVideoMemory = std::min<uint64_t>(memory_, std::numeric_limits<SIZE_T>::max());
+    desc_.DedicatedSystemMemory = 0;
+    // the memory is unified (D3D12_FEATURE_DATA_ARCHITECTURE1::UMA), and applications size an integrated GPU's by its
+    // shared system memory, as Windows drivers of integrated GPUs report most of theirs: Unity's D3D12 device filter
+    // saw 0 MB and fell back to D3D11 (PEAK, 2026-10-24)
+    desc_.SharedSystemMemory = desc_.DedicatedVideoMemory;
+    desc_.AdapterLuid = identity.luid;
+    desc_.Flags = DXGI_ADAPTER_FLAG3_NONE;
+    desc_.GraphicsPreemptionGranularity = DXGI_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
+    desc_.ComputePreemptionGranularity = DXGI_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
+  };
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
@@ -152,49 +224,7 @@ public:
     if (pDesc == nullptr)
       return FAIL(E_INVALIDARG);
 
-    std::memset(pDesc->Description, 0, sizeof(pDesc->Description));
-
-    if (!options_.customDeviceDesc.empty()) {
-      str::transcodeString(
-          pDesc->Description,
-          sizeof(pDesc->Description) / sizeof(pDesc->Description[0]) - 1,
-          options_.customDeviceDesc.c_str(), options_.customDeviceDesc.size());
-    } else {
-      device_.name().getCString((char *)pDesc->Description, sizeof(pDesc->Description), WMTUTF16StringEncoding);
-    }
-
-    // applications know the vendors of PC graphics cards and some leave when they meet another (God of War Ragnarök
-    // exits at startup unless it is AMD, Intel or NVIDIA: measured 2026-10-04 over eight IDs). the vendor is AMD's
-    // unless the configuration names one (dxgi.customVendorId; Apple's own is 106b); the name is the GPU's
-    if (options_.customVendorId >= 0) {
-      pDesc->VendorId = options_.customVendorId;
-    } else {
-      pDesc->VendorId = 0x1002;
-      if (g_extension_enabled == VendorExtension::Nvidia) {
-        pDesc->VendorId = 0x10DE;
-      }
-    }
-
-    if (options_.customDeviceId >= 0) {
-      pDesc->DeviceId = options_.customDeviceId;
-    } else {
-      pDesc->DeviceId = 0;
-    }
-
-    pDesc->SubSysId = 0;
-    pDesc->Revision = 0;
-    // as much of it as a SIZE_T holds, which in a 32-bit process is less than there is
-    pDesc->DedicatedVideoMemory = std::min<uint64_t>(DeviceMemory(), std::numeric_limits<SIZE_T>::max());
-    pDesc->DedicatedSystemMemory = 0;
-    // the memory is unified (D3D12_FEATURE_DATA_ARCHITECTURE1::UMA), and applications size an integrated GPU's by its
-    // shared system memory, as Windows drivers of integrated GPUs report most of theirs: Unity's D3D12 device filter
-    // saw 0 MB and fell back to D3D11 (PEAK, 2026-10-24)
-    pDesc->SharedSystemMemory = pDesc->DedicatedVideoMemory;
-    pDesc->AdapterLuid = adapter_luid_;
-    pDesc->Flags = DXGI_ADAPTER_FLAG3_NONE;
-    pDesc->GraphicsPreemptionGranularity = DXGI_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
-    pDesc->ComputePreemptionGranularity = DXGI_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
-
+    *pDesc = desc_;
     return S_OK;
   }
 
@@ -246,13 +276,6 @@ public:
   void STDMETHODCALLTYPE
   UnregisterHardwareContentProtectionTeardownStatus(DWORD cookie) override {}
 
-  // what Metal recommends the device's working set be, or less where the configuration says
-  uint64_t
-  DeviceMemory() {
-    uint64_t memory = device_.recommendedMaxWorkingSetSize();
-    return options_.maxDeviceMemory ? std::min(memory, options_.maxDeviceMemory) : memory;
-  }
-
   HRESULT STDMETHODCALLTYPE QueryVideoMemoryInfo(
       UINT NodeIndex, DXGI_MEMORY_SEGMENT_GROUP MemorySegmentGroup,
       DXGI_QUERY_VIDEO_MEMORY_INFO *pVideoMemoryInfo) override {
@@ -264,9 +287,10 @@ public:
       return FAIL(E_INVALIDARG);
 
     // unified memory is all local (D3D12_MEMORY_POOL, Remarks): the other group has nothing. Windows drivers let
-    // half of a group be reserved
+    // half of a group be reserved. the usage is asked of Metal at each call, since it is "current" (DXGI,
+    // DXGI_QUERY_VIDEO_MEMORY_INFO): an application reads it right after it allocates
     bool local = MemorySegmentGroup == DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
-    pVideoMemoryInfo->Budget = local ? DeviceMemory() : 0;
+    pVideoMemoryInfo->Budget = local ? memory_ : 0;
     pVideoMemoryInfo->CurrentUsage = local ? device_.currentAllocatedSize() : 0;
     pVideoMemoryInfo->AvailableForReservation = pVideoMemoryInfo->Budget / 2;
     // MULLION_TRACE_MEMORY=heavy: every query; a game polls it each frame
@@ -310,9 +334,12 @@ public:
 
 private:
   WMT::Reference<WMT::Device> device_;
-  const LUID adapter_luid_;
   Com<IDXGIFactory> factory_;
   DxgiOptions options_;
+  // what GetDesc3 answers, and the memory behind it before a SIZE_T narrows it: made once, of DeviceIdentity and the
+  // configuration, which is the process's
+  DXGI_ADAPTER_DESC3 desc_ = {};
+  uint64_t memory_ = 0;
   uint64_t mem_reserved_[2] = {0, 0};
   std::atomic<DWORD> event_cookie_{0};
 };
