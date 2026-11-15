@@ -225,9 +225,11 @@ public:
     ctx_.setComputePSO(cs_clear_buffer_uint_, {32, 1, 1});
   }
 
+  // `offset_x` counts a buffer's words or a view's texels from the start of the buffer, which a Direct3D 12 view
+  // may be 4 GiB or more into
   void
   clear(
-      uint32_t offset_x, uint32_t offset_y, uint32_t width, uint32_t height, uint32_t first_slice = 0,
+      uint64_t offset_x, uint32_t offset_y, uint32_t width, uint32_t height, uint32_t first_slice = 0,
       uint32_t slice_count = 0
   ) {
     meta_temp_.offset[0] = offset_x;
@@ -247,6 +249,9 @@ public:
         auto dst_sub_offset = dst_->currentSuballocationOffset();
         ctx_.setComputeBuffer(0, clearing_buffer_, offset_x, width, ResourceAccess::Write);
         meta_temp_.offset[0] += dst_sub_offset;
+        // the kernel counts words in 32 bits: the binding starts as many whole 16 GiB in as the offset has
+        if (uint64_t high = offset_x >> 32)
+          ctx_.setComputeBuffer(0, dst_->buffer(), high << 32 << 2);
       }
     } else {
       return;
