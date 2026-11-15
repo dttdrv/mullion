@@ -5396,7 +5396,8 @@ public:
                                  uint32_t(depth_format),
                                  uint32_t(scaler_motion_format),
                                  uint32_t(!!pDesc->AutoExposure),
-                                 uint32_t(display_motion)};
+                                 uint32_t(display_motion),
+                                 uint32_t(!!pDesc->MotionVectorJittered)};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
@@ -5415,6 +5416,8 @@ public:
       // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization): the list is not held
       // through the compilation each time a game changes its resolution or quality mode
       info.requires_synchronous_initialization = false;
+      // the pass that brings motion vectors to the input resolution writes them in pixels and leaves their jitter in
+      info.jittered_motion_vectors = pDesc->MotionVectorJittered;
       cache->temporal = new TemporalScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
       if (!cache->temporal->scaler().handle) {
         cache->temporal = nullptr;
