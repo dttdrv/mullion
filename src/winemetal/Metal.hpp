@@ -1172,9 +1172,10 @@ public:
 
 class BinaryArchive : public Object {
 public:
-  void
+  // false when Metal faulted writing it: the archive is then not to be used or released (MTLBinaryArchive_serialize)
+  bool
   serialize(const char *url, Reference<Error> &error) {
-    MTLBinaryArchive_serialize(handle, url, error.out());
+    return MTLBinaryArchive_serialize(handle, url, error.out());
   }
 };
 

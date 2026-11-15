@@ -698,9 +698,13 @@ protected:
   // per-primitive outputs (d3d12_mesh)
   WMT::Reference<WMT::RenderPipelineState>
   MetalPipeline(const WMTMeshRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
-    return device_->Archived(info, error, [&](auto &info, auto &error) {
-      return device_->GetMTLDevice().newRenderPipelineState(info, error);
-    });
+    return device_->Archived(
+        info, error, [&](auto &info, auto &error) { return device_->GetMTLDevice().newRenderPipelineState(info, error); },
+        [&] {
+          return device_->FitsShard(info.mesh_function, info.fragment_function, info.depth_pixel_format,
+                                    info.stencil_pixel_format);
+        }
+    );
   }
 
   // the Metal pipeline of `info`: on Metal 4, specialized from the device's flexible pipeline of the rest of its state
@@ -715,9 +719,14 @@ protected:
       flexible.enabled = env::getEnvVar("MULLION_D3D12_FLEXIBLE") == "1" && device_->UsesMetal4();
     });
     if (!flexible.enabled)
-      return device_->Archived(info, error, [&](auto &info, auto &error) {
-        return device_->GetMTLDevice().newRenderPipelineState(info, error);
-      });
+      return device_->Archived(
+          info, error,
+          [&](auto &info, auto &error) { return device_->GetMTLDevice().newRenderPipelineState(info, error); },
+          [&] {
+            return device_->FitsShard(info.vertex_function, info.fragment_function, info.depth_pixel_format,
+                                      info.stencil_pixel_format);
+          }
+      );
     Sha1HashState fixed, colors;
     auto hash = [](Sha1HashState &h, const auto &...values) { (h.update(values), ...); };
     for (auto &[format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending] : info.colors)

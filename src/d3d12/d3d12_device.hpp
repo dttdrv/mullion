@@ -745,7 +745,7 @@ public:
   // there before Metal compiles it, and one that is not there is added once it is compiled
   template <typename Info, typename Make>
   auto
-  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
+  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make, const std::function<bool()> &fits = {}) {
     std::shared_lock lock(archive_lock);
     auto archives = PipelineArchives();
     if (archives.empty())
@@ -756,10 +756,13 @@ public:
     if (auto found = make(info, error))
       return found;
     info.fail_on_binary_archive_miss = false;
-    info.binary_archive_for_serialization = archives.back();
+    // a pipeline that does not fit the shard (`fits`, FitsShard) is compiled and not added
+    bool kept = !fits || fits();
+    if (kept)
+      info.binary_archive_for_serialization = archives.back();
     error = {};
     auto made = make(info, error);
-    if (made)
+    if (made && kept)
       PipelineArchived();
     return made;
   }
@@ -767,6 +770,19 @@ public:
   // shader cache (ShaderCacheDirectory)
   virtual std::span<const obj_handle_t> PipelineArchives() = 0;
   virtual void PipelineArchived() = 0;
+  // whether a render pipeline of these functions and depth stencil formats may be added to the shard that is open:
+  // Metal faults writing an archive that holds the same functions with two depth stencil formats (macOS 27.3,
+  // -[_MTLBinaryArchive materializeAirNTFromOnlineForSlice:entryList:]; a title's depth pass over D32_FLOAT and over
+  // D32_FLOAT_S8X24), so the second is left to the next launch's shard. called under archive_lock shared, and
+  // emptied with the shard under it whole
+  bool
+  FitsShard(obj_handle_t first, obj_handle_t fragment, WMTPixelFormat depth, WMTPixelFormat stencil) {
+    std::lock_guard lock(shard_functions_mutex_);
+    auto [held, added] = shard_functions_.try_emplace({first, fragment}, depth, stencil);
+    return added || held->second == std::pair(depth, stencil);
+  }
+  mullion::mutex shard_functions_mutex_;
+  std::map<std::pair<obj_handle_t, obj_handle_t>, std::pair<WMTPixelFormat, WMTPixelFormat>> shard_functions_;
   // pipelines are made under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
   // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=1 turns them on): one pipeline of each state but its targets'
