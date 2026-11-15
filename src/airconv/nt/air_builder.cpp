@@ -6,6 +6,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cmath>
 #include <format>
 
 namespace llvm::air {
@@ -1497,7 +1498,7 @@ AIRBuilder::CreateConvertToHalf(Value *Val, Signedness SrcSign) {
 }
 
 Value *
-AIRBuilder::CreateConvertToSigned(Value *Val) {
+AIRBuilder::CreateConvertToInteger(Value *Val, Signedness Sign, uint32_t Bits) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
@@ -1506,36 +1507,30 @@ AIRBuilder::CreateConvertToSigned(Value *Val) {
   );
 
   Type *TySrc = Val->getType();
-  Type *TyDst = isa<FixedVectorType>(TySrc) ? getIntTy(cast<FixedVectorType>(TySrc)->getNumElements()) : getIntTy();
+  Type *TyDst = IntegerType::get(Context, Bits);
+  if (auto TyVec = dyn_cast<FixedVectorType>(TySrc))
+    TyDst = FixedVectorType::get(TyDst, TyVec->getNumElements());
 
   std::string FnName = "air.convert";
-  FnName += getTypeOverloadSuffix(TyDst, Signedness::Signed);
-  FnName += getTypeOverloadSuffix(TySrc, Signedness::Signed);
+  FnName += getTypeOverloadSuffix(TyDst, Sign);
+  FnName += getTypeOverloadSuffix(TySrc, Sign);
 
   auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(TyDst, {TySrc}, false), Attrs);
 
-  return builder.CreateCall(Fn, {Val});
-}
-
-Value *
-AIRBuilder::CreateConvertToUnsigned(Value *Val) {
-  auto &Context = getContext();
-  auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
-  );
-
-  Type *TySrc = Val->getType();
-  Type *TyDst = isa<FixedVectorType>(TySrc) ? getIntTy(cast<FixedVectorType>(TySrc)->getNumElements()) : getIntTy();
-
-  std::string FnName = "air.convert";
-  FnName += getTypeOverloadSuffix(TyDst, Signedness::Unsigned);
-  FnName += getTypeOverloadSuffix(TySrc, Signedness::Unsigned);
-
-  auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(TyDst, {TySrc}, false), Attrs);
-
-  return builder.CreateCall(Fn, {Val});
+  Value *Converted = builder.CreateCall(Fn, {Val});
+  if (Bits <= 32)
+    return Converted;
+  // Metal's conversion clamps to an integer of up to 32 bits and gives 0 for a NaN. to 64 bits it does neither
+  // for a signed integer (an infinity gives 0, and a value past the range the low bits of a wider integer), so
+  // the range's ends and the NaN are chosen here: the first values past each end, which a float holds exactly
+  bool Signed = Sign == Signedness::Signed;
+  auto Above = ConstantFP::get(TySrc, std::ldexp(1.0, Signed ? Bits - 1 : Bits));
+  auto Below = ConstantFP::get(TySrc, Signed ? -std::ldexp(1.0, Bits - 1) : 0.0);
+  auto Most = ConstantInt::get(TyDst, Signed ? APInt::getSignedMaxValue(Bits) : APInt::getMaxValue(Bits));
+  auto Least = ConstantInt::get(TyDst, Signed ? APInt::getSignedMinValue(Bits) : APInt::getMinValue(Bits));
+  Converted = builder.CreateSelect(builder.CreateFCmpOGE(Val, Above), Most, Converted);
+  Converted = builder.CreateSelect(builder.CreateFCmpOLE(Val, Below), Least, Converted);
+  return builder.CreateSelect(builder.CreateFCmpUNO(Val, Val), Constant::getNullValue(TyDst), Converted);
 }
 
 CallInst *
