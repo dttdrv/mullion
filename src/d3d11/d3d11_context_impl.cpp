@@ -30,6 +30,7 @@
 #include "d3d11_device_child.hpp"
 #include "d3d11_enumerable.hpp"
 #include "d3d11_interfaces.hpp"
+#include "util_hotpatch.h"
 #include "d3d11_private.h"
 #include "d3d11_context_state.hpp"
 #include "d3d11_device.hpp"
@@ -1062,6 +1063,9 @@ public:
     }
   }
 
+  // Assetto Corsa's Custom Shaders Patch detours ResolveSubresource with an x86 jump for its MSAA resolve. In an
+  // x86_64 process on ARM64EC that would land on ARM64 code; a hybrid patchable function gives it an x64 entry to patch.
+  MULLION_HOTPATCHABLE
   void
   STDMETHODCALLTYPE
   ResolveSubresource(
