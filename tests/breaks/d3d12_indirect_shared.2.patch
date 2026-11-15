@@ -1,0 +1,12 @@
+# only the first command of a signature that changes a root argument starts from the list's root arguments
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -446,7 +446,7 @@ public:
+     // a command that runs starts from the list's root arguments and vertex buffers, where it has its own to change:
+     // the commands past the count get none, and are not run
+     if (UpdateRootArguments)
+-      source << "if (command_data.rootsig_base)\n"
++      source << "if (command_data.rootsig_base && i == 0)\n"
+                 "for (uint word = 0; word < command_data.rootsig_qwords_stride; word++)\n"
+                 "rootsig_qwords[word] = command_data.rootsig_base[word];\n";
+     if (!is_compute && UpdateVertexBuffers)
