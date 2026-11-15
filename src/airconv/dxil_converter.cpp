@@ -88,6 +88,11 @@ enum Op : uint32_t {
   IMin = 38,
   UMax = 39,
   UMin = 40,
+  IMul = 41,
+  UMul = 42,
+  UDiv = 43,
+  UAddc = 44,
+  USubb = 45,
   FMad = 46,
   Fma = 47,
   IMad = 48,
@@ -163,6 +168,10 @@ enum Op : uint32_t {
   WavePrefixOp = 121,
   QuadReadLaneAt = 122,
   QuadOp = 123,
+  BitcastI16toF16 = 124,
+  BitcastF16toI16 = 125,
+  BitcastI32toF32 = 126,
+  BitcastF32toI32 = 127,
   LegacyF32ToF16 = 130,
   LegacyF16ToF32 = 131,
   WaveAllBitCount = 135,
@@ -4154,6 +4163,43 @@ convert_dxil(
     case Fma:
       ret = op == FMad && (precise || call->getMetadata("dx.precise")) ? ir.CreateFAdd(ir.CreateFMul(a(1), a(2)), a(3))
                                                                    : air.CreateFMA(a(1), a(2), a(3));
+      break;
+    // the operations with two results that DXBC's imul, umul, udiv, uaddc and usubb become when a DXBC shader is
+    // converted to DXIL, and the bit casts its untyped registers need; DXIL.rst gives each under its name
+    case IMul:
+    case UMul: {
+      // "producing the correct full 64-bit result": the high half, then the low
+      auto half = cast<StructType>(ty)->getElementType(0);
+      auto bits = half->getIntegerBitWidth();
+      auto wide = IntegerType::get(ctx.llvm, 2 * bits);
+      auto extend = [&](Value *v) { return op == IMul ? ir.CreateSExt(v, wide) : ir.CreateZExt(v, wide); };
+      auto product = ir.CreateMul(extend(a(1)), extend(a(2)));
+      ret = ir.CreateInsertValue(UndefValue::get(ty), ir.CreateTrunc(ir.CreateLShr(product, bits), half), {0});
+      ret = ir.CreateInsertValue(ret, ir.CreateTrunc(product, half), {1});
+      break;
+    }
+    case UDiv: {
+      // the quotient, then the remainder: "Divide by zero returns 0xffffffff for both"
+      auto zero = ir.CreateICmpEQ(a(2), Constant::getNullValue(a(2)->getType()));
+      auto divisor = ir.CreateSelect(zero, ConstantInt::get(a(2)->getType(), 1), a(2));
+      auto ones = Constant::getAllOnesValue(a(1)->getType());
+      ret = ir.CreateInsertValue(UndefValue::get(ty), ir.CreateSelect(zero, ones, ir.CreateUDiv(a(1), divisor)), {0});
+      ret = ir.CreateInsertValue(ret, ir.CreateSelect(zero, ones, ir.CreateURem(a(1), divisor)), {1});
+      break;
+    }
+    case UAddc:
+    case USubb: {
+      // the low bits of the sum or difference, then whether it carried or borrowed
+      auto result = op == UAddc ? ir.CreateAdd(a(1), a(2)) : ir.CreateSub(a(1), a(2));
+      ret = ir.CreateInsertValue(UndefValue::get(ty), result, {0});
+      ret = ir.CreateInsertValue(ret, op == UAddc ? ir.CreateICmpULT(result, a(1)) : ir.CreateICmpULT(a(1), a(2)), {1});
+      break;
+    }
+    case BitcastI16toF16:
+    case BitcastF16toI16:
+    case BitcastI32toF32:
+    case BitcastF32toI32:
+      ret = ir.CreateBitCast(a(1), ty);
       break;
     case IMad:
     case UMad:
