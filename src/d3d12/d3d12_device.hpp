@@ -825,8 +825,15 @@ public:
     uint64_t commands = 0;
   } indirect_command_buffers;
 
-  // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
-  std::atomic<uint32_t> max_mesh_threadgroups{0};
+  // the most mesh threadgroups an object threadgroup may start (MeshGridLimit), asked of the device once, when a
+  // tessellation pipeline first needs it
+  uint32_t
+  MaxMeshThreadgroups() {
+    std::call_once(mesh_grid_asked_, [&] { max_mesh_threadgroups_ = MeshGridLimit(GetMTLDevice()); });
+    return max_mesh_threadgroups_;
+  }
+  std::once_flag mesh_grid_asked_;
+  uint32_t max_mesh_threadgroups_ = 0;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads

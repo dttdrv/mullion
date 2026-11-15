@@ -1935,79 +1935,67 @@ public:
       mesh_info.object_tgsize_is_multiple_of_sgwidth = true;
       threads_per_patch = ref_hs.ThreadsPerPatch;
 
-      auto build = [&]() -> HRESULT {
-        // a geometry shader's primitives each take a mesh threadgroup; a grid has as many as the device lets it, and
-        // the object threadgroups of several grids share a patch group's
-        pso_tess.max_mesh_threadgroups = device_->max_mesh_threadgroups;
-        auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(ref_hs.Tessellator.Partition);
-        auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(ref_hs.Tessellator.Domain);
-        auto factor = dxbc::get_final_factor(ref_hs.Tessellator.MaxFactor, partitioning, pso_tess.max_potential_tess_factor).second;
-        bool geometry = bool(pDesc->GS.pShaderBytecode);
-        tessellation_parts = dxbc::tessellation_grids(
-                                 dxbc::get_max_potential_workload_count(factor, domain, partitioning) * (32 / threads_per_patch),
-                                 geometry ? dxbc::get_max_workload_vertices(factor, domain)
-                                          : dxbc::tessellation_pieces(
-                                                factor, domain,
-                                                microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE(ref_hs.Tessellator.OutputPrimitive),
-                                                pso_tess.mesh_vertex_size, pso_tess.conservative
-                                            ).count,
-                                 geometry ? ref_gs.GeometryShader.InstanceCount : 1, pso_tess.max_mesh_threadgroups
-        ).parts;
-        SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
-        root_signature(rootsig_gs, &pso_tess);
-        rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
-        auto ds_func = CompileFunction(
-            device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
-            std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
-            [&](auto args, auto name, auto bitcode, auto error) {
-              sm50_shader_t hs, ds;
-              return shader_hs.Get(pDesc->HS, hs, error) && shader_ds.Get(pDesc->DS, ds, error) &&
-                             shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
-                         ? SM50CompileTessellationPipelineDomain(hs, ds, args, name, bitcode, error)
-                         : int(SM50_COMPILE_FAILED);
-            }
-        );
-        if (!ds_func)
-          return FAIL(E_INVALIDARG);
-        mesh_info.mesh_function = ds_func.handle;
+      // a geometry shader's primitives each take a mesh threadgroup; a grid has as many as the device lets it, and
+      // the object threadgroups of several grids share a patch group's
+      pso_tess.max_mesh_threadgroups = device_->MaxMeshThreadgroups();
+      auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(ref_hs.Tessellator.Partition);
+      auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(ref_hs.Tessellator.Domain);
+      auto factor = dxbc::get_final_factor(ref_hs.Tessellator.MaxFactor, partitioning, pso_tess.max_potential_tess_factor).second;
+      bool geometry = bool(pDesc->GS.pShaderBytecode);
+      tessellation_parts = dxbc::tessellation_grids(
+                               dxbc::get_max_potential_workload_count(factor, domain, partitioning) * (32 / threads_per_patch),
+                               geometry ? dxbc::get_max_workload_vertices(factor, domain)
+                                        : dxbc::tessellation_pieces(
+                                              factor, domain,
+                                              microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE(ref_hs.Tessellator.OutputPrimitive),
+                                              pso_tess.mesh_vertex_size, pso_tess.conservative
+                                          ).count,
+                               geometry ? ref_gs.GeometryShader.InstanceCount : 1, pso_tess.max_mesh_threadgroups
+      ).parts;
+      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
+      root_signature(rootsig_gs, &pso_tess);
+      rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
+      auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
+      auto ds_func = CompileFunction(
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
+          [&](auto args, auto name, auto bitcode, auto error) {
+            sm50_shader_t hs, ds;
+            return shader_hs.Get(pDesc->HS, hs, error) && shader_ds.Get(pDesc->DS, ds, error) &&
+                           shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
+                       ? SM50CompileTessellationPipelineDomain(hs, ds, args, name, bitcode, error)
+                       : int(SM50_COMPILE_FAILED);
+          }
+      );
+      if (!ds_func)
+        return FAIL(E_INVALIDARG);
+      mesh_info.mesh_function = ds_func.handle;
 
-        // the object stage fetches indices itself, through the index buffer view each draw binds
-        data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
-        data_ia_layout.next = &pso_tess;
-        SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
-        root_signature(rootsig_vs, &data_ia_layout);
-        rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
-        auto vshs_func = CompileFunction(
-            device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
-            std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
-            [&](auto args, auto name, auto bitcode, auto error) {
-              sm50_shader_t vs, hs;
-              return shader_vs.Get(pDesc->VS, vs, error) && shader_hs.Get(pDesc->HS, hs, error) &&
-                             shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
-                         ? SM50CompileTessellationPipelineHull(vs, hs, args, name, bitcode, error)
-                         : int(SM50_COMPILE_FAILED);
-            }
-        );
-        if (!vshs_func)
-          return FAIL(E_INVALIDARG);
-        mesh_info.object_function = vshs_func.handle;
-        pipeline_descriptors_.erase(pso.handle);
-        if (!(pso = CreatePipeline(mesh_info, err))) {
-          ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
-          DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
-          return E_FAIL;
-        }
-        return S_OK;
-      };
-      if (FAILED(hr = build()))
-        return hr;
-      // only a pipeline tells what a grid may have: the device's first is built to ask, then built for it
-      if (!pso_tess.max_mesh_threadgroups) {
-        device_->max_mesh_threadgroups = std::min<uint64_t>(pso.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX);
-        if (FAILED(hr = build()))
-          return hr;
+      // the object stage fetches indices itself, through the index buffer view each draw binds
+      data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
+      data_ia_layout.next = &pso_tess;
+      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
+      root_signature(rootsig_vs, &data_ia_layout);
+      rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
+      auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
+      auto vshs_func = CompileFunction(
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
+          [&](auto args, auto name, auto bitcode, auto error) {
+            sm50_shader_t vs, hs;
+            return shader_vs.Get(pDesc->VS, vs, error) && shader_hs.Get(pDesc->HS, hs, error) &&
+                           shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
+                       ? SM50CompileTessellationPipelineHull(vs, hs, args, name, bitcode, error)
+                       : int(SM50_COMPILE_FAILED);
+          }
+      );
+      if (!vshs_func)
+        return FAIL(E_INVALIDARG);
+      mesh_info.object_function = vshs_func.handle;
+      if (!(pso = CreatePipeline(mesh_info, err))) {
+        ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
+        DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
+        return E_FAIL;
       }
     }
 
