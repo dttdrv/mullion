@@ -168,7 +168,8 @@ on every route that reaches the changed code.
 
 Reason: malformed IR fails late, often in a different shader and with an empty or misleading message.
 
-**4.2 Version cached output.** A change to converted output, or to how it is read, raises `AIRCONV_VERSION` in
+**4.2 Version cached output.** A change to converted output, to the reflection `SM50Initialize` reports of a shader,
+or to how either is read, raises `AIRCONV_VERSION` in
 [`src/airconv/airconv_public.h`](../src/airconv/airconv_public.h) in the same change. A cache key covers every input
 that changes the generated code, and no pointers or padding.
 
