@@ -1844,6 +1844,10 @@ struct WMTFXTemporalScalerInfo {
   bool auto_exposure;
   bool input_content_properties_enabled;
   bool requires_synchronous_initialization;
+  // the motion vectors hold the jitter of the frames they are between, which MetalFX takes out with the jitter
+  // offsets of each frame (MTLFXTemporalScalerDescriptor.jitteredMotionVectorsEnabled, macOS 27): no scaler is made
+  // where MetalFX lacks it
+  bool jittered_motion_vectors;
 };
 
 struct WMTFXSpatialScalerInfo {
