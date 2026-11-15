@@ -71,7 +71,7 @@ ShaderCache::getReflection(const Sha1Digest &shader, ShaderReflection &reflectio
   }
   WMT::Reference<WMT::DispatchData> stored;
   if (auto reader = getReader())
-    stored = reader->get(ReflectionKey(shader));
+    stored = reader.get(ReflectionKey(shader));
   if (!stored)
     return false;
   std::string bytes(stored.getBytes(nullptr, 0), '\0');
@@ -121,7 +121,7 @@ ShaderCache::setReflection(const Sha1Digest &shader, const ShaderReflection &ref
   auto digest = Sha1HashState::compute(bytes.data(), bytes.size());
   bytes.append(reinterpret_cast<const char *>(digest.data), sizeof(digest));
   if (auto writer = getWriter())
-    writer->set(ReflectionKey(shader), WMT::MakeDispatchData(bytes.data(), bytes.size()));
+    writer.set(ReflectionKey(shader), WMT::MakeDispatchData(bytes.data(), bytes.size()));
 }
 
 ShaderCache::ShaderCache(WMTMetalVersion metal_version) {

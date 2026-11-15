@@ -60,50 +60,19 @@ ShaderReflection ReadShaderReflection(sm50_shader_t shader, const MTL_SHADER_REF
 
 class ShaderCache {
 public:
-  template <typename T> class LockProtected {
-  public:
-    [[nodiscard]] LockProtected(mullion::mutex &mutex, T object) : object(object), mutex_(&mutex) {
-      mutex_->lock();
-    }
-    [[nodiscard]] LockProtected() : object({}), mutex_(nullptr) {}
-    ~LockProtected() {
-      if (mutex_) {
-        mutex_->unlock();
-        mutex_ = nullptr;
-      }
-      object = {};
-    }
-    T object;
-    LockProtected(const LockProtected &copy) = delete;
-    LockProtected(LockProtected &&move) = default;
-
-    operator bool() const {
-      return mutex_ != nullptr;
-    }
-
-    T *
-    operator->() {
-      return &object;
-    }
-
-  private:
-    mullion::mutex *mutex_;
-  };
-
   static ShaderCache &getInstance(WMTMetalVersion version);
 
-  LockProtected<WMT::CacheWriter>
+  // the store's writer and reader, null without a store (MULLION_SHADER_CACHE=0). any thread may use them at any
+  // time: the bridge's reader gives each lookup a connection of its own, and its writer queues what it is given and
+  // writes it in that order on a thread of its own
+  WMT::CacheWriter
   getWriter() {
-    if (!scache_writer_)
-      return {};
-    return {scache_writer_mutex_, scache_writer_};
+    return scache_writer_;
   }
 
-  LockProtected<WMT::CacheReader>
+  WMT::CacheReader
   getReader() {
-    if (!scache_reader_)
-      return {};
-    return {scache_reader_mutex_, scache_reader_};
+    return scache_reader_;
   }
 
   // the reflection of the shader with this SHA-1, as an earlier pipeline or an earlier process stored it: with it and
@@ -122,10 +91,7 @@ private:
   std::unordered_map<Sha1Digest, ShaderReflection> reflections_;
 
   WMT::Reference<WMT::CacheWriter> scache_writer_;
-  mullion::mutex scache_writer_mutex_;
-
   WMT::Reference<WMT::CacheReader> scache_reader_;
-  mullion::mutex scache_reader_mutex_;
 };
 
 } // namespace mullion
