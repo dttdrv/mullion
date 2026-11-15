@@ -2509,7 +2509,6 @@ Converter::SampleImplicit(
                                    {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}})
   );
   auto Whole = ir.CreateCall(QuadAll, {Isotropic});
-  Whole->addFnAttr(Attribute::ReadNone);
   auto Head = ir.GetInsertBlock();
   auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
                                                  : SplitBlock(Head, &*ir.GetInsertPoint());
@@ -2581,7 +2580,6 @@ Converter::MinMaxFilter(
         )
     );
     auto Any = ir.CreateCall(QuadAny, {Reduces});
-    Any->addFnAttr(Attribute::ReadNone);
     Taken = Any;
   }
   auto Head = ir.GetInsertBlock();
@@ -3707,8 +3705,7 @@ Converter::MaskedSumOfAbsDiff(llvm::Value *Ref, llvm::Value *Src, llvm::Value *A
 
   auto &Context = air.getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
