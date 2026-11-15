@@ -1,12 +1,12 @@
 # a miss shader that traces runs, called through the table beside the miss shaders called directly
 --- a/src/d3d12/d3d12_state_object.cpp
 +++ b/src/d3d12/d3d12_state_object.cpp
-@@ -241,7 +241,7 @@ RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shad
-               "_shader(uint function, thread MullionRayContext &c, thread void *first, thread void *second) {\n"
-               "  switch (function) {\n" +
-               cases + "  default: " +
--              (table ? "return ((thread MullionRayTable *)&c)->shaders[function](c, first, second);\n" : "return;\n") +
-+              "return;\n" +
-               "  }\n}\n";
-   }
-   // the context starts with the table (MullionRayContext)
+@@ -361,7 +361,7 @@ RayDispatchers(
+     SM50ShaderBitcode bitcode;
+     SM50Error conversion_error;
+     if (SM50CompileRayDispatcher(
+-            SM50_RAY_DISPATCHER(dispatcher), direct.data(), direct.size(), table, device->GetMetalVersion(), &bitcode,
++            SM50_RAY_DISPATCHER(dispatcher), direct.data(), direct.size(), false, device->GetMetalVersion(), &bitcode,
+             &conversion_error
+         )) {
+       error = SM50GetErrorMessageString(conversion_error);

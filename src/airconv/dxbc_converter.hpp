@@ -826,6 +826,11 @@ llvm::Error convert_dxil_ray_shader(
     SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
 );
 
+llvm::Error convert_ray_dispatcher(
+    llvm::LLVMContext &context, llvm::Module &module, SM50_RAY_DISPATCHER dispatcher,
+    llvm::ArrayRef<SM50_RAY_DISPATCHED_SHADER> shaders, bool table, SM50_SHADER_METAL_VERSION metal_version
+);
+
 void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_version);
 
 // the index at `position` of a D3D12 index buffer view ({GPU address, size, DXGI format}) of `format`, R16 or R32;

@@ -14,6 +14,11 @@ test('host_tessellator',
                 # the reference's and the Metal source's, neither written for this compiler's warnings
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 300)
+# the converter's own functions, built for the host as the bridge links them
+test('host_ray_dispatchers',
+     executable('host_ray_dispatchers', 'ray_dispatchers.cpp', dependencies : airconv_dep_darwin,
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
 # which DXIL operations shaders use, for tests/coverage.py; it reads DXIL with the LLVM the converter is built with
 executable('dxilops', ['dxilops.cpp'], include_directories : llvm_include_path_darwin,
            link_args : [ llvm_ld_flags_darwin, llvm_deps ], cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true)
