@@ -1,12 +1,12 @@
 # a dispatch runs the ray generation shader its record names, not the pipeline's first
 --- a/src/d3d12/d3d12_state_object.cpp
 +++ b/src/d3d12/d3d12_state_object.cpp
-@@ -220,7 +220,7 @@ RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shad
-                     : kind == SM50_RAY_SHADER_ANY_HIT                                    ? 2
-                     : kind == SM50_RAY_SHADER_INTERSECTION                               ? 3
-                                                                                          : 4;
--      if (of != role || std::find(direct.begin(), direct.end(), function->slot) != direct.end())
-+      if (of != role || std::find(direct.begin(), direct.end(), function->slot) != direct.end() || (of == 0 && !direct.empty()))
+@@ -342,7 +342,7 @@ RayDispatchers(
+                     : kind == SM50_RAY_SHADER_ANY_HIT                                    ? SM50_RAY_DISPATCHER_ANY_HIT
+                     : kind == SM50_RAY_SHADER_INTERSECTION ? SM50_RAY_DISPATCHER_INTERSECTION
+                                                            : SM50_RAY_DISPATCHER_CALLABLE;
+-      if (of != dispatcher ||
++      if (of != dispatcher || (of == SM50_RAY_DISPATCHER_GENERATION && !direct.empty()) ||
+           std::any_of(direct.begin(), direct.end(), [&](auto &other) { return other.slot == function->slot; }))
          continue;
-       uint32_t reaching = of == 1   ? SM50_RAY_SHADER_CALLS_TRACE
-                           : of == 4 ? SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE
+       uint32_t reaching = of == SM50_RAY_DISPATCHER_CLOSEST ? SM50_RAY_SHADER_CALLS_TRACE
