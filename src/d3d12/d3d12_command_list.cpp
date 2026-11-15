@@ -5141,6 +5141,9 @@ public:
   // arguments as the global ones (dispatch_rays in mullion_command.metal)
   void STDMETHODCALLTYPE
   DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) {
+    // a grid with a dimension of zero has no ray generation shader to run: Metal takes no empty grid
+    if (!pDesc->Width || !pDesc->Height || !pDesc->Depth)
+      return;
     SM50_RAY_DISPATCH dispatch{
         pDesc->RayGenerationShaderRecord.StartAddress,
         pDesc->MissShaderTable.StartAddress,
