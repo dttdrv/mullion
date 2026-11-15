@@ -455,6 +455,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -467,6 +468,7 @@ public:
     encoder->before_tail->next.set(storage);
     encoder->before_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -479,6 +481,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -491,6 +494,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
