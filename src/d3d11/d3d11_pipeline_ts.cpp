@@ -24,11 +24,8 @@
 #include "d3d11_pipeline.hpp"
 #include "d3d11_shader.hpp"
 #include "log/log.hpp"
-#include "thread.hpp"
 
 namespace mullion {
-
-static mullion::mutex ts_global_mutex;
 
 class MTLCompiledTessellationPipelineImpl: public MTLCompiledTessellationMeshPipeline {
 public:
@@ -193,11 +190,7 @@ public:
     // FIXME: might be different on AMD GPU, if it's ever supported
     info.object_tgsize_is_multiple_of_sgwidth = true;
 
-    {
-      std::lock_guard<mullion::mutex> lock(ts_global_mutex);
-      state_rasterization_ =
-          device_->GetMTLDevice().newRenderPipelineState(info, err);
-    }
+    state_rasterization_ = device_->GetMTLDevice().newRenderPipelineState(info, err);
     if (state_rasterization_ == nullptr) {
       ERR("Failed to create tessellation raster PSO: ",
           err.description().getUTF8String());
