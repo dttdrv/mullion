@@ -404,37 +404,47 @@ D3D12CreateRootSignatureDeserializer(const void *pBytecode, SIZE_T DataSize, REF
 
 #pragma endregion
 
-inline std::pair<std::vector<uint32_t>, uint32_t>
+// each parameter's first qword in the root arguments and its type, and the qwords they take together
+struct RootSignatureSlots {
+  std::vector<uint32_t> qword_offsets;
+  std::vector<D3D12_ROOT_PARAMETER_TYPE> types;
+  uint32_t qwords = 0;
+};
+
+inline RootSignatureSlots
 CalculateRootSignatureQwordOffsets(const D3D12_ROOT_SIGNATURE_DESC1 &Desc) {
-  uint32_t current_offset = 0;
-  std::vector<uint32_t> out;
+  RootSignatureSlots slots;
 
   for (unsigned i = 0; i < Desc.NumParameters; i++) {
     auto &Parameter = Desc.pParameters[i];
 
     switch (Parameter.ParameterType) {
     case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
-      out.push_back(current_offset++);
+      slots.qword_offsets.push_back(slots.qwords++);
       break;
     case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
-      out.push_back(current_offset);
-      current_offset += (Parameter.Constants.Num32BitValues / 2) + (Parameter.Constants.Num32BitValues & 1);
+      slots.qword_offsets.push_back(slots.qwords);
+      slots.qwords += (Parameter.Constants.Num32BitValues / 2) + (Parameter.Constants.Num32BitValues & 1);
       break;
     case D3D12_ROOT_PARAMETER_TYPE_CBV:
     case D3D12_ROOT_PARAMETER_TYPE_SRV:
     case D3D12_ROOT_PARAMETER_TYPE_UAV:
-      out.push_back(current_offset++);
+      slots.qword_offsets.push_back(slots.qwords++);
       break;
+    default:
+      continue;
     }
+    slots.types.push_back(Parameter.ParameterType);
   }
 
-  return {out, current_offset};
+  return slots;
 }
 
 class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignature> {
 
   std::vector<uint8_t> blob_;
   std::vector<uint32_t> qword_offsets_;
+  std::vector<D3D12_ROOT_PARAMETER_TYPE> slot_types_;
 
   std::vector<Rc<Sampler>> static_samplers_; // which is not really "static"
   /**
@@ -605,8 +615,10 @@ public:
       }
     }
 
-    auto [offsets, total_qwords] = CalculateRootSignatureQwordOffsets(desc);
-    qword_offsets_ = offsets;
+    auto slots = CalculateRootSignatureQwordOffsets(desc);
+    qword_offsets_ = std::move(slots.qword_offsets);
+    slot_types_ = std::move(slots.types);
+    auto total_qwords = slots.qwords;
     /* after the parameters, in the order the shader compiler declares them (dxbc_binding_rootsig.cpp) */
     if (desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED)
       ResourceHeapQword = total_qwords++;
@@ -617,6 +629,7 @@ public:
     StreamOutput = desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
     ParameterSlots = qword_offsets_.size();
     SlotQwordOffsets = qword_offsets_.data();
+    SlotTypes = slot_types_.data();
 
     return S_OK;
   }
