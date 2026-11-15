@@ -1,0 +1,12 @@
+# a buffer view's first word is taken from the low 31 bits of its byte offset
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3488,7 +3488,7 @@
+     case ShaderVisibleDescriptorType::UAVBuffer: {
+       auto &slice = Descriptor.UAVBuffer.slice;
+       element_stride = slice.byteLength / (slice.elementCount * sizeof(uint32_t));
+-      first = slice.byteOffset / sizeof(uint32_t);
++      first = (slice.byteOffset & 0x7fffffff) / sizeof(uint32_t);
+       width = slice.byteLength / sizeof(uint32_t) / element_stride;
+       break;
+     }

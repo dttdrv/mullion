@@ -373,7 +373,7 @@ MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevi
     records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
-    clear_rtv_(device_->GetMTLDevice(), *this) {}
+    clear_rtv_(device_->GetLib(), *this) {}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
@@ -685,6 +685,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   // the resolver's last thread runs the extras an execution claims, and leaves the counts at zero for the next
   data->extras_claimed = data->extras_done = 0;
   data->draws = 0;
+  data->rootsig_base = data->vertex_base = 0;
   data->so_targets = data->so_scratch_size = data->so_invocations = data->so_lacked = 0;
   if (draws) {
     auto [records, at] = AllocateGPUHeap(MaxCount * sizeof(IndirectMeshDraw), alignof(IndirectMeshDraw));
@@ -931,12 +932,6 @@ MTLD3D12CommandAllocatorImpl::CopyD24(
   ctx.endPass();
   ctx.startBlitPass();
   return true;
-}
-
-template <>
-WMT::Library
-SimpleCommandContext<MTLD3D12CommandAllocatorImpl>::getDefaultLibrary() {
-  return ctx.device_->GetLib().getLibrary();
 }
 
 template <>
