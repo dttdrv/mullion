@@ -1535,6 +1535,31 @@ convert_dxil(
       }
     }
   }
+  // DXIL converts a float to an integer with LLVM's fptosi and fptoui, whose result for a NaN or a value outside the
+  // integer's range LLVM leaves undefined: its passes fold such a conversion of a constant to no value at all. D3D
+  // defines both (D3D11.3 22.13.3 ftoi, 22.13.4 ftou: clamped to the range, and 0 for a NaN), a DXBC shader gets
+  // them here, and a DXBC shader converted to DXIL has these same instructions for its ftoi and ftou. so each
+  // becomes the conversion that gives D3D's result; one of a double stays, which no Metal conversion takes
+  if (start) {
+    IRBuilder<> ir(ctx.llvm);
+    raw_null_ostream nulldbg;
+    llvm::air::AIRBuilder air(ir, nulldbg);
+    for (auto &I : make_early_inc_range(instructions(*start))) {
+      auto op = I.getOpcode();
+      if (op != llvm::Instruction::FPToSI && op != llvm::Instruction::FPToUI)
+        continue;
+      auto from = I.getOperand(0)->getType()->getScalarType();
+      auto bits = I.getType()->getScalarSizeInBits();
+      if ((!from->isFloatTy() && !from->isHalfTy()) || (bits != 16 && bits != 32 && bits != 64))
+        continue;
+      ir.SetInsertPoint(&I);
+      I.replaceAllUsesWith(air.CreateConvertToInteger(
+          I.getOperand(0),
+          op == llvm::Instruction::FPToSI ? llvm::air::Signedness::Signed : llvm::air::Signedness::Unsigned, bits
+      ));
+      I.eraseFromParent();
+    }
+  }
   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
   // linked in on its own: only this one keeps its body, under a name no other takes, and module variables stay private
   // to it
