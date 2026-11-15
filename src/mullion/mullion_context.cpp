@@ -36,7 +36,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     queue_(queue),
     lib(lib),
     emulated_cmd(device, lib, *this),
-    clear_rt_cmd(device, *this),
+    clear_rt_cmd(lib, *this),
     blit_depth_stencil_cmd(device, lib, *this),
     clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
@@ -2123,12 +2123,6 @@ SimpleCommandContext<ArgumentEncodingContext>::setComputeBytes(uint32_t index, u
   setmeta.length = length;
   setmeta.index = index;
   return temp;
-}
-
-template <>
-WMT::Library
-SimpleCommandContext<ArgumentEncodingContext>::getDefaultLibrary() {
-  return ctx.lib.getLibrary();
 }
 
 template <>

@@ -198,6 +198,12 @@ public:
   WMT::RenderPipelineState StreamOutputSnapshot();
   // the kernel `name` as a compute pipeline, made once for the device
   WMT::Reference<WMT::ComputePipelineState> ComputePipeline(const std::string &name);
+  // the pipeline that draws a clear's rectangles into a target of `format` and `sample_count`, or with `resolve` a
+  // resolve's (vs_clear_rt with fs_clear_rt_* or fs_resolve_*), made once for the device; none when Metal makes none.
+  // `dsv_flag` has the planes written of a depth stencil target, depth 1 and stencil 2, and is 0 for a color target
+  WMT::RenderPipelineState ClearPipeline(WMTPixelFormat format, uint32_t sample_count, uint32_t dsv_flag, bool resolve);
+  // the depth stencil state such a pipeline writes the planes of `dsv_flag` with: depth always, stencil replaced
+  WMT::DepthStencilState ClearDepthStencilState(uint32_t dsv_flag);
 
   // a texture of `type` that a shader reads and writes as `sample`, bound in place of an unbound one: Metal leaves a
   // null texture's functions undefined. its metadata carries SM50_TEXTURE_METADATA_UNBOUND, and the shader drops what
@@ -219,6 +225,10 @@ private:
   mullion::mutex pipelines_mutex_;
   WMT::Reference<WMT::RenderPipelineState> pipeline_statistics_draw_[2], zero_words_, stream_output_snapshot_;
   std::unordered_map<std::string, WMT::Reference<WMT::ComputePipelineState>> compute_pipelines_;
+  // every thread that records a clear or a resolve reads these, and one of them makes each
+  mullion::mutex clear_mutex_;
+  std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> clear_pipelines_;
+  WMT::Reference<WMT::DepthStencilState> clear_depth_stencil_states_[4];
   struct Unbound {
     WMT::Reference<WMT::Texture> texture;
     uint64_t id;

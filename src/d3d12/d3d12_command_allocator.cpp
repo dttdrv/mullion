@@ -305,7 +305,7 @@ MTLD3D12CommandAllocatorImpl::MTLD3D12CommandAllocatorImpl(MTLD3D12Device *pDevi
     records_(diag::errors ? new GPURecording : nullptr),
     clear_uav_(device_->GetMTLDevice(), *this),
     transcode_feedback_(*this),
-    clear_rtv_(device_->GetMTLDevice(), *this) {}
+    clear_rtv_(device_->GetLib(), *this) {}
 
 HRESULT
 CreateCommandAllocator(MTLD3D12Device *pDevice, D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
@@ -857,12 +857,6 @@ MTLD3D12CommandAllocatorImpl::CopyD24(
   ctx.endPass();
   ctx.startBlitPass();
   return true;
-}
-
-template <>
-WMT::Library
-SimpleCommandContext<MTLD3D12CommandAllocatorImpl>::getDefaultLibrary() {
-  return ctx.device_->GetLib().getLibrary();
 }
 
 template <>
