@@ -110,4 +110,30 @@ MeshBytesPerDraw(WMT::Device device) {
   return device.supportsFamily(WMTGPUFamilyApple7) && !device.supportsFamily(WMTGPUFamilyApple9) ? 1ull << 32 : -1ull;
 }
 
+uint32_t
+MeshGridLimit(WMT::Device device) {
+  static const char source[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct Vertex {
+  float4 position [[position]];
+};
+[[mesh]] void grid_limit(mesh<Vertex, void, 3, 1, topology::triangle> out) {
+  out.set_primitive_count(0);
+}
+)";
+  WMT::Reference<WMT::Error> error;
+  auto library = device.newLibraryWithSource(source, error);
+  auto function = library ? library.newFunction("grid_limit") : WMT::Reference<WMT::Function>{};
+  WMTMeshRenderPipelineInfo info;
+  WMT::InitializeMeshRenderPipelineInfo(info);
+  info.mesh_function = function.handle;
+  info.rasterization_enabled = false;
+  auto pipeline = function ? device.newRenderPipelineState(info, error) : WMT::Reference<WMT::RenderPipelineState>{};
+  if (!pipeline) {
+    ERR("Failed to ask the device's mesh grid limit: ", error ? error.description().getUTF8String() : "no function");
+    return 0;
+  }
+  return uint32_t(std::min<uint64_t>(pipeline.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX));
+}
+
 } // namespace mullion
