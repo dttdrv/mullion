@@ -158,13 +158,13 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     virtual WMT::Reference<WMT::DispatchData> find_cached_variant(Sha1Digest &variant_digest) final {
       auto reader = cache->scache_.getReader();
       if (reader)
-        return reader->get(std::make_pair(sha1_, variant_digest));
+        return reader.get(std::make_pair(sha1_, variant_digest));
       return {};
     };
     virtual void update_cached_variant(Sha1Digest &variant_digest, WMT::DispatchData data) final {
       auto writer = cache->scache_.getWriter();
       if (writer)
-        writer->set(std::make_pair(sha1_, variant_digest), data);
+        writer.set(std::make_pair(sha1_, variant_digest), data);
     }
   };
 
