@@ -81,7 +81,8 @@ public:
     auto args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common;
     HRESULT status = E_FAIL;
     auto cs_func = CompileFunction(
-        device_, this, std::array{pDesc->CS}, args, "cs_main", [&](auto args, auto name, auto bitcode, auto error) {
+        device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature), std::array{pDesc->CS}, args,
+        "cs_main", [&](auto args, auto name, auto bitcode, auto error) {
           auto result = SM50Compile(shader_cs, args, name, bitcode, error);
           if (result)
             status = E_INVALIDARG;

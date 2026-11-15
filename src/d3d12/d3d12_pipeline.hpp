@@ -70,9 +70,10 @@ HRESULT PipelineKey(
 );
 HRESULT CreatePipelineLibrary(MTLD3D12Device *Device, const void *Blob, SIZE_T Size, REFIID Iid, void **Library);
 
+// `root_signature`: the one its SM50_SHADER_ROOT_SIGNATURE arguments are of
 WMT::Reference<WMT::Function> CompileFunction(
-    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, std::span<const D3D12_SHADER_BYTECODE> shaders,
-    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, MTLD3D12RootSignature *root_signature,
+    std::span<const D3D12_SHADER_BYTECODE> shaders, SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
     const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
         &compile
 );
