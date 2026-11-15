@@ -491,26 +491,17 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
            scissors + y->scissors <= WMT::kPassRectangles && viewports + y->viewports <= WMT::kPassRectangles;
   }
 
-  // how many commands a pass has: what encoding it costs
+  // how many commands a pass has, with the one each of its lists starts with: what encoding it costs
   static uint64_t
   Commands(const EncoderData *pass) {
-    auto count = [](const void *head) {
-      uint64_t n = 0;
-      for (auto cmd = static_cast<const wmtcmd_base *>(head); cmd; cmd = static_cast<const wmtcmd_base *>(cmd->next.ptr))
-        n++;
-      return n;
-    };
     switch (pass->type) {
     case EncoderType::Clear:
-    case EncoderType::Render: {
-      auto data = static_cast<const RenderEncoderData *>(pass);
-      return count(&data->cmd_head) + count(&data->before_head);
-    }
+    case EncoderType::Render:
+      return pass->commands + 2;
     case EncoderType::Blit:
-      return count(&static_cast<const BlitEncoderData *>(pass)->cmd_head);
     case EncoderType::Compute:
     case EncoderType::ComputeParts:
-      return count(&static_cast<const ComputeEncoderData *>(pass)->cmd_head);
+      return pass->commands + 1;
     default:
       return 1;
     }
