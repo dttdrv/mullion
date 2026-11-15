@@ -425,7 +425,7 @@ ray_calls(const Function &F) {
         calls |= op == TraceRay ? SM50_RAY_SHADER_CALLS_TRACE : op == CallShader ? SM50_RAY_SHADER_CALLS_CALLABLE : 0;
       } else if (!callee || callee->isDeclaration()) {
         // another library's function, or an indirect call
-        calls |= SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE;
+        calls |= SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE | SM50_RAY_SHADER_CALLS_LIBRARY;
       } else if (seen.insert(callee).second) {
         next.push_back(callee);
       }
