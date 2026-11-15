@@ -19,4 +19,10 @@ SM50_SHADER_FLAG GPUShaderFlags(WMT::Device device);
 // MULLION_MAX_MESH_THREADGROUPS (0: none)
 uint64_t MeshBytesPerDraw(WMT::Device device);
 
+// the most threadgroups a mesh grid of the device may have. Metal tells it only of a pipeline (MTLRenderPipelineState's
+// maxTotalThreadgroupsPerMeshGrid), which has the limit its functions declare or, of functions that declare none, the
+// device's, whatever else the pipeline is: so this asks a pipeline of one mesh function that outputs nothing. 0 when
+// that pipeline cannot be made
+uint32_t MeshGridLimit(WMT::Device device);
+
 }; // namespace mullion

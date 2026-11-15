@@ -77,7 +77,7 @@ public:
   // the vertex-hull and domain shaders, for what the device says a mesh grid may have, and how many object
   // threadgroups then share a patch group's mesh threadgroups
   void GetTessellationShaders() {
-    max_mesh_threadgroups = device_->GetMullionDevice().max_mesh_threadgroups;
+    max_mesh_threadgroups = device_->GetMullionDevice().maxMeshThreadgroups();
     auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(hull_reflection.Tessellator.Partition);
     auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(hull_reflection.Tessellator.Domain);
     auto factor = dxbc::get_final_factor(hull_reflection.Tessellator.MaxFactor, partitioning, max_potential_factor).second;
@@ -201,13 +201,6 @@ public:
     if (state_rasterization_ == nullptr) {
       ERR("Failed to create tessellation raster PSO: ",
           err.description().getUTF8String());
-    }
-    // only a pipeline tells what a grid may have: the device's first is built to ask, then built for it
-    if (!max_mesh_threadgroups && state_rasterization_ != nullptr) {
-      device_->GetMullionDevice().max_mesh_threadgroups =
-          std::min<uint64_t>(state_rasterization_.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX);
-      GetTessellationShaders();
-      return RunThreadpoolWork();
     }
 
     return this;
