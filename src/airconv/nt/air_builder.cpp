@@ -1981,17 +1981,32 @@ AIRBuilder::CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant) {
 }
 
 Value *
-AIRBuilder::CreateIsNaN(Value *Operand) {
+AIRBuilder::CreateIsFPClass(FPClass Class, Value *Operand) {
   auto OperandType = Operand->getType();
-  llvm::Value *BitsL31 = getInt(0x7fffffffu);
-  llvm::Value *BitsInf = getInt(0x7f800000u);
-  llvm::Type *TyCast = getIntTy();
-  if (auto TyVec = dyn_cast<llvm::FixedVectorType>(OperandType)) {
-    BitsL31 = builder.CreateVectorSplat(TyVec->getNumElements(), BitsL31);
-    BitsInf = builder.CreateVectorSplat(TyVec->getNumElements(), BitsInf);
-    TyCast = getIntTy(TyVec->getNumElements());
+  auto Width = OperandType->getScalarSizeInBits();
+  llvm::Type *TyBits = llvm::IntegerType::get(getContext(), Width);
+  if (auto TyVec = dyn_cast<llvm::FixedVectorType>(OperandType))
+    TyBits = FixedVectorType::get(TyBits, TyVec->getNumElements());
+  // an infinity's bits are the exponent field, all ones, over a fraction of zero (IEEE 754, 3.4)
+  auto BitsInf =
+      ConstantInt::get(TyBits, llvm::APFloat::getInf(OperandType->getScalarType()->getFltSemantics()).bitcastToAPInt());
+  auto Bits = builder.CreateBitCast(Operand, TyBits);
+  auto Magnitude = builder.CreateAnd(Bits, ConstantInt::get(TyBits, llvm::APInt::getSignedMaxValue(Width)));
+  switch (Class) {
+  case FPClass::nan:
+    return builder.CreateICmpUGT(Magnitude, BitsInf);
+  case FPClass::infinite:
+    return builder.CreateICmpEQ(Magnitude, BitsInf);
+  case FPClass::finite:
+    return builder.CreateICmpULT(Magnitude, BitsInf);
+  case FPClass::normal: {
+    auto Exponent = builder.CreateAnd(Bits, BitsInf);
+    return builder.CreateAnd(
+        builder.CreateICmpNE(Exponent, Constant::getNullValue(TyBits)), builder.CreateICmpNE(Exponent, BitsInf)
+    );
   }
-  return builder.CreateICmpUGT(builder.CreateAnd(builder.CreateBitCast(Operand, TyCast), BitsL31), BitsInf);
+  }
+  llvm_unreachable("unknown floating-point class");
 }
 
 Value *

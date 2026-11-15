@@ -4058,21 +4058,15 @@ convert_dxil(
       ret = fp_unary(llvm::air::AIRBuilder::trunc, a(1));
       break;
     case IsNaN:
-      ret = air.CreateIsNaN(a(1));
-      break;
     case IsInf:
-      ret = ir.CreateFCmpOEQ(fp_unary(llvm::air::AIRBuilder::fabs, a(1)), ConstantFP::getInfinity(a(1)->getType()));
-      break;
     case IsFinite:
-      ret = ir.CreateFCmpOLT(fp_unary(llvm::air::AIRBuilder::fabs, a(1)), ConstantFP::getInfinity(a(1)->getType()));
-      break;
     case IsNormal: {
-      auto magnitude = fp_unary(llvm::air::AIRBuilder::fabs, a(1));
-      auto &semantics = a(1)->getType()->getFltSemantics();
-      ret = ir.CreateAnd(
-          ir.CreateFCmpOGE(magnitude, ConstantFP::get(a(1)->getType(), APFloat::getSmallestNormalized(semantics))),
-          ir.CreateFCmpOLT(magnitude, ConstantFP::getInfinity(a(1)->getType()))
-      );
+      using llvm::air::AIRBuilder;
+      const AIRBuilder::FPClass classes[] = {
+          AIRBuilder::FPClass::nan, AIRBuilder::FPClass::infinite, AIRBuilder::FPClass::finite,
+          AIRBuilder::FPClass::normal
+      };
+      ret = air.CreateIsFPClass(classes[op - IsNaN], a(1));
       break;
     }
     case Bfrev:
