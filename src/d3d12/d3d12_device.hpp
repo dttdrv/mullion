@@ -649,9 +649,11 @@ public:
   // whether its pixel shader has a variant of coarse pixels (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool coarse_shading = false;
 
+  // `Pipeline` for the pass's attachments: the render targets of `Mask`, whose views' formats are `Colors`, and the
+  // planes `DSVPlanar` of a depth stencil view of `DSVFormat`
   virtual WMT::RenderPipelineState RenderTargets(
-      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics = false,
-      bool Occluded = false, bool Coarse = false, WMTPixelFormat DSVFormat = WMTPixelFormatInvalid
+      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
+      WMTPixelFormat DSVFormat, const WMTPixelFormat (&Colors)[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]
   ) = 0;
   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
 };
