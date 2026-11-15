@@ -445,6 +445,9 @@ public:
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
+  // the SHA-1 of its serialized description, taken once: what names it in the keys of pipelines and of the shaders
+  // converted for it
+  Sha1Digest Digest;
   // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT, which a pipeline with stream output needs of it
   bool StreamOutput;
   uint32_t UploadQwords;

@@ -20,6 +20,16 @@ executable('dxilops', ['dxilops.cpp'], include_directories : llvm_include_path_d
 # the tests' own container hash against the hashes real shaders carry; it wants directories of them (MULLION_HASHED)
 test('host_dxbc_hash', executable('host_dxbc_hash', ['dxbchash.cpp'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host')
+# the bridge's shader store, which is Objective-C built as the bridge builds it
+test('host_shader_store',
+     executable('host_shader_store', ['shader_store.c', '../../src/winemetal/unix/cache.c'],
+                include_directories : [mullion_include_path, include_directories('../../src/winemetal', '../../src/airconv')],
+                c_args : ['-ObjC', '-w'],
+                # the native architecture reaches only C++ links (the project's link arguments)
+                link_args : ['-arch', native_compiler_arch, '-framework', 'Foundation', '-framework', 'Metal',
+                             '-lsqlite3'],
+                native : true),
+     suite : 'host', timeout : 120)
 test('host_diag_profile', find_program('python3', native : true), args : files('diag.py'), suite : 'host')
 test('host_mutate', find_program('python3', native : true), args : files('mutate.py'), suite : 'host')
 test('host_install', find_program('python3', native : true),
