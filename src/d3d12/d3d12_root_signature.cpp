@@ -589,13 +589,12 @@ public:
     NumStaticSamplers = desc.NumStaticSamplers;
     if (NumStaticSamplers) {
       for (unsigned i = 0; i < desc.NumStaticSamplers; i++) {
-        WMTSamplerInfo info;
-        PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, desc.pStaticSamplers[i]);
-
-        auto sampler = Sampler::createSampler(
-            device_->GetMTLDevice(), info, desc.pStaticSamplers[i].MipLODBias, nullptr,
-            SamplerReduction(desc.pStaticSamplers[i].Filter)
-        );
+        // a static sampler is the device's sampler of its description, as one in a heap is
+        MTLD3D12CachedSampler cached;
+        hr = GetSampler(device_, SamplerDescription(desc.pStaticSamplers[i]), cached);
+        if (FAILED(hr))
+          return hr;
+        auto &sampler = cached.sampler;
         static_samplers_encoded_.push_back(sampler->sampler_state_handle);
         static_samplers_encoded_.push_back(sampler->sampler_state_cube_handle);
         static_samplers_encoded_.push_back(sampler->metadata);
