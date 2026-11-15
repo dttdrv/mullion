@@ -201,7 +201,13 @@ public:
     if (!descriptors_.empty())
       VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
-      device_->UnregisterResidencyAndVA(buffer_->current());
+      // shaders read the heap by its address, which no pass binds: its buffer stays for the work in flight, as a
+      // buffer released in flight does (~MTLD3D12Buffer)
+      device_->UnregisterVA(buffer_->current());
+      EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(buffer_)] {
+        if (!buffer->current()->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(buffer->current()->buffer());
+      });
     } else {
       free(mapped_argument_buffer_);
     }
@@ -668,8 +674,13 @@ public:
   };
 
   ~MTLD3D12SamplerDescriptorHeapImpl() {
-     if (buffer_) {
-      device_->UnregisterResidencyAndVA(buffer_->current());
+    if (buffer_) {
+      // as the descriptor heap's (~MTLD3D12DescriptorHeapImpl)
+      device_->UnregisterVA(buffer_->current());
+      EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(buffer_)] {
+        if (!buffer->current()->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(buffer->current()->buffer());
+      });
     } else {
       free(mapped_argument_buffer_);
     }
