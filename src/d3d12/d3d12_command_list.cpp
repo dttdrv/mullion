@@ -1716,9 +1716,9 @@ public:
     bool strip = Strip(topology_);
     if (PassesAdjacency() || pso_graphics_->patches)
       return RenderTargets(pso_graphics_->TopologyPipeline(topology_, counting));
-    if (counting)
-      return RenderTargets(strip ? pso_graphics_->so_count_strip : pso_graphics_->so_count);
-    return RenderTargets(pso_graphics_->geometry_shader && strip ? pso_graphics_->pso_strip : pso_graphics_->pso);
+    if (pso_graphics_->geometry_shader && (strip || counting))
+      return RenderTargets(pso_graphics_->GeometryPipeline(strip, counting));
+    return RenderTargets(pso_graphics_->pso);
   }
 
   // whether the draw's pipeline is a mesh function alone, which runs the vertex shader in the mesh stage: a list of
