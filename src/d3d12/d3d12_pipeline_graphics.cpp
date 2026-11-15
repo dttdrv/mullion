@@ -681,6 +681,10 @@ protected:
   std::unordered_map<uint32_t, WMT::Reference<WMT::Function>> pixel_shaders_;
   // the targets the pixel shader blends itself (ShaderBlend)
   uint32_t blend_mask_ = 0;
+  // the formats of the description's render targets and depth stencil view, which a pass's views may differ from
+  // (RenderTargets)
+  WMTPixelFormat color_formats_[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+  WMTPixelFormat dsv_format_ = WMTPixelFormatInvalid;
 
   // a mesh pipeline is made whole: its specialization gives the fragment stage zeros for the mesh stage's
   // per-primitive outputs (d3d12_mesh)
@@ -1144,7 +1148,7 @@ public:
       // Windows accepts non-renderable formats as null slots (vkd3d-proton test_render_target_support_validation).
       if (!any_bit_set(device_->GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::Color))
         continue;
-      rt.pixel_format = format_desc.PixelFormat;
+      rt.pixel_format = color_formats_[i] = format_desc.PixelFormat;
       rtv_mask |= 1u << i;
 
       // an undeclared output leaves the target alone even with blending (D3D11.3 16.9.1)
@@ -1187,6 +1191,7 @@ public:
         return hr;
       }
       auto dsv_flags = dsv_mask = DepthStencilPlanarFlags(format_desc.PixelFormat);
+      dsv_format_ = format_desc.PixelFormat;
       if (dsv_flags & 1)
         info.depth_pixel_format = format_desc.PixelFormat;
       if (dsv_flags & 2)
@@ -2026,19 +2031,31 @@ public:
   WMT::RenderPipelineState
   RenderTargets(
       WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
-      WMTPixelFormat DSVFormat
+      WMTPixelFormat DSVFormat, const WMTPixelFormat (&Colors)[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]
   ) override {
     Mask &= rtv_mask;
     DSVPlanar &= dsv_mask;
     // a pipeline of any depth stencil format is made without one, which a pass without a view keeps
     bool any_format = dsv_any_format && DSVPlanar;
+    // D3D12 leaves drawing to a view of another format than the pipeline's undefined, and titles do it: a pipeline
+    // of R8G8B8A8_UNORM into an sRGB view of the target, or of one depth format over a view of another. a view decides
+    // how its texture is written, where Metal's pipeline does and must name the pass's formats, so the pass's
+    // pipeline takes the view's: for a depth stencil view, and for a render target view of the pipeline's format in
+    // its other encoding, sRGB or not, which the pixel shader's outputs and the blending fit as they are
+    bool other_dsv = DSVPlanar && !dsv_any_format && DSVFormat != dsv_format_;
+    uint32_t other_encoding = 0;
+    for (unsigned i = 0; i < std::size(Colors); i++) {
+      auto view = WMTPixelFormat(ORIGINAL_FORMAT(Colors[i])), own = WMTPixelFormat(ORIGINAL_FORMAT(color_formats_[i]));
+      if ((Mask & (1u << i)) && view != own && Forget_sRGB(view) == Forget_sRGB(own))
+        other_encoding |= 1u << i;
+    }
     Statistics &= pixel_shader || statistics_geometry_;
     Coarse &= pixel_shader && coarse_shading;
     // a pixel shader's discard of the depth bounds test takes its samples out of an occlusion query only before the
     // depth and stencil tests
     bool late = Occluded && depth_bounds_emulated && pixel_shader;
-    if (!Pipeline ||
-        (!Statistics && !late && !Coarse && Mask == rtv_mask && (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
+    if (!Pipeline || (!Statistics && !late && !Coarse && Mask == rtv_mask && !other_encoding && !other_dsv &&
+                      (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
       return Pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
     auto described = pipeline_descriptors_.find(Pipeline.handle);
@@ -2050,7 +2067,8 @@ public:
                (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
                (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3)) |
                (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4)) |
-               (uint64_t(any_format ? DSVFormat : WMTPixelFormatInvalid) << 32);
+               (other_encoding << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 5)) |
+               (uint64_t(any_format || other_dsv ? DSVFormat : WMTPixelFormatInvalid) << 32);
     auto found = descriptor.variants.find(key);
     if (found != descriptor.variants.end())
       return found->second;
@@ -2084,13 +2102,18 @@ public:
           for (unsigned i = 0; i < std::size(info.colors); i++)
             if (!(Mask & (1u << i)))
               info.colors[i] = {.pixel_format = WMTPixelFormatInvalid};
+            else if (other_encoding & (1u << i))
+              // in the channel order the pixel shader was made for
+              info.colors[i].pixel_format = WMTPixelFormat(
+                  (info.colors[i].pixel_format & WMTPixelFormatCustomSwizzle) | ORIGINAL_FORMAT(Colors[i])
+              );
           if (!(DSVPlanar & 1))
             info.depth_pixel_format = WMTPixelFormatInvalid;
-          else if (any_format)
+          else if (any_format || other_dsv)
             info.depth_pixel_format = DSVFormat;
           if (!(DSVPlanar & 2))
             info.stencil_pixel_format = WMTPixelFormatInvalid;
-          else if (any_format)
+          else if (any_format || other_dsv)
             info.stencil_pixel_format = DSVFormat;
           return MetalPipeline(info, error);
         },

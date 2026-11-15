@@ -1647,12 +1647,16 @@ public:
   RenderTargets(WMT::RenderPipelineState Pipeline) {
     auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
     uint32_t mask = 0;
+    WMTPixelFormat colors[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
     for (unsigned i = 0; i < std::size(pass->colors); i++)
-      if (pass->colors[i].attachment)
+      if (pass->colors[i].attachment) {
         mask |= 1u << i;
+        if (rtvs[i].Texture)
+          colors[i] = rtvs[i].Texture->pixelFormat(rtvs[i].View);
+      }
     return pso_graphics_->RenderTargets(
         Pipeline, mask, pass->dsv_planar_flags, !active_statistics_.empty(), !active_queries_.empty(), CoarseShading(),
-        dsv.Texture ? dsv.Texture->pixelFormat(dsv.View) : WMTPixelFormatInvalid
+        dsv.Texture ? dsv.Texture->pixelFormat(dsv.View) : WMTPixelFormatInvalid, colors
     );
   }
 
