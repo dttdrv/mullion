@@ -906,7 +906,7 @@ public:
   };
 
   std::tuple<uint64_t, uint64_t>
-  PopulateVertexBufferTable(uint32_t Count, bool Written = false) {
+  PopulateVertexBufferTable() {
     auto slot_mask = pso_graphics_ ? pso_graphics_->slot_mask : 0;
     if (!slot_mask)
       return {0, 0};
@@ -918,21 +918,19 @@ public:
     };
     auto stride = align(sizeof(VERTEX_BUFFER_ENTRY) * max_slot, 16);
 
-    auto [mapped, offset] = allocator_->AllocateGPUHeap(stride * Count, 16);
-    if (allocator_->records_ && !Written)
-      allocator_->RecordGPUHeap(mapped, stride * Count, "vertex buffer table");
+    auto [mapped, offset] = allocator_->AllocateGPUHeap(stride, 16);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(mapped, stride, "vertex buffer table");
 
-    for (unsigned i = 0; i < Count; i++) {
-      VERTEX_BUFFER_ENTRY *entries = (VERTEX_BUFFER_ENTRY *)(reinterpret_cast<char *>(mapped) + i * stride);
-      for (unsigned slot = 0, index = 0; slot < max_slot; slot++) {
-        if (!(slot_mask & (1 << slot)))
-          continue;
-        auto &state = vertex_buffers_[slot];
-        entries[index].buffer_handle = state.BufferLocation;
-        entries[index].stride = state.StrideInBytes;
-        entries[index++].length = state.SizeInBytes;
-      };
-    }
+    VERTEX_BUFFER_ENTRY *entries = (VERTEX_BUFFER_ENTRY *)mapped;
+    for (unsigned slot = 0, index = 0; slot < max_slot; slot++) {
+      if (!(slot_mask & (1 << slot)))
+        continue;
+      auto &state = vertex_buffers_[slot];
+      entries[index].buffer_handle = state.BufferLocation;
+      entries[index].stride = state.StrideInBytes;
+      entries[index++].length = state.SizeInBytes;
+    };
 
     return {offset, stride};
   }
@@ -1308,7 +1306,7 @@ public:
       EncodeBuffer(WMTRenderCommandSetFragmentBuffer, Offset, Index);
     };
     if (dirty_state_.test(DirtyState::VertexBuffer)) {
-      auto [Offset, Stride] = PopulateVertexBufferTable(1);
+      auto [Offset, Stride] = PopulateVertexBufferTable();
       // and the mesh stage, which runs the vertex shader where a list of triangles has it alone (MeshOnly)
       if (Stride && mesh) {
         EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
@@ -1959,18 +1957,19 @@ public:
   };
 
   uint64_t
-  EncodeRootArgument(
-      MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64], UINT Count = 1, bool Written = false
-  ) {
-    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t) * pRootSig->UploadQwords * Count, 64);
-    if (allocator_->records_ && !Written)
-      allocator_->RecordGPUHeap(Ptr, sizeof(uint64_t) * pRootSig->UploadQwords * Count, "root argument table");
-    for (unsigned i = 0; i < Count; i++)
-      memcpy(
-          reinterpret_cast<uint64_t *>(Ptr) + i * pRootSig->UploadQwords, pStaging,
-          pRootSig->UploadQwords * sizeof(uint64_t)
-      );
+  EncodeRootArgument(MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64]) {
+    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t) * pRootSig->UploadQwords, 64);
+    if (allocator_->records_)
+      allocator_->RecordGPUHeap(Ptr, sizeof(uint64_t) * pRootSig->UploadQwords, "root argument table");
+    memcpy(Ptr, pStaging, pRootSig->UploadQwords * sizeof(uint64_t));
     return Offset;
+  }
+
+  // room for the root arguments of each of `Count` commands of an ExecuteIndirect whose signature changes some: its
+  // resolver writes those of the commands it runs, on the GPU, so recording copies nothing for a command
+  uint64_t
+  ReserveRootArguments(MTLD3D12RootSignature *pRootSig, UINT Count) {
+    return std::get<1>(allocator_->AllocateGPUHeap(sizeof(uint64_t) * pRootSig->UploadQwords * Count, 64));
   }
 
   uint64_t
@@ -3903,7 +3902,9 @@ public:
       uint64_t root_arguments = 0, static_samplers = 0;
 
       if (sig->UpdateRootArguments) {
-        root_arguments = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_, MaxCommandCount, true);
+        cmd->rootsig_base = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_);
+        cmd->rootsig_base += allocator_->gpu_heap_buffer_address_;
+        root_arguments = ReserveRootArguments(rootsig_compute_.ptr(), MaxCommandCount);
         cmd->rootsig_qwords = root_arguments;
         cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
         cmd->rootsig_qwords_stride = rootsig_compute_->UploadQwords;
@@ -4070,20 +4071,27 @@ public:
     }
     if (!encode_binding)
       return;
-    // a command has root arguments or a vertex buffer table of its own where the signature changes them. the
-    // commands of a signature that does not read the list's one copy, a stride of nothing apart
-    cmd->rootsig_qwords = EncodeRootArgument(
-        rootsig_graphics_.ptr(), rootarg_graphics_staging_, sig->UpdateRootArguments ? MaxCommandCount : 1,
-        sig->UpdateRootArguments
-    );
+    // a command has root arguments or a vertex buffer table of its own where the signature changes them: room for
+    // each, which the resolver fills from the list's one copy for the commands it runs (rootsig_base, vertex_base).
+    // the commands of a signature that does not read the list's copy, a stride of nothing apart
+    cmd->rootsig_qwords = EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
     cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
-    cmd->rootsig_qwords_stride = sig->UpdateRootArguments ? rootsig_graphics_->UploadQwords : 0;
+    if (sig->UpdateRootArguments) {
+      cmd->rootsig_base = cmd->rootsig_qwords;
+      cmd->rootsig_qwords = ReserveRootArguments(rootsig_graphics_.ptr(), MaxCommandCount);
+      cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
+      cmd->rootsig_qwords_stride = rootsig_graphics_->UploadQwords;
+    }
     cmd->static_samplers = EncodeStaticSamplers(rootsig_graphics_.ptr());
     cmd->static_samplers += allocator_->gpu_heap_buffer_address_;
-    auto [VBOffset, VBStride] =
-        PopulateVertexBufferTable(sig->UpdateVertexBuffers ? MaxCommandCount : 1, sig->UpdateVertexBuffers);
+    auto [VBOffset, VBStride] = PopulateVertexBufferTable();
     cmd->vertex_buffer = allocator_->gpu_heap_buffer_address_ + VBOffset;
-    cmd->vertex_argbuf_stride = sig->UpdateVertexBuffers ? VBStride : 0;
+    if (sig->UpdateVertexBuffers && VBStride) {
+      cmd->vertex_base = cmd->vertex_buffer;
+      auto [tables, at] = allocator_->AllocateGPUHeap(VBStride * MaxCommandCount, 16);
+      cmd->vertex_buffer = allocator_->gpu_heap_buffer_address_ + at;
+      cmd->vertex_argbuf_stride = VBStride;
+    }
     ResetIndirectState(sig, false);
     if (!cmd->draws)
       return;

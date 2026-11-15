@@ -611,6 +611,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   // the resolver's last thread runs the extras an execution claims, and leaves the counts at zero for the next
   data->extras_claimed = data->extras_done = 0;
   data->draws = 0;
+  data->rootsig_base = data->vertex_base = 0;
   data->so_targets = data->so_scratch_size = data->so_invocations = data->so_lacked = 0;
   if (draws) {
     auto [records, at] = AllocateGPUHeap(MaxCount * sizeof(IndirectMeshDraw), alignof(IndirectMeshDraw));

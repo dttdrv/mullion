@@ -6,17 +6,19 @@
 // three commands each draw one point at a pixel of their own, taken from the vertex buffer in slot 0 at the command's
 // start vertex. the pixel holds a per-instance value from slot 1, and a root constant as the vertex shader, the pixel
 // shader and, where the pipeline has one, the geometry shader each read it. one signature only draws, so all three
-// commands read the list's slot 1; the other names slot 1, so each command reads its own. the root constant is the
-// list's in both, in every command and stage. pixels no command draws stay zero.
+// commands read the list's slot 1; another names slot 1, so each command reads its own. the root constant is the
+// list's in both, in every command and stage. a third signature sets the second of the root parameter's two
+// constants, which the vertex shader folds into what it writes: each command has its own, over the list's first
+// constant and the list's vertex buffers. pixels no command draws stay zero.
 #include "d3d12_test.hpp"
 
 static const char hlsl[] = R"hlsl(
-cbuffer C : register(b0) { uint base; };
+cbuffer C : register(b0) { uint base; uint own; };
 struct V { float4 p : SV_Position; nointerpolation uint n : N; };
 V vs(uint id : ID, uint extra : EXTRA) {
   V v;
   v.p = float4((float2(id % SIDE, id / SIDE) + 0.5) * float2(2, -2) / SIDE + float2(-1, 1), 0, 1);
-  v.n = extra | base << 8;
+  v.n = extra | (base ^ own) << 8;
   return v;
 }
 [maxvertexcount(1)] void gs(point V i[1], inout PointStream<V> o) {
@@ -34,8 +36,8 @@ main(int argc, char **argv) {
     printf("skipped: dxcompiler.dll not found\n");
     return 77;
   }
-  constexpr UINT side = 4, cells = side * side, commands = 3, base = 0x5a;
-  const UINT extras[commands] = {0x11, 0x22, 0x33};
+  constexpr UINT side = 4, cells = side * side, commands = 3, base = 0x5a, own = 4;
+  const UINT extras[commands] = {0x11, 0x22, 0x33}, owns[commands] = {1, 2, 3};
   const std::vector<std::string> defines = {"SIDE=" + std::to_string(side)};
   auto vs = compiler.compile(hlsl, "vs", "vs", defines), gs = compiler.compile(hlsl, "gs", "gs", defines),
        ps = compiler.compile(hlsl, "ps", "ps", defines);
@@ -44,7 +46,7 @@ main(int argc, char **argv) {
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER param{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
-  param.Constants = {0, 0, 1};
+  param.Constants = {0, 0, 2};
   auto rs = root_signature(
       device.Get(), {1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT}
   );
@@ -94,10 +96,15 @@ main(int argc, char **argv) {
     D3D12_VERTEX_BUFFER_VIEW view;
     D3D12_DRAW_ARGUMENTS draw;
   };
+  struct Constant {
+    UINT own;
+    D3D12_DRAW_ARGUMENTS draw;
+  };
   const UINT extras_at = cells * sizeof(UINT), plain_at = extras_at + sizeof(extras),
-             named_at = plain_at + commands * sizeof(D3D12_DRAW_ARGUMENTS);
+             named_at = plain_at + commands * sizeof(D3D12_DRAW_ARGUMENTS),
+             constant_at = named_at + commands * sizeof(Command);
   auto data = buffer(
-      device.Get(), D3D12_HEAP_TYPE_UPLOAD, named_at + commands * sizeof(Command), D3D12_RESOURCE_STATE_GENERIC_READ
+      device.Get(), D3D12_HEAP_TYPE_UPLOAD, constant_at + commands * sizeof(Constant), D3D12_RESOURCE_STATE_GENERIC_READ
   );
   if (!expect(readback && data, "buffers were not created"))
     return verdict();
@@ -112,6 +119,8 @@ main(int argc, char **argv) {
     const Command command{{address + extras_at + n * sizeof(UINT), sizeof(UINT), sizeof(UINT)}, draw};
     memcpy(mapped + plain_at + n * sizeof(draw), &draw, sizeof(draw));
     memcpy(mapped + named_at + n * sizeof(command), &command, sizeof(command));
+    const Constant constant{owns[n], draw};
+    memcpy(mapped + constant_at + n * sizeof(constant), &constant, sizeof(constant));
   }
   data->Unmap(0, nullptr);
   const D3D12_VERTEX_BUFFER_VIEW views[] = {
@@ -120,13 +129,27 @@ main(int argc, char **argv) {
   D3D12_INDIRECT_ARGUMENT_DESC arguments[] = {
       {D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW}, {D3D12_INDIRECT_ARGUMENT_TYPE_DRAW}
   };
-  arguments[0].VertexBuffer.Slot = 1;
-  const D3D12_COMMAND_SIGNATURE_DESC signature_descs[] = {
-      {sizeof(D3D12_DRAW_ARGUMENTS), 1, arguments + 1}, {sizeof(Command), 2, arguments}
+  D3D12_INDIRECT_ARGUMENT_DESC constants[] = {
+      {D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT}, {D3D12_INDIRECT_ARGUMENT_TYPE_DRAW}
   };
-  ComPtr<ID3D12CommandSignature> signatures[2];
+  arguments[0].VertexBuffer.Slot = 1;
+  constants[0].Constant = {0, 1, 1};
+  // what a signature's commands set, their description, and where they are
+  enum { Plain, Named, Constants };
+  const struct {
+    const char *sets;
+    D3D12_COMMAND_SIGNATURE_DESC desc;
+    UINT at;
+  } kinds[] = {
+      {"only draws", {sizeof(D3D12_DRAW_ARGUMENTS), 1, arguments + 1}, plain_at},
+      {"names vertex buffer slot 1", {sizeof(Command), 2, arguments}, named_at},
+      {"sets a root constant", {sizeof(Constant), 2, constants}, constant_at}
+  };
+  ComPtr<ID3D12CommandSignature> signatures[std::size(kinds)];
   for (UINT i = 0; i < std::size(signatures); i++)
-    CHECK(device->CreateCommandSignature(&signature_descs[i], nullptr, IID_PPV_ARGS(&signatures[i])));
+    CHECK(device->CreateCommandSignature(
+        &kinds[i].desc, i == Constants ? rs.Get() : nullptr, IID_PPV_ARGS(&signatures[i])
+    ));
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
@@ -138,18 +161,16 @@ main(int argc, char **argv) {
   CHECK(list->Close());
 
   for (UINT geometry = 0; geometry < 2; geometry++)
-    for (UINT named = 0; named < 2; named++) {
-      step(
-          "%s pipeline, signature that %s", geometry ? "geometry" : "ordinary",
-          named ? "names vertex buffer slot 1" : "only draws"
-      );
+    for (UINT kind = 0; kind < std::size(kinds); kind++) {
+      step("%s pipeline, signature that %s", geometry ? "geometry" : "ordinary", kinds[kind].sets);
       CHECK(forget(readback.Get()));
       CHECK(allocator->Reset());
       CHECK(list->Reset(allocator.Get(), pipelines[geometry].Get()));
       const float zero[4] = {};
       list->ClearRenderTargetView(rtv, zero, 0, nullptr);
       list->SetGraphicsRootSignature(rs.Get());
-      list->SetGraphicsRoot32BitConstant(0, base, 0);
+      const UINT root[] = {base, own};
+      list->SetGraphicsRoot32BitConstants(0, UINT(std::size(root)), root, 0);
       list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
       D3D12_VIEWPORT viewport{0, 0, float(side), float(side), 0, 1};
       D3D12_RECT scissor{0, 0, LONG(side), LONG(side)};
@@ -157,7 +178,7 @@ main(int argc, char **argv) {
       list->RSSetScissorRects(1, &scissor);
       list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
       list->IASetVertexBuffers(0, UINT(std::size(views)), views);
-      list->ExecuteIndirect(signatures[named].Get(), commands, data.Get(), named ? named_at : plain_at, nullptr, 0);
+      list->ExecuteIndirect(signatures[kind].Get(), commands, data.Get(), kinds[kind].at, nullptr, 0);
       transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
       D3D12_TEXTURE_COPY_LOCATION from{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
           into{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
@@ -173,7 +194,9 @@ main(int argc, char **argv) {
             &got, pixels + footprint.Offset + (n / side) * footprint.Footprint.RowPitch + (n % side) * sizeof(UINT),
             sizeof(got)
         );
-        UINT want = n < commands ? extras[named ? n : 0] | base << 8 | base << 16 | (geometry ? base << 24 : 0) : 0;
+        UINT want = n < commands ? extras[kind == Named ? n : 0] | (base ^ (kind == Constants ? owns[n] : own)) << 8 |
+                                       base << 16 | (geometry ? base << 24 : 0)
+                                 : 0;
         expect(got == want, "pixel %u is %08x, expected %08x", n, got, want);
       }
       readback->Unmap(0, nullptr);
