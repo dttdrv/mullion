@@ -228,6 +228,19 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     dirty_state_.set(dirty);
   }
 
+  // a root constant buffer view of address 0 is a null view, and one the application has not set since the root
+  // signature was is undefined to read: both read the device's buffer of zeros, as a null view in a descriptor heap
+  // does. root SRVs and UAVs keep address 0: a shader finds a null acceleration structure by it, and a UAV's writes
+  // would land in the zeros every null view reads
+  void
+  NullRootViews(MTLD3D12RootSignature *rootsig, uint64_t *staging) {
+    for (uint32_t i = 0; i < rootsig->ParameterSlots; i++) {
+      auto &slot = staging[rootsig->SlotQwordOffsets[i]];
+      if (rootsig->SlotTypes[i] == D3D12_ROOT_PARAMETER_TYPE_CBV && !slot)
+        slot = device_->GetNullBuffer();
+    }
+  }
+
   FLOAT blend_factor_[4];
   UINT8 stencil_ref_;
   UINT8 back_stencil_ref_;
@@ -2949,6 +2962,7 @@ public:
       rootsig_compute_ = static_cast<MTLD3D12RootSignature *>(pRootSignature);
       assert(rootsig_compute_->UploadQwords <= std::size(rootarg_compute_staging_));
       WriteHeapArguments(rootsig_compute_.ptr(), rootarg_compute_staging_, DirtyState::ComputeRootArguments);
+      NullRootViews(rootsig_compute_.ptr(), rootarg_compute_staging_);
     } else {
       rootsig_compute_ = nullptr;
     }
@@ -2965,6 +2979,7 @@ public:
       rootsig_graphics_ = static_cast<MTLD3D12RootSignature *>(pRootSignature);
       assert(rootsig_graphics_->UploadQwords <= std::size(rootarg_graphics_staging_));
       WriteHeapArguments(rootsig_graphics_.ptr(), rootarg_graphics_staging_, DirtyState::GraphicsRootArguments);
+      NullRootViews(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
     } else {
       rootsig_graphics_ = nullptr;
     }
@@ -3041,14 +3056,20 @@ public:
   void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
     if (Bundled() && Record([=](auto *l) { l->SetComputeRootConstantBufferView(Index, VA); }))
       return;
-    SetRootQword(rootsig_compute_.ptr(), rootarg_compute_staging_, DirtyState::ComputeRootArguments, Index, VA);
+    SetRootQword(
+        rootsig_compute_.ptr(), rootarg_compute_staging_, DirtyState::ComputeRootArguments, Index,
+        VA ? VA : device_->GetNullBuffer()
+    );
   };
 
   void STDMETHODCALLTYPE
   SetGraphicsRootConstantBufferView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
     if (Bundled() && Record([=](auto *l) { l->SetGraphicsRootConstantBufferView(Index, VA); }))
       return;
-    SetRootQword(rootsig_graphics_.ptr(), rootarg_graphics_staging_, DirtyState::GraphicsRootArguments, Index, VA);
+    SetRootQword(
+        rootsig_graphics_.ptr(), rootarg_graphics_staging_, DirtyState::GraphicsRootArguments, Index,
+        VA ? VA : device_->GetNullBuffer()
+    );
   };
 
   void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
@@ -4189,6 +4210,8 @@ public:
     auto rootargs = compute ? rootarg_compute_staging_ : rootarg_graphics_staging_;
     for (auto [offset, count] : sig->ResetRootDwords)
       std::fill_n(reinterpret_cast<uint32_t *>(rootargs) + offset, count, 0u);
+    if (auto rootsig = compute ? rootsig_compute_.ptr() : rootsig_graphics_.ptr())
+      NullRootViews(rootsig, rootargs);
     if (compute) {
       dirty_state_.set(DirtyState::ComputeRootArguments);
       return;
