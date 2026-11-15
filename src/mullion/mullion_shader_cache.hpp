@@ -3,8 +3,12 @@
 #include "thread.hpp"
 #include "airconv_public.h"
 #include "mullion_format.hpp"
+#include "sha1/sha1_util.hpp"
+#include <shared_mutex>
 #include <span>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace mullion {
 
@@ -43,6 +47,16 @@ PixelShaderOutputFormats(
 // where a program's caches are, in the user's cache directory when relative (the bridge's resolve_cache_dir): none
 // with MULLION_SHADER_CACHE=0
 std::string ShaderCacheDirectory();
+
+// what SM50Initialize reports of a shader, which a pipeline reads before any of its functions is converted
+struct ShaderReflection {
+  MTL_SHADER_REFLECTION reflection{};
+  // its constant buffers' arguments, then its other arguments (SM50GetArgumentsInfo)
+  std::vector<MTL_SM50_SHADER_ARGUMENT> arguments;
+};
+
+// that of the shader SM50Initialize made, which reported `reflection`
+ShaderReflection ReadShaderReflection(sm50_shader_t shader, const MTL_SHADER_REFLECTION &reflection);
 
 class ShaderCache {
 public:
@@ -92,10 +106,21 @@ public:
     return {scache_reader_mutex_, scache_reader_};
   }
 
+  // the reflection of the shader with this SHA-1, as an earlier pipeline or an earlier process stored it: with it and
+  // the shader's converted functions, a pipeline is made without its bytecode being parsed at all. false when there
+  // is none, and when what is stored is not a whole record. it is kept in the cache's table, which belongs to one
+  // AIRCONV_VERSION: a change to what SM50Initialize reports raises that version
+  bool getReflection(const Sha1Digest &shader, ShaderReflection &reflection);
+  void setReflection(const Sha1Digest &shader, const ShaderReflection &reflection);
+
   ShaderCache(WMTMetalVersion metal_version);
   ShaderCache(const ShaderCache &copy) = delete;
 
 private:
+  // those read or stored in this process
+  std::shared_mutex reflections_mutex_;
+  std::unordered_map<Sha1Digest, ShaderReflection> reflections_;
+
   WMT::Reference<WMT::CacheWriter> scache_writer_;
   mullion::mutex scache_writer_mutex_;
 
