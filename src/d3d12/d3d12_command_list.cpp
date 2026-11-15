@@ -3610,6 +3610,10 @@ public:
 
   void STDMETHODCALLTYPE
   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    // a bundle's query is the calling list's: it counts that list's draws, the bundle's among them
+    if (Bundled() &&
+        Record([=, heap = Com<ID3D12QueryHeap>(pHeap)](auto *l) { l->BeginQuery(heap.ptr(), Type, Index); }))
+      return;
     OrderingPoint();
     // pipeline statistics count the draws and dispatches captured from here
     if (Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS || Type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS1) {
@@ -3651,6 +3655,8 @@ public:
 
   void STDMETHODCALLTYPE
   EndQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    if (Bundled() && Record([=, heap = Com<ID3D12QueryHeap>(pHeap)](auto *l) { l->EndQuery(heap.ptr(), Type, Index); }))
+      return;
     OrderingPoint();
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
     if (Type >= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0 && Type <= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3) {
