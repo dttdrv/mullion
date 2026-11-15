@@ -36,7 +36,7 @@ TemporalScaler::TemporalScaler(WMT::Device device, const WMTFXTemporalScalerInfo
     return metal4 ? device.newTemporalScaler4(of) : device.newTemporalScaler(of);
   };
   // metalfx.jitteredMotionVectors says so for an application that does not: one whose motion vectors carry the jitter
-  // and whose DLSS flags leave NVSDK_NGX_DLSS_Feature_Flags_MVJittered out (Overwatch 2), which shakes what moves
+  // and whose DLSS flags leave NVSDK_NGX_DLSS_Feature_Flags_MVJittered out, which shakes what moves. none is known
   static const bool always = Config::getInstance().getOption<bool>("metalfx.jitteredMotionVectors", false);
   auto asked = info;
   asked.jittered_motion_vectors |= always;
