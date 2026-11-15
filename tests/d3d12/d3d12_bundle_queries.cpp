@@ -77,23 +77,31 @@ main(int argc, char **argv) {
   const auto type = D3D12_QUERY_TYPE_OCCLUSION;
   ComPtr<ID3D12CommandAllocator> bundle_allocator;
   CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&bundle_allocator)));
-  ComPtr<ID3D12GraphicsCommandList> bundles[3];
-  for (auto &bundle : bundles) {
-    CHECK(device->CreateCommandList(
-        0, D3D12_COMMAND_LIST_TYPE_BUNDLE, bundle_allocator.Get(), pso.Get(), IID_PPV_ARGS(&bundle)
-    ));
-    bundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-  }
-  auto &whole = bundles[0], &begins = bundles[1], &ends = bundles[2];
-  whole->BeginQuery(query_heap.Get(), type, 0);
-  whole->DrawInstanced(3, 1, 0, 0);
-  whole->EndQuery(query_heap.Get(), type, 0);
-  begins->BeginQuery(query_heap.Get(), type, 1);
-  begins->DrawInstanced(3, 1, 0, 0);
-  ends->DrawInstanced(3, 1, 0, 0);
-  ends->EndQuery(query_heap.Get(), type, 2);
-  for (auto &bundle : bundles)
-    CHECK(bundle->Close());
+  // an allocator has one list recording at a time, so each bundle is closed before the next is made
+  ComPtr<ID3D12GraphicsCommandList> whole, begins, ends;
+  auto bundle = [&](ComPtr<ID3D12GraphicsCommandList> &made, auto record) -> HRESULT {
+    HRESULT hr = device->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_BUNDLE, bundle_allocator.Get(), pso.Get(), IID_PPV_ARGS(&made)
+    );
+    if (FAILED(hr))
+      return hr;
+    made->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    record(made.Get());
+    return made->Close();
+  };
+  CHECK(bundle(whole, [&](ID3D12GraphicsCommandList *b) {
+    b->BeginQuery(query_heap.Get(), type, 0);
+    b->DrawInstanced(3, 1, 0, 0);
+    b->EndQuery(query_heap.Get(), type, 0);
+  }));
+  CHECK(bundle(begins, [&](ID3D12GraphicsCommandList *b) {
+    b->BeginQuery(query_heap.Get(), type, 1);
+    b->DrawInstanced(3, 1, 0, 0);
+  }));
+  CHECK(bundle(ends, [&](ID3D12GraphicsCommandList *b) {
+    b->DrawInstanced(3, 1, 0, 0);
+    b->EndQuery(query_heap.Get(), type, 2);
+  }));
 
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12CommandAllocator> allocator;
