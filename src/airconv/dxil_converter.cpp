@@ -213,6 +213,8 @@ enum Op : uint32_t {
   RayQuery_RayFlags = 195,
   RayQuery_CandidateInstanceContributionToHitGroupIndex = 214,
   RayQuery_CommittedInstanceContributionToHitGroupIndex = 215,
+  StartVertexLocation = 256,
+  StartInstanceLocation = 257,
   AllocateRayQuery2 = 258,
   Dot2AddHalf = 162,
   Dot4AddI8Packed = 163,
@@ -4182,6 +4184,19 @@ convert_dxil(
       // pipelines have one view: view instancing is unsupported
       ret = ir.getInt32(0);
       break;
+    case StartVertexLocation:
+    case StartInstanceLocation: {
+      // SM 6.8, "Extended Command Information": SV_StartVertexLocation is DrawInstanced's StartVertexLocation or
+      // DrawIndexedInstanced's BaseVertexLocation, and SV_StartInstanceLocation the StartInstanceLocation of either:
+      // what the draw adds to SV_VertexID and SV_InstanceID, which start at zero, to find a vertex's data
+      // https://microsoft.github.io/hlsl-specs/proposals/0015-extended-command-info/
+      ret = op == StartVertexLocation ? ctx.resource.base_vertex_id : ctx.resource.base_instance_id;
+      if (!ret)
+        return make_error<UnsupportedFeature>(
+            "a draw's start locations are read in a stage that is not a vertex shader"
+        );
+      break;
+    }
     case IsHelperLane:
       ret =
           ctx.shader_type == D3D10_SB_PIXEL_SHADER ? simd("simd_is_helper_thread", ir.getInt1Ty(), {}) : ir.getFalse();
