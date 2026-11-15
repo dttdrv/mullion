@@ -24,7 +24,6 @@
 #include "mullion_sampler.hpp"
 #include "log/log.hpp"
 #include "log/trace.hpp"
-#include "util_env.hpp"
 #include <bit>
 #include <set>
 
@@ -751,29 +750,18 @@ public:
       return FAIL(E_INVALIDARG);
     if (Index >= samplers_.size())
       return FAIL(E_INVALIDARG);
-  
-    WMTSamplerInfo info;
-    bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-    // MULLION_AIRCONV_SKIP=custom-border keeps pipelines without the custom border path, so such a sampler reads a
-    // border Metal has (the skip is in the shader cache's key)
-    static const bool borders = env::getEnvVar("MULLION_AIRCONV_SKIP").find("custom-border") == std::string::npos;
-    if (custom && borders)
-      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
-    auto sampler = Sampler::createSampler(
-        device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
-        SamplerReduction(pDesc->Filter)
-    );
-    // Metal made no sampler state: the descriptor keeps the sampler it had
-    if (sampler == nullptr)
-      return FAIL(E_OUTOFMEMORY);
 
-    bool minmax =
-        sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1);
-    if (minmax)
-      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+    MTLD3D12CachedSampler cached;
+    HRESULT hr = GetSampler(device_, *pDesc, cached);
+    // Metal made no sampler state: the descriptor keeps the sampler it had
+    if (FAILED(hr))
+      return hr;
+    auto &sampler = cached.sampler;
+    if (cached.emulations & ~device_->sampler_emulations)
+      device_->sampler_emulations |= cached.emulations;
     if (trace::On(trace::Shader) &&
-        (custom || minmax || (D3D12_DECODE_IS_ANISOTROPIC_FILTER(pDesc->Filter) && pDesc->MipLODBias != 0)))
-      TraceSampler(*pDesc, custom);
+        (cached.emulations || (D3D12_DECODE_IS_ANISOTROPIC_FILTER(pDesc->Filter) && pDesc->MipLODBias != 0)))
+      TraceSampler(*pDesc, cached.emulations & SM50_SHADER_FLAG_NO_CUSTOM_BORDER);
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
       auto &gpu_storage = mapped_argument_buffer_[Index];
