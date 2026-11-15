@@ -804,6 +804,8 @@ protected:
     WMT::Reference<WMT::Function> ps;
     D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip_cut;
     uint32_t primitive; // D3D10_SB_PRIMITIVE of the topology type
+    // without a geometry shader, the mesh stage passes the vertex shader's primitives on to the rasterizer
+    bool pass_through;
     bool clip_distance_varyings, cull_distance_varyings;
     bool quad_lines, barycentrics;
     // conservative rasterization, of the hull of a triangle's pixels where it can, and how the pixel shader
@@ -817,6 +819,12 @@ protected:
   mullion::mutex topology_mutex_;
   // by topology and stream output's counting pass
   std::unordered_map<uint32_t, WMT::Reference<WMT::RenderPipelineState>> topology_variants_;
+  // a geometry pipeline's variants (GeometryPipeline) by [strip][counting], but for `pso`, and which of them were
+  // attempted: one that could not be made is not made again for every draw
+  WMT::Reference<WMT::RenderPipelineState> geometry_variants_[2][2];
+  bool geometry_attempted_[2][2] = {};
+  // whether its primitives come in strips at all: points do not
+  bool geometry_strips_ = false;
 
   static SM50_SHADER_COMPILATION_ARGUMENT_DATA *
   RootSignature(
@@ -927,7 +935,9 @@ protected:
     // a pipeline statistics query's variant counts in the geometry shader as well
     std::function<WMT::Reference<WMT::Function>()> statistics;
     if (GS.pShaderBytecode && !counting) {
-      statistics_geometry_ = true;
+      // the list's variant, made with the pipeline, has set it before one made at a draw would
+      if (!statistics_geometry_)
+        statistics_geometry_ = true;
       statistics = [this, inputs, strip, primitive, pass_through, single] {
         auto &in = *inputs;
         D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()}, GS{in.gs.data(), in.gs.size()};
@@ -1112,6 +1122,28 @@ public:
                                                             : D3D_PRIMITIVE_TRIANGLE_ADJ;
       // patches only stream out: nothing rasterizes them without a tessellator
       variant = GeometryVariant(topology_inputs_, shader_vs, no_gs, {}, strip, counting, primitive, !patch, hr);
+      if (variant && device_->NamesPasses())
+        device_->PipelineMade(name, "graphics", start);
+    }
+    return variant;
+  }
+
+  WMT::RenderPipelineState
+  GeometryPipeline(bool strip, bool counting) final {
+    if (strip && !geometry_strips_)
+      return {};
+    std::lock_guard<mullion::mutex> lock(topology_mutex_);
+    auto &variant = geometry_variants_[strip][counting];
+    if (!variant && !geometry_attempted_[strip][counting] && topology_inputs_) {
+      geometry_attempted_[strip][counting] = true;
+      auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+      auto &in = *topology_inputs_;
+      HRESULT hr;
+      auto GS = in.gs.empty() ? D3D12_SHADER_BYTECODE{} : D3D12_SHADER_BYTECODE{in.gs.data(), in.gs.size()};
+      variant = GeometryVariant(
+          topology_inputs_, shader_vs, shader_gs, GS, strip, counting, in.primitive, in.pass_through, hr,
+          strip ? so_single_strip : so_single
+      );
       if (variant && device_->NamesPasses())
         device_->PipelineMade(name, "graphics", start);
     }
@@ -1776,6 +1808,7 @@ public:
       in->barycentrics = ps_func && ref_ps.PixelShader.Barycentrics;
       in->strip_cut = pDesc->IBStripCutValue;
       in->primitive = pDesc->PrimitiveTopologyType;
+      in->pass_through = pass_through;
       in->conservative = conservative;
       in->conservative_hull = conservative_hull;
       in->conservative_inner = ps_func && ref_ps.PixelShader.InnerCoverage;
@@ -1844,7 +1877,9 @@ public:
         mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
       }
     } else if (geometry_shader) {
-      // a strip's primitives share vertices, so strips and lists each have their pipeline
+      // a strip's primitives share vertices, so strips and lists each have their pipeline, and so has stream output's
+      // counting pass of each. those a list draws with are made here; a strip's are made when a draw first needs them
+      // (GeometryPipeline), as each is two conversions and a Metal pipeline, and most pipelines never draw a strip
       auto inputs = geometry_inputs();
       if (!inputs)
         return FAIL(E_FAIL);
@@ -1870,8 +1905,8 @@ public:
         );
         return SUCCEEDED(hr);
       };
-      bool strips = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
-                              : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+      geometry_strips_ = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
+                                                         : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
       // lists of triangles a vertex shader's cull distances pass through: a mesh function alone runs the vertex shader
       // and passes them on, with no object stage before it, which costs about as much as the triangles themselves
       // (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only). strips keep the object stage, as do stream output,
@@ -1882,15 +1917,15 @@ public:
                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
                   !conservative && !quad_lines;
       mesh_reads_root_arguments |= mesh_only;
-      if (!patches && (!variant(pso, false, false, mesh_only) || (strips && !variant(pso_strip, true))))
+      if (!patches && !variant(pso, false, false, mesh_only))
         return hr;
       // a one-pass variant has no counting pass
-      if (!patches && stream_output &&
-          ((!so_single && !variant(so_count, false, true)) ||
-           (strips && !so_single_strip && !variant(so_count_strip, true, true))))
-        return hr;
-      if (adjacency || patches)
-        topology_inputs_ = inputs;
+      if (!patches && stream_output && !so_single) {
+        geometry_attempted_[false][true] = true;
+        if (!variant(geometry_variants_[false][true], false, true))
+          return hr;
+      }
+      topology_inputs_ = inputs;
       if (!later.empty()) {
         deferred = std::make_shared<DeferredPipeline>([jobs = std::move(later)] {
           for (auto &job : jobs)

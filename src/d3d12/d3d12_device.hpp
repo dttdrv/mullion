@@ -559,7 +559,7 @@ public:
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
-  // in `pso` for list topologies and in `pso_strip` for strips (none for points)
+  // in `pso` for list topologies and in a variant of its own for strips (GeometryPipeline; none for points)
   bool geometry_shader = false;
   // its `pso` is a mesh function alone that runs the vertex shader and passes a list of triangles on, culling them by
   // their cull distances, with no object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
@@ -572,14 +572,17 @@ public:
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
   bool shader_blend = false;
-  WMT::Reference<WMT::RenderPipelineState> pso_strip;
   // the vertex shader's output registers, which size a geometry pipeline's object threadgroups (get_gs_vertex_count)
   uint32_t vertex_registers = 0;
-  // with stream output, the pipelines of its counting pass, as `pso` and `pso_strip` (airconv_public.h,
+  // with stream output, its counting pass has pipelines of its own, for lists and for strips (airconv_public.h,
   // SM50_STREAM_OUTPUT_TARGETS)
   bool stream_output = false;
-  WMT::Reference<WMT::RenderPipelineState> so_count, so_count_strip;
-  // whether `pso` and `pso_strip` stream out in one pass, without their counting pass, after their filled sizes are
+  // a geometry pipeline's Metal pipeline for strips (`strip`), and for stream output's counting pass of lists or of
+  // strips (`counting`); for lists that draw it is `pso`. a list's are made with the pipeline, as the first draw is
+  // taken to be of a list, and a strip's when a draw first needs them, since many pipelines draw none. null when it
+  // cannot be made
+  virtual WMT::RenderPipelineState GeometryPipeline(bool strip, bool counting) = 0;
+  // whether lists and strips stream out in one pass, without their counting pass, after their filled sizes are
   // copied (SM50StreamOutputSinglePass); and whether the pipeline's draws rasterize nothing, stream output to no
   // rasterized stream (D3D11.3 14.1), so that a pass without attachments they begin covers no pixels.
   // MULLION_D3D12_FAST_STREAM_OUTPUT=0 turns both off
