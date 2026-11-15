@@ -822,6 +822,8 @@ public:
     predication_region_ = nullptr;
     left_for_later_ = false;
     events_.clear();
+    // an error belongs to the recording it happened in: Close reported it, and the list records again from here
+    recording_error_ = S_OK;
 
     encoder_count = std::numeric_limits<size_t>::max();
     return allocator_->StartRecord(&entry);
@@ -894,7 +896,7 @@ public:
   Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState) {
     if (encoder_count == std::numeric_limits<size_t>::max())
       return FAIL(E_FAIL);
-    return FAILED(recording_error_) ? recording_error_ : Initialize(pAllocator, pInitialState);
+    return Initialize(pAllocator, pInitialState);
   };
 
   void STDMETHODCALLTYPE
