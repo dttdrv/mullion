@@ -15,8 +15,8 @@ getGlobalShaderFlag(MTLD3D11Device *pDevice) {
   static std::once_flag get_shader_flag_once;
   std::call_once(get_shader_flag_once, [=]() {
     shader_flag = GPUShaderFlags(pDevice->GetMullionDevice().device());
-    if (Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", false))
-      shader_flag |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
+    if (!Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", true))
+      shader_flag = SM50_SHADER_FLAG(shader_flag & ~SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO);
     if (Config::getInstance().getOption<bool>("d3d11.defuseFma", false))
       shader_flag |= SM50_SHADER_FLAG_DEFUSE_FMA;
   });

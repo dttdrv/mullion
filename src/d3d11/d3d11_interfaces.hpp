@@ -19,6 +19,8 @@ struct MTL_TEMPORAL_UPSCALE_D3D11_DESC {
   ID3D11Resource *ExposureTexture;
   FLOAT JitterOffsetX;
   FLOAT JitterOffsetY;
+  // the motion vectors were made with the jittered projections (NVSDK_NGX_DLSS_Feature_Flags_MVJittered)
+  BOOL MotionVectorJittered;
 };
 
 DEFINE_COM_INTERFACE("43ace3ce-1956-448b-a4eb-aee68bdeb283",

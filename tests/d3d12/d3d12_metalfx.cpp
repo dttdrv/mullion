@@ -7,7 +7,9 @@
 // create them; DLSS takes motion vectors as floats only, so normalized ones are refused rather than misread. motion
 // vectors at the output resolution (DLSS without NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) are taken too: frames of one
 // color, the second not in reset, come out that color with them, and a square that moves between two frames comes out
-// the same image whether its motion is given at the input resolution or, as the same motion, at the output's
+// the same image whether its motion is given at the input resolution or, as the same motion, at the output's.
+// motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
+// one color come out that color with them
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -162,9 +164,14 @@ main(int argc, char **argv) {
   };
   // through the extension, as the NGX bridge records it
   auto frame = [&](const BYTE *a, const BYTE *b, UINT square, BOOL reset, IMTLD3D12Upscaler *&scaler,
-                   bool at_output = false, const Moved *moved = nullptr) {
+                   bool at_output = false, const Moved *moved = nullptr, const float *jitter = nullptr) {
     auto record = [&] {
       MTL_TEMPORAL_UPSCALE_D3D12_DESC desc{};
+      if (jitter) {
+        desc.MotionVectorJittered = TRUE;
+        desc.JitterOffsetX = jitter[0];
+        desc.JitterOffsetY = jitter[1];
+      }
       desc.InReset = reset;
       desc.Color = color.resource.Get();
       desc.Depth = depth.resource.Get();
@@ -238,6 +245,18 @@ main(int argc, char **argv) {
   }
   if (display)
     display->Destroy();
+
+  // motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered): nothing moves and the
+  // image is one color, so it is that color whatever jitter is taken out of the vectors
+  IMTLD3D12Upscaler *jittered = nullptr;
+  const float jitters[][2] = {{0.25f, -0.25f}, {-0.375f, 0.125f}};
+  for (UINT i = 0; i < 2; i++) {
+    step("a frame of one color with jittered motion vectors, %s", i ? "not in reset" : "in reset");
+    if (!uniform(frame(frames[0], frames[0], 0, !i, jittered, false, nullptr, jitters[i]), frames[0]))
+      return verdict();
+  }
+  if (jittered)
+    jittered->Destroy();
 
   // a light square on dark moves `by` input pixels between a frame in reset and the next. its motion at the output
   // resolution is `scale` times its motion at the input's, in every output pixel of the square: the same motion, so

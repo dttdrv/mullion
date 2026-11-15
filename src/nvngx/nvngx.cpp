@@ -124,6 +124,7 @@ NVSDK_NGX_D3D11_EvaluateFeature(
     desc.DepthReversed = bool(dlss->flag & NVNGX_DLSS_FLAG_DEPTH_INVERTED);
     desc.AutoExposure = bool(dlss->flag & NVNGX_DLSS_FLAG_AUTO_EXPOSURE);
     desc.MotionVectorInDisplayRes = !bool(dlss->flag & NVNGX_DLSS_FLAG_MV_LOWRES);
+    desc.MotionVectorJittered = bool(dlss->flag & NVNGX_DLSS_FLAG_MV_JITTERED);
 
     if (NVNGX_FAILED(parameters->Get(NVNGX_Parameter_Jitter_Offset_X, &desc.JitterOffsetX)))
       desc.JitterOffsetX = 0;
