@@ -401,7 +401,15 @@ public:
 
   Value *CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant = true);
 
-  Value *CreateIsNaN(Value *Operand);
+  // the classes of IEEE 754 that DXIL's IsNaN, IsInf, IsFinite and IsNormal ask for (DXIL.rst, "Unary operations").
+  // each is read from the value's bits, of any width, which no floating-point setting of a compiler can fold as it
+  // can a comparison with an infinity
+  enum class FPClass { nan, infinite, finite, normal };
+  Value *CreateIsFPClass(FPClass Class, Value *Operand);
+  Value *
+  CreateIsNaN(Value *Operand) {
+    return CreateIsFPClass(FPClass::nan, Operand);
+  }
 
   enum FPBinOp {
     fmax,
