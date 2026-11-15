@@ -1830,12 +1830,24 @@ public:
       mesh_info.rasterization_enabled = true;
       // the most a payload may be (D3D12 mesh shader specification, "Amplification shader output payload")
       mesh_info.payload_memory_length = 16384;
-      if (!(pso = CreatePipeline(mesh_info, err))) {
+      // DispatchMesh splits a grid by what the pipeline itself says one may have
+      if (DeferredPipeline::Enabled()) {
+        // Metal's compile of it on a compile thread, with its functions, as a plain pipeline's below
+        deferred = std::make_shared<DeferredPipeline>([self = this, mesh_info, as_func, ms_func, ps_func]() {
+          WMT::Reference<WMT::Error> error;
+          if (!(self->pso = self->CreatePipeline(mesh_info, error)))
+            ERR("Failed to create mesh shader PSO of shaders ", self->name, ": ", error.description().getUTF8String());
+          else
+            self->mesh_grid_limit = self->pso.maxTotalThreadgroupsPerMeshGrid();
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = CreatePipeline(mesh_info, err))) {
         ERR("Failed to create mesh shader PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({AS, MS, pDesc->PS});
         return E_FAIL;
+      } else {
+        mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
       }
-      mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
     } else if (geometry_shader) {
       // a strip's primitives share vertices, so strips and lists each have their pipeline
       auto inputs = geometry_inputs();
@@ -1992,7 +2004,15 @@ public:
       if (!vshs_func)
         return FAIL(E_INVALIDARG);
       mesh_info.object_function = vshs_func.handle;
-      if (!(pso = CreatePipeline(mesh_info, err))) {
+      if (DeferredPipeline::Enabled()) {
+        // Metal's compile of it on a compile thread, with its functions, as a plain pipeline's above
+        deferred = std::make_shared<DeferredPipeline>([self = this, mesh_info, vshs_func, ds_func, ps_func]() {
+          WMT::Reference<WMT::Error> error;
+          if (!(self->pso = self->CreatePipeline(mesh_info, error)))
+            ERR("Failed to create tessellation PSO of shaders ", self->name, ": ", error.description().getUTF8String());
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = CreatePipeline(mesh_info, err))) {
         ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
         return E_FAIL;
