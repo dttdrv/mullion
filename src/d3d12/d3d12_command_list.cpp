@@ -3476,6 +3476,50 @@ public:
     }
   };
 
+  // the rectangles of a UAV clear that ClearUAV has begun, or the whole view with none, and the clear's end. a
+  // rectangle counts a buffer's elements, and the kernel the buffer's words or the view's texels from the start of
+  // the buffer: the view's first is kept in 64 bits, as a view may start 4 GiB or more into a buffer
+  void
+  ClearUAVRectangles(const ShaderVisibleDescriptorCPUStorage &Descriptor, UINT RectCount, const D3D12_RECT *pRects) {
+    uint64_t first = 0;
+    int64_t width = 0, height = 1;
+    UINT element_stride = 1, first_slice = 0, slice_count = 0;
+    switch (Descriptor.type) {
+    case ShaderVisibleDescriptorType::UAVBuffer: {
+      auto &slice = Descriptor.UAVBuffer.slice;
+      element_stride = slice.byteLength / (slice.elementCount * sizeof(uint32_t));
+      first = slice.byteOffset / sizeof(uint32_t);
+      width = slice.byteLength / sizeof(uint32_t) / element_stride;
+      break;
+    }
+    case ShaderVisibleDescriptorType::UAVTexture:
+      first_slice = Descriptor.UAVTexture.first_slice;
+      slice_count = Descriptor.UAVTexture.slice_count;
+      width = Descriptor.UAVTexture.texture->width(Descriptor.UAVTexture.view);
+      height = Descriptor.UAVTexture.texture->height(Descriptor.UAVTexture.view);
+      break;
+    case ShaderVisibleDescriptorType::UAVTexelBuffer:
+      first = Descriptor.UAVTexelBuffer.slice.firstElement;
+      width = Descriptor.UAVTexelBuffer.slice.elementCount;
+      break;
+    default:
+      break;
+    }
+    for (UINT i = 0; i < std::max(RectCount, 1u); i++) {
+      int64_t left = 0, top = 0, right = width, bottom = height;
+      if (RectCount) {
+        left = std::max<int64_t>(pRects[i].left, 0), top = std::max<int64_t>(pRects[i].top, 0);
+        right = std::min<int64_t>(pRects[i].right, width), bottom = std::min<int64_t>(pRects[i].bottom, height);
+      }
+      if (right <= left || bottom <= top)
+        continue;
+      allocator_->clear_uav_.clear(
+          first + left * element_stride, top, (right - left) * element_stride, bottom - top, first_slice, slice_count
+      );
+    }
+    allocator_->clear_uav_.end();
+  }
+
   void STDMETHODCALLTYPE
   ClearUnorderedAccessViewUint(
       D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, ID3D12Resource *pResource,
@@ -3503,61 +3547,21 @@ public:
         BlitNaNClear(Descriptor.UAVTexture, color, RectCount, pRects))
       return;
     SharedComputePass shared(this);
-    D3D12_RECT full_rect;
-    UINT element_stride = 1, first_slice = 0, slice_count = 0;
     switch (Descriptor.type) {
-    case ShaderVisibleDescriptorType::UAVBuffer: {
+    case ShaderVisibleDescriptorType::UAVBuffer:
       allocator_->clear_uav_.begin(color, Descriptor.UAVBuffer.buffer);
-      element_stride = Descriptor.UAVBuffer.slice.byteLength /
-                       (Descriptor.UAVBuffer.slice.elementCount * sizeof(uint32_t));
-      full_rect = {
-          (LONG)Descriptor.UAVBuffer.slice.byteOffset >> 2, 0,
-          (LONG)((Descriptor.UAVBuffer.slice.byteOffset + Descriptor.UAVBuffer.slice.byteLength) >> 2), 1
-      };
       break;
-    }
-    case ShaderVisibleDescriptorType::UAVTexture: {
+    case ShaderVisibleDescriptorType::UAVTexture:
       allocator_->clear_uav_.begin(color, Descriptor.UAVTexture.texture, Descriptor.UAVTexture.view);
-      first_slice = Descriptor.UAVTexture.first_slice;
-      slice_count = Descriptor.UAVTexture.slice_count;
-      full_rect = {
-          0, 0, (LONG)Descriptor.UAVTexture.texture->width(Descriptor.UAVTexture.view),
-          (LONG)Descriptor.UAVTexture.texture->height(Descriptor.UAVTexture.view)
-      };
       break;
-    }
-    case ShaderVisibleDescriptorType::UAVTexelBuffer: {
+    case ShaderVisibleDescriptorType::UAVTexelBuffer:
       allocator_->clear_uav_.begin(color, Descriptor.UAVTexelBuffer.buffer, Descriptor.UAVTexelBuffer.view);
-      full_rect = {
-          (LONG)Descriptor.UAVTexelBuffer.slice.firstElement, 0,
-          (LONG)(Descriptor.UAVTexelBuffer.slice.firstElement + Descriptor.UAVTexelBuffer.slice.elementCount), 1
-      };
       break;
-    }
     default:
       allocator_->clear_uav_.end();
       return;
     }
-
-    const D3D12_RECT *rects = RectCount > 0 ? pRects : &full_rect;
-    UINT rect_count = RectCount > 0 ? RectCount : 1;
-
-    for (unsigned i = 0; i < rect_count; i++) {
-      auto &rect = rects[i];
-      auto left = RectCount ? std::max<int64_t>(rect.left, 0) : 0;
-      auto top = std::max<int64_t>(rect.top, 0);
-      auto right = RectCount ? std::min<int64_t>(rect.right, (full_rect.right - full_rect.left) / element_stride)
-                             : (full_rect.right - full_rect.left) / element_stride;
-      auto bottom = std::min<int64_t>(rect.bottom, full_rect.bottom);
-      if (right <= left || bottom <= top)
-        continue;
-      allocator_->clear_uav_.clear(
-          full_rect.left + left * element_stride, top, (right - left) * element_stride, bottom - top,
-          first_slice, slice_count
-      );
-    }
-
-    allocator_->clear_uav_.end();
+    ClearUAVRectangles(Descriptor, RectCount, pRects);
   };
 
   void STDMETHODCALLTYPE
@@ -3579,61 +3583,21 @@ public:
         FillBufferClear(Descriptor.UAVBuffer, std::bit_cast<uint32_t>(color[0]), RectCount, pRects))
       return;
     SharedComputePass shared(this);
-    D3D12_RECT full_rect;
-    UINT element_stride = 1, first_slice = 0, slice_count = 0;
     switch (Descriptor.type) {
-    case ShaderVisibleDescriptorType::UAVBuffer: {
+    case ShaderVisibleDescriptorType::UAVBuffer:
       allocator_->clear_uav_.begin(color, Descriptor.UAVBuffer.buffer);
-      element_stride = Descriptor.UAVBuffer.slice.byteLength /
-                       (Descriptor.UAVBuffer.slice.elementCount * sizeof(uint32_t));
-      full_rect = {
-          (LONG)Descriptor.UAVBuffer.slice.byteOffset >> 2, 0,
-          (LONG)((Descriptor.UAVBuffer.slice.byteOffset + Descriptor.UAVBuffer.slice.byteLength) >> 2), 1
-      };
       break;
-    }
-    case ShaderVisibleDescriptorType::UAVTexture: {
+    case ShaderVisibleDescriptorType::UAVTexture:
       allocator_->clear_uav_.begin(color, Descriptor.UAVTexture.texture, Descriptor.UAVTexture.view);
-      first_slice = Descriptor.UAVTexture.first_slice;
-      slice_count = Descriptor.UAVTexture.slice_count;
-      full_rect = {
-          0, 0, (LONG)Descriptor.UAVTexture.texture->width(Descriptor.UAVTexture.view),
-          (LONG)Descriptor.UAVTexture.texture->height(Descriptor.UAVTexture.view)
-      };
       break;
-    }
-    case ShaderVisibleDescriptorType::UAVTexelBuffer: {
+    case ShaderVisibleDescriptorType::UAVTexelBuffer:
       allocator_->clear_uav_.begin(color, Descriptor.UAVTexelBuffer.buffer, Descriptor.UAVTexelBuffer.view);
-      full_rect = {
-          (LONG)Descriptor.UAVTexelBuffer.slice.firstElement, 0,
-          (LONG)(Descriptor.UAVTexelBuffer.slice.firstElement + Descriptor.UAVTexelBuffer.slice.elementCount), 1
-      };
       break;
-    }
     default:
       allocator_->clear_uav_.end();
       return;
     }
-
-    const D3D12_RECT *rects = RectCount > 0 ? pRects : &full_rect;
-    UINT rect_count = RectCount > 0 ? RectCount : 1;
-
-    for (unsigned i = 0; i < rect_count; i++) {
-      auto &rect = rects[i];
-      auto left = RectCount ? std::max<int64_t>(rect.left, 0) : 0;
-      auto top = std::max<int64_t>(rect.top, 0);
-      auto right = RectCount ? std::min<int64_t>(rect.right, (full_rect.right - full_rect.left) / element_stride)
-                             : (full_rect.right - full_rect.left) / element_stride;
-      auto bottom = std::min<int64_t>(rect.bottom, full_rect.bottom);
-      if (right <= left || bottom <= top)
-        continue;
-      allocator_->clear_uav_.clear(
-          full_rect.left + left * element_stride, top, (right - left) * element_stride, bottom - top,
-          first_slice, slice_count
-      );
-    }
-
-    allocator_->clear_uav_.end();
+    ClearUAVRectangles(Descriptor, RectCount, pRects);
   };
 
   void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) {
