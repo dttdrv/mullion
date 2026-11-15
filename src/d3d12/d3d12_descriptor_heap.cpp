@@ -188,10 +188,15 @@ public:
           reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(buffer_->current()->mappedMemory(0));
       argument_buffer_gpu_address_ = buffer_->current()->gpuAddress();
       device_->RegisterResidencyAndVA(buffer_->current());
-    } else {
-      mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(
-          malloc(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage))
-      );
+    } else if (!descriptors_.empty()) {
+      // what CopyDescriptors takes to a heap shaders read: zeroed like that heap's own memory, so a descriptor nothing
+      // has written is copied as the null descriptor it is there
+      mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(VirtualAlloc(
+          nullptr, descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), MEM_RESERVE | MEM_COMMIT,
+          PAGE_READWRITE
+      ));
+      if (!mapped_argument_buffer_)
+        return FAIL(E_OUTOFMEMORY);
     }
 
     return S_OK;
@@ -202,8 +207,8 @@ public:
       VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
       device_->UnregisterResidencyAndVA(buffer_->current());
-    } else {
-      free(mapped_argument_buffer_);
+    } else if (mapped_argument_buffer_) {
+      VirtualFree(mapped_argument_buffer_, 0, MEM_RELEASE);
     }
   }
 
@@ -660,9 +665,34 @@ public:
       device_->RegisterResidencyAndVA(buffer_->current());
     } else {
       mapped_argument_buffer_ =
-          reinterpret_cast<SamplerGPUStorage *>(malloc(samplers_.size() * 2 * sizeof(SamplerGPUStorage)));
+          reinterpret_cast<SamplerGPUStorage *>(calloc(samplers_.size(), 2 * sizeof(SamplerGPUStorage)));
+      if (!mapped_argument_buffer_)
+        return FAIL(E_OUTOFMEMORY);
     }
     borders_ = reinterpret_cast<SM50_SAMPLER_BORDER *>(mapped_argument_buffer_ + samplers_.size());
+
+    // Direct3D leaves a descriptor nothing has written undefined. a sampler of no Metal sampler state is not one a
+    // shader can sample through, so every descriptor starts as the sampler Direct3D 11 has by default
+    // (D3D11_SAMPLER_DESC): linear filters, clamped addresses, no comparison and every LOD
+    if (!samplers_.empty()) {
+      const D3D12_SAMPLER_DESC unwritten{
+          D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          0.0f,
+          1,
+          D3D12_COMPARISON_FUNC_NEVER,
+          {1.0f, 1.0f, 1.0f, 1.0f},
+          -D3D12_FLOAT32_MAX,
+          D3D12_FLOAT32_MAX
+      };
+      HRESULT hr = AddSampler(0, &unwritten);
+      if (FAILED(hr))
+        return hr;
+      std::fill(samplers_.begin() + 1, samplers_.end(), samplers_[0]);
+      std::fill_n(mapped_argument_buffer_ + 1, samplers_.size() - 1, mapped_argument_buffer_[0]);
+    }
 
     return S_OK;
   };
@@ -733,6 +763,9 @@ public:
         device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
         SamplerReduction(pDesc->Filter)
     );
+    // Metal made no sampler state: the descriptor keeps the sampler it had
+    if (sampler == nullptr)
+      return FAIL(E_OUTOFMEMORY);
 
     bool minmax =
         sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1);
