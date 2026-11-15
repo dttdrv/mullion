@@ -223,6 +223,9 @@ enum Op : uint32_t {
   WaveMultiPrefixOp = 166,
   WaveMultiPrefixBitCount = 167,
   AnnotateHandle = 216,
+  SampleCmpLevel = 224,
+  SampleCmpGrad = 254,
+  SampleCmpBias = 255,
   Unpack4x8 = 219,
   Pack4x8 = 220,
   IsHelperLane = 221,
@@ -884,7 +887,8 @@ if (auto resources = M.getNamedMetadata("dx.resources")) {
         // a resource consumed together with a sampler is sampled, or compared by a comparing operation, as DXBC's
         // sample_c marks it
         auto how = opcode(consumer);
-        bool compared = how == SampleCmp || how == SampleCmpLevelZero || how == TextureGatherCmp;
+        bool compared = how == SampleCmp || how == SampleCmpLevelZero || how == TextureGatherCmp ||
+                        how == SampleCmpLevel || how == SampleCmpGrad || how == SampleCmpBias;
         bool sampled = llvm::any_of(consumer->args(), [&](auto &arg) { return handle_of(arg, SamplerClass); });
         // feedback is written with atomics, which read
         // and an acceleration structure is read by the query or the ray it starts
@@ -1345,8 +1349,8 @@ read_dxil(
   auto &n = shader->threadgroup_size;
   info.quads_2d = compute && n[0] % 2 == 0 && n[1] % 2 == 0 &&
                   used(
-                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivFineY, Sample, SampleBias, SampleCmp, CalculateLOD,
-                       QuadOp, QuadReadLaneAt, QuadVote}
+                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivFineY, Sample, SampleBias, SampleCmp, SampleCmpBias,
+                       CalculateLOD, QuadOp, QuadReadLaneAt, QuadVote}
                   );
   if (info.quads_2d)
     for (auto type :
@@ -3202,14 +3206,22 @@ convert_dxil(
     case SampleLevel:
     case SampleGrad:
     case SampleCmp:
-    case SampleCmpLevelZero: {
+    case SampleCmpLevelZero:
+    case SampleCmpLevel:
+    case SampleCmpBias:
+    case SampleCmpGrad: {
       auto &tex = handles[a(1)];
       auto &smp = handles[a(2)];
       auto [texture, coord, array, sampler, bias, logical, coord_ty] = sample(call, tex, smp, 3);
       int32_t offset[3];
       offsets(call, 7, 3, offset);
       auto handle = tex.texture->Handle;
-      auto reference = op == SampleCmp || op == SampleCmpLevelZero ? dxbc.CompareReference(smp.sampler->Metadata, a(10)) : nullptr;
+      // SampleCmp with the level SampleLevel takes (SM 6.7), or the bias or gradients SampleBias and SampleGrad take
+      // (SM 6.8): each comparison's operands are its plain sample's after the reference
+      bool compares = op != Sample && op != SampleBias && op != SampleLevel && op != SampleGrad;
+      auto reference = compares ? dxbc.CompareReference(smp.sampler->Metadata, a(10)) : nullptr;
+      if (op == SampleCmpBias)
+        bias = ir.CreateFAdd(a(11), bias);
       // compute shaders have no derivatives: they sample with their quads' gradients, or compare at their LOD
       bool compute = ctx.shader_type == D3D11_SB_COMPUTE_SHADER;
       Value *residency_level = nullptr, *residency_bias = bias, *residency_clamp = nullptr;
@@ -3228,10 +3240,11 @@ convert_dxil(
         read = [&, gx, gy, clamp](Value *s, Value *) {
           return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
         };
-      } else if (compute && op == SampleCmp) {
+      } else if (compute && (op == SampleCmp || op == SampleCmpBias)) {
         auto is_cube = llvm::air::AIRBuilder::getTextureInfo(tex.texture->Logical).is_cube;
         auto lod = llvm::air::sample_level{air.CreateFPBinOp(
-            llvm::air::AIRBuilder::fmax, min_lod(tex, a(11)), ir.CreateFAdd(quad_lod(*tex.texture, coord, is_cube), bias)
+            llvm::air::AIRBuilder::fmax, min_lod(tex, a(op == SampleCmp ? 11 : 12)),
+            ir.CreateFAdd(quad_lod(*tex.texture, coord, is_cube), bias)
         )};
         residency_level = lod.lod;
         read = [&, lod](Value *s, Value *ref) {
@@ -3275,19 +3288,25 @@ convert_dxil(
           };
           break;
         }
-        case SampleGrad: {
-          auto dx = vec(call, 10, logical, coord_ty), dy = vec(call, 13, logical, coord_ty);
+        case SampleGrad:
+        case SampleCmpGrad: {
+          unsigned first = op == SampleGrad ? 10 : 11;
+          auto dx = vec(call, first, logical, coord_ty), dy = vec(call, first + 3, logical, coord_ty);
           auto gx = dxbc.BiasGradient(dx, bias), gy = dxbc.BiasGradient(dy, bias);
-          auto clamp = min_lod(tex, a(16));
+          auto clamp = min_lod(tex, a(first + 6));
           residency_dx = gx, residency_dy = gy, residency_clamp = clamp, residency_bias = nullptr;
-          footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
-          read = [&, gx, gy, clamp](Value *s, Value *) {
-            return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
+          if (op == SampleGrad)
+            footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
+          read = [&, gx, gy, clamp](Value *s, Value *ref) {
+            return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset, ref);
           };
           break;
         }
-        case SampleCmp: {
-          auto options = std::pair{llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}};
+        case SampleCmp:
+        case SampleCmpBias: {
+          auto options = std::pair{
+              llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(op == SampleCmp ? 11 : 12))}
+          };
           residency_bias = options.first.bias, residency_clamp = options.second.lod;
           read = [&, options](Value *s, Value *ref) {
             return dxbc.SampleImplicit(
@@ -3298,7 +3317,7 @@ convert_dxil(
           break;
         }
         default: {
-          auto lod = llvm::air::sample_level{min_lod(tex, bias)};
+          auto lod = llvm::air::sample_level{min_lod(tex, op == SampleCmpLevel ? ir.CreateFAdd(a(11), bias) : bias)};
           residency_level = lod.lod;
           read = [&, lod](Value *s, Value *ref) {
             return ref ? air.CreateSampleCmp(texture, handle, s, coord, array, ref, offset, lod)
@@ -3318,7 +3337,7 @@ convert_dxil(
             *tex.texture, sampler, smp.sampler->Metadata, coord, array, offset, {value, residency},
             [&](Value *s) { return read(s, reference); }, residency_level, residency_bias, residency_clamp,
             residency_dx, residency_dy);
-      if (op == SampleCmpLevelZero)
+      if (op == SampleCmpLevelZero || op == SampleCmpLevel)
         value = dxbc.ComparePointAtZero(*tex.texture, smp.sampler->Metadata, reference, value, [&] {
           return read(sampler, nullptr).first;
         });
