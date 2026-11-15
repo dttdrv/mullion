@@ -1178,14 +1178,14 @@ public:
   bool
   GetPipeline(WMT::ComputePipelineState &Pipeline, WMT::VisibleFunctionTable &Table, uint32_t &Flags) {
     Flags = pipeline_config_.Flags;
-    auto made = MakePipeline(CallDepth());
+    auto &made = MakePipeline(CallDepth());
     Pipeline = made.pipeline;
     Table = made.table;
     return made.pipeline;
   }
 
-  // the pipeline of a call depth, compiled the first time it is asked for
-  Pipeline
+  // the pipeline of a call depth, compiled the first time it is asked for. the state object keeps every one it made
+  const Pipeline &
   MakePipeline(uint32_t depth) {
     std::unique_lock<mullion::mutex> lock(pipeline_lock_);
     auto [entry, first] = pipelines_.try_emplace(depth);
