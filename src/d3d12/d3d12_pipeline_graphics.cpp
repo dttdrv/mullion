@@ -372,14 +372,10 @@ GetPipelineKey(const Desc &desc, Sha1Digest &key, bool depth_bounds = false,
     else if (code.BytecodeLength)
       hash(ShaderDigest(code.pShaderBytecode, code.BytecodeLength));
   };
-  const void *root = nullptr;
-  UINT root_size = 0;
-  if (desc.pRootSignature) {
-    static_cast<MTLD3D12RootSignature *>(desc.pRootSignature)->GetBlob(&root);
-    if (FAILED(microsoft::DXBCGetRootSignature(root, &root, &root_size)))
-      return FAIL(E_INVALIDARG);
-  }
-  bytes(root, root_size);
+  // a root signature by the digest it took of its serialized description when it was made
+  hash(bool(desc.pRootSignature));
+  if (desc.pRootSignature)
+    hash(static_cast<MTLD3D12RootSignature *>(desc.pRootSignature)->Digest);
   constexpr bool compute = std::is_same_v<Desc, D3D12_COMPUTE_PIPELINE_STATE_DESC>;
   hash(compute, desc.NodeMask, desc.Flags);
   if constexpr (compute) {
@@ -448,8 +444,8 @@ PipelineKey(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &Desc, Sha1Digest &Key, boo
 
 WMT::Reference<WMT::Function>
 CompileFunction(
-    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, std::span<const D3D12_SHADER_BYTECODE> shaders,
-    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, MTLD3D12RootSignature *root_signature,
+    std::span<const D3D12_SHADER_BYTECODE> shaders, SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
     const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
         &compile
 ) {
@@ -514,12 +510,9 @@ CompileFunction(
     }
     case SM50_SHADER_ROOT_SIGNATURE:
     case SM50_SHADER_ROOT_SIGNATURE2: {
-      auto [next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
-      UINT size;
-      if (FAILED(microsoft::DXBCGetRootSignature(code, &code, &size)))
-        return {};
-      bytes(code, size);
-      hash(samplers);
+      // the bytes are the pipeline's root signature's, which its digest names
+      auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+      hash(root_signature->Digest, samplers);
       break;
     }
     case SM50_SHADER_STREAM_OUTPUT: {
@@ -864,7 +857,7 @@ protected:
   ) {
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
     return CompileFunction(
-        device_, this, std::array{D3D12_SHADER_BYTECODE{in.vs.data(), in.vs.size()}, GS},
+        device_, this, in.root_signature.ptr(), std::array{D3D12_SHADER_BYTECODE{in.vs.data(), in.vs.size()}, GS},
         RootSignature(rootsig, in.root_signature.ptr(), &pso_gs), "gs_main",
         [&](auto args, auto name, auto bitcode, auto error) {
           auto result = SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
@@ -896,7 +889,7 @@ protected:
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_vs;
     auto args_vs = RootSignature(rootsig_vs, in.root_signature.ptr(), &in.ia_layout);
     auto vs_func = CompileFunction(
-        device_, this, std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
+        device_, this, in.root_signature.ptr(), std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
           auto result = SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
           if (result)
             status = E_INVALIDARG;
@@ -1441,7 +1434,8 @@ public:
                         const char *name, D3D12_SHADER_BYTECODE linked = {}) {
       auto shaders = std::array{code, linked};
       return CompileFunction(
-          device_, this, std::span(shaders).first(linked.pShaderBytecode ? 2 : 1), args, name,
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::span(shaders).first(linked.pShaderBytecode ? 2 : 1), args, name,
           [shader](auto args, auto name, auto bitcode, auto error) {
             return SM50Compile(shader, args, name, bitcode, error);
           }
@@ -1724,7 +1718,7 @@ public:
             auto name =
                 ps_name + "_" +
                 std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11 | bare << 12);
-            return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, name.c_str(),
+            return CompileFunction(device_, this, signature.ptr(), std::span(&bytecode, 1), arguments, name.c_str(),
                                    [&shader](auto args, auto name, auto bitcode, auto error) {
                                      return SM50Compile(shader, args, name, bitcode, error);
                                    });
@@ -1942,7 +1936,8 @@ public:
         rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
         auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
         auto ds_func = CompileFunction(
-            device_, this, std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
+            device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+            std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
             [&](auto args, auto name, auto bitcode, auto error) {
               return SM50CompileTessellationPipelineDomain(shader_hs, shader_ds, args, name, bitcode, error);
             }
@@ -1959,7 +1954,8 @@ public:
         rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
         auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
         auto vshs_func = CompileFunction(
-            device_, this, std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
+            device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+            std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
             [&](auto args, auto name, auto bitcode, auto error) {
               return SM50CompileTessellationPipelineHull(shader_vs, shader_hs, args, name, bitcode, error);
             }
