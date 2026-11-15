@@ -113,6 +113,11 @@ class SpatialScaler;
 
 bool ExperimentalShaderModelsEnabled();
 HRESULT DeserializeLibraryRootSignature(const void *Library, SIZE_T Size, LPCWSTR Name, REFIID riid, void **Deserializer);
+// the root signature a DXIL library defines as the global or local root signature subobject of a name
+HRESULT CreateLibraryRootSignature(
+    class MTLD3D12Device *pDevice, const void *pLibrary, SIZE_T LibraryLength, LPCWSTR Name, REFIID riid,
+    void **ppRootSignature
+);
 
 // a subobject a DXIL library defines, of the kinds a state object takes from one: their numbers are D3D12's
 // subobject types
