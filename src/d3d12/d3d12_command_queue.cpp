@@ -866,10 +866,6 @@ private:
 
     uint64_t internal_seq = 1;
     for (;;) {
-      // what feedback has come, without waiting for more: the next command buffer's completion is not held behind it.
-      // what is still to come is read at the next one, or by GetDeviceRemovedReason, which waits for it
-      if (Metal4 || EventWait())
-        SettleFeedback(false);
       inflight_cmdbuf_seq_.wait(internal_seq, std::memory_order_acquire);
       if (inflight_cmdbuf_stop_.load() == internal_seq)
         break;
@@ -1055,6 +1051,12 @@ private:
       }
 
       inflight = {};
+      // what feedback has come of the command buffers before, without waiting for more: this one's completion is not
+      // held behind it. what is still to come is read at the next one, or by GetDeviceRemovedReason, which waits for
+      // it. before the fences: a command buffer keeps what its passes used until it is settled, and an application
+      // that sees its fence reached takes what it released before as given back (d3d12_copy_memory)
+      if (Metal4 || EventWait())
+        SettleFeedback(false);
       retired_.Reach(internal_seq);
 
       inflight_cmdbuf_count_.fetch_sub(1, std::memory_order_release);
