@@ -538,7 +538,15 @@ public:
   // its offset in the window. without a window the list fails when it is closed
   static constexpr size_t kVisibilitySegments = 4096;
   static constexpr size_t kVisibilityWindow = (1 + kVisibilitySegments) * sizeof(uint64_t);
-  std::vector<WMT::Reference<WMT::Buffer>> visibility_;
+  struct VisibilityWindow : WMT::Reference<WMT::Buffer> {
+    uint64_t address = 0;
+    void *counts = nullptr;
+  };
+  std::vector<VisibilityWindow> visibility_;
+  // the windows the lists before the last Reset counted in, which the next lists count in again: a title with
+  // occlusion queries would otherwise have Metal make a buffer for each window of each allocator in every frame. no
+  // more than the last lists took are kept
+  std::vector<VisibilityWindow> visibility_kept_;
   // the depth bounds test of a GPU without one: buffers of the samples in the bounds, a byte for each pixel
   // (SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES), the last at least as large as asked for, which the lists' passes use one
   // after another
@@ -560,13 +568,20 @@ public:
   std::tuple<WMT::Buffer, uint64_t, size_t>
   VisibilitySlot() {
     if (visibility_used_ == kVisibilityWindow) {
-      WMTBufferInfo info;
-      info.memory.set(nullptr);
-      info.length = kVisibilityWindow;
-      info.options = WMTResourceHazardTrackingModeUntracked;
-      visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
+      if (!visibility_kept_.empty()) {
+        visibility_.push_back(std::move(visibility_kept_.back()));
+        visibility_kept_.pop_back();
+        // as a new buffer is: a pass that does not run (predication) stores no counts, and its queries count nothing
+        memset(visibility_.back().counts, 0, kVisibilityWindow);
+      } else {
+        WMTBufferInfo info;
+        info.memory.set(nullptr);
+        info.length = kVisibilityWindow;
+        info.options = WMTResourceHazardTrackingModeUntracked;
+        visibility_.push_back({device_->GetMTLDevice().newBuffer(info), info.gpu_address, info.memory.get()});
+      }
       exhausted_ |= !visibility_.back();
-      visibility_address_ = info.gpu_address;
+      visibility_address_ = visibility_.back().address;
       // offset 0 is the one counting is turned off at, and a pass takes an offset once
       visibility_used_ = sizeof(uint64_t);
     }
