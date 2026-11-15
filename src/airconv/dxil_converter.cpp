@@ -233,6 +233,7 @@ enum Op : uint32_t {
   WaveMultiPrefixBitCount = 167,
   AnnotateHandle = 216,
   SampleCmpLevel = 224,
+  BarrierByMemoryType = 244,
   SampleCmpGrad = 254,
   SampleCmpBias = 255,
   Unpack4x8 = 219,
@@ -4040,8 +4041,30 @@ convert_dxil(
     case LegacyF16ToF32:
       ret = air.CreateConvertToFloat(ir.CreateBitCast(ir.CreateTrunc(a(1), ir.getInt16Ty()), ir.getHalfTy()));
       break;
-    case Barrier: {
+    case Barrier:
+    case BarrierByMemoryType: {
+      // DxilConstants.h BarrierMode: SyncThreadGroup 1, UAVFenceGlobal 2, UAVFenceThreadGroup 4, TGSMFence 8
       auto mode = constant(a(1));
+      if (op == BarrierByMemoryType) {
+        // SM 6.8's Barrier(MemoryTypeFlags, SemanticFlags) names the memory and the scope apart (DirectX-Specs,
+        // Work Graphs, "Barrier"): UAV_MEMORY 1 and GROUP_SHARED_MEMORY 2 are a compute shader's, in GROUP_SCOPE 2 or
+        // DEVICE_SCOPE 4, with GROUP_SYNC 1; ALL_MEMORY is every kind the shader has. a node's records
+        // (NODE_INPUT_MEMORY 4, NODE_OUTPUT_MEMORY 8) and a scope past those are of shaders that are not lowered
+        constexpr uint32_t uav = 1, group_shared = 2, all_memory = 0xf, group_sync = 1, group_scope = 2,
+                           device_scope = 4;
+        auto memory = constant(a(1)), semantic = constant(a(2));
+        if (memory == all_memory)
+          memory = uav | group_shared;
+        if ((memory & ~(uav | group_shared)) || (semantic & ~(group_sync | group_scope | device_scope)))
+          return make_error<UnsupportedFeature>(
+              std::format("a barrier of memory {:#x} with semantics {:#x} is not lowered yet", memory, semantic)
+          );
+        mode = (semantic & group_sync ? 1 : 0) | (memory & group_shared ? 8 : 0) |
+               (memory & uav ? (semantic & device_scope  ? 2
+                                : semantic & group_scope ? 4
+                                                         : 0)
+                             : 0);
+      }
       dxbc(
           InstSync{
               .uav_boundary = mode & 2   ? InstSync::UAVBoundary::global
