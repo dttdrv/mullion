@@ -215,17 +215,49 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
     return true;
   }
 
+  // where a root signature's arguments were last uploaded in this recording, in which of the buffers over what the
+  // GPU reads: a pass that starts with the arguments as they were binds that copy again. no buffer once an argument
+  // or the root signature changes
+  struct UploadedRootArguments {
+    obj_handle_t buffer = 0;
+    uint64_t offset = 0;
+  };
+  UploadedRootArguments rootarg_graphics_uploaded_, rootarg_compute_uploaded_;
+
+  // an argument of `dirty`'s root signature is no longer what was uploaded: the next draw or dispatch uploads them
+  void
+  RootArgumentsChanged(DirtyState dirty) {
+    dirty_state_.set(dirty);
+    (dirty == DirtyState::GraphicsRootArguments ? rootarg_graphics_uploaded_ : rootarg_compute_uploaded_).buffer = 0;
+  }
+
+  // the uploaded arguments of a root signature, which are uploaded first when they have changed since. a recording
+  // that keeps what each pass read (GPURecording) uploads them for every pass
+  UploadedRootArguments
+  UploadRootArguments(MTLD3D12RootSignature *rootsig, const uint64_t *staging, UploadedRootArguments &uploaded) {
+    if (!uploaded.buffer || allocator_->records_) {
+      uploaded.offset = EncodeRootArgument(rootsig, staging);
+      uploaded.buffer = obj_handle_t(allocator_->gpu_heap_buffer_);
+    }
+    return uploaded;
+  }
+
   /* a root signature that indexes the heaps directly reads their addresses from its root arguments */
   void
   WriteHeapArguments(MTLD3D12RootSignature *rootsig, uint64_t *staging, DirtyState dirty) {
     if (!rootsig)
       return;
+    auto write = [&](uint32_t qword, uint64_t value) {
+      if (staging[qword] == value)
+        return;
+      staging[qword] = value;
+      RootArgumentsChanged(dirty);
+    };
     if (rootsig->ResourceHeapQword != ~0u)
-      staging[rootsig->ResourceHeapQword] = resource_heap_;
+      write(rootsig->ResourceHeapQword, resource_heap_);
     if (rootsig->SamplerHeapQword != ~0u)
-      staging[rootsig->SamplerHeapQword] = sampler_heap_;
-    staging[rootsig->AtomicLocksQword] = device_->GetAtomicLocks();
-    dirty_state_.set(dirty);
+      write(rootsig->SamplerHeapQword, sampler_heap_);
+    write(rootsig->AtomicLocksQword, device_->GetAtomicLocks());
   }
 
   // a root constant buffer view of address 0 is a null view, and one the application has not set since the root
@@ -233,11 +265,13 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // does. root SRVs and UAVs keep address 0: a shader finds a null acceleration structure by it, and a UAV's writes
   // would land in the zeros every null view reads
   void
-  NullRootViews(MTLD3D12RootSignature *rootsig, uint64_t *staging) {
+  NullRootViews(MTLD3D12RootSignature *rootsig, uint64_t *staging, DirtyState dirty) {
     for (uint32_t i = 0; i < rootsig->ParameterSlots; i++) {
       auto &slot = staging[rootsig->SlotQwordOffsets[i]];
-      if (rootsig->SlotTypes[i] == D3D12_ROOT_PARAMETER_TYPE_CBV && !slot)
+      if (rootsig->SlotTypes[i] == D3D12_ROOT_PARAMETER_TYPE_CBV && !slot) {
         slot = device_->GetNullBuffer();
+        RootArgumentsChanged(dirty);
+      }
     }
   }
 
@@ -785,9 +819,11 @@ public:
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
+    rootarg_graphics_uploaded_ = {};
 
     rootsig_compute_ = nullptr;
     memset(rootarg_compute_staging_, 0, sizeof(rootarg_compute_staging_));
+    rootarg_compute_uploaded_ = {};
 
     memset(vertex_buffers_.data(), 0, sizeof(vertex_buffers_));
     std::fill(std::begin(so_views_), std::end(so_views_), D3D12_STREAM_OUTPUT_BUFFER_VIEW{});
@@ -1313,14 +1349,14 @@ public:
     // the root arguments and static samplers reach the mesh stage where its function reads them
     // (mesh_reads_root_arguments): not the pass-through mesh stage of a pipeline without a geometry shader
     bool mesh_reads = mesh && pso_graphics_->mesh_reads_root_arguments;
-    auto geometry_buffer = [&](uint64_t Offset, uint8_t Index) {
+    auto geometry_buffer = [&](uint64_t Offset, uint8_t Index, obj_handle_t Earlier = 0) {
       if (mesh)
-        EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, Index);
+        EncodeBuffer(WMTRenderCommandSetObjectBuffer, Offset, Index, Earlier);
       if (mesh_reads)
-        EncodeBuffer(WMTRenderCommandSetMeshBuffer, Offset, Index);
+        EncodeBuffer(WMTRenderCommandSetMeshBuffer, Offset, Index, Earlier);
       if (vertex)
-        EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, Index);
-      EncodeBuffer(WMTRenderCommandSetFragmentBuffer, Offset, Index);
+        EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, Index, Earlier);
+      EncodeBuffer(WMTRenderCommandSetFragmentBuffer, Offset, Index, Earlier);
     };
     if (dirty_state_.test(DirtyState::VertexBuffer)) {
       auto [Offset, Stride] = PopulateVertexBufferTable(1);
@@ -1336,10 +1372,11 @@ public:
     }
 
     if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
-      if (rootsig_graphics_)
-        geometry_buffer(
-            EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_), SM50_BINDING_INDEX_ROOT_ARGUMENTS
-        );
+      if (rootsig_graphics_) {
+        auto uploaded =
+            UploadRootArguments(rootsig_graphics_.ptr(), rootarg_graphics_staging_, rootarg_graphics_uploaded_);
+        geometry_buffer(uploaded.offset, SM50_BINDING_INDEX_ROOT_ARGUMENTS, uploaded.buffer);
+      }
       dirty_state_.clr(DirtyState::GraphicsRootArguments);
     }
 
@@ -2045,11 +2082,12 @@ public:
   BindComputeRootArguments(bool SkipResourceBinding = false) {
     if (dirty_state_.test(DirtyState::ComputeRootArguments) && !SkipResourceBinding) {
       if (rootsig_compute_) {
-        auto Offset = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_);
+        auto uploaded =
+            UploadRootArguments(rootsig_compute_.ptr(), rootarg_compute_staging_, rootarg_compute_uploaded_);
         auto &cmd_argbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
         cmd_argbuf.type = WMTComputeCommandSetBuffer;
-        cmd_argbuf.buffer = allocator_->gpu_heap_buffer_;
-        cmd_argbuf.offset = Offset;
+        cmd_argbuf.buffer = uploaded.buffer;
+        cmd_argbuf.offset = uploaded.offset;
         cmd_argbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
       }
       dirty_state_.clr(DirtyState::ComputeRootArguments);
@@ -2962,11 +3000,13 @@ public:
       rootsig_compute_ = static_cast<MTLD3D12RootSignature *>(pRootSignature);
       assert(rootsig_compute_->UploadQwords <= std::size(rootarg_compute_staging_));
       WriteHeapArguments(rootsig_compute_.ptr(), rootarg_compute_staging_, DirtyState::ComputeRootArguments);
-      NullRootViews(rootsig_compute_.ptr(), rootarg_compute_staging_);
+      NullRootViews(rootsig_compute_.ptr(), rootarg_compute_staging_, DirtyState::ComputeRootArguments);
     } else {
       rootsig_compute_ = nullptr;
     }
-    dirty_state_.set(DirtyState::ComputeRootArguments, DirtyState::ComputeRootSignature);
+    // another root signature uploads another number of arguments
+    RootArgumentsChanged(DirtyState::ComputeRootArguments);
+    dirty_state_.set(DirtyState::ComputeRootSignature);
   };
 
   void STDMETHODCALLTYPE
@@ -2979,11 +3019,13 @@ public:
       rootsig_graphics_ = static_cast<MTLD3D12RootSignature *>(pRootSignature);
       assert(rootsig_graphics_->UploadQwords <= std::size(rootarg_graphics_staging_));
       WriteHeapArguments(rootsig_graphics_.ptr(), rootarg_graphics_staging_, DirtyState::GraphicsRootArguments);
-      NullRootViews(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
+      NullRootViews(rootsig_graphics_.ptr(), rootarg_graphics_staging_, DirtyState::GraphicsRootArguments);
     } else {
       rootsig_graphics_ = nullptr;
     }
-    dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature);
+    // another root signature uploads another number of arguments
+    RootArgumentsChanged(DirtyState::GraphicsRootArguments);
+    dirty_state_.set(DirtyState::GraphicsRootSignature);
   };
 
   // a root argument that changes dirties the arguments, which the next draw or dispatch uploads again; one set to what
@@ -2996,7 +3038,7 @@ public:
     if (slot == Value)
       return;
     slot = Value;
-    dirty_state_.set(dirty);
+    RootArgumentsChanged(dirty);
   }
 
   void
@@ -3010,7 +3052,7 @@ public:
     if (!memcmp(dst, Data, Count * sizeof(uint32_t)))
       return;
     memcpy(dst, Data, Count * sizeof(uint32_t));
-    dirty_state_.set(dirty);
+    RootArgumentsChanged(dirty);
   }
 
   void STDMETHODCALLTYPE SetComputeRootDescriptorTable(UINT Index, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
@@ -4210,18 +4252,18 @@ public:
     auto rootargs = compute ? rootarg_compute_staging_ : rootarg_graphics_staging_;
     for (auto [offset, count] : sig->ResetRootDwords)
       std::fill_n(reinterpret_cast<uint32_t *>(rootargs) + offset, count, 0u);
+    auto dirty = compute ? DirtyState::ComputeRootArguments : DirtyState::GraphicsRootArguments;
     if (auto rootsig = compute ? rootsig_compute_.ptr() : rootsig_graphics_.ptr())
-      NullRootViews(rootsig, rootargs);
-    if (compute) {
-      dirty_state_.set(DirtyState::ComputeRootArguments);
+      NullRootViews(rootsig, rootargs, dirty);
+    RootArgumentsChanged(dirty);
+    if (compute)
       return;
-    }
     for (unsigned slot = 0; slot < vertex_buffers_.size(); slot++)
       if (sig->ResetVertexBuffers & (1u << slot))
         vertex_buffers_[slot] = {};
     if (sig->UpdateIndexBuffer)
       IASetIndexBuffer(nullptr);
-    dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::VertexBuffer);
+    dirty_state_.set(DirtyState::VertexBuffer);
   }
 
   void STDMETHODCALLTYPE
