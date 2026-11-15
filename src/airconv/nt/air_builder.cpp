@@ -1183,7 +1183,6 @@ AIRBuilder::CreateGetNumSamples() {
       {
           {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
           {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-          {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
       }
   );
 
@@ -1206,8 +1205,7 @@ AIRBuilder::CreateSamplePos(Value *SampleCount, Value *Index) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
   auto Fn = getModule()->getOrInsertFunction(
       "mullion.sample_pos.i32", FunctionType::get(getFloatTy(2), {getIntTy(), getIntTy()}, false), Attrs
@@ -1362,8 +1360,7 @@ AIRBuilder::CreateFMA(Value *X, Value *Y, Value *Z) {
   }
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1403,8 +1400,7 @@ AIRBuilder::CreateDotProduct(Value *LHS, Value *RHS) {
 
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1429,8 +1425,7 @@ Value *
 AIRBuilder::CreateCountZero(Value *Val, bool TrailingZero) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1455,8 +1450,7 @@ Value *
 AIRBuilder::CreateConvertToFloat(Value *Val, Signedness SrcSign) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1476,8 +1470,7 @@ Value *
 AIRBuilder::CreateConvertToHalf(Value *Val, Signedness SrcSign) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1497,8 +1490,7 @@ Value *
 AIRBuilder::CreateConvertToSigned(Value *Val) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1518,8 +1510,7 @@ Value *
 AIRBuilder::CreateConvertToUnsigned(Value *Val) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
 
@@ -1963,8 +1954,7 @@ AIRBuilder::CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
   auto OperandType = Operand->getType();
 
@@ -2006,8 +1996,7 @@ AIRBuilder::CreateFPBinOp(FPBinOp Op, Value *LHS, Value *RHS, bool FastVariant) 
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
   auto OperandType = LHS->getType();
 
@@ -2037,8 +2026,7 @@ AIRBuilder::CreateIntUnOp(IntUnOp Op, Value *Operand) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
   auto OperandType = Operand->getType();
 
@@ -2065,8 +2053,7 @@ AIRBuilder::CreateIntBinOp(IntBinOp Op, Value *LHS, Value *RHS, bool Signed) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
   );
   auto OperandType = LHS->getType();
 
