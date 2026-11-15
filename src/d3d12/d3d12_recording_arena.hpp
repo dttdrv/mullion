@@ -10,8 +10,9 @@
 namespace mullion {
 
 // address space a device's command allocators record into, handed out in runs of blocks: a list has room for whatever
-// it records, an allocator holds what its lists recorded and no more, and everything recorded is at an offset into
-// one piece, which the words and addresses in it rely on. the pages are the system's until they are written. it is
+// it records, an allocator holds what its lists recorded and, for some Resets, what its lists before them did
+// (MTLD3D12CommandAllocatorImpl::Cursor), and everything recorded is at an offset into one piece, which the words
+// and addresses in it rely on. the pages are the system's until they are written. it is
 // the device's, not each allocator's: address space counts as a process's committed memory where Wine reports it,
 // and an application that sees itself far over its memory stops loading what it shows
 class RecordingArena {
