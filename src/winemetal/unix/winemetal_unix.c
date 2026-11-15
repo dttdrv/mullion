@@ -2395,7 +2395,15 @@ CREATES(_MTLDevice_newFrameInterpolator)(void *obj) {
     desc.inputHeight = info->input_height;
     desc.outputWidth = info->output_width;
     desc.outputHeight = info->output_height;
-    desc.requiresPrevColorTexture = NO;
+    // by name: the property came with the macOS 27 SDK, and a build with an earlier one still makes interpolators
+    // where the system has it. a descriptor without it would want the last frame's color from us, so makes none
+    SEL keeps_color = sel_registerName("setRequiresPrevColorTexture:");
+    if (![desc respondsToSelector:keeps_color]) {
+      [desc release];
+      [compiler release];
+      return STATUS_SUCCESS;
+    }
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(desc, keeps_color, NO);
     params->ret = params->metal4 ? (obj_handle_t)[desc newFrameInterpolatorWithDevice:device compiler:compiler]
                                  : (obj_handle_t)[desc newFrameInterpolatorWithDevice:device];
     [desc release];
