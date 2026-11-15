@@ -320,11 +320,17 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   std::unique_ptr<EventListener> event_listener_;
 
 public:
+  // the device as it answers what feature levels it reaches (CheckFeatureSupport of D3D12_FEATURE_FEATURE_LEVELS and
+  // the options they are made of), which D3D12CreateDevice asks before anything is built; Initialize makes the rest
   MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter)
       : adapter_(adapter), command_library(adapter_->GetMTLDevice()),
         metal_version_(SM50_SHADER_METAL_VERSION(ShaderMetalVersion(adapter_->GetMTLDevice()))),
         shader_flags_(GPUShaderFlags(adapter_->GetMTLDevice())) {
     mesh_bytes_per_draw = MeshBytesPerDraw(adapter_->GetMTLDevice());
+    if (GetMTLDevice().supportsPlacementSparse())
+      for (auto page : {WMTSparsePageSize16, WMTSparsePageSize64, WMTSparsePageSize256})
+        if (GetMTLDevice().sparseTileSizeInBytes(page) == D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES)
+          sparse_page_size_ = page;
   }
 
   ~MTLD3D12DeviceImpl() {
@@ -406,10 +412,6 @@ public:
     }
     // a compute pipeline's thread execution width is the SIMD-group width
     simd_width_ = occlusion_sum.threadExecutionWidth();
-    if (GetMTLDevice().supportsPlacementSparse())
-      for (auto page : {WMTSparsePageSize16, WMTSparsePageSize64, WMTSparsePageSize256})
-        if (GetMTLDevice().sparseTileSizeInBytes(page) == D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES)
-          sparse_page_size_ = page;
     // each GPU core runs four SIMD groups at once; Metal reports neither, so it is an estimate, as on other drivers
     total_lanes_ = GetMTLDevice().gpuCoreCount() * 4 * simd_width_;
     // the lock words of 64-bit atomics (dxil_converter.cpp): as many as lanes run at once, a power of two, whose mask
@@ -3124,24 +3126,50 @@ AccelerationStructure::~AccelerationStructure() {
 }
 
 HRESULT
-CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
+CreateD3D12Device(IMTLDXGIAdapter *adapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, const IID &riid, void **ppDevice) {
   DXGI_ADAPTER_DESC desc;
   HRESULT hr = adapter->GetDesc(&desc);
   if (FAILED(hr))
     return hr;
+  // released after the lock, which a device takes as it is destroyed
+  Com<MTLD3D12DeviceImpl> device;
   // under the lock, so that two calls at once make one device
   std::lock_guard lock(device_singletons_lock);
-  Com<MTLD3D12DeviceImpl> device;
   for (auto &[luid, existing] : device_singletons)
     if (luid.LowPart == desc.AdapterLuid.LowPart && luid.HighPart == desc.AdapterLuid.HighPart &&
         existing->AddRefIfReferenced())
       device = Com<MTLD3D12DeviceImpl>::transfer(existing);
-  if (device) {
+  bool held = device != nullptr;
+  if (held) {
     if (FAILED(hr = device->GetDeviceRemovedReason()))
       return hr;
-    return device->QueryInterface(riid, ppDevice);
+  } else {
+    device = Com(new MTLD3D12DeviceImpl(adapter));
   }
-  device = Com(new MTLD3D12DeviceImpl(adapter));
+  // the level is asked of a device that is not built yet: a level it does not reach builds nothing, and neither does
+  // a call without ppDevice, which only tests whether the adapter supports the level (Microsoft Learn,
+  // D3D12CreateDevice, ppDevice). middleware asks so for each level in turn before any device is created
+  D3D12_FEATURE_DATA_FEATURE_LEVELS levels{1, &MinimumFeatureLevel};
+  if (FAILED(hr = device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels))))
+    return hr;
+  if (levels.MaxSupportedFeatureLevel != MinimumFeatureLevel) {
+    WARN("D3D12CreateDevice: feature level ", MinimumFeatureLevel, " is not supported");
+    // an application may end over this with no word of ours, so the flight recorder has what the device reaches, and
+    // the first refusal of a process writes its records. level 12_0 needs tiled resources tier 2, which the device
+    // has where Metal has placement sparse resources (macOS 26.4)
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+    FLIGHT("D3D12CreateDevice refuses feature level %#llx: the device reaches %#llx, tiled resources tier %llu",
+           uint64_t(MinimumFeatureLevel), uint64_t(device->GetFeatureLevel()), uint64_t(options.TiledResourcesTier));
+    static std::atomic_flag written;
+    if (!written.test_and_set())
+      WMTFlightDump("a refused feature level");
+    return E_INVALIDARG;
+  }
+  if (!ppDevice)
+    return S_FALSE;
+  if (held)
+    return device->QueryInterface(riid, ppDevice);
   if (FAILED(hr = device->Initialize()))
     return hr;
   std::erase_if(device_singletons, [&](auto &entry) {

@@ -91,29 +91,7 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
     return hr;
   }
 
-  // the device, if it reaches the minimum feature level
-  Com<ID3D12Device> device;
-  if (FAILED(hr = mullion::CreateD3D12Device(dxgi_adapter_mtl.ptr(), IID_PPV_ARGS(&device))))
-    return hr;
-  D3D12_FEATURE_DATA_FEATURE_LEVELS levels{1, &MinimumFeatureLevel};
-  if (FAILED(hr = device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels))))
-    return hr;
-  if (levels.MaxSupportedFeatureLevel != MinimumFeatureLevel) {
-    WARN("D3D12CreateDevice: feature level ", MinimumFeatureLevel, " is not supported");
-    // an application may end over this with no word of ours, so the flight recorder has what the device reaches, and
-    // the first refusal of a process writes its records. level 12_0 needs tiled resources tier 2, which the device
-    // has where Metal has placement sparse resources (macOS 26.4)
-    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
-    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    FLIGHT("D3D12CreateDevice refuses feature level %#llx: the device reaches %#llx, tiled resources tier %llu",
-           uint64_t(MinimumFeatureLevel), uint64_t(static_cast<mullion::MTLD3D12Device *>(device.ptr())->GetFeatureLevel()),
-           uint64_t(options.TiledResourcesTier));
-    static std::atomic_flag written;
-    if (!written.test_and_set())
-      WMTFlightDump("a refused feature level");
-    return E_INVALIDARG;
-  }
-  return ppDevice ? device->QueryInterface(riid, ppDevice) : S_FALSE;
+  return mullion::CreateD3D12Device(dxgi_adapter_mtl.ptr(), MinimumFeatureLevel, riid, ppDevice);
 }
 
 static const GUID CLSID_D3D12SDKConfiguration = {
