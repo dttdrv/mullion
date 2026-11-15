@@ -563,14 +563,20 @@ CompileFunction(
     }
     return keep(kept);
   };
-  if (enabled) {
+  // the function a pipeline of the device already holds
+  auto made = [&]() -> WMT::Reference<WMT::Function> {
+    if (!enabled)
+      return {};
     std::unique_lock lock(shared.mutex);
     if (auto found = shared.made.find(key); found != shared.made.end())
       if (auto kept = found->second.lock()) {
         lock.unlock();
         return keep(kept);
       }
-  }
+    return {};
+  };
+  if (auto function = made())
+    return function;
   auto load = [&](WMT::Reference<WMT::DispatchData> data, WMT::Reference<WMT::Error> &error) {
     auto library = device->GetMTLDevice().newLibrary(data, error);
     auto function = library ? library.newFunction(name) : WMT::Reference<WMT::Function>{};
@@ -593,12 +599,12 @@ CompileFunction(
   auto cached = [&]() -> WMT::Reference<WMT::Function> {
     WMT::Reference<WMT::DispatchData> data;
     if (auto reader = cache.getReader())
-      data = reader->get(key);
+      data = reader.get(key);
     if (data) {
       if (auto function = load(data, error))
         return function;
       if (auto writer = cache.getWriter())
-        writer->set(key, {});
+        writer.set(key, {});
     }
     return {};
   };
@@ -626,6 +632,9 @@ CompileFunction(
       pending.insert(key);
       conversion.emplace(key);
     }
+    // what the conversion waited for made is with its pipeline first: its write to the store is queued
+    if (auto function = made())
+      return function;
     if (auto function = cached())
       return function;
   }
@@ -646,7 +655,7 @@ CompileFunction(
     return {};
   }
   if (auto writer = cache.getWriter())
-    writer->set(key, data);
+    writer.set(key, data);
   return function;
 }
 
