@@ -306,6 +306,10 @@ public:
   // gives what the lists recorded into back to the device
   void ReleaseRuns();
   void Discard(EncoderData *Root);
+  // what the lists recorded and what their passes use, taken out of the allocator for the queues to keep while
+  // lists they were given are still to complete (Reset)
+  struct Retired;
+  void Retire();
 
   HRESULT
   Initialize();
