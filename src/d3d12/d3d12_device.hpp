@@ -447,6 +447,8 @@ public:
   uint32_t const *SlotQwordOffsets;
   // each parameter's type, beside its offset
   D3D12_ROOT_PARAMETER_TYPE const *SlotTypes;
+  // how many 32-bit values each parameter of constants has; 0 for the others
+  uint32_t const *SlotConstants;
   // the root arguments holding the CBV/SRV/UAV and sampler heaps' GPU addresses, for directly indexed heaps
   // (D3D12_ROOT_SIGNATURE_FLAG_*_HEAP_DIRECTLY_INDEXED); ~0u without
   uint32_t ResourceHeapQword = ~0u;

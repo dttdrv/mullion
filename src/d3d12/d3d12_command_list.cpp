@@ -3046,6 +3046,12 @@ public:
   ) {
     if (!rootsig || Index >= rootsig->ParameterSlots)
       return;
+    // values past the parameter's own are another parameter's arguments, or past them all: Direct3D does not define
+    // setting them, and they are left as they are, as is a parameter that is not constants
+    auto values = rootsig->SlotConstants[Index];
+    if (DstOffset >= values)
+      return;
+    Count = std::min(Count, values - DstOffset);
     auto dst = reinterpret_cast<uint32_t *>(staging + rootsig->SlotQwordOffsets[Index]) + DstOffset;
     if (!memcmp(dst, Data, Count * sizeof(uint32_t)))
       return;
