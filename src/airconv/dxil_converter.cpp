@@ -88,6 +88,11 @@ enum Op : uint32_t {
   IMin = 38,
   UMax = 39,
   UMin = 40,
+  IMul = 41,
+  UMul = 42,
+  UDiv = 43,
+  UAddc = 44,
+  USubb = 45,
   FMad = 46,
   Fma = 47,
   IMad = 48,
@@ -163,6 +168,10 @@ enum Op : uint32_t {
   WavePrefixOp = 121,
   QuadReadLaneAt = 122,
   QuadOp = 123,
+  BitcastI16toF16 = 124,
+  BitcastF16toI16 = 125,
+  BitcastI32toF32 = 126,
+  BitcastF32toI32 = 127,
   LegacyF32ToF16 = 130,
   LegacyF16ToF32 = 131,
   WaveAllBitCount = 135,
@@ -213,6 +222,8 @@ enum Op : uint32_t {
   RayQuery_RayFlags = 195,
   RayQuery_CandidateInstanceContributionToHitGroupIndex = 214,
   RayQuery_CommittedInstanceContributionToHitGroupIndex = 215,
+  StartVertexLocation = 256,
+  StartInstanceLocation = 257,
   AllocateRayQuery2 = 258,
   Dot2AddHalf = 162,
   Dot4AddI8Packed = 163,
@@ -221,6 +232,10 @@ enum Op : uint32_t {
   WaveMultiPrefixOp = 166,
   WaveMultiPrefixBitCount = 167,
   AnnotateHandle = 216,
+  SampleCmpLevel = 224,
+  BarrierByMemoryType = 244,
+  SampleCmpGrad = 254,
+  SampleCmpBias = 255,
   Unpack4x8 = 219,
   Pack4x8 = 220,
   IsHelperLane = 221,
@@ -882,7 +897,8 @@ if (auto resources = M.getNamedMetadata("dx.resources")) {
         // a resource consumed together with a sampler is sampled, or compared by a comparing operation, as DXBC's
         // sample_c marks it
         auto how = opcode(consumer);
-        bool compared = how == SampleCmp || how == SampleCmpLevelZero || how == TextureGatherCmp;
+        bool compared = how == SampleCmp || how == SampleCmpLevelZero || how == TextureGatherCmp ||
+                        how == SampleCmpLevel || how == SampleCmpGrad || how == SampleCmpBias;
         bool sampled = llvm::any_of(consumer->args(), [&](auto &arg) { return handle_of(arg, SamplerClass); });
         // feedback is written with atomics, which read
         // and an acceleration structure is read by the query or the ray it starts
@@ -1014,6 +1030,16 @@ read_dxil(
   if (!module)
     return module.takeError();
   auto &M = **module;
+  // the device has no DoublePrecisionFloatShaderOps, as for a DXBC shader's double instructions, and Metal has no
+  // 64-bit float to compute them in: a shader that has a double value anywhere is refused here, by name, where
+  // Metal's compiler would refuse what it was converted to without one
+  auto is_double = [](const Value *v) { return v->getType()->getScalarType()->isDoubleTy(); };
+  for (auto &F : M)
+    for (auto &I : instructions(F))
+      if (is_double(&I) || any_of(I.operands(), [&](const Use &use) { return is_double(use.get()); }))
+        return make_error<UnsupportedFeature>(
+            std::format("unsupported: a double-precision operation ({}) in {}", I.getOpcodeName(), F.getName().str())
+        );
   auto entry = read_entry(M);
 
   read_resources(M, info);
@@ -1333,8 +1359,8 @@ read_dxil(
   auto &n = shader->threadgroup_size;
   info.quads_2d = compute && n[0] % 2 == 0 && n[1] % 2 == 0 &&
                   used(
-                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivFineY, Sample, SampleBias, SampleCmp, CalculateLOD,
-                       QuadOp, QuadReadLaneAt, QuadVote}
+                      {DerivCoarseX, DerivCoarseY, DerivFineX, DerivFineY, Sample, SampleBias, SampleCmp, SampleCmpBias,
+                       CalculateLOD, QuadOp, QuadReadLaneAt, QuadVote}
                   );
   if (info.quads_2d)
     for (auto type :
@@ -1531,6 +1557,31 @@ convert_dxil(
         I.setHasAllowReassoc(false);
         I.setHasAllowReciprocal(false);
       }
+    }
+  }
+  // DXIL converts a float to an integer with LLVM's fptosi and fptoui, whose result for a NaN or a value outside the
+  // integer's range LLVM leaves undefined: its passes fold such a conversion of a constant to no value at all. D3D
+  // defines both (D3D11.3 22.13.3 ftoi, 22.13.4 ftou: clamped to the range, and 0 for a NaN), a DXBC shader gets
+  // them here, and a DXBC shader converted to DXIL has these same instructions for its ftoi and ftou. so each
+  // becomes the conversion that gives D3D's result; one of a double stays, which no Metal conversion takes
+  if (start) {
+    IRBuilder<> ir(ctx.llvm);
+    raw_null_ostream nulldbg;
+    llvm::air::AIRBuilder air(ir, nulldbg);
+    for (auto &I : make_early_inc_range(instructions(*start))) {
+      auto op = I.getOpcode();
+      if (op != llvm::Instruction::FPToSI && op != llvm::Instruction::FPToUI)
+        continue;
+      auto from = I.getOperand(0)->getType()->getScalarType();
+      auto bits = I.getType()->getScalarSizeInBits();
+      if ((!from->isFloatTy() && !from->isHalfTy()) || (bits != 16 && bits != 32 && bits != 64))
+        continue;
+      ir.SetInsertPoint(&I);
+      I.replaceAllUsesWith(air.CreateConvertToInteger(
+          I.getOperand(0),
+          op == llvm::Instruction::FPToSI ? llvm::air::Signedness::Signed : llvm::air::Signedness::Unsigned, bits
+      ));
+      I.eraseFromParent();
     }
   }
   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
@@ -3165,14 +3216,22 @@ convert_dxil(
     case SampleLevel:
     case SampleGrad:
     case SampleCmp:
-    case SampleCmpLevelZero: {
+    case SampleCmpLevelZero:
+    case SampleCmpLevel:
+    case SampleCmpBias:
+    case SampleCmpGrad: {
       auto &tex = handles[a(1)];
       auto &smp = handles[a(2)];
       auto [texture, coord, array, sampler, bias, logical, coord_ty] = sample(call, tex, smp, 3);
       int32_t offset[3];
       offsets(call, 7, 3, offset);
       auto handle = tex.texture->Handle;
-      auto reference = op == SampleCmp || op == SampleCmpLevelZero ? dxbc.CompareReference(smp.sampler->Metadata, a(10)) : nullptr;
+      // SampleCmp with the level SampleLevel takes (SM 6.7), or the bias or gradients SampleBias and SampleGrad take
+      // (SM 6.8): each comparison's operands are its plain sample's after the reference
+      bool compares = op != Sample && op != SampleBias && op != SampleLevel && op != SampleGrad;
+      auto reference = compares ? dxbc.CompareReference(smp.sampler->Metadata, a(10)) : nullptr;
+      if (op == SampleCmpBias)
+        bias = ir.CreateFAdd(a(11), bias);
       // compute shaders have no derivatives: they sample with their quads' gradients, or compare at their LOD
       bool compute = ctx.shader_type == D3D11_SB_COMPUTE_SHADER;
       Value *residency_level = nullptr, *residency_bias = bias, *residency_clamp = nullptr;
@@ -3191,10 +3250,11 @@ convert_dxil(
         read = [&, gx, gy, clamp](Value *s, Value *) {
           return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
         };
-      } else if (compute && op == SampleCmp) {
+      } else if (compute && (op == SampleCmp || op == SampleCmpBias)) {
         auto is_cube = llvm::air::AIRBuilder::getTextureInfo(tex.texture->Logical).is_cube;
         auto lod = llvm::air::sample_level{air.CreateFPBinOp(
-            llvm::air::AIRBuilder::fmax, min_lod(tex, a(11)), ir.CreateFAdd(quad_lod(*tex.texture, coord, is_cube), bias)
+            llvm::air::AIRBuilder::fmax, min_lod(tex, a(op == SampleCmp ? 11 : 12)),
+            ir.CreateFAdd(quad_lod(*tex.texture, coord, is_cube), bias)
         )};
         residency_level = lod.lod;
         read = [&, lod](Value *s, Value *ref) {
@@ -3238,19 +3298,25 @@ convert_dxil(
           };
           break;
         }
-        case SampleGrad: {
-          auto dx = vec(call, 10, logical, coord_ty), dy = vec(call, 13, logical, coord_ty);
+        case SampleGrad:
+        case SampleCmpGrad: {
+          unsigned first = op == SampleGrad ? 10 : 11;
+          auto dx = vec(call, first, logical, coord_ty), dy = vec(call, first + 3, logical, coord_ty);
           auto gx = dxbc.BiasGradient(dx, bias), gy = dxbc.BiasGradient(dy, bias);
-          auto clamp = min_lod(tex, a(16));
+          auto clamp = min_lod(tex, a(first + 6));
           residency_dx = gx, residency_dy = gy, residency_clamp = clamp, residency_bias = nullptr;
-          footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
-          read = [&, gx, gy, clamp](Value *s, Value *) {
-            return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset);
+          if (op == SampleGrad)
+            footprint = {.DDX = dx, .DDY = dy, .Bias = bias, .MinLOD = clamp};
+          read = [&, gx, gy, clamp](Value *s, Value *ref) {
+            return air.CreateSampleGrad(texture, handle, s, coord, array, gx, gy, clamp, offset, ref);
           };
           break;
         }
-        case SampleCmp: {
-          auto options = std::pair{llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}};
+        case SampleCmp:
+        case SampleCmpBias: {
+          auto options = std::pair{
+              llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(op == SampleCmp ? 11 : 12))}
+          };
           residency_bias = options.first.bias, residency_clamp = options.second.lod;
           read = [&, options](Value *s, Value *ref) {
             return dxbc.SampleImplicit(
@@ -3261,7 +3327,7 @@ convert_dxil(
           break;
         }
         default: {
-          auto lod = llvm::air::sample_level{min_lod(tex, bias)};
+          auto lod = llvm::air::sample_level{min_lod(tex, op == SampleCmpLevel ? ir.CreateFAdd(a(11), bias) : bias)};
           residency_level = lod.lod;
           read = [&, lod](Value *s, Value *ref) {
             return ref ? air.CreateSampleCmp(texture, handle, s, coord, array, ref, offset, lod)
@@ -3281,7 +3347,7 @@ convert_dxil(
             *tex.texture, sampler, smp.sampler->Metadata, coord, array, offset, {value, residency},
             [&](Value *s) { return read(s, reference); }, residency_level, residency_bias, residency_clamp,
             residency_dx, residency_dy);
-      if (op == SampleCmpLevelZero)
+      if (op == SampleCmpLevelZero || op == SampleCmpLevel)
         value = dxbc.ComparePointAtZero(*tex.texture, smp.sampler->Metadata, reference, value, [&] {
           return read(sampler, nullptr).first;
         });
@@ -3975,8 +4041,30 @@ convert_dxil(
     case LegacyF16ToF32:
       ret = air.CreateConvertToFloat(ir.CreateBitCast(ir.CreateTrunc(a(1), ir.getInt16Ty()), ir.getHalfTy()));
       break;
-    case Barrier: {
+    case Barrier:
+    case BarrierByMemoryType: {
+      // DxilConstants.h BarrierMode: SyncThreadGroup 1, UAVFenceGlobal 2, UAVFenceThreadGroup 4, TGSMFence 8
       auto mode = constant(a(1));
+      if (op == BarrierByMemoryType) {
+        // SM 6.8's Barrier(MemoryTypeFlags, SemanticFlags) names the memory and the scope apart (DirectX-Specs,
+        // Work Graphs, "Barrier"): UAV_MEMORY 1 and GROUP_SHARED_MEMORY 2 are a compute shader's, in GROUP_SCOPE 2 or
+        // DEVICE_SCOPE 4, with GROUP_SYNC 1; ALL_MEMORY is every kind the shader has. a node's records
+        // (NODE_INPUT_MEMORY 4, NODE_OUTPUT_MEMORY 8) and a scope past those are of shaders that are not lowered
+        constexpr uint32_t uav = 1, group_shared = 2, all_memory = 0xf, group_sync = 1, group_scope = 2,
+                           device_scope = 4;
+        auto memory = constant(a(1)), semantic = constant(a(2));
+        if (memory == all_memory)
+          memory = uav | group_shared;
+        if ((memory & ~(uav | group_shared)) || (semantic & ~(group_sync | group_scope | device_scope)))
+          return make_error<UnsupportedFeature>(
+              std::format("a barrier of memory {:#x} with semantics {:#x} is not lowered yet", memory, semantic)
+          );
+        mode = (semantic & group_sync ? 1 : 0) | (memory & group_shared ? 8 : 0) |
+               (memory & uav ? (semantic & device_scope  ? 2
+                                : semantic & group_scope ? 4
+                                                         : 0)
+                             : 0);
+      }
       dxbc(
           InstSync{
               .uav_boundary = mode & 2   ? InstSync::UAVBoundary::global
@@ -4058,21 +4146,15 @@ convert_dxil(
       ret = fp_unary(llvm::air::AIRBuilder::trunc, a(1));
       break;
     case IsNaN:
-      ret = air.CreateIsNaN(a(1));
-      break;
     case IsInf:
-      ret = ir.CreateFCmpOEQ(fp_unary(llvm::air::AIRBuilder::fabs, a(1)), ConstantFP::getInfinity(a(1)->getType()));
-      break;
     case IsFinite:
-      ret = ir.CreateFCmpOLT(fp_unary(llvm::air::AIRBuilder::fabs, a(1)), ConstantFP::getInfinity(a(1)->getType()));
-      break;
     case IsNormal: {
-      auto magnitude = fp_unary(llvm::air::AIRBuilder::fabs, a(1));
-      auto &semantics = a(1)->getType()->getFltSemantics();
-      ret = ir.CreateAnd(
-          ir.CreateFCmpOGE(magnitude, ConstantFP::get(a(1)->getType(), APFloat::getSmallestNormalized(semantics))),
-          ir.CreateFCmpOLT(magnitude, ConstantFP::getInfinity(a(1)->getType()))
-      );
+      using llvm::air::AIRBuilder;
+      const AIRBuilder::FPClass classes[] = {
+          AIRBuilder::FPClass::nan, AIRBuilder::FPClass::infinite, AIRBuilder::FPClass::finite,
+          AIRBuilder::FPClass::normal
+      };
+      ret = air.CreateIsFPClass(classes[op - IsNaN], a(1));
       break;
     }
     case Bfrev:
@@ -4104,6 +4186,43 @@ convert_dxil(
     case Fma:
       ret = op == FMad && (precise || call->getMetadata("dx.precise")) ? ir.CreateFAdd(ir.CreateFMul(a(1), a(2)), a(3))
                                                                    : air.CreateFMA(a(1), a(2), a(3));
+      break;
+    // the operations with two results that DXBC's imul, umul, udiv, uaddc and usubb become when a DXBC shader is
+    // converted to DXIL, and the bit casts its untyped registers need; DXIL.rst gives each under its name
+    case IMul:
+    case UMul: {
+      // "producing the correct full 64-bit result": the high half, then the low
+      auto half = cast<StructType>(ty)->getElementType(0);
+      auto bits = half->getIntegerBitWidth();
+      auto wide = IntegerType::get(ctx.llvm, 2 * bits);
+      auto extend = [&](Value *v) { return op == IMul ? ir.CreateSExt(v, wide) : ir.CreateZExt(v, wide); };
+      auto product = ir.CreateMul(extend(a(1)), extend(a(2)));
+      ret = ir.CreateInsertValue(UndefValue::get(ty), ir.CreateTrunc(ir.CreateLShr(product, bits), half), {0});
+      ret = ir.CreateInsertValue(ret, ir.CreateTrunc(product, half), {1});
+      break;
+    }
+    case UDiv: {
+      // the quotient, then the remainder: "Divide by zero returns 0xffffffff for both"
+      auto zero = ir.CreateICmpEQ(a(2), Constant::getNullValue(a(2)->getType()));
+      auto divisor = ir.CreateSelect(zero, ConstantInt::get(a(2)->getType(), 1), a(2));
+      auto ones = Constant::getAllOnesValue(a(1)->getType());
+      ret = ir.CreateInsertValue(UndefValue::get(ty), ir.CreateSelect(zero, ones, ir.CreateUDiv(a(1), divisor)), {0});
+      ret = ir.CreateInsertValue(ret, ir.CreateSelect(zero, ones, ir.CreateURem(a(1), divisor)), {1});
+      break;
+    }
+    case UAddc:
+    case USubb: {
+      // the low bits of the sum or difference, then whether it carried or borrowed
+      auto result = op == UAddc ? ir.CreateAdd(a(1), a(2)) : ir.CreateSub(a(1), a(2));
+      ret = ir.CreateInsertValue(UndefValue::get(ty), result, {0});
+      ret = ir.CreateInsertValue(ret, op == UAddc ? ir.CreateICmpULT(result, a(1)) : ir.CreateICmpULT(a(1), a(2)), {1});
+      break;
+    }
+    case BitcastI16toF16:
+    case BitcastF16toI16:
+    case BitcastI32toF32:
+    case BitcastF32toI32:
+      ret = ir.CreateBitCast(a(1), ty);
       break;
     case IMad:
     case UMad:
@@ -4188,6 +4307,19 @@ convert_dxil(
       // pipelines have one view: view instancing is unsupported
       ret = ir.getInt32(0);
       break;
+    case StartVertexLocation:
+    case StartInstanceLocation: {
+      // SM 6.8, "Extended Command Information": SV_StartVertexLocation is DrawInstanced's StartVertexLocation or
+      // DrawIndexedInstanced's BaseVertexLocation, and SV_StartInstanceLocation the StartInstanceLocation of either:
+      // what the draw adds to SV_VertexID and SV_InstanceID, which start at zero, to find a vertex's data
+      // https://microsoft.github.io/hlsl-specs/proposals/0015-extended-command-info/
+      ret = op == StartVertexLocation ? ctx.resource.base_vertex_id : ctx.resource.base_instance_id;
+      if (!ret)
+        return make_error<UnsupportedFeature>(
+            "a draw's start locations are read in a stage that is not a vertex shader"
+        );
+      break;
+    }
     case IsHelperLane:
       ret =
           ctx.shader_type == D3D10_SB_PIXEL_SHADER ? simd("simd_is_helper_thread", ir.getInt1Ty(), {}) : ir.getFalse();
