@@ -12,6 +12,8 @@
 // - a record rewritten, to name another shader, after the list was recorded and before it runs;
 // - a record a copy in the same list writes into a default heap, over a record of another shader;
 // - two dispatches in one list naming different shaders, then two indirect dispatches doing the same;
+// - dispatches whose grid has a width, a height or a depth of zero, and so no index: they run nothing, and the
+//   dispatch after them in the list runs;
 // each with a grid that is no whole number of SIMD groups in x, and a depth of 2. a shader writes its own code, its
 // record's root constant and what its ray met, at its index; every index starts with a value none writes.
 #include "d3d12_test.hpp"
@@ -314,5 +316,23 @@ main(int argc, char **argv) {
     list->ExecuteIndirect(signature.Get(), 1, commands.Get(), sizeof(D3D12_DISPATCH_RAYS_DESC), nullptr, 0);
   }, nothing));
   check(2, 0x26, 1, 0x17);
+
+  step("dispatches of an empty grid, then one of the whole grid");
+  record(table[1], identifiers[1], 0x28);
+  record(table[2], identifiers[0], 0x18);
+  CHECK(run(
+      [&] {
+        for (UINT empty = 0; empty < 3; empty++) {
+          auto d = dispatch(at(1));
+          (empty == 0 ? d.Width : empty == 1 ? d.Height : d.Depth) = 0;
+          list->DispatchRays(&d);
+        }
+        list->SetComputeRootUnorderedAccessView(1, results->GetGPUVirtualAddress() + rays * sizeof(UINT));
+        auto d = dispatch(at(2));
+        list->DispatchRays(&d);
+      },
+      nothing
+  ));
+  check(0, 0, 1, 0x18);
   return verdict();
 }
