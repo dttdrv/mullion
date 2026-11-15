@@ -1508,6 +1508,31 @@ convert_dxil(
       auto result = ir.CreateSelect(zero, Constant::getAllOnesValue(type), &I);
       I.replaceUsesWithIf(result, [&](Use &use) { return use.getUser() != result; });
     }
+  // DXC marks every operation that is not precise as fast, which LLVM reads as all seven flags, nnan and ninf among
+  // them: the passes here and Metal's compiler then fold what tells a NaN or an infinity apart (x != x, a - a,
+  // a * 0), and D3D's shaders compute with both (D3D11.3 3.1.1, 3.1.2: NaN and infinity propagate). so a comparison
+  // carries no flag, and no other operation assumes its operands or result are neither. a stage before the
+  // rasterizer also keeps each operation as written, as a DXBC shader's do (Converter::UseFastMath): two shaders
+  // that compute a position with the same expression then give the same depth, whatever else each one does
+  if (start) {
+    bool as_written = ctx.shader_type != D3D10_SB_PIXEL_SHADER && ctx.shader_type != D3D11_SB_COMPUTE_SHADER &&
+                      ctx.shader_type != kShaderLibrary;
+    for (auto &I : instructions(*start)) {
+      if (!isa<FPMathOperator>(&I))
+        continue;
+      if (isa<FCmpInst>(&I)) {
+        I.setFast(false);
+        continue;
+      }
+      I.setHasNoNaNs(false);
+      I.setHasNoInfs(false);
+      if (as_written) {
+        I.setHasAllowContract(false);
+        I.setHasAllowReassoc(false);
+        I.setHasAllowReciprocal(false);
+      }
+    }
+  }
   // one Metal function can run several DXIL functions (a hull shader's phases, the stages tessellation fuses), each
   // linked in on its own: only this one keeps its body, under a name no other takes, and module variables stay private
   // to it
