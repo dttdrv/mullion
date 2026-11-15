@@ -4129,16 +4129,20 @@ public:
     }
     if (!encode_binding)
       return;
+    // a command has root arguments or a vertex buffer table of its own where the signature changes them. the
+    // commands of a signature that does not read the list's one copy, a stride of nothing apart
     cmd->rootsig_qwords = EncodeRootArgument(
-        rootsig_graphics_.ptr(), rootarg_graphics_staging_, MaxCommandCount, sig->UpdateRootArguments
+        rootsig_graphics_.ptr(), rootarg_graphics_staging_, sig->UpdateRootArguments ? MaxCommandCount : 1,
+        sig->UpdateRootArguments
     );
     cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
-    cmd->rootsig_qwords_stride = rootsig_graphics_->UploadQwords;
+    cmd->rootsig_qwords_stride = sig->UpdateRootArguments ? rootsig_graphics_->UploadQwords : 0;
     cmd->static_samplers = EncodeStaticSamplers(rootsig_graphics_.ptr());
     cmd->static_samplers += allocator_->gpu_heap_buffer_address_;
-    auto [VBOffset, VBStride] = PopulateVertexBufferTable(MaxCommandCount, sig->UpdateVertexBuffers);
+    auto [VBOffset, VBStride] =
+        PopulateVertexBufferTable(sig->UpdateVertexBuffers ? MaxCommandCount : 1, sig->UpdateVertexBuffers);
     cmd->vertex_buffer = allocator_->gpu_heap_buffer_address_ + VBOffset;
-    cmd->vertex_argbuf_stride = VBStride;
+    cmd->vertex_argbuf_stride = sig->UpdateVertexBuffers ? VBStride : 0;
     ResetIndirectState(sig, false);
     if (!cmd->draws)
       return;
