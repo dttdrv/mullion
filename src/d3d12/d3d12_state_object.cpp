@@ -35,15 +35,117 @@ ExportName(std::string_view function) {
   return std::wstring(function.begin(), function.end());
 }
 
-struct RayLibrary {
-  sm50_shader_t shader = nullptr;
+// a DXIL library. its conversion state is made when a conversion first asks for it: a state object whose shaders are
+// all stored parses no library
+class RayLibrary {
+  mullion::mutex mutex_;
+  // the container, until the state is made of it
+  std::string bytecode_;
+  sm50_shader_t shader_ = nullptr;
+
+public:
   // of its container (ShaderDigest)
   Sha1Digest digest{};
+
+  RayLibrary(const D3D12_SHADER_BYTECODE &container) :
+      bytecode_((const char *)container.pShaderBytecode, container.BytecodeLength),
+      digest(ShaderDigest(container.pShaderBytecode, container.BytecodeLength)) {}
+
+  // null, with `error`, for a container that is no usable library
+  sm50_shader_t
+  Shader(SM50Error &error) {
+    std::lock_guard lock(mutex_);
+    if (!shader_ && !SM50Initialize(bytecode_.data(), bytecode_.size(), &shader_, nullptr, &error))
+      bytecode_ = {};
+    return shader_;
+  }
+
   ~RayLibrary() {
-    if (shader)
-      SM50Destroy(shader);
+    if (shader_)
+      SM50Destroy(shader_);
   }
 };
+
+// a library's ray tracing shaders, as SM50GetRayShader gives them
+using RayShaderList = std::vector<std::pair<std::string, SM50_RAY_SHADER_INFO>>;
+
+// a stored list: this, each shader's information, its name's length and its name, and the SHA-1 of it all. the size
+// tells a record of another layout from this one, and the digest a damaged one
+struct RayShaderListRecord {
+  char magic[8];
+  uint32_t information_size;
+  uint32_t shaders;
+};
+constexpr char kRayShaderListMagic[] = "SM50RAYS";
+static_assert(sizeof(kRayShaderListMagic) - 1 == sizeof(RayShaderListRecord::magic));
+
+Sha1Digest
+RayShaderListKey(const Sha1Digest &library) {
+  Sha1HashState h;
+  h.update(kRayShaderListMagic, sizeof(kRayShaderListMagic));
+  h.update(library);
+  return h.final();
+}
+
+// the list of the library with this digest, as an earlier state object or an earlier process stored it in the shader
+// cache, whose table belongs to one AIRCONV_VERSION. false when there is none, or no whole one
+bool
+StoredRayShaders(ShaderCache &cache, const Sha1Digest &library, RayShaderList &shaders) {
+  WMT::Reference<WMT::DispatchData> stored;
+  if (auto reader = cache.getReader())
+    stored = reader.get(RayShaderListKey(library));
+  if (!stored)
+    return false;
+  std::string bytes(stored.getBytes(nullptr, 0), '\0');
+  stored.getBytes(bytes.data(), bytes.size());
+  RayShaderListRecord record;
+  if (bytes.size() < sizeof(record) + sizeof(Sha1Digest))
+    return false;
+  size_t body = bytes.size() - sizeof(Sha1Digest);
+  memcpy(&record, bytes.data(), sizeof(record));
+  if (memcmp(record.magic, kRayShaderListMagic, sizeof(record.magic)) ||
+      record.information_size != sizeof(SM50_RAY_SHADER_INFO) ||
+      memcmp(Sha1HashState::compute(bytes.data(), body).data, bytes.data() + body, sizeof(Sha1Digest)))
+    return false;
+  RayShaderList read;
+  size_t at = sizeof(record);
+  for (uint32_t i = 0; i < record.shaders; i++) {
+    SM50_RAY_SHADER_INFO info;
+    uint32_t length;
+    if (body - at < sizeof(info) + sizeof(length))
+      return false;
+    memcpy(&info, bytes.data() + at, sizeof(info));
+    memcpy(&length, bytes.data() + at + sizeof(info), sizeof(length));
+    at += sizeof(info) + sizeof(length);
+    if (body - at < length)
+      return false;
+    read.emplace_back(bytes.substr(at, length), info);
+    at += length;
+  }
+  if (at != body)
+    return false;
+  shaders = std::move(read);
+  return true;
+}
+
+void
+StoreRayShaders(ShaderCache &cache, const Sha1Digest &library, const RayShaderList &shaders) {
+  auto writer = cache.getWriter();
+  if (!writer)
+    return;
+  RayShaderListRecord record{{}, sizeof(SM50_RAY_SHADER_INFO), uint32_t(shaders.size())};
+  memcpy(record.magic, kRayShaderListMagic, sizeof(record.magic));
+  std::string bytes((const char *)&record, sizeof(record));
+  for (auto &[name, info] : shaders) {
+    uint32_t length = name.size();
+    bytes.append((const char *)&info, sizeof(info));
+    bytes.append((const char *)&length, sizeof(length));
+    bytes.append(name);
+  }
+  auto digest = Sha1HashState::compute(bytes.data(), bytes.size());
+  bytes.append((const char *)digest.data, sizeof(digest));
+  writer.set(RayShaderListKey(library), WMT::MakeDispatchData(bytes.data(), bytes.size()));
+}
 
 // a function of a library that is a ray tracing shader
 struct RayShader {
@@ -339,24 +441,30 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
   AddLibrary(
       const D3D12_DXIL_LIBRARY_DESC &desc, std::vector<std::pair<const RayLibrary *, LibrarySubobject>> &subobjects
   ) {
-    auto library = std::make_shared<RayLibrary>();
     if (!ShaderContainerHolds(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength) ||
         !ShaderFeaturesSupported(device_, desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength))
       return FAIL(E_INVALIDARG);
-    SM50Error error;
-    if (SM50Initialize(
-            desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength, &library->shader, nullptr, &error
-        )) {
-      ERR("CreateStateObject: a DXIL library is not usable: ", SM50GetErrorMessageString(error));
-      return E_INVALIDARG;
+    auto library = std::make_shared<RayLibrary>(desc.DXILLibrary);
+    // its shaders, which a library that was parsed before has stored: such a library was usable
+    auto &cache = ShaderCache::getInstance(WMTMetalVersion(device_->GetMetalVersion()));
+    RayShaderList listed;
+    if (!StoredRayShaders(cache, library->digest, listed)) {
+      SM50Error error;
+      auto shader = library->Shader(error);
+      if (!shader) {
+        ERR("CreateStateObject: a DXIL library is not usable: ", SM50GetErrorMessageString(error));
+        return E_INVALIDARG;
+      }
+      char name[1024];
+      SM50_RAY_SHADER_INFO info;
+      for (uint32_t i = 0; SM50GetRayShader(shader, i, name, sizeof(name), &info); i++)
+        listed.emplace_back(name, info);
+      StoreRayShaders(cache, library->digest, listed);
     }
     std::unordered_map<std::wstring, RayShader> shaders;
-    char name[1024];
-    SM50_RAY_SHADER_INFO info;
-    for (uint32_t i = 0; SM50GetRayShader(library->shader, i, name, sizeof(name), &info); i++)
+    for (auto &[name, info] : listed)
       shaders.insert({ExportName(name), {library, name, info}});
     Export(shaders, {desc.pExports, desc.NumExports}, shaders_);
-    library->digest = ShaderDigest(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength);
     libraries_.push_back(library);
     if (device_->NamesPasses())
       this->name += library->digest.string() + " ";
@@ -460,10 +568,22 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
         data.static_samplers = root->StaticSamplersAddress;
         return data;
       };
+      SM50Error conversion_error;
+      auto unusable = [&](const RayLibrary &library) {
+        ERR("CreateStateObject: the DXIL library ", library.digest.string(),
+            " is not usable: ", SM50GetErrorMessageString(conversion_error));
+        return nullptr;
+      };
+      auto converted = shader.library->Shader(conversion_error);
+      if (!converted)
+        return unusable(*shader.library);
       std::vector<sm50_shader_t> linkable;
       if (links)
-        for (auto &library : libraries)
-          linkable.push_back(library->shader);
+        for (auto &library : libraries) {
+          linkable.push_back(library->Shader(conversion_error));
+          if (!linkable.back())
+            return unusable(*library);
+        }
       SM50_SHADER_LIBRARIES_DATA linked{nullptr, SM50_SHADER_LIBRARIES, linkable.data(), (uint32_t)linkable.size()};
       SM50_SHADER_RAY_SHADER_DATA ray{&linked, SM50_SHADER_RAY_SHADER, shader.function.c_str()};
       void *arguments = &ray;
@@ -477,10 +597,8 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
       common.simd_width = device_->GetSIMDWidth();
 
       SM50ShaderBitcode bitcode;
-      SM50Error conversion_error;
       if (auto result = SM50Compile(
-              shader.library->shader, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, name.c_str(), &bitcode,
-              &conversion_error
+              converted, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, name.c_str(), &bitcode, &conversion_error
           )) {
         unresolved = result == SM50_COMPILE_UNRESOLVED;
         if (!unresolved)
