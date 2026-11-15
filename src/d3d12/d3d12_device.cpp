@@ -593,11 +593,22 @@ public:
       lock.unlock();
       auto start = std::chrono::steady_clock::now();
       WMT::Reference<WMT::Error> error;
+      // every shard was lost to a fault in Metal and no new one could be made
+      if (archives_.empty())
+        return;
       auto path = ShardPath(archives_.size() - 1);
       uint64_t target;
       {
         std::lock_guard whole(archive_lock);
-        archives_.back().serialize(path.c_str(), error);
+        if (!archives_.back().serialize(path.c_str(), error)) {
+          // Metal faulted writing the shard and holds its queue from then on, so a pipeline looked up in it, and its
+          // release, would wait for good: the shard is left as it is, with the pipelines it held, and is no longer
+          // looked up. those pipelines are compiled again by the next launch
+          ERR("Metal faulted writing the pipeline archive ", path, "; its ", shard_archived_, " pipelines are not kept");
+          archives_.back().handle = NULL_OBJECT_HANDLE;
+          archives_.pop_back();
+          archive_handles_.pop_back();
+        }
         // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
         // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")
         WMT::Reference<WMT::Error> unused;
