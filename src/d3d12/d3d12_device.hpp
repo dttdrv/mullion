@@ -905,7 +905,8 @@ public:
   // the address alone, and what ends with it (the buffer's acceleration structures)
   virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
-  // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
+  // the buffer an address lies in, or none. pEnd, when given, is where the addresses that find the same buffer end:
+  // its end, or the next buffer's start
   virtual BufferAllocation *
   LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset, uint64_t *pEnd = nullptr) = 0;
 

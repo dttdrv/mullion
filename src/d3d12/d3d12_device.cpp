@@ -2654,6 +2654,11 @@ public:
       return {};
     }
     --iter;
+    // an address past the end of the buffer below it is in no buffer: between two, or of one that is gone
+    if (VA - iter->first >= iter->second->info().length) {
+      *pOffset = 0;
+      return {};
+    }
     if (pEnd)
       *pEnd = std::min(*pEnd, iter->first + iter->second->info().length);
     *pOffset = VA - iter->first;
