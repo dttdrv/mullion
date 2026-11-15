@@ -163,11 +163,25 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   D3D12_COMMAND_LIST_TYPE type_;
   GPURecording *records_ = nullptr;
 
-  // where in an arena the lists record next, in the last of the runs the allocator holds of it
+  // where in an arena the lists record next, in the runs the allocator holds of it: the first `taken` are those the
+  // lists recorded into since the last Reset, the last of them the one they record in, and the rest are kept from
+  // earlier recordings for the lists to go on in. `used` is the Reset a run was last recorded into before
   struct Cursor {
-    size_t offset = 0, end = 0;
-    std::vector<RecordingArena::Run> runs;
+    size_t offset = 0, end = 0, taken = 0;
+    struct Kept {
+      RecordingArena::Run run;
+      uint64_t used;
+    };
+    std::vector<Kept> runs;
   };
+  // an allocator records about as much after each Reset, so it keeps its runs across one: taking each from the
+  // device's arena again is a search under the lock every recording thread shares. a new run is as large as all
+  // the allocator holds, up to kMostRun, so a long list takes few while an allocator of short lists holds a block
+  // (a title with a list per thread, pass and frame has hundreds of allocators in one arena). a run no list
+  // recorded into for kIdleResets Resets goes back to the device, for its other allocators
+  static constexpr size_t kMostRun = size_t(4) << 20;
+  static constexpr uint64_t kIdleResets = 50;
+  uint64_t resets_ = 0;
   // the device's arenas (RecordingArena): commands, and what the GPU reads
   void *cpu_heap_ = nullptr;
   Cursor cpu_cursor_;
@@ -303,8 +317,8 @@ public:
 
   ~MTLD3D12CommandAllocatorImpl();
 
-  // gives what the lists recorded into back to the device
-  void ReleaseRuns();
+  // ends what the lists recorded, and gives the runs no list recorded into for `Idle` Resets back to the device
+  void ReleaseRuns(uint64_t Idle);
   void Discard(EncoderData *Root);
   // what the lists recorded and what their passes use, taken out of the allocator for the queues to keep while
   // lists they were given are still to complete (Reset)
@@ -361,33 +375,47 @@ public:
     return exhausted_ ? FAIL(E_OUTOFMEMORY) : S_OK;
   }
 
-  // where in an arena `Length` bytes are: after the cursor, or in a new run of the arena's when the cursor's has no
-  // room. an arena without room ends the list (EndRecord, and Close cuts what it recorded off): what it records from
-  // then on goes to memory of the allocator's own, which no list holds, each allocation its own until Reset: a pass's
-  // commands are linked into the pass as they come, so one in the pass's memory would overwrite it
+  // where in an arena `Length` bytes are: after the cursor, or in the next run with room for them when the cursor's
+  // has none: one the allocator kept, else a new one of the arena's. an arena without room ends the list (EndRecord,
+  // and Close cuts what it recorded off): what it records from then on goes to memory of the allocator's own, which
+  // no list holds, each allocation its own until Reset: a pass's commands are linked into the pass as they come, so
+  // one in the pass's memory would overwrite it
   std::optional<size_t>
   Allocate(RecordingArena &arena, Cursor &cursor, size_t Length, size_t Alignment) {
     auto aligned = cursor.offset + align_forward_adjustment((void *)cursor.offset, Alignment);
     if (unlikely(Length > cursor.end - std::min(aligned, cursor.end))) {
-      // a run starts at a block, which is aligned for anything recorded
-      auto run = arena.Acquire(Length);
-      // what the GPU reads grows, and a list goes on in a buffer that covers its new run (GrowArguments)
-      if (&arena == &device_->recording.arguments) {
-        for (size_t seen = arena.Usable(); !run && GrowArguments(seen); seen = arena.Usable())
+      auto kept = std::find_if(cursor.runs.begin() + cursor.taken, cursor.runs.end(), [&](auto &unused) {
+        return unused.run.length >= Length;
+      });
+      if (kept == cursor.runs.end()) {
+        size_t held = 0;
+        for (auto &has : cursor.runs)
+          held += has.run.length;
+        // a run starts at a block, which is aligned for anything recorded
+        auto run = arena.Acquire(std::max(Length, std::min(held, kMostRun)));
+        // an arena without that much in one piece may still have what is asked for
+        if (!run && held > Length)
           run = arena.Acquire(Length);
-        if (run && run->offset + run->length > gpu_heap_buffer_length_)
-          TakeLastArgumentsBuffer();
+        // what the GPU reads grows, and a list goes on in a buffer that covers its new run (GrowArguments)
+        if (&arena == &device_->recording.arguments) {
+          for (size_t seen = arena.Usable(); !run && GrowArguments(seen); seen = arena.Usable())
+            run = arena.Acquire(Length);
+          if (run && run->offset + run->length > gpu_heap_buffer_length_)
+            TakeLastArgumentsBuffer();
+        }
+        if (!run) {
+          if (!std::exchange(exhausted_, true))
+            ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
+          spill_.emplace_back(Length + Alignment);
+          auto at = (size_t)spill_.back().data();
+          return at + align_forward_adjustment((void *)at, Alignment) - (size_t)arena.base;
+        }
+        kept = cursor.runs.insert(cursor.runs.end(), {*run, resets_});
       }
-      if (!run) {
-        if (!std::exchange(exhausted_, true))
-          ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
-        spill_.emplace_back(Length + Alignment);
-        auto at = (size_t)spill_.back().data();
-        return at + align_forward_adjustment((void *)at, Alignment) - (size_t)arena.base;
-      }
-      cursor.runs.push_back(*run);
-      aligned = run->offset;
-      cursor.end = run->offset + run->length;
+      std::iter_swap(kept, cursor.runs.begin() + cursor.taken);
+      auto &run = cursor.runs[cursor.taken++].run;
+      aligned = run.offset;
+      cursor.end = run.offset + run.length;
     }
     cursor.offset = aligned + Length;
     return aligned;

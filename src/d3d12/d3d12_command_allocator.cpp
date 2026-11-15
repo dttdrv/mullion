@@ -179,7 +179,7 @@ MTLD3D12CommandAllocatorImpl::~MTLD3D12CommandAllocatorImpl() {
     for (auto &used : icb_)
       device_->indirect_command_buffers.Give(std::move(used));
   }
-  ReleaseRuns();
+  ReleaseRuns(0);
   delete records_;
 }
 
@@ -260,8 +260,14 @@ MTLD3D12CommandAllocatorImpl::Retire() {
   retired->device = device_;
   // a deque's elements stay where they are when it is moved: the queues hold the lists' roots
   retired->lists = std::exchange(encoder_lists_, {});
-  retired->commands = std::exchange(cpu_cursor_, {}).runs;
-  retired->arguments = std::exchange(gpu_cursor_, {}).runs;
+  // the runs the lists recorded into; those kept from before them stay the allocator's
+  for (auto [cursor, runs] :
+       {std::pair{&cpu_cursor_, &retired->commands}, std::pair{&gpu_cursor_, &retired->arguments}}) {
+    for (size_t i = 0; i < cursor->taken; i++)
+      runs->push_back(cursor->runs[i].run);
+    cursor->runs.erase(cursor->runs.begin(), cursor->runs.begin() + cursor->taken);
+    cursor->offset = cursor->end = cursor->taken = 0;
+  }
   retired->spill = std::exchange(spill_, {});
   retired->records.reset(std::exchange(records_, records_ ? new GPURecording : nullptr));
   // the indirect command buffers the lists run go to the device's pool after them, not to the next lists
@@ -339,17 +345,24 @@ MTLD3D12CommandAllocatorImpl::TakeLastArgumentsBuffer() {
 }
 
 void
-MTLD3D12CommandAllocatorImpl::ReleaseRuns() {
+MTLD3D12CommandAllocatorImpl::ReleaseRuns(uint64_t Idle) {
   for (auto &list : encoder_lists_)
     Discard(&list);
   encoder_lists_.clear();
   if (records_)
     records_->Clear();
+  resets_++;
   for (auto [arena, cursor] : {std::pair{&device_->recording.commands, &cpu_cursor_},
                               std::pair{&device_->recording.arguments, &gpu_cursor_}}) {
-    for (auto &run : cursor->runs)
-      arena->Release(run);
-    *cursor = {};
+    for (size_t i = 0; i < cursor->taken; i++)
+      cursor->runs[i].used = resets_;
+    std::erase_if(cursor->runs, [&](auto &kept) {
+      if (resets_ - kept.used < Idle)
+        return false;
+      arena->Release(kept.run);
+      return true;
+    });
+    cursor->offset = cursor->end = cursor->taken = 0;
   }
 }
 
@@ -396,7 +409,7 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
     gpu_heap_buffer_ = last.buffer, gpu_heap_buffer_address_ = last.address, gpu_heap_buffer_length_ = last.length;
   }
   cpu_heap_ = recording.commands.base, gpu_heap_ = recording.arguments.base;
-  ReleaseRuns();
+  ReleaseRuns(kIdleResets);
   exhausted_ = false;
   spill_.clear();
 
