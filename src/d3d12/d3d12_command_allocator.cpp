@@ -237,7 +237,8 @@ struct MTLD3D12CommandAllocatorImpl::Retired {
   std::unique_ptr<GPURecording> records;
   std::vector<PooledICB> icbs;
   std::vector<Rc<Buffer>> sparse_clear_texels;
-  std::vector<WMT::Reference<WMT::Buffer>> visibility, depth_bounds_samples;
+  std::vector<VisibilityWindow> visibility;
+  std::vector<WMT::Reference<WMT::Buffer>> depth_bounds_samples;
   std::vector<std::shared_ptr<AccelerationStructure>> acceleration_structures;
   std::vector<std::shared_ptr<const AccelerationStructureInputs>> acceleration_structure_inputs;
   std::vector<TempBuffer> temp_buffers;
@@ -426,7 +427,9 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
     icb_pool_.emplace(used.key, std::move(used));
   icb_.clear();
   sparse_clear_texels_.clear();
-  visibility_.clear();
+  // the lists that counted in the windows have completed (Reset): Metal has stored their counts
+  std::erase_if(visibility_, [](auto &window) { return !window; });
+  visibility_kept_ = std::exchange(visibility_, {});
   visibility_used_ = kVisibilityWindow;
   depth_bounds_samples_.clear();
   depth_bounds_length_ = 0;
