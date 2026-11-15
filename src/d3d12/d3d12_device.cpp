@@ -373,6 +373,10 @@ public:
     }
     format_inspector_.Inspect(GetMTLDevice());
     keep_structure_inputs = Config::getInstance().getOption<bool>("d3d12.keepAccelerationStructureInputs", true);
+    emulate_depth_bounds = Config::getInstance().getOption<bool>("d3d12.emulateDepthBounds", false);
+    timestamp_queries = Config::getInstance().getOption<bool>("d3d12.timestampQueries", false);
+    immediate_markers = Config::getInstance().getOption<bool>("d3d12.immediateMarkers", false);
+    report_emulated_features = Config::getInstance().getOption<bool>("d3d12.reportEmulatedFeatures", false);
     
     WMTDepthStencilInfo info{};
     info.depth_compare_function = WMTCompareFunctionAlways;
@@ -874,6 +878,13 @@ public:
       CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7));
       CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
       CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &root, sizeof(root));
+      // the level is the implementation's: tiers d3d12.reportEmulatedFeatures leaves out are still there for an
+      // application that asks for the level and not for them
+      if (!report_emulated_features) {
+        o.ConservativeRasterizationTier = D3D12_CONSERVATIVE_RASTERIZATION_TIER_3;
+        o6.VariableShadingRateTier = D3D12_VARIABLE_SHADING_RATE_TIER_2;
+        o7.SamplerFeedbackTier = D3D12_SAMPLER_FEEDBACK_TIER_1_0;
+      }
       bool level_12_2 =
           model.HighestShaderModel >= D3D_SHADER_MODEL_6_5 && o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 &&
           o6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_2 &&
@@ -943,7 +954,9 @@ public:
       out->ROVsSupported = TRUE;
       // emulated: the mesh stage grows triangles, degenerate ones too, and the pixel shader takes the pixels they
       // overlap and knows those inside (airconv)
-      out->ConservativeRasterizationTier = D3D12_CONSERVATIVE_RASTERIZATION_TIER_3;
+      out->ConservativeRasterizationTier = report_emulated_features
+                                               ? D3D12_CONSERVATIVE_RASTERIZATION_TIER_3
+                                               : D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
       out->MaxGPUVirtualAddressBitsPerResource = 48;
       out->StandardSwizzle64KBSupported = FALSE;
       out->CrossNodeSharingTier = D3D12_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
@@ -968,7 +981,9 @@ public:
       out->DepthBoundsTestSupported = TRUE;
       // every Apple GPU family places samples where a render pass says (Metal feature set tables), one pattern for
       // all pixels
-      out->ProgrammableSamplePositionsTier = D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
+      out->ProgrammableSamplePositionsTier = report_emulated_features
+                                                 ? D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1
+                                                 : D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_NOT_SUPPORTED;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS3: {
@@ -1042,7 +1057,8 @@ public:
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS7 *>(pFeatureData);
       out->MeshShaderTier = D3D12_MESH_SHADER_TIER_1;
       // 1.0 would need the first mip and slice of a paired texture's view in the shader
-      out->SamplerFeedbackTier = D3D12_SAMPLER_FEEDBACK_TIER_1_0;
+      out->SamplerFeedbackTier =
+          report_emulated_features ? D3D12_SAMPLER_FEEDBACK_TIER_1_0 : D3D12_SAMPLER_FEEDBACK_TIER_NOT_SUPPORTED;
       return S_OK;
     }
     case D3D12_FEATURE_SHADER_CACHE: {
@@ -1184,8 +1200,9 @@ public:
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS6 *>(pFeatureData);
       out->AdditionalShadingRatesSupported = FALSE;
       out->PerPrimitiveShadingRateSupportedWithViewportIndexing = FALSE;
-      out->VariableShadingRateTier = D3D12_VARIABLE_SHADING_RATE_TIER_2;
-      out->ShadingRateImageTileSize = 16;
+      out->VariableShadingRateTier = report_emulated_features ? D3D12_VARIABLE_SHADING_RATE_TIER_2
+                                                              : D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED;
+      out->ShadingRateImageTileSize = report_emulated_features ? 16 : 0;
       out->BackgroundProcessingSupported = FALSE;
       return S_OK;
     }

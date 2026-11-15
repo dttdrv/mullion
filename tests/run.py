@@ -43,6 +43,17 @@ WHERE = {}
 # the Objective-C runtime keeps freed objects as zombies under the tests and says when one is messaged (Foundation,
 # NSDebug.h: NSZombieEnabled): an object released once too often names itself there, whatever its memory holds by then
 ZOMBIES = {"NSZombieEnabled": "YES"}
+# the options that do the work mullion.conf leaves out by default (docs/CODE.md 2.5)
+COMPLETE = ";".join(
+    f"{option}=True"
+    for option in (
+        "d3d12.emulateDepthBounds",
+        "d3d12.timestampQueries",
+        "d3d11.timestampQueries",
+        "d3d12.immediateMarkers",
+        "d3d12.reportEmulatedFeatures",
+    )
+)
 # every failure and skip that is known, by what the test said, with its cause: one that is not there, or that says
 # something else, is new, whatever the test is called
 KNOWN = Path(__file__).with_name("known.txt")
@@ -562,6 +573,8 @@ def environment(args):
     prefix = (args.prefix or builds[0] / "tests-prefix").resolve()
     unix, pe = libraries(builds)
     base = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG=os.environ.get("WINEDEBUG", "-all"), MULLION_SHADER_CACHE="0")
+    # the tests are of the complete implementation: the work mullion.conf leaves out by default is done
+    base.setdefault("MULLION_CONFIG", COMPLETE)
     if getattr(args, "benchmark", False):
         base.pop("NSZombieEnabled", None)
     else:

@@ -363,6 +363,8 @@ public:
       ctx_state.current_cmdlist->ended_queries.push_back(static_cast<MTLD3D11Query *>(pAsync));
       break;
     case D3D11_QUERY_TIMESTAMP: {
+      if (!TimestampQueriesSampled())
+        break;
       auto &queries = ctx_state.current_cmdlist->regions.back().issued_timestamp_query;
       auto query_id = queries.size();
       queries.push_back(static_cast<MTLD3D11TimestampQuery *>(pAsync));
