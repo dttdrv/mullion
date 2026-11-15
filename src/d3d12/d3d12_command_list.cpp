@@ -4327,6 +4327,22 @@ public:
       ID3D12Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, ID3D12Resource *pSrcResource,
       UINT SrcSubresource, D3D12_RECT *pSrcRect, DXGI_FORMAT Format, D3D12_RESOLVE_MODE ResolveMode
   ) {
+    // a source with one sample has nothing to resolve: its texels are the result, so it is a copy of the rectangle
+    // (Metal resolves only multisampled attachments). CopyTextureRegion opens the predication of its own
+    if (ResolveMode != D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK &&
+        ResolveMode != D3D12_RESOLVE_MODE_DECODE_SAMPLER_FEEDBACK && pDstResource && pSrcResource && pDstResource != pSrcResource) {
+      auto *single = static_cast<MTLD3D12Resource *>(pSrcResource);
+      if (single->texture && single->texture->sampleCount() <= 1 &&
+          static_cast<MTLD3D12Resource *>(pDstResource)->texture) {
+        D3D12_TEXTURE_COPY_LOCATION to{pDstResource, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = DstSubresource}};
+        D3D12_TEXTURE_COPY_LOCATION from{pSrcResource, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = SrcSubresource}};
+        D3D12_BOX box{};
+        if (pSrcRect)
+          box = {(UINT)pSrcRect->left, (UINT)pSrcRect->top, 0, (UINT)pSrcRect->right, (UINT)pSrcRect->bottom, 1};
+        CopyTextureRegion(&to, DstX, DstY, 0, &from, pSrcRect ? &box : nullptr);
+        return;
+      }
+    }
     PredicatedPasses predicated(this);
     if (ResolveMode == D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK ||
         ResolveMode == D3D12_RESOLVE_MODE_DECODE_SAMPLER_FEEDBACK) {
