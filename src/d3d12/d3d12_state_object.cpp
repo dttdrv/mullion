@@ -1083,9 +1083,13 @@ public:
                         std::min<uint64_t>(1, recursion) +
                     hit * (std::max<uint64_t>(recursion, 1) - 1) + 2 * most[SM50_RAY_SHADER_CALLABLE];
       // without callable recursion, DXR's ray recursion limit bounds every native call chain, regardless of spare
-      // bytes requested by SetPipelineStackSize (DXR spec, "Ray recursion limit"; Metal maxCallStackDepth)
-      if (!most[SM50_RAY_SHADER_CALLABLE])
-        max_call_depth_ = stack_size_;
+      // bytes requested by SetPipelineStackSize (DXR spec, "Ray recursion limit"; Metal maxCallStackDepth). DXR
+      // bounds no chain of callable shaders, and leaves the stack they need to the application: a size it sums
+      // from GetShaderStackSize is a call depth, but one it took from elsewhere, a count of bytes, is not, and would
+      // ask Metal for a stack that deep. the pipeline's depth stops at callable shaders nested as deep as DXR lets
+      // traces be declared, the one recursion it does bound, where the default has them two deep
+      max_call_depth_ =
+          stack_size_ + most[SM50_RAY_SHADER_CALLABLE] * (D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH - 2);
       if (pParent)
         stack_size_ = pParent->stack_size_;
     }
