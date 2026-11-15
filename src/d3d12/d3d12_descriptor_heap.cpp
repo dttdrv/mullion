@@ -141,7 +141,7 @@ TextureType(D3D12_SRV_DIMENSION dimension) {
   }
 }
 
-class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHeap> {
+class MTLD3D12DescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12DescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
@@ -499,17 +499,36 @@ public:
     return descriptors_[Index];
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12DescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    for (unsigned i = 0; i < CopyCount; i++) {
-      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->descriptors_[DescriptorTo + i] = descriptors_[From + i];
-      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->mapped_argument_buffer_[DescriptorTo + i] =
-          mapped_argument_buffer_[From + i];
-    }
+  static std::tuple<MTLD3D12DescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetShaderVisibleDescriptorHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12DescriptorHeapImpl *>(heap), index};
+  }
+
+  // a run of descriptors is its bytes: what shaders read, and what ClearUnorderedAccessView reads of a view
+  void
+  CopyTo(UINT From, MTLD3D12DescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    static_assert(
+        std::is_trivially_copyable_v<ShaderVisibleDescriptorCPUStorage> &&
+        std::is_trivially_copyable_v<ShaderVisibleDescriptorGPUStorage>
+    );
+    if (!Holds(From, CopyCount) || !pHeapTo->Holds(DescriptorTo, CopyCount))
+      return;
+    memcpy(&pHeapTo->descriptors_[DescriptorTo], &descriptors_[From], CopyCount * sizeof(descriptors_[0]));
+    memcpy(
+        &pHeapTo->mapped_argument_buffer_[DescriptorTo], &mapped_argument_buffer_[From],
+        CopyCount * sizeof(mapped_argument_buffer_[0])
+    );
+  }
+
+  // whether the heap has `Count` descriptors from `First`, and any: a run Direct3D defines
+  bool
+  Holds(UINT First, UINT Count) {
+    return Count && uint64_t(First) + Count <= descriptors_.size();
   }
 };
 
-class MTLD3D12RenderTargetDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12RenderTargetDescriptorHeap> {
+class MTLD3D12RenderTargetDescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12RenderTargetDescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
@@ -593,12 +612,18 @@ public:
     return render_targets_[Index];
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12RenderTargetDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    for (unsigned i = 0; i < CopyCount; i++) {
-      static_cast<MTLD3D12RenderTargetDescriptorHeapImpl *>(pHeapTo)->render_targets_[DescriptorTo + i] =
-          render_targets_[From + i];
-    }
+  static std::tuple<MTLD3D12RenderTargetDescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetRenderTargetHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12RenderTargetDescriptorHeapImpl *>(heap), index};
+  }
+
+  void
+  CopyTo(UINT From, MTLD3D12RenderTargetDescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    if (uint64_t(From) + CopyCount > render_targets_.size() ||
+        uint64_t(DescriptorTo) + CopyCount > pHeapTo->render_targets_.size())
+      return;
+    std::copy_n(render_targets_.begin() + From, CopyCount, pHeapTo->render_targets_.begin() + DescriptorTo);
   }
 };
 
@@ -611,7 +636,7 @@ struct SamplerGPUStorage {
 
 static_assert(sizeof(SamplerGPUStorage) == sizeof(SM50_SAMPLER_BORDER));
 
-class MTLD3D12SamplerDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12SamplerDescriptorHeap> {
+class MTLD3D12SamplerDescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12SamplerDescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
@@ -623,13 +648,18 @@ class MTLD3D12SamplerDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12Sample
   // the descriptors' borders follow them in the same memory
   SM50_SAMPLER_BORDER *borders_ = nullptr;
 
+  // where shaders find a descriptor's border, when it has one and the heap is one they read
+  uint64_t
+  BorderAddress(UINT Index) {
+    return borders_[Index].white_sampler && argument_buffer_gpu_address_
+               ? argument_buffer_gpu_address_ + (uintptr_t)&borders_[Index] - (uintptr_t)mapped_argument_buffer_
+               : 0;
+  }
+
   void
   SetBorder(UINT Index, const SM50_SAMPLER_BORDER &Border) {
     borders_[Index] = Border;
-    mapped_argument_buffer_[Index].border =
-        Border.white_sampler && argument_buffer_gpu_address_
-            ? argument_buffer_gpu_address_ + (uintptr_t)&borders_[Index] - (uintptr_t)mapped_argument_buffer_
-            : 0;
+    mapped_argument_buffer_[Index].border = BorderAddress(Index);
   }
 
 public:
@@ -776,16 +806,84 @@ public:
     return S_OK;
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12SamplerDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    auto to = static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(pHeapTo);
-    for (unsigned i = 0; i < CopyCount; i++) {
-      to->samplers_[DescriptorTo + i] = samplers_[From + i];
-      to->mapped_argument_buffer_[DescriptorTo + i] = mapped_argument_buffer_[From + i];
-      to->SetBorder(DescriptorTo + i, borders_[From + i]);
-    }
+  static std::tuple<MTLD3D12SamplerDescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetSamplerDescriptorHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(heap), index};
+  }
+
+  // a run of samplers is its bytes and its borders', but for each border's address, which is of the heap it is in
+  void
+  CopyTo(UINT From, MTLD3D12SamplerDescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    if (uint64_t(From) + CopyCount > samplers_.size() || uint64_t(DescriptorTo) + CopyCount > pHeapTo->samplers_.size())
+      return;
+    std::copy_n(samplers_.begin() + From, CopyCount, pHeapTo->samplers_.begin() + DescriptorTo);
+    std::copy_n(mapped_argument_buffer_ + From, CopyCount, pHeapTo->mapped_argument_buffer_ + DescriptorTo);
+    std::copy_n(borders_ + From, CopyCount, pHeapTo->borders_ + DescriptorTo);
+    for (UINT i = DescriptorTo; i < DescriptorTo + CopyCount; i++)
+      pHeapTo->mapped_argument_buffer_[i].border = pHeapTo->BorderAddress(i);
   }
 };
+
+// CopyDescriptors between two heaps of a type: each run that lies in one source range and one destination range
+template <typename Heap>
+static void
+CopyRuns(
+    MTLD3D12Device *pDevice, UINT DstRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *DstRangeStarts,
+    const UINT *DstRangeSizes, UINT SrcRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *SrcRangeStarts,
+    const UINT *SrcRangeSizes
+) {
+  UINT dst_range = 0, dst_done = 0, src_range = 0, src_done = 0;
+  while (dst_range < DstRangeCount && src_range < SrcRangeCount) {
+    UINT dst_size = DstRangeSizes ? DstRangeSizes[dst_range] : 1;
+    UINT src_size = SrcRangeSizes ? SrcRangeSizes[src_range] : 1;
+    UINT count = std::min(dst_size - dst_done, src_size - src_done);
+
+    auto [dst_heap, dst_first] = Heap::Find(pDevice, DstRangeStarts[dst_range]);
+    auto [src_heap, src_first] = Heap::Find(pDevice, SrcRangeStarts[src_range]);
+    src_heap->CopyTo(src_first + src_done, dst_heap, dst_first + dst_done, count);
+
+    dst_done += count;
+    src_done += count;
+    if (dst_done >= dst_size) {
+      ++dst_range;
+      dst_done = 0;
+    }
+    if (src_done >= src_size) {
+      ++src_range;
+      src_done = 0;
+    }
+  }
+}
+
+void
+CopyDescriptors(
+    MTLD3D12Device *pDevice, UINT DstDescriptorRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *DstDescriptorRangeOffsets,
+    const UINT *DstDescriptorRangeSizes, UINT SrcDescriptorRangeCount,
+    const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
+    D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
+) {
+  switch (DescriptorHeapType) {
+  case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
+    return CopyRuns<MTLD3D12DescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
+    return CopyRuns<MTLD3D12SamplerDescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
+  case D3D12_DESCRIPTOR_HEAP_TYPE_DSV:
+    return CopyRuns<MTLD3D12RenderTargetDescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  default:
+    return;
+  }
+}
 
 HRESULT
 CreateDescriptorHeap(
