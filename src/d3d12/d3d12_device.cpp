@@ -1525,56 +1525,10 @@ public:
       const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
       D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
   ) {
-    unsigned int dst_range_idx, dst_idx, src_range_idx, src_idx;
-    unsigned int dst_range_size, src_range_size, copy_count;
-
-    dst_range_idx = dst_idx = 0;
-    src_range_idx = src_idx = 0;
-    while (dst_range_idx < DstDescriptorRangeCount && src_range_idx < SrcDescriptorRangeCount) {
-      dst_range_size = DstDescriptorRangeSizes ? DstDescriptorRangeSizes[dst_range_idx] : 1;
-      src_range_size = SrcDescriptorRangeSizes ? SrcDescriptorRangeSizes[src_range_idx] : 1;
-
-      copy_count = std::min(dst_range_size - dst_idx, src_range_size - src_idx);
-
-      switch (DescriptorHeapType) {
-      case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV: {
-        auto [DstRangeHeap, DstRangeIndex] =
-            GetShaderVisibleDescriptorHeap(this, DstDescriptorRangeOffsets[dst_range_idx]);
-        auto [SrcRangeHeap, SrcRangeIndex] =
-            GetShaderVisibleDescriptorHeap(this, SrcDescriptorRangeOffsets[src_range_idx]);
-        SrcRangeHeap->CopyDescriptors(SrcRangeIndex + src_idx, DstRangeHeap, DstRangeIndex + dst_idx, copy_count);
-        break;
-      }
-
-      case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER: {
-        auto [DstRangeHeap, DstRangeIndex] = GetSamplerDescriptorHeap(this, DstDescriptorRangeOffsets[dst_range_idx]);
-        auto [SrcRangeHeap, SrcRangeIndex] = GetSamplerDescriptorHeap(this, SrcDescriptorRangeOffsets[src_range_idx]);
-        SrcRangeHeap->CopyDescriptors(SrcRangeIndex + src_idx, DstRangeHeap, DstRangeIndex + dst_idx, copy_count);
-        break;
-      }
-      case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
-      case D3D12_DESCRIPTOR_HEAP_TYPE_DSV: {
-        auto [DstRangeHeap, DstRangeIndex] = GetRenderTargetHeap(this, DstDescriptorRangeOffsets[dst_range_idx]);
-        auto [SrcRangeHeap, SrcRangeIndex] = GetRenderTargetHeap(this, SrcDescriptorRangeOffsets[src_range_idx]);
-        SrcRangeHeap->CopyDescriptors(SrcRangeIndex + src_idx, DstRangeHeap, DstRangeIndex + dst_idx, copy_count);
-        break;
-      }
-      default:
-        return;
-      }
-
-      dst_idx += copy_count;
-      src_idx += copy_count;
-
-      if (dst_idx >= dst_range_size) {
-        ++dst_range_idx;
-        dst_idx = 0;
-      }
-      if (src_idx >= src_range_size) {
-        ++src_range_idx;
-        src_idx = 0;
-      }
-    }
+    mullion::CopyDescriptors(
+        this, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes, DescriptorHeapType
+    );
   };
 
   void STDMETHODCALLTYPE
@@ -1582,8 +1536,8 @@ public:
       UINT DescriptorCount, const D3D12_CPU_DESCRIPTOR_HANDLE DstDescriptorRangeOffset,
       const D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeOffset, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
   ) {
-    CopyDescriptors(
-        1, &DstDescriptorRangeOffset, &DescriptorCount, 1, &SrcDescriptorRangeOffset, &DescriptorCount,
+    mullion::CopyDescriptors(
+        this, 1, &DstDescriptorRangeOffset, &DescriptorCount, 1, &SrcDescriptorRangeOffset, &DescriptorCount,
         DescriptorHeapType
     );
   };
