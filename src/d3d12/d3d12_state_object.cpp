@@ -5,6 +5,7 @@
 #include "d3d12_pipeline.hpp"
 #include "airconv_ray.h"
 #include "mullion_command_constants.hpp"
+#include "mullion_shader_cache.hpp"
 #include "com/com_pointer.hpp"
 #include "util_md5.hpp"
 #include "sha1/sha1_util.hpp"
@@ -36,6 +37,8 @@ ExportName(std::string_view function) {
 
 struct RayLibrary {
   sm50_shader_t shader = nullptr;
+  // of its container (ShaderDigest)
+  Sha1Digest digest{};
   ~RayLibrary() {
     if (shader)
       SM50Destroy(shader);
@@ -168,15 +171,29 @@ struct Association {
   std::pair<uint32_t, uint32_t> values{};
 };
 
-// a shader compiled with its root signatures
+// a shader compiled with its root signatures: the device's one of its key (MTLD3D12Device::ray_functions), whose
+// Metal function the key names. the slot is this process's, and nothing converted holds it
 struct RayFunction {
   MTLD3D12Device *device;
+  Sha1Digest key;
   uint32_t slot;
-  ID3D12RootSignature *global, *local;
+  Com<MTLD3D12RootSignature, false> global, local;
   WMT::Reference<WMT::Function> function;
   uint32_t calls = 0; // SM50_RAY_SHADER_CALLS
 
+  std::string
+  Name() const {
+    return "mullion_ray_shader_" + key.string();
+  }
+
   ~RayFunction() {
+    {
+      std::lock_guard lock(device->ray_functions.mutex);
+      // another of the key may have been made since the last reference to this one went
+      if (auto found = device->ray_functions.made.find(key);
+          found != device->ray_functions.made.end() && found->second.expired())
+        device->ray_functions.made.erase(found);
+    }
     device->FreeRayFunction(slot);
   }
 };
@@ -230,7 +247,7 @@ RayDispatchers(const std::vector<std::pair<uint32_t, const RayFunction *>> &shad
         continue;
       }
       direct.push_back(function->slot);
-      auto name = "mullion_ray_shader_" + std::to_string(function->slot);
+      auto name = function->Name();
       if (std::find(declared.begin(), declared.end(), function->slot) == declared.end()) {
         declared.push_back(function->slot);
         declarations += "[[visible]] void " + name + "(thread MullionRayContext &, thread void *, thread void *);\n";
@@ -339,10 +356,10 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     for (uint32_t i = 0; SM50GetRayShader(library->shader, i, name, sizeof(name), &info); i++)
       shaders.insert({ExportName(name), {library, name, info}});
     Export(shaders, {desc.pExports, desc.NumExports}, shaders_);
+    library->digest = ShaderDigest(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength);
     libraries_.push_back(library);
     if (device_->NamesPasses())
-      this->name +=
-          ShaderDigest(desc.DXILLibrary.pShaderBytecode, desc.DXILLibrary.BytecodeLength).string() + " ";
+      this->name += library->digest.string() + " ";
     for (auto &subobject : ReadSubobjects(desc.DXILLibrary)) {
       if (!desc.NumExports)
         subobjects.push_back({library.get(), subobject});
@@ -376,56 +393,121 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     return root;
   }
 
-  // `libraries`: those whose functions the shader may call
+  // the shader converted for its root signatures, as the device has it, the shader cache stores it, or a conversion
+  // now makes it. `libraries`: those whose functions the shader may call, this state object's
   std::shared_ptr<RayFunction>
   Compile(
       const RayShader &shader, ID3D12RootSignature *pGlobal, ID3D12RootSignature *pLocal,
-      std::span<const sm50_shader_t> libraries, bool &unresolved
+      std::span<const std::shared_ptr<RayLibrary>> libraries, bool &unresolved
   ) {
-    auto blob = [](ID3D12RootSignature *root, SM50_SHADER_COMPILATION_ARGUMENT_TYPE type, void *next) {
-      SM50_SHADER_ROOT_SIGNATURE_DATA data{next, type};
-      data.bytecode_length = static_cast<MTLD3D12RootSignature *>(root)->GetBlob(&data.bytecode);
-      data.static_samplers = static_cast<MTLD3D12RootSignature *>(root)->StaticSamplersAddress;
-      return data;
+    auto global_root = static_cast<MTLD3D12RootSignature *>(pGlobal),
+         local_root = static_cast<MTLD3D12RootSignature *>(pLocal);
+    // the address of the local root signature's static samplers is in the converted code
+    uint64_t local_samplers = local_root ? local_root->StaticSamplersAddress : 0;
+    bool links = shader.info.calls & SM50_RAY_SHADER_CALLS_LIBRARY;
+
+    // everything the conversion reads (convert_dxil_ray_shader). the function's name is the key's, so that what is
+    // stored is the same whatever slot the shader has
+    Sha1HashState h;
+    auto hash = [&](const auto &...values) { (h.update(values), ...); };
+    hash("d3d12 ray", uint32_t(AIRCONV_VERSION), device_->GetMTLDevice().registryID(), shader.library->digest);
+    hash(uint64_t(shader.function.size()));
+    h.update(shader.function.data(), shader.function.size());
+    hash(uint32_t(device_->GetMetalVersion()), uint32_t(device_->GetShaderFlags()), uint32_t(device_->GetSIMDWidth()));
+    hash(bool(global_root), bool(local_root));
+    if (global_root)
+      hash(global_root->Digest);
+    if (local_root)
+      hash(local_root->Digest, local_samplers);
+    // the libraries in the order a function is looked for in them
+    if (links)
+      for (auto &library : libraries)
+        hash(library->digest);
+    auto key = h.final();
+
+    auto &shared = device_->ray_functions;
+    auto made = [&]() -> std::shared_ptr<RayFunction> {
+      std::lock_guard lock(shared.mutex);
+      auto found = shared.made.find(key);
+      return found == shared.made.end() ? nullptr : std::static_pointer_cast<RayFunction>(found->second.lock());
     };
-    auto function = std::make_shared<RayFunction>(device_, device_->AllocateRayFunction(), pGlobal, pLocal);
+    if (auto function = made())
+      return function;
+
+    auto function = std::make_shared<RayFunction>(device_, key, device_->AllocateRayFunction());
+    function->global = global_root;
+    function->local = local_root;
     function->calls = shader.info.calls;
-    auto name = "mullion_ray_shader_" + std::to_string(function->slot);
-
-    SM50_SHADER_LIBRARIES_DATA linkable{nullptr, SM50_SHADER_LIBRARIES, libraries.data(), (uint32_t)libraries.size()};
-    SM50_SHADER_RAY_SHADER_DATA ray{&linkable, SM50_SHADER_RAY_SHADER, shader.function.c_str()};
-    void *arguments = &ray;
-    SM50_SHADER_ROOT_SIGNATURE_DATA local, global;
-    if (pLocal)
-      arguments = &(local = blob(pLocal, SM50_SHADER_ROOT_SIGNATURE2, arguments));
-    if (pGlobal)
-      arguments = &(global = blob(pGlobal, SM50_SHADER_ROOT_SIGNATURE, arguments));
-    SM50_SHADER_COMMON_DATA common{arguments, SM50_SHADER_COMMON, device_->GetMetalVersion()};
-    common.flags = device_->GetShaderFlags();
-    common.simd_width = device_->GetSIMDWidth();
-
-    SM50ShaderBitcode bitcode;
-    SM50Error error;
-    if (auto result = SM50Compile(
-            shader.library->shader, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, name.c_str(), &bitcode, &error
-        )) {
-      unresolved = result == SM50_COMPILE_UNRESOLVED;
-      if (!unresolved)
-        ERR("CreateStateObject: failed to compile ", shader.function, ": ", SM50GetErrorMessageString(error));
-      return nullptr;
-    }
-    SM50_COMPILED_BITCODE compiled;
-    SM50GetCompiledBitcode(bitcode, &compiled);
-    WMT::Reference<WMT::Error> err;
-    auto library = device_->GetMTLDevice().newLibrary(WMT::MakeDispatchData(compiled.Data, compiled.Size), err);
-    if (library)
-      function->function = library.newFunction(name.c_str());
+    auto name = function->Name();
+    auto load = [&](WMT::Reference<WMT::DispatchData> data, WMT::Reference<WMT::Error> &error) {
+      auto library = device_->GetMTLDevice().newLibrary(data, error);
+      return library ? library.newFunction(name.c_str()) : WMT::Reference<WMT::Function>{};
+    };
+    // an address in the code is this process's, so such a shader is not stored
+    auto &cache = ShaderCache::getInstance(WMTMetalVersion(device_->GetMetalVersion()));
+    auto reader = local_samplers ? WMT::CacheReader{} : cache.getReader();
+    auto writer = local_samplers ? WMT::CacheWriter{} : cache.getWriter();
+    WMT::Reference<WMT::Error> error;
+    if (reader)
+      if (auto stored = reader.get(key)) {
+        if (!(function->function = load(stored, error)) && writer)
+          writer.set(key, {});
+      }
     if (!function->function) {
-      ERR("CreateStateObject: no Metal function for ", shader.function, ": ",
-          err ? err.description().getUTF8String() : "the library has none of its name");
-      return nullptr;
+      auto blob = [](MTLD3D12RootSignature *root, SM50_SHADER_COMPILATION_ARGUMENT_TYPE type, void *next) {
+        SM50_SHADER_ROOT_SIGNATURE_DATA data{next, type};
+        data.bytecode_length = root->GetBlob(&data.bytecode);
+        data.static_samplers = root->StaticSamplersAddress;
+        return data;
+      };
+      std::vector<sm50_shader_t> linkable;
+      if (links)
+        for (auto &library : libraries)
+          linkable.push_back(library->shader);
+      SM50_SHADER_LIBRARIES_DATA linked{nullptr, SM50_SHADER_LIBRARIES, linkable.data(), (uint32_t)linkable.size()};
+      SM50_SHADER_RAY_SHADER_DATA ray{&linked, SM50_SHADER_RAY_SHADER, shader.function.c_str()};
+      void *arguments = &ray;
+      SM50_SHADER_ROOT_SIGNATURE_DATA local, global;
+      if (local_root)
+        arguments = &(local = blob(local_root, SM50_SHADER_ROOT_SIGNATURE2, arguments));
+      if (global_root)
+        arguments = &(global = blob(global_root, SM50_SHADER_ROOT_SIGNATURE, arguments));
+      SM50_SHADER_COMMON_DATA common{arguments, SM50_SHADER_COMMON, device_->GetMetalVersion()};
+      common.flags = device_->GetShaderFlags();
+      common.simd_width = device_->GetSIMDWidth();
+
+      SM50ShaderBitcode bitcode;
+      SM50Error conversion_error;
+      if (auto result = SM50Compile(
+              shader.library->shader, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, name.c_str(), &bitcode,
+              &conversion_error
+          )) {
+        unresolved = result == SM50_COMPILE_UNRESOLVED;
+        if (!unresolved)
+          ERR("CreateStateObject: failed to compile ", shader.function, ": ",
+              SM50GetErrorMessageString(conversion_error));
+        return nullptr;
+      }
+      SM50_COMPILED_BITCODE compiled;
+      SM50GetCompiledBitcode(bitcode, &compiled);
+      auto data = WMT::MakeDispatchData(compiled.Data, compiled.Size);
+      if (!(function->function = load(data, error))) {
+        ERR("CreateStateObject: no Metal function for ", shader.function, ": ",
+            error ? error.description().getUTF8String() : "the library has none of its name");
+        return nullptr;
+      }
+      if (writer)
+        writer.set(key, data);
     }
-    return function;
+    // another thread may have made the same meanwhile: a pipeline links one function of the name
+    std::shared_ptr<RayFunction> other;
+    {
+      std::lock_guard lock(shared.mutex);
+      auto &kept = shared.made[key];
+      if (!(other = std::static_pointer_cast<RayFunction>(kept.lock())))
+        kept = function;
+    }
+    return other ? other : function;
   }
 
 public:
@@ -701,9 +783,6 @@ public:
         association.collection = association.collection ? association.collection : this;
     }
 
-    std::vector<sm50_shader_t> linkable;
-    for (auto &library : libraries_)
-      linkable.push_back(library->shader);
     bool unresolved = false;
     // the subobject of a shader: the strongest association with the shader, by the name it exports under or,
     // from its own library, the name it has there, with its hit group ("Subobject associations for hit groups"), or
@@ -774,10 +853,6 @@ public:
         configuration((SubobjectKind)of, config->values);
       }
     };
-    // a shader compiles once for each pair of root signatures it is used with
-    std::map<std::tuple<sm50_shader_t, std::string, ID3D12RootSignature *, ID3D12RootSignature *>,
-             std::shared_ptr<RayFunction>>
-        compiled;
     auto function = [&](RayExport &to, unsigned index, const std::wstring &name, const std::wstring *group) {
       auto shader = shaders_.find(name);
       if (shader == shaders_.end()) {
@@ -800,11 +875,11 @@ public:
         return false;
       }
       auto previous = to.functions[index];
-      if (previous && same({Global, global}, {Global, previous->global}) &&
-          same({Local, local}, {Local, previous->local}))
+      if (previous && same({Global, global}, {Global, previous->global.ptr()}) &&
+          same({Local, local}, {Local, previous->local.ptr()}))
         return true;
-      auto &made = compiled[{shader->second.library->shader, shader->second.function, global, local}];
-      if (!made && !(made = Compile(shader->second, global, local, linkable, unresolved))) {
+      auto made = Compile(shader->second, global, local, libraries_, unresolved);
+      if (!made) {
         failed |= !deferred_ || !unresolved;
         return false;
       }

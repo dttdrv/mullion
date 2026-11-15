@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 115
+#define AIRCONV_VERSION 116
 
 #ifdef __cplusplus
 #include <string>
@@ -361,11 +361,13 @@ enum SM50_RAY_SHADER_KIND {
   SM50_RAY_SHADER_CALLABLE = 12,
 };
 
-/* what a ray tracing shader, or a function it calls, may call: TraceRay, CallShader. a call of a function the library
-   does not define may call either */
+/* what a ray tracing shader, or a function it calls, may call: TraceRay, CallShader, a function its library does not
+   define, which may call either. only a shader that calls such a function is converted with the functions of the
+   libraries it is given (SM50_SHADER_LIBRARIES) */
 enum SM50_RAY_SHADER_CALLS {
   SM50_RAY_SHADER_CALLS_TRACE = 1,
   SM50_RAY_SHADER_CALLS_CALLABLE = 2,
+  SM50_RAY_SHADER_CALLS_LIBRARY = 4,
 };
 
 struct SM50_RAY_SHADER_INFO {
