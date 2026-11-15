@@ -26,6 +26,7 @@
 #include "thread.hpp"
 #include "util_flags.hpp"
 #include "util_svector.hpp"
+#include <unordered_map>
 
 namespace mullion {
 
@@ -329,6 +330,8 @@ private:
   std::atomic<uint32_t> refcount_ = {0u};
 
   small_vector<TextureViewDescriptor, 4> viewDescriptors_;
+  // each of viewDescriptors_ by its fields as one word (ViewWord), which createView finds a view it has by
+  std::unordered_map<uint64_t, uint32_t> viewIndices_;
   mullion::shared_mutex mutex_;
   WMT::Device device_;
 };

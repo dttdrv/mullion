@@ -23,6 +23,14 @@
 
 namespace mullion {
 
+// a view's length in bytes as a descriptor keeps it, in 32 bits: a view of 4 GiB or more is its whole elements below
+// that, which a shader's bounds then hold it to
+static uint32_t
+ViewBytes(uint32_t Elements, uint32_t Stride) {
+  uint64_t bytes = uint64_t(Elements) * Stride;
+  return bytes <= UINT32_MAX ? uint32_t(bytes) : UINT32_MAX / Stride * Stride;
+}
+
 class MTLD3D12Buffer : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_RESOURCE_DESC desc_;
   D3D12_HEAP_PROPERTIES heap_props_;
@@ -211,8 +219,8 @@ public:
       UINT Stride = (ViewDesc.Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) ? 4 : ViewDesc.Buffer.StructureByteStride;
       Slice.firstElement = ViewDesc.Buffer.FirstElement;
       Slice.elementCount = ViewDesc.Buffer.NumElements;
-      Slice.byteOffset = Slice.firstElement * Stride;
-      Slice.byteLength = Slice.elementCount * Stride;
+      Slice.byteOffset = ViewDesc.Buffer.FirstElement * Stride;
+      Slice.byteLength = ViewBytes(ViewDesc.Buffer.NumElements, Stride);
       return Heap->AddShaderResourceView(Index, buffer.ptr(), Slice);
     }
 
@@ -230,8 +238,8 @@ public:
     Slice.firstElement = ViewDesc.Buffer.FirstElement * (Format.BytesPerTexel / MTLGetTexelSize(Format.BufferPixelFormat));
     Slice.elementCount = ViewDesc.Buffer.NumElements |
                          (Format.Flag & MTL_DXGI_FORMAT_EMULATED_RGB32 ? SM50_TEXEL_BUFFER_METADATA_RGB32 : 0);
-    Slice.byteOffset = Format.BytesPerTexel * ViewDesc.Buffer.FirstElement;
-    Slice.byteLength = Format.BytesPerTexel * ViewDesc.Buffer.NumElements;
+    Slice.byteOffset = ViewDesc.Buffer.FirstElement * Format.BytesPerTexel;
+    Slice.byteLength = ViewBytes(ViewDesc.Buffer.NumElements, Format.BytesPerTexel);
 
     auto view = buffer->createView(view_descriptor);
     return Heap->AddShaderResourceView(Index, buffer.ptr(), view, Slice);
@@ -261,8 +269,8 @@ public:
       UINT Stride = (ViewDesc.Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW) ? 4 : ViewDesc.Buffer.StructureByteStride;
       Slice.firstElement = ViewDesc.Buffer.FirstElement;
       Slice.elementCount = ViewDesc.Buffer.NumElements;
-      Slice.byteOffset = Slice.firstElement * Stride;
-      Slice.byteLength = Slice.elementCount * Stride;
+      Slice.byteOffset = ViewDesc.Buffer.FirstElement * Stride;
+      Slice.byteLength = ViewBytes(ViewDesc.Buffer.NumElements, Stride);
       if (!pCounter)
         return Heap->AddUnorderedAccessView(Index, buffer.ptr(), Slice, nullptr, 0);
 
@@ -289,8 +297,8 @@ public:
     BufferViewDescriptor view_descriptor{Format.BufferPixelFormat, true};
     Slice.firstElement = ViewDesc.Buffer.FirstElement;
     Slice.elementCount = ViewDesc.Buffer.NumElements;
-    Slice.byteOffset = Format.BytesPerTexel * ViewDesc.Buffer.FirstElement;
-    Slice.byteLength = Format.BytesPerTexel * ViewDesc.Buffer.NumElements;
+    Slice.byteOffset = ViewDesc.Buffer.FirstElement * Format.BytesPerTexel;
+    Slice.byteLength = ViewBytes(ViewDesc.Buffer.NumElements, Format.BytesPerTexel);
 
     auto view = buffer->createView(view_descriptor);
     return Heap->AddUnorderedAccessView(Index, buffer.ptr(), view, Slice);

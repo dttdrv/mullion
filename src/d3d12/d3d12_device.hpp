@@ -34,10 +34,12 @@
 #include "mullion_info.hpp"
 #include "mullion_presenter.hpp"
 #include "mullion_ring_bump_allocator.hpp"
+#include "mullion_sampler.hpp"
 #include "mullion_texture.hpp"
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
 #include "sha1/sha1_util.hpp"
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -46,6 +48,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -110,6 +113,11 @@ class SpatialScaler;
 
 bool ExperimentalShaderModelsEnabled();
 HRESULT DeserializeLibraryRootSignature(const void *Library, SIZE_T Size, LPCWSTR Name, REFIID riid, void **Deserializer);
+// the root signature a DXIL library defines as the global or local root signature subobject of a name
+HRESULT CreateLibraryRootSignature(
+    class MTLD3D12Device *pDevice, const void *pLibrary, SIZE_T LibraryLength, LPCWSTR Name, REFIID riid,
+    void **ppRootSignature
+);
 
 // a subobject a DXIL library defines, of the kinds a state object takes from one: their numbers are D3D12's
 // subobject types
@@ -442,6 +450,10 @@ public:
   uint32_t UploadQwords;
   uint32_t ParameterSlots;
   uint32_t const *SlotQwordOffsets;
+  // each parameter's type, beside its offset
+  D3D12_ROOT_PARAMETER_TYPE const *SlotTypes;
+  // how many 32-bit values each parameter of constants has; 0 for the others
+  uint32_t const *SlotConstants;
   // the root arguments holding the CBV/SRV/UAV and sampler heaps' GPU addresses, for directly indexed heaps
   // (D3D12_ROOT_SIGNATURE_FLAG_*_HEAP_DIRECTLY_INDEXED); ~0u without
   uint32_t ResourceHeapQword = ~0u;
@@ -663,6 +675,22 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
+// a sampler the device has made, and what of MTLD3D12Device::kSamplerEmulations pipelines emulate for it
+struct MTLD3D12CachedSampler {
+  Rc<Sampler> sampler;
+  unsigned emulations = 0;
+};
+
+// a sampler description's bytes, which have no padding: what the device's samplers are kept by
+using MTLD3D12SamplerKey = std::array<uint32_t, sizeof(D3D12_SAMPLER_DESC) / sizeof(uint32_t)>;
+
+struct MTLD3D12SamplerKeyHash {
+  size_t
+  operator()(const MTLD3D12SamplerKey &key) const {
+    return std::hash<std::string_view>()({reinterpret_cast<const char *>(key.data()), sizeof(key)});
+  }
+};
+
 class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
@@ -677,6 +705,11 @@ public:
   // it (MTLD3D12PipelineState::left_out)
   static constexpr unsigned kSamplerEmulations = SM50_SHADER_FLAG_NO_CUSTOM_BORDER | SM50_SHADER_FLAG_NO_MINMAX_FILTER;
   std::atomic<unsigned> sampler_emulations{0};
+  // the samplers made so far, by description (GetSampler): the same description again takes the one made for it
+  struct {
+    mullion::shared_mutex mutex;
+    std::unordered_map<MTLD3D12SamplerKey, MTLD3D12CachedSampler, MTLD3D12SamplerKeyHash> made;
+  } samplers;
   // the bytecode lean pipelines keep, once per shader however many pipelines share it
   struct {
     mullion::mutex mutex;
@@ -872,7 +905,8 @@ public:
   // the address alone, and what ends with it (the buffer's acceleration structures)
   virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
-  // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
+  // the buffer an address lies in, or none. pEnd, when given, is where the addresses that find the same buffer end:
+  // its end, or the next buffer's start
   virtual BufferAllocation *
   LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset, uint64_t *pEnd = nullptr) = 0;
 
@@ -1078,10 +1112,15 @@ HRESULT OpenFence(
     void **ppFence
 );
 
-void PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_STATIC_SAMPLER_DESC const &Desc);
-
 // true when the sampler needs a custom border color (SM50_SAMPLER_BORDER)
 bool PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLER_DESC const &Desc);
+
+// the device's sampler of a description, made when the device has none: Metal's sampler states, and what a shader
+// reads beside them. E_OUTOFMEMORY when Metal makes none
+HRESULT GetSampler(MTLD3D12Device *pDevice, const D3D12_SAMPLER_DESC &Desc, MTLD3D12CachedSampler &SamplerOut);
+
+// a root signature's static sampler as a sampler in a heap would describe it, with its border color's values
+D3D12_SAMPLER_DESC SamplerDescription(const D3D12_STATIC_SAMPLER_DESC &Desc);
 
 // a filter's reduction, when it is a minimum or maximum filter (SM50_SAMPLER_REDUCTION)
 inline SM50_SAMPLER_REDUCTION
