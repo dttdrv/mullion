@@ -6337,7 +6337,9 @@ public:
       info.input_content_properties_enabled = true;
       info.input_content_min_scale = 1.0f;
       info.input_content_max_scale =  3.0f;
-      info.requires_synchronous_initialization = true;
+      // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
+      // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
+      info.requires_synchronous_initialization = false;
       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
       if (pDesc->MotionVectorInDisplayRes) {
         WMTTextureInfo tex_info{};
