@@ -495,8 +495,11 @@ CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
   params->ret_error = (obj_handle_t)[err retain];
   if (!err && info->binary_archive_for_serialization) {
-    [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor
-                                                                                                      error:&err];
+    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+    @synchronized((id)info->binary_archive_for_serialization) {
+      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
   }
   [descriptor release];
   return STATUS_SUCCESS;
@@ -737,8 +740,11 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
                                                                                                 error:&err];
   params->ret_error = (obj_handle_t)[err retain];
   if (!err && info->binary_archive_for_serialization) {
-    [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor
-                                                                                                     error:&err];
+    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+    @synchronized((id)info->binary_archive_for_serialization) {
+      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
   }
   [descriptor release];
   return STATUS_SUCCESS;
@@ -893,9 +899,11 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
     if (!err && info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization
-          addMeshRenderPipelineFunctionsWithDescriptor:descriptor
-                                                 error:&err];
+      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+      @synchronized((id)info->binary_archive_for_serialization) {
+        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      }
     }
   }
 #endif
@@ -4592,9 +4600,11 @@ CREATES(_MTLDevice_newTileRenderPipelineState)(void *obj) {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
     if (!err && info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization
-          addTileRenderPipelineFunctionsWithDescriptor:descriptor
-                                                 error:&err];
+      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+      @synchronized((id)info->binary_archive_for_serialization) {
+        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      }
     }
   }
 #endif
