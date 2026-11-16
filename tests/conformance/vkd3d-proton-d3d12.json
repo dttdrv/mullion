@@ -600,9 +600,7 @@
   "first": "test_dual_source_blending_dxil:1185: Test failed: Unexpected result, hr 0."
  },
  "test_dynamic_depth_bias": {
-  "verdict": "failed",
-  "failed": 1,
-  "first": "test_dynamic_depth_bias:2196:Test 1: Test failed: Got 0, expected 1."
+  "verdict": "passed"
  },
  "test_dynamic_depth_stencil_write": {
   "verdict": "passed"
