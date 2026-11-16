@@ -4,7 +4,8 @@ d3d12_test_deps = [ cpp.find_library('d3d12'), cpp.find_library('d3dcompiler_47'
 # the sources a test has beside its own
 d3d12_test_sources = { 'd3d12_tessellator': files('../reference/reference.cpp'),
                        'd3d12_tessellation_payload': files('../reference/reference.cpp'),
-                       'd3d12_library': files('../../src/util/sha1/sha1_util.cpp', '../../src/util/sha1/sha1.c') }
+                       'd3d12_library': files('../../src/util/sha1/sha1_util.cpp', '../../src/util/sha1/sha1.c'),
+                       'd3d12_shadercache': files('../../src/util/sha1/sha1_util.cpp', '../../src/util/sha1/sha1.c') }
 adapters = executable('d3d12_adapters', 'd3d12_adapters.cpp', dependencies: d3d12_test_deps)
 foreach front_end : ['dxil', 'dxbc']
   test('d3d12_adapters_' + front_end, adapters, args: [front_end], timeout: 600)
