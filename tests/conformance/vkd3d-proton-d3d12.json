@@ -497,9 +497,7 @@
   "verdict": "passed"
  },
  "test_descriptor_range_validation": {
-  "verdict": "failed",
-  "failed": 1,
-  "first": "test_descriptor_range_validation:5018: Test failed: Unexpected success."
+  "verdict": "passed"
  },
  "test_descriptor_tables": {
   "verdict": "passed"
@@ -1686,8 +1684,8 @@
  },
  "test_static_sampler_dynamic_index": {
   "verdict": "failed",
-  "failed": 4,
-  "first": "test_static_sampler_dynamic_index:6725: Test failed: Unexpected success."
+  "failed": 3,
+  "first": "test_static_sampler_dynamic_index:6774: Test failed: Output 1: expected 1.000000, got 2.000000."
  },
  "test_stencil_export_dxbc": {
   "verdict": "passed"

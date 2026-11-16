@@ -476,8 +476,10 @@ setup_binding_rootsig(
       return false;
     if (range_rootsig.NumDescriptors == ~0u)
       return true;
+    // an unbounded array starts inside the range, which may end before it does: Direct3D 12 refuses one that
+    // starts past the range's last register (vkd3d-proton's test_descriptor_range_validation)
     if (range.size == ~0u)
-      return true;
+      return range.lower_bound - range_rootsig.BaseShaderRegister < range_rootsig.NumDescriptors;
     if (range.lower_bound + range.size <= range_rootsig.BaseShaderRegister + range_rootsig.NumDescriptors)
       return true;
     return false;
@@ -743,6 +745,10 @@ setup_binding_rootsig(
       if (sampler.range.space != State.RegisterSpace)
         continue;
       if (sampler.range.lower_bound != State.ShaderRegister)
+        continue;
+      // a static sampler is one register: an array of several is not covered by the samplers at its registers,
+      // where an unbounded one from there is (vkd3d-proton's test_static_sampler_dynamic_index)
+      if (sampler.range.size != 1 && sampler.range.size != ~0u)
         continue;
       if (!check_visibility(State.ShaderVisibility))
         break;
