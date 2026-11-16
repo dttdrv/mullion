@@ -2227,7 +2227,9 @@ CreateGraphicsPipelineState(
   if (cached)
     pso->cached_shaders = *cached;
   pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
-  pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds;
+  // without Metal's test the pixel shader's stands in when d3d12.emulateDepthBounds asks: it costs a pass over the
+  // depth attachment for each range, and what it drops is shading an application culls, not what it draws
+  pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds && pDevice->emulate_depth_bounds;
   HRESULT hr = pso->Initialize(&desc, AS, MS, depth_stencil2);
   if (FAILED(hr))
     return hr;

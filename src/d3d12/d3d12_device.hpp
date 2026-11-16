@@ -982,6 +982,19 @@ public:
   // (d3d12.keepAccelerationStructureInputs)
   bool keep_structure_inputs = true;
 
+  // work an application can do without, each done in full when its option says so (mullion.conf). on by default, as
+  // what a title draws or reads changes without them: the depth bounds test where Metal has none
+  // (d3d12.emulateDepthBounds), without which those draws shade the fragments the test would have dropped
+  bool emulate_depth_bounds = true;
+  // timestamp queries (d3d12.timestampQueries): without them a query samples nothing and a resolve writes nothing
+  bool timestamp_queries = true;
+  // off by default, as an application reads nothing from them but timing:
+  // WriteBufferImmediate's markers (d3d12.immediateMarkers): without them only DEFAULT values are written
+  bool immediate_markers = false;
+  // the tiers of what shaders emulate (d3d12.reportEmulatedFeatures): conservative rasterization, variable rate
+  // shading, sampler feedback and programmed sample positions, reported as absent without it
+  bool report_emulated_features = false;
+
   // the scratch area each list's indirect stream output commands share, from D3D11's start (kStagingBlockSize): a
   // command that lacked room was not run, and grows it for lists recorded later
   std::atomic<uint64_t> so_scratch_budget = kStagingBlockSize;
