@@ -860,10 +860,11 @@ public:
   }
   std::once_flag mesh_grid_asked_;
   uint32_t max_mesh_threadgroups_ = 0;
-  // the room a render pass's compute tessellator has for its points and indices: as much as a pass has needed, which
-  // grows as passes need more (MTLD3D12CommandAllocatorImpl::Reset). memory counts only where the GPU writes
-  std::atomic<uint32_t> tessellation_point_room{1u << 18}, tessellation_index_room{3u << 18};
-  // 12 MB of points and of indices
+  // the most points and indices a patch slot of a render pass's compute tessellator has made, which sizes the arenas
+  // of the passes after it by their slots: none until a pass has made some, more as passes make more
+  // (MTLD3D12CommandAllocatorImpl::Reset). what a pass makes past its arena its mesh draws draw
+  std::atomic<uint32_t> tessellation_slot_points{0}, tessellation_slot_indices{0};
+  // the most a pass takes: 12 MB of points and of indices
   static constexpr uint32_t kTessellationMostPoints = 1u << 20, kTessellationMostIndices = 3u << 20;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;

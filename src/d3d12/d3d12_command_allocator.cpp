@@ -472,17 +472,18 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
   if (encoder_last)
     return FAIL(E_FAIL);
-  // the passes' compute tessellators ran: the next passes have room for what the largest needed, up to the most a
-  // pass takes of the heap all lists share; past it a draw takes its mesh draw
-  auto grow = [](std::atomic<uint32_t> &room, uint32_t need, uint32_t most) {
-    // rounded up to a power of two, which stops at a cap that is not one (the indices' 3 << 20)
-    need = std::min(std::bit_ceil(std::min(need, most)), most);
-    for (auto now = room.load(); need > now && !room.compare_exchange_weak(now, need);)
-      ;
+  // the passes' compute tessellators ran: the next passes have room for what a slot made at the most
+  auto grow = [](std::atomic<uint32_t> &slot, const char *what, uint64_t need, uint32_t slots) {
+    auto made = slots ? uint32_t((need + slots - 1) / slots) : 0;
+    for (auto now = slot.load(); made > now;)
+      if (slot.compare_exchange_weak(now, made)) {
+        Logger::info(str::format("CommandAllocator: a tessellated patch has room for ", made, " ", what));
+        break;
+      }
   };
   for (auto pass : std::exchange(tessellation_passes_, {})) {
-    grow(device_->tessellation_point_room, pass->need_points, device_->kTessellationMostPoints);
-    grow(device_->tessellation_index_room, pass->need_indices, device_->kTessellationMostIndices);
+    grow(device_->tessellation_slot_points, "points", pass->need_points, pass->patches);
+    grow(device_->tessellation_slot_indices, "indices", pass->need_indices, pass->patches);
   }
   // "the runtime will not allow a reset while a command list is still being executed": the lists' recording is what
   // the queues' threads still encode and the GPU still reads. Windows' drivers survive the reset and applications
@@ -1093,10 +1094,10 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
   auto [draws, draws_offset] = AllocateGPUHeap(sizeof(TessellationDraw) * batch->draws, 16);
   auto [counts, counts_offset] = AllocateGPUHeap(sizeof(uint32_t) * 3 * (batch->patches + 1), 16);
   auto [pass, pass_offset] = AllocateGPUHeap(sizeof(TessellationPass), 16);
-  // the arena: as much as the draws can need, up to the room. a point is {patch, u, v} (tess_point), at a whole point
-  // from the heap's start, as the indices number them
-  uint32_t point_room = std::min<uint64_t>(batch->point_room, batch->most_points),
-           index_room = std::min<uint64_t>(batch->index_room, batch->most_indices);
+  // the arena (TessellationBatch::Room). a point is {patch, u, v} (tess_point), at a whole point from the heap's start,
+  // as the indices number them
+  uint32_t point_room = batch->Room(batch->slot_points, batch->most_points, device_->kTessellationMostPoints),
+           index_room = batch->Room(batch->slot_indices, batch->most_indices, device_->kTessellationMostIndices);
   constexpr size_t point = 3 * sizeof(uint32_t);
   auto points = std::get<1>(AllocateGPUHeap(uint64_t(point_room + 1) * point, 16));
   points += (point - points % point) % point;

@@ -1786,8 +1786,8 @@ public:
     if (!batch) {
       batch = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch), alignof(TessellationBatch))) TessellationBatch();
       batch->heap = obj_handle_t(allocator_->gpu_heap_buffer_);
-      batch->point_room = device_->tessellation_point_room;
-      batch->index_room = device_->tessellation_index_room;
+      batch->slot_points = device_->tessellation_slot_points;
+      batch->slot_indices = device_->tessellation_slot_indices;
     }
     auto [arguments, arguments_offset] = allocator_->AllocateGPUHeap(5 * sizeof(uint32_t), 16);
     auto draw = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch::Draw), alignof(TessellationBatch::Draw)))
@@ -1823,7 +1823,9 @@ public:
     draw->indexed = &cmd;
     cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
     cmd.indirect_args_offset = arguments_offset;
-    return batch->most_points > batch->point_room || batch->most_indices > batch->index_room;
+    // the slots after it only add room
+    return batch->most_points > batch->Room(batch->slot_points, batch->most_points, device_->kTessellationMostPoints) ||
+           batch->most_indices > batch->Room(batch->slot_indices, batch->most_indices, device_->kTessellationMostIndices);
   }
 
   static bool
