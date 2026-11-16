@@ -4048,6 +4048,15 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) {
+    // a range is a multiple of 16 constants from a multiple of 16, no more than a shader is shown, and comes with
+    // both arrays or neither (Microsoft Learn, VSSetConstantBuffers1). Windows drops a call with another, whole
+    // (Wine's test_constant_buffer_offset)
+    if (!pFirstConstant != !pNumConstants)
+      return;
+    for (unsigned i = 0; pFirstConstant && i < NumBuffers; i++)
+      if ((pFirstConstant[i] | pNumConstants[i]) % 16 || pNumConstants[i] > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT)
+        return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     auto &ShaderStage = state_.ShaderStages[Stage];

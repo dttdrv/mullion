@@ -65,9 +65,7 @@
   "verdict": "passed"
  },
  "test_constant_buffer_offset": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "d3d11.c:34434: Test failed: Got offset 1."
+  "verdict": "passed"
  },
  "test_copy_subresource_region": {
   "verdict": "passed"
