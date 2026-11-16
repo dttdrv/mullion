@@ -13,6 +13,8 @@
 // local signatures have "4064 bytes max local root signature footprint"
 // (DXR, Local root signatures vs global root signatures).
 // https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#local-root-signatures-vs-global-root-signatures
+// two bindings that one stage sees cannot name the same register of a space: "Shader register range ... overlaps
+// with another shader register range" (DirectXShaderCompiler, lib/DxilRootSignature/DxilRootSignatureValidator.cpp).
 #include "d3d12_test.hpp"
 #include <bit>
 #include <limits>
@@ -217,5 +219,80 @@ int main(int, char **) {
     mixed[2].Constants.Num32BitValues = count;
     create(mixed, count <= tail, local);
   }
+  auto constants = [](UINT reg, D3D12_SHADER_VISIBILITY stages) {
+    D3D12_ROOT_PARAMETER1 p{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
+    p.Constants = {reg, 0, 1};
+    p.ShaderVisibility = stages;
+    return p;
+  };
+  auto descriptor = [](D3D12_ROOT_PARAMETER_TYPE type, UINT reg, UINT space, D3D12_SHADER_VISIBILITY stages) {
+    D3D12_ROOT_PARAMETER1 p{type};
+    p.Descriptor = {reg, space};
+    p.ShaderVisibility = stages;
+    return p;
+  };
+  auto table = [](std::span<const D3D12_DESCRIPTOR_RANGE1> ranges, D3D12_SHADER_VISIBILITY stages) {
+    D3D12_ROOT_PARAMETER1 p{D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE};
+    p.DescriptorTable = {UINT(ranges.size()), ranges.data()};
+    p.ShaderVisibility = stages;
+    return p;
+  };
+  const auto all = D3D12_SHADER_VISIBILITY_ALL, vertex = D3D12_SHADER_VISIBILITY_VERTEX,
+             pixel = D3D12_SHADER_VISIBILITY_PIXEL;
+  const auto cbv = D3D12_ROOT_PARAMETER_TYPE_CBV, srv = D3D12_ROOT_PARAMETER_TYPE_SRV,
+             uav = D3D12_ROOT_PARAMETER_TYPE_UAV;
+  const D3D12_DESCRIPTOR_RANGE1 four[] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0}},
+                                unbounded[] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 0}},
+                                twice[] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0},
+                                           {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1, 0,
+                                            D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 2}};
+  // two bindings a stage sees cannot name one register of one space: a visibility meets its own and ALL, constants
+  // and constant buffers share the b registers, and an unbounded range has every register from its first
+  // (Microsoft's verifier: DirectXShaderCompiler, DxilRootSignatureValidator.cpp, AddRegisterRange)
+  const struct {
+    D3D12_ROOT_PARAMETER1 first, second;
+    bool valid;
+    const char *what;
+  } pairs[] = {
+      {constants(0, all), constants(0, vertex), false, "b0 of every stage and of the vertex stage"},
+      {constants(0, pixel), constants(0, vertex), true, "b0 of the pixel stage and of the vertex stage"},
+      {constants(0, pixel), constants(0, pixel), false, "b0 of the pixel stage twice"},
+      {constants(0, all), descriptor(cbv, 0, 0, all), false, "constants and a constant buffer at b0"},
+      {descriptor(cbv, 0, 0, all), descriptor(srv, 0, 0, all), true, "b0 and t0"},
+      {descriptor(uav, 0, 0, all), descriptor(uav, 0, 1, all), true, "u0 of two spaces"},
+      {descriptor(uav, 0, 0, all), descriptor(uav, 0, 0, pixel), false, "u0 of every stage and of the pixel stage"},
+      {table(four, all), descriptor(srv, 3, 0, all), false, "t3 after a range of t0 to t3"},
+      {table(four, all), descriptor(srv, 4, 0, all), true, "t4 after a range of t0 to t3"},
+      {table(unbounded, all), descriptor(srv, 100000, 0, vertex), false, "a register in an unbounded range"},
+      {table(unbounded, all), descriptor(srv, 0, 1, all), true, "another space than an unbounded range's"},
+      {table(twice, all), constants(0, all), false, "two ranges of one table that share t1"},
+  };
+  for (auto &pair : pairs) {
+    step("two bindings: %s", pair.what);
+    const D3D12_ROOT_PARAMETER1 both[] = {pair.first, pair.second};
+    create(both, pair.valid);
+  }
+  // a static sampler has an s register as a sampler range has
+  const D3D12_DESCRIPTOR_RANGE1 sampler_range[] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0}};
+  for (UINT reg : {0u, 1u})
+    for (UINT space : {0u, 1u}) {
+      step("a static sampler at s%u of space %u beside a sampler range of s0 of space 0", reg, space);
+      const D3D12_ROOT_PARAMETER1 parameters[] = {table(sampler_range, pixel)};
+      D3D12_STATIC_SAMPLER_DESC sampler{D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                                        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP};
+      sampler.MaxAnisotropy = 1, sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+      sampler.MaxLOD = D3D12_FLOAT32_MAX;
+      sampler.ShaderRegister = reg, sampler.RegisterSpace = space;
+      D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{D3D_ROOT_SIGNATURE_VERSION_1_1};
+      desc.Desc_1_1 = {1, parameters, 1, &sampler};
+      ComPtr<ID3DBlob> blob;
+      ComPtr<ID3D12RootSignature> root;
+      const bool valid = reg || space;
+      HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &blob, nullptr);
+      if (SUCCEEDED(hr))
+        hr = device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root));
+      expect(valid ? hr == S_OK && root : FAILED(hr) && !root, "returned %08lx, expected %s", hr,
+             valid ? "valid" : "invalid");
+    }
   return verdict();
 }
