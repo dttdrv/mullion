@@ -814,14 +814,10 @@
   "verdict": "passed"
  },
  "test_gs_topology_mismatch_dxbc": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "test_gs_topology_mismatch_dxbc:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
+  "verdict": "passed"
  },
  "test_gs_topology_mismatch_dxil": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "test_gs_topology_mismatch_dxil:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
+  "verdict": "passed"
  },
  "test_hull_shader_control_point_phase_dxbc": {
   "verdict": "passed"
