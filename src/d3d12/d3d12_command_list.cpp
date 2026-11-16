@@ -2831,11 +2831,6 @@ public:
   SetPipelineState(ID3D12PipelineState *pPSO) {
     if (Bundled() && Record([pso = Com<ID3D12PipelineState>(pPSO)](auto *l) { l->SetPipelineState(pso.ptr()); }))
       return;
-    // setting a pipeline state again takes its depth bias back, the same one included
-    if (depth_bias_) {
-      depth_bias_.reset();
-      dirty_state_.set(DirtyState::GraphicsPipelineState);
-    }
     if (!pPSO) {
       pso_graphics_ = nullptr;
       pso_compute_ = nullptr;
@@ -2857,6 +2852,9 @@ public:
     auto graphics_pso = static_cast<MTLD3D12GraphicsPipelineState *>(pPSO);
     if (pso_graphics_.ptr() == graphics_pso)
       return;
+    // another pipeline takes RSSetDepthBias's values back; the one that is set keeps them, as on Windows
+    // (vkd3d-proton's test_dynamic_depth_bias, which has the specification take them back there too)
+    depth_bias_.reset();
     // tessellation, geometry shaders and stream output bind root arguments to other stages
     // and a pipeline whose mesh stage reads them, or reads the vertex buffers (mesh_only), to others again
     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
