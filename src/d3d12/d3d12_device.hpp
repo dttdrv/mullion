@@ -734,6 +734,13 @@ public:
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const SharedFunction>> made;
   } functions;
+  // the ray tracing shaders state objects are made of, by their conversion's key (d3d12_state_object.cpp), which
+  // names their Metal function: a pipeline links one function of a name, so there is one while any state object
+  // holds it
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<void>> made;
+  } ray_functions;
   // the program's pipelines kept across launches as their GPU binaries (MTLBinaryArchive): a pipeline is looked up
   // there before Metal compiles it, and one that is not there is added once it is compiled
   template <typename Info, typename Make>

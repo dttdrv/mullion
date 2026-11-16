@@ -17,6 +17,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -2230,6 +2231,48 @@ AIRCONV_API int SM50GetRayShader(
     pName[shaders[Index].name.copy(pName, NameSize - 1)] = 0;
   *pInfo = shaders[Index].info;
   return 1;
+}
+
+AIRCONV_API int SM50CompileRayDispatcher(
+  enum SM50_RAY_DISPATCHER Dispatcher, const struct SM50_RAY_DISPATCHED_SHADER *pShaders, uint32_t ShaderCount,
+  uint32_t Table, enum SM50_SHADER_METAL_VERSION MetalVersion, sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
+) {
+  using namespace llvm;
+  using namespace mullion;
+
+  if (ppError)
+    *ppError = nullptr;
+  // handed to the caller with a failure, and freed here otherwise
+  auto errorObj = std::make_unique<SM50ErrorInternal>();
+  llvm::raw_svector_ostream errorOut(errorObj->buf);
+  auto failed = [&] {
+    if (ppError)
+      *ppError = (sm50_error_t)errorObj.release();
+    return 1;
+  };
+  if (!ppBitcode || (ShaderCount && !pShaders)) {
+    errorOut << "the dispatcher has no shaders or no bitcode to give";
+    return failed();
+  }
+  LLVMContext context;
+  context.setOpaquePointers(false);
+  auto pModule = std::make_unique<Module>("shader.air", context);
+  initializeModule(*pModule);
+  if (auto err = mullion::dxbc::convert_ray_dispatcher(
+        context, *pModule, Dispatcher, ArrayRef(pShaders, ShaderCount), Table, MetalVersion
+      )) {
+    errorOut << llvm::toString(std::move(err));
+    return failed();
+  }
+  // Metal says of ill-formed IR only "Failed to materializeAll"
+  if (verifyModule(*pModule, &errorOut))
+    return failed();
+  auto compiled = new SM50CompiledBitcodeInternal();
+  raw_svector_ostream OS(compiled->vec);
+  metallib::MetallibWriter writer;
+  writer.Write(*pModule, OS);
+  *ppBitcode = (sm50_bitcode_t)compiled;
+  return 0;
 }
 
 namespace {

@@ -2732,6 +2732,16 @@ thunk_SM50GetArgumentsInfo(void *args) {
 }
 
 static NTSTATUS
+thunk_SM50CompileRayDispatcher(void *args) {
+  struct sm50_compile_ray_dispatcher_params *params = args;
+  params->ret = SM50CompileRayDispatcher(
+      params->dispatcher, params->shaders, params->shader_count, params->table, params->metal_version, params->bitcode,
+      params->error
+  );
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 thunk_SM50GetRayShader(void *args) {
   struct sm50_get_ray_shader_params *params = args;
   params->ret = SM50GetRayShader(params->shader, params->index, params->name, params->name_size, params->info);
@@ -3160,6 +3170,16 @@ thunk32_SM50CompileGeometryPipelineGeometry(void *args) {
 
   sm50_compilation_argument32_free(&first_arg);
 
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_SM50CompileRayDispatcher(void *args) {
+  struct sm50_compile_ray_dispatcher_params32 *params = args;
+  params->ret = SM50CompileRayDispatcher(
+      params->dispatcher, UInt32ToPtr(params->shaders), params->shader_count, params->table, params->metal_version,
+      UInt32ToPtr(params->bitcode), UInt32ToPtr(params->error)
+  );
   return STATUS_SUCCESS;
 }
 
@@ -7373,7 +7393,7 @@ const void *__wine_unix_call_funcs[] = {
     &thunk_SM50FreeError,
     &thunk_SM50CompileGeometryPipelineVertex,
     &thunk_SM50CompileGeometryPipelineGeometry,
-    NULL,
+    &thunk_SM50CompileRayDispatcher,
     &thunk_SM50CompileTessellationPipelineHull,
     &thunk_SM50CompileTessellationPipelineDomain,
     &_MTLCommandEncoder_setLabel,
@@ -7590,7 +7610,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &thunk_SM50FreeError,
     &thunk32_SM50CompileGeometryPipelineVertex,
     &thunk32_SM50CompileGeometryPipelineGeometry,
-    NULL,
+    &thunk32_SM50CompileRayDispatcher,
     &thunk32_SM50CompileTessellationPipelineHull,
     &thunk32_SM50CompileTessellationPipelineDomain,
     &_MTLCommandEncoder_setLabel,

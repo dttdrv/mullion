@@ -440,7 +440,7 @@ ray_calls(const Function &F) {
         calls |= op == TraceRay ? SM50_RAY_SHADER_CALLS_TRACE : op == CallShader ? SM50_RAY_SHADER_CALLS_CALLABLE : 0;
       } else if (!callee || callee->isDeclaration()) {
         // another library's function, or an indirect call
-        calls |= SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE;
+        calls |= SM50_RAY_SHADER_CALLS_TRACE | SM50_RAY_SHADER_CALLS_CALLABLE | SM50_RAY_SHADER_CALLS_LIBRARY;
       } else if (seen.insert(callee).second) {
         next.push_back(callee);
       }
@@ -5231,6 +5231,79 @@ convert_dxil_ray_shader(
   module.getOrInsertNamedMetadata("air.visible")
       ->addOperand(md({llvm::ValueAsMetadata::get(function), md({}),
                        md({argument(0, "MullionRayContext"), argument(1, "void"), argument(2, "void")})}));
+  return llvm::Error::success();
+}
+
+// a dispatcher of a ray tracing pipeline (SM50CompileRayDispatcher): a visible function that takes a slot and what a
+// shader takes, and calls the shader of the slot as a Metal function calls an extern [[visible]] one, so that Metal
+// can compile the shader into its caller. the context starts with the pipeline's function table
+llvm::Error
+convert_ray_dispatcher(
+    llvm::LLVMContext &context, llvm::Module &module, SM50_RAY_DISPATCHER dispatcher,
+    llvm::ArrayRef<SM50_RAY_DISPATCHED_SHADER> shaders, bool table, SM50_SHADER_METAL_VERSION metal_version
+) {
+  static const char *const names[SM50_RAY_DISPATCHER_COUNT] = {
+      "mullion_ray_generation_shader", "mullion_ray_closest_shader",  "mullion_ray_any_hit_shader",
+      "mullion_ray_intersection_shader", "mullion_ray_callable_shader",
+  };
+  if (dispatcher >= SM50_RAY_DISPATCHER_COUNT)
+    return llvm::make_error<UnsupportedFeature>("a ray tracing pipeline has no such dispatcher");
+  setup_metal_version(module, metal_version);
+  auto context_ty = ray_context_type(context);
+  llvm::Type *i8p = llvm::Type::getInt8PtrTy(context), *i32 = llvm::Type::getInt32Ty(context);
+  auto void_ty = llvm::Type::getVoidTy(context);
+  auto shader_ty = llvm::FunctionType::get(void_ty, {context_ty->getPointerTo(), i8p, i8p}, false);
+  auto function = llvm::Function::Create(
+      llvm::FunctionType::get(void_ty, {i32, context_ty->getPointerTo(), i8p, i8p}, false),
+      llvm::GlobalValue::ExternalLinkage, names[dispatcher], module
+  );
+  auto md = [&](std::initializer_list<llvm::Metadata *> nodes) { return llvm::MDNode::get(context, nodes); };
+  auto string = [&](llvm::StringRef text) { return llvm::MDString::get(context, text); };
+  llvm::Value *slot = function->getArg(0), *ray_context = function->getArg(1);
+  llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", function));
+  auto other = llvm::BasicBlock::Create(context, "other", function);
+  auto cases = builder.CreateSwitch(slot, other);
+  std::set<uint32_t> direct;
+  for (auto &shader : shaders) {
+    llvm::StringRef name(shader.name, strnlen(shader.name, sizeof(shader.name)));
+    if (name.empty() || name.size() == sizeof(shader.name))
+      return llvm::make_error<UnsupportedFeature>("a dispatched ray tracing shader has no name");
+    if (!direct.insert(shader.slot).second)
+      continue;
+    auto symbol = (name + ".MTL_VISIBLE_FN_REF").str();
+    auto callee = module.getFunction(symbol);
+    if (!callee) {
+      callee = llvm::Function::Create(shader_ty, llvm::GlobalValue::ExternalLinkage, symbol, module);
+      callee->setSection("air.externally_defined");
+      module.getOrInsertNamedMetadata("air.visible_function_references")
+          ->addOperand(md({string("air.visible_function_reference"), llvm::ValueAsMetadata::get(callee), string(name)}));
+    }
+    auto block = llvm::BasicBlock::Create(context, "", function, other);
+    cases->addCase(builder.getInt32(shader.slot), block);
+    builder.SetInsertPoint(block);
+    builder.CreateCall(shader_ty, callee, {ray_context, function->getArg(2), function->getArg(3)});
+    builder.CreateRetVoid();
+  }
+  builder.SetInsertPoint(other);
+  if (table) {
+    auto table_ty = context_ty->getElementType(RayShaders);
+    auto lookup = module.getOrInsertFunction(
+        "air.get_function_pointer_visible_function_table", llvm::FunctionType::get(i8p, {table_ty, i32}, false)
+    );
+    auto shaders_table = builder.CreateLoad(table_ty, builder.CreateStructGEP(context_ty, ray_context, RayShaders));
+    auto shader = builder.CreateBitCast(builder.CreateCall(lookup, {shaders_table, slot}), shader_ty->getPointerTo());
+    builder.CreateCall(shader_ty, shader, {ray_context, function->getArg(2), function->getArg(3)});
+  }
+  builder.CreateRetVoid();
+
+  auto argument = [&](unsigned i, const char *type) {
+    return md({llvm::ConstantAsMetadata::get(builder.getInt32(i)), string("air.visible_input"),
+               string("air.arg_type_name"), string(type)});
+  };
+  module.getOrInsertNamedMetadata("air.visible")
+      ->addOperand(md({llvm::ValueAsMetadata::get(function), md({}),
+                       md({argument(0, "uint"), argument(1, "MullionRayContext"), argument(2, "void"),
+                           argument(3, "void")})}));
   return llvm::Error::success();
 }
 

@@ -856,6 +856,7 @@ public:
     named_.clear();
     hoisted_ = nullptr;
     hoisted_for_ = nullptr;
+    structure_run_ = {};
     // a bundle's initial state is its first call
     if (pInitialPipelineState && type_ == D3D12_COMMAND_LIST_TYPE_BUNDLE)
       SetPipelineState(pInitialPipelineState);
@@ -4687,10 +4688,56 @@ public:
     ERR("ExecuteMetaCommand: meta commands are not supported");
   }
 
+  // a build or a copy of an acceleration structure has a pass of its own, which the queue runs after the one before
+  // it: Metal may run the builds of one encoder together, and Direct3D 12's run in their order, over one scratch
+  // buffer if the application likes. what each does before its own command needs no pass of its own, though: for
+  // builds and copies recorded one after another, the writes of headers and the copies of inputs share the blit pass
+  // before the first of them, and the conversions of transforms and instances a compute pass after it, so that N
+  // builds take N + 1 or N + 2 of Metal's encoders and not 2N or 3N. that work reads the application's inputs and
+  // the headers, and writes headers and buffers of the command's own, none of which a build or copy reads or writes,
+  // so it may run before the commands recorded before it. only a conversion of instances reads a header, to find
+  // an instance's structure: once a build of the run has converted instances, which then name the structures their
+  // addresses had when it was recorded, the next command starts a run of its own
+  struct StructureRun {
+    // the last command's pass, which is open, and its number: another recording may have a pass where this one was
+    const EncoderData *pass = nullptr;
+    uint64_t id = 0;
+    BlitEncoderData *blit = nullptr;
+    ComputeEncoderData *compute = nullptr;
+    bool converted = false;
+  } structure_run_;
+
+  bool
+  JoinsStructures() const {
+    auto open = allocator_->encoder_current;
+    return open && open == structure_run_.pass && open->id == structure_run_.id && structure_run_.blit &&
+           !structure_run_.converted;
+  }
+
+  // what a command that joined the run does before its pass goes to the run's blit pass
   void
-  PreAccelerationStructure() {
-    if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::AccelerationStructure)
-      return;
+  StructureBlits(bool Joined) {
+    if (Joined)
+      allocator_->encoder_current = structure_run_.blit;
+  }
+
+  // and to its compute pass, made when the first command asks. the run's passes are linked already: neither is
+  // ended again
+  ComputeEncoderData *
+  StructureCompute(bool Joined) {
+    if (!Joined)
+      return StartComputePass();
+    if (!structure_run_.compute) {
+      allocator_->encoder_current = nullptr;
+      structure_run_.compute = StartComputePass();
+      allocator_->InvalidateCurrentPass();
+    }
+    allocator_->encoder_current = structure_run_.compute;
+    return structure_run_.compute;
+  }
+
+  void
+  StartAccelerationStructurePass() {
     allocator_->InvalidateCurrentPass();
     auto pass = allocator_->AllocatePass<AccelerationStructureEncoderData>();
     pass->type = EncoderType::AccelerationStructure;
@@ -4699,6 +4746,34 @@ public:
     pass->cmd_tail = (wmtcmd_base *)&pass->cmd_head;
     pass->filled = nullptr;
     pass->filled_tail = &pass->filled;
+  }
+
+  // the pass of a build or a copy, after the open one for a command that joined the run, which the commands after it
+  // may join. `Blit`: the pass its header went to, if one; `Conversion`: the pass that converts its instances
+  void
+  PreAccelerationStructure(bool Joined, EncoderData *Blit, ComputeEncoderData *Conversion) {
+    if (Joined) {
+      allocator_->encoder_current = const_cast<EncoderData *>(structure_run_.pass);
+      StartAccelerationStructurePass();
+      structure_run_.pass = allocator_->encoder_current;
+      structure_run_.id = structure_run_.pass->id;
+      structure_run_.converted = Conversion;
+      return;
+    }
+    // with nothing done before it, it goes on in the open pass, as it was recorded
+    PreAccelerationStructure();
+    structure_run_ = {allocator_->encoder_current, allocator_->encoder_current->id,
+                      Blit && Blit->type == EncoderType::Blit ? static_cast<BlitEncoderData *>(Blit) : nullptr,
+                      Conversion, bool(Conversion)};
+  }
+
+  // the open pass of acceleration structure commands, or a new one
+  void
+  PreAccelerationStructure() {
+    if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::AccelerationStructure)
+      return;
+    structure_run_ = {};
+    StartAccelerationStructurePass();
   }
 
   // the current pass's build or copy fills the structure, with inputs it kept or those of the structure it copies
@@ -4828,6 +4903,8 @@ public:
     }
     if (source)
       allocator_->acceleration_structures_.push_back(source);
+    bool joined = JoinsStructures();
+    StructureBlits(joined);
     // a top-level structure's instance count is a uint32 the build reads
     obj_handle_t count = 0;
     uint64_t count_offset = 0;
@@ -4883,7 +4960,7 @@ public:
       }
       if (allocator_->records_)
         allocator_->RecordGPUHeap(sources, transforms * sizeof(uint64_t), "transform addresses");
-      StartComputePass();
+      StructureCompute(joined);
       auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
       pso.type = WMTComputeCommandSetPSO;
       pso.pso = device_->acceleration_structure_transforms;
@@ -4898,6 +4975,7 @@ public:
       auto &dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
       dispatch.type = WMTComputeCommandDispatchThreads;
       dispatch.size = {transforms, 1, 1};
+      StructureBlits(joined);
     }
     uint64_t size = source ? source->size : 0;
     if (!source) {
@@ -4909,9 +4987,12 @@ public:
     // Metal wants a buffer of instances also when the count it reads is zero
     info.instance_buffer = structure->instances ? structure->instances.handle : count;
     auto kept = KeepInputs(inputs);
+    // the pass its header went to, which the instances' conversion follows
+    auto header_pass = allocator_->encoder_current;
+    ComputeEncoderData *conversion_pass = nullptr;
 
     if (structure->instances) {
-      StartComputePass();
+      conversion_pass = StructureCompute(joined);
       auto &pso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
       pso.type = WMTComputeCommandSetPSO;
       pso.pso = device_->acceleration_structure_instances;
@@ -4939,7 +5020,7 @@ public:
 
     uint64_t scratch_offset = 0;
     auto scratch = device_->LookupBufferByVA(pDesc->ScratchAccelerationStructureData, &scratch_offset);
-    PreAccelerationStructure();
+    PreAccelerationStructure(joined, header_pass, conversion_pass);
     if (allocator_->records_ && top)
       allocator_->RecordGPUHeap(
           ptr_add(allocator_->gpu_heap_, count_offset), sizeof(inputs.NumDescs), "instance count"
@@ -5129,6 +5210,9 @@ public:
       GiveInputs(*source, DestAccelerationStructureData, Mode == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_SERIALIZE);
       return;
     }
+    // a top-level structure's instances are copied after what converted them, which a pass the copy joined may have
+    bool joined = !source->instances && JoinsStructures();
+    StructureBlits(joined);
     // a compacted copy is as small as the GPU has said by now, if it was asked
     auto compacted = compact && source->compacted_size.value ? *source->compacted_size.value : 0;
     auto structure =
@@ -5142,7 +5226,7 @@ public:
       instances.dst_offset = 0;
       instances.copy_length = source->instance_count * kAccelerationStructureInstanceSize;
     }
-    PreAccelerationStructure();
+    PreAccelerationStructure(joined, allocator_->encoder_current, nullptr);
     Fills(structure.get(), nullptr, source.get());
     auto &copy = allocator_->EncodeAccelerationStructureCommand<wmtcmd_accelerationstructure_copy>();
     copy.type = compact ? WMTAccelerationStructureCommandCopyAndCompact : WMTAccelerationStructureCommandCopy;
@@ -5150,8 +5234,12 @@ public:
     copy.dst = structure->structure;
   }
 
+  // SetPipelineState1 and DispatchRays "can be called from graphics or compute command lists and bundles" (DXR spec,
+  // "SetPipelineState1", "DispatchRays"), the calls on acceleration structures "not from bundles"
   void STDMETHODCALLTYPE
   SetPipelineState1(ID3D12StateObject *pStateObject) {
+    if (Bundled() && Record([state = Com<ID3D12StateObject>(pStateObject)](auto *l) { l->SetPipelineState1(state.ptr()); }))
+      return;
     state_object_ = static_cast<MTLD3D12StateObject *>(pStateObject);
   }
 
@@ -5159,6 +5247,8 @@ public:
   // arguments as the global ones (dispatch_rays in mullion_command.metal)
   void STDMETHODCALLTYPE
   DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) {
+    if (Bundled() && Record([desc = *pDesc](auto *l) { l->DispatchRays(&desc); }))
+      return;
     // a grid with a dimension of zero has no ray generation shader to run: Metal takes no empty grid
     if (!pDesc->Width || !pDesc->Height || !pDesc->Depth)
       return;
