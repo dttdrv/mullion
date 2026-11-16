@@ -610,7 +610,9 @@ RWBuffer<uint> result : register(u1);
                               D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET};
     UINT parent_support = 0;
     CHECK(device->CheckFormatSupport(desc.Format, &parent_support));
-    if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+    // the sRGB format too, which is made with the flag and has no view for unordered access (D3D11.3 5.3.9.2: "any
+    // format that supports being bound at the RenderTarget except for SRGB formats")
+    if (desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
         (parent_support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW))
       desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
     ComPtr<ID3D11Texture2D> texture;
