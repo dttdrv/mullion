@@ -16,7 +16,9 @@
 // again while another float format is not.
 // what a pipeline reads of a shader before it converts it is stored with the conversions, so a process that finds
 // both must not parse the shader's bytecode at all, and one that finds a stored reflection damaged must read it
-// from the shader again, with the same pixels and bytes.
+// from the shader again, with the same pixels and bytes. so must one that finds a whole reflection of another layout:
+// a stage's part of the reflection shares the bytes of the other stages' parts, so a build in which it has another
+// size stores reflections of the same length.
 #include "d3d12_test.hpp"
 #include <array>
 #include <fstream>
@@ -26,6 +28,7 @@
 #include <cmath>
 #include <thread>
 #include "../../src/airconv/airconv_public.h"
+#include "../../src/util/sha1/sha1_util.hpp"
 
 static const char hlsl[] = R"hlsl(
 cbuffer constants : register(b0) { uint number; };
@@ -1054,7 +1057,8 @@ processes(int argc, char **argv) {
     // every stored reflection, in the store and in what of it is not yet written back: the byte after a record's
     // header, which is of the reflection itself
     static const char record[] = "SM50REFL";
-    const size_t header = std::size(record) - 1 + 3 * sizeof(UINT);
+    // its sizes: the reflection's, the four stages' parts', an argument's; then the count of arguments
+    const size_t sizes = 6, header = std::size(record) - 1 + (sizes + 1) * sizeof(UINT);
     UINT damaged_records = 0;
     auto stores = FindFirstFileA((std::string(directory) + "\\shaders_*").c_str(), &found);
     if (stores != INVALID_HANDLE_VALUE) {
@@ -1074,6 +1078,43 @@ processes(int argc, char **argv) {
       FindClose(stores);
     }
     expect(damaged_records > 0, "no stored reflection");
+    run("reflect", false);
+    run("warm", false);
+    // every whole one again, as a build with a larger tessellator part would have stored it: that size raised and
+    // the record's digest made anew
+    UINT other_layouts = 0;
+    stores = FindFirstFileA((std::string(directory) + "\\shaders_*").c_str(), &found);
+    if (stores != INVALID_HANDLE_VALUE) {
+      do {
+        std::string name = std::string(directory) + "\\" + found.cFileName;
+        std::ifstream file(name, std::ios::binary);
+        std::string bytes{std::istreambuf_iterator<char>(file), {}};
+        file.close();
+        std::fstream other(name, std::ios::in | std::ios::out | std::ios::binary);
+        for (auto at = bytes.find(record); at != std::string::npos && at + header < bytes.size();
+             at = bytes.find(record, at + 1)) {
+          UINT arguments, part;
+          memcpy(&arguments, &bytes[at + header - sizeof(UINT)], sizeof(arguments));
+          size_t body = header + sizeof(MTL_SHADER_REFLECTION) + size_t(arguments) * sizeof(MTL_SM50_SHADER_ARGUMENT);
+          if (arguments > 4096 || at + body + sizeof(mullion::Sha1Digest) > bytes.size())
+            continue;
+          auto digest = mullion::Sha1HashState::compute(&bytes[at], body);
+          if (memcmp(digest.data, &bytes[at + body], sizeof(digest)))
+            continue;
+          auto tessellator = at + std::size(record) - 1 + sizeof(UINT);
+          memcpy(&part, &bytes[tessellator], sizeof(part));
+          part += sizeof(UINT);
+          memcpy(&bytes[tessellator], &part, sizeof(part));
+          digest = mullion::Sha1HashState::compute(&bytes[at], body);
+          memcpy(&bytes[at + body], digest.data, sizeof(digest));
+          other.seekp(at);
+          other.write(&bytes[at], body + sizeof(digest));
+          other_layouts++;
+        }
+      } while (FindNextFileA(stores, &found));
+      FindClose(stores);
+    }
+    expect(other_layouts > 0, "no whole stored reflection");
     run("reflect", false);
     run("warm", false);
     run("disabled", true);
