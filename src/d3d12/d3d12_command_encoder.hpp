@@ -118,10 +118,15 @@ struct RenderEncoderStencilAttachmentData {
 struct TessellationBatch {
   struct Draw {
     TessellationDraw record;
-    uint64_t *index_offset;
+    // its draw and its binding of the points, which take the arena's place and the buffer that covers it once the
+    // pass ends (FinishTessellation)
+    struct wmtcmd_render_draw_indexed_indirect *indexed;
+    struct wmtcmd_render_setbuffer *points;
     Draw *next;
   } *first = nullptr, **last = &first;
   uint32_t draws = 0, patches = 0;
+  // the buffer over the arguments its first draw's hull kernel writes through (FinishTessellation)
+  obj_handle_t heap = 0;
   uint32_t point_room = 0, index_room = 0;
   uint64_t most_points = 0, most_indices = 0;
 };
@@ -149,6 +154,9 @@ struct RenderEncoderData : EncoderData {
   wmtcmd_base *before_tail = (wmtcmd_base *)&before_head;
   // its compute-tessellated draws, until the pass ends (FinishTessellation)
   TessellationBatch *tessellation = nullptr;
+  // its draws read through other buffers over the arguments what its tessellation's kernels wrote
+  // (FinishTessellation): the pass begins with a barrier that shows it
+  bool order_aliases = false;
   // MULLION_D3D12_GPU_ERRORS: where each of the pass's indirect commands' resolvers keeps its largest numbers
   struct Most {
     const uint32_t *words;

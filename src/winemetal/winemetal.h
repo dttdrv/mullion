@@ -1221,6 +1221,9 @@ enum WMTBarrierScope : uint8_t {
   WMTBarrierScopeBuffers = 1,
   WMTBarrierScopeTextures = 2,
   WMTBarrierScopeRenderTargets = 4,
+  // Metal 4, a compute barrier: also what was written through another buffer over the same memory
+  // (MTL4VisibilityOptionResourceAlias). not a scope of Metal 3's, which is not given it
+  WMTBarrierScopeAliases = 8,
 };
 
 struct wmtcmd_compute_memory_barrier {

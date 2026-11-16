@@ -1785,6 +1785,7 @@ public:
     auto &batch = render->tessellation;
     if (!batch) {
       batch = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch), alignof(TessellationBatch))) TessellationBatch();
+      batch->heap = obj_handle_t(allocator_->gpu_heap_buffer_);
       batch->point_room = device_->tessellation_point_room;
       batch->index_room = device_->tessellation_index_room;
     }
@@ -1804,14 +1805,22 @@ public:
     uint64_t side = pso_graphics_->tessellation_factor + 3;
     batch->most_points += Patches * side * side;
     batch->most_indices += Patches * 6 * side * side;
-    // the indices number the points from the heap's start (FinishTessellation places the arena)
-    EncodeBuffer(WMTRenderCommandSetVertexBuffer, 0, SM50_BINDING_INDEX_TESSELLATION_POINTS);
+    // the indices number the points from the heap's start. FinishTessellation places the arena and names the buffer
+    // that covers it, which a longer one than this may be by then: a binding of its own, not one EncodeBuffer keeps
+    auto &points = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+    points.type = WMTRenderCommandSetVertexBuffer;
+    points.buffer = allocator_->gpu_heap_buffer_;
+    points.offset = 0;
+    points.index = SM50_BINDING_INDEX_TESSELLATION_POINTS;
+    if (bound_.pass == allocator_->encoder_current)
+      bound_.buffer[0][SM50_BINDING_INDEX_TESSELLATION_POINTS] = 0;
+    draw->points = &points;
     auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
     cmd.type = WMTRenderCommandDrawIndexedIndirect;
     cmd.primitive_type = WMTPrimitiveTypeTriangle;
     cmd.index_type = WMTIndexTypeUInt32;
     cmd.index_buffer = allocator_->gpu_heap_buffer_;
-    draw->index_offset = &cmd.index_buffer_offset;
+    draw->indexed = &cmd;
     cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
     cmd.indirect_args_offset = arguments_offset;
     return batch->most_points > batch->point_room || batch->most_indices > batch->index_room;

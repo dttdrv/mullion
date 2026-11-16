@@ -1143,7 +1143,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTComputeCommandMemoryBarrier: {
       struct wmtcmd_compute_memory_barrier *body = (struct wmtcmd_compute_memory_barrier *)next;
-      [encoder memoryBarrierWithScope:(MTLBarrierScope)body->scope];
+      [encoder memoryBarrierWithScope:(MTLBarrierScope)(body->scope & ~WMTBarrierScopeAliases)];
       break;
     }    
     case WMTComputeCommandExecuteCommandsInBuffer: {
@@ -7014,9 +7014,12 @@ API_AVAILABLE(macos(26.0)) metal4_compute(MullionMetal4Encoder *state, const str
       break;
     }
     case WMTComputeCommandMemoryBarrier: {
+      struct wmtcmd_compute_memory_barrier *body = (struct wmtcmd_compute_memory_barrier *)next;
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
-                       visibilityOptions:MTL4VisibilityOptionDevice];
+                       visibilityOptions:body->scope & WMTBarrierScopeAliases
+                                             ? MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias
+                                             : MTL4VisibilityOptionDevice];
       break;
     }
     case WMTComputeCommandExecuteCommandsInBuffer: {

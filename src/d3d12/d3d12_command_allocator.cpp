@@ -1104,7 +1104,11 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
   auto record = static_cast<TessellationDraw *>(draws);
   for (auto draw = batch->first; draw; draw = draw->next) {
     *record++ = draw->record;
-    *draw->index_offset = indices;
+    // the arena is in the buffer the list records into now, which may be longer than the one the draw was recorded
+    // with and then alone covers the arena
+    draw->indexed->index_buffer = gpu_heap_buffer_;
+    draw->indexed->index_buffer_offset = indices;
+    draw->points->buffer = gpu_heap_buffer_;
   }
   auto words = [](size_t offset) { return uint32_t(offset / sizeof(uint32_t)); };
   *static_cast<TessellationPass *>(pass) = {
@@ -1113,10 +1117,17 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
   };
   tessellation_passes_.push_back(static_cast<const TessellationPass *>(pass));
 
-  auto barrier = [&] {
+  // the arguments have a longer buffer since the pass's first tessellated draw (GrowArguments): its hull kernels
+  // wrote through one buffer what these kernels read through another, and these write through theirs what the
+  // pass's draws read through the ones they were recorded with. Metal 4 shows what was written through another
+  // buffer over the same memory only after a barrier that asks for it (d3d12_tessellator's largest draws): one
+  // before these kernels, and one before the pass (MTLD3D12CommandQueue)
+  bool aliased = batch->heap != obj_handle_t(gpu_heap_buffer_);
+  Render->order_aliases = aliased;
+  auto barrier = [&](bool aliases = false) {
     auto &cmd = EncodeBeforeRender<wmtcmd_compute_memory_barrier>();
     cmd.type = WMTComputeCommandMemoryBarrier;
-    cmd.scope = WMTBarrierScopeBuffers;
+    cmd.scope = WMTBarrierScope(WMTBarrierScopeBuffers | (aliases ? WMTBarrierScopeAliases : 0));
   };
   auto kernel = [&](const char *name, uint32_t threads) {
     auto pipeline = device_->GetLib().ComputePipeline(name);
@@ -1132,7 +1143,7 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
       buffer.index = index;
     }
   };
-  barrier();
+  barrier(aliased);
   kernel("tessellation_count", kTessellationThreads);
   auto &count = EncodeBeforeRender<wmtcmd_compute_dispatch>();
   count.type = WMTComputeCommandDispatchThreads;

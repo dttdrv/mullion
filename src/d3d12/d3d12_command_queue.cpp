@@ -2083,6 +2083,9 @@ public:
         }
         before.encodeCommands(&data->before_head);
         end(before);
+        if constexpr (Metal4)
+          if (data->order_aliases)
+            cmdbuf.orderAliases(false);
         if (data->omitted) {
           size_t count = 0;
           for (auto omitted = data->omitted; omitted; omitted = omitted->next)
