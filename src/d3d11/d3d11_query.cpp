@@ -135,7 +135,7 @@ class MTLD3D11TimestampQueryImpl : public MTLD3DQueryBase<MTLD3D11TimestampQuery
 
 bool
 TimestampQueriesSampled() {
-  static const bool sampled = Config::getInstance().getOption<bool>("d3d11.timestampQueries", false);
+  static const bool sampled = Config::getInstance().getOption<bool>("d3d11.timestampQueries", true);
   return sampled;
 }
 
