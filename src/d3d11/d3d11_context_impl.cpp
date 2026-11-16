@@ -6232,6 +6232,7 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
     WMTPixelFormat depth_pixel_format;
     WMTPixelFormat motion_vector_pixel_format;
     bool auto_exposure;
+    bool jittered;
     uint32_t input_width;
     uint32_t input_height;
     uint32_t output_width;
@@ -6299,6 +6300,7 @@ public:
 
     for(CachedTemporalScaler& entry: scaler_cache_) {
       if(pDesc->AutoExposure != entry.auto_exposure) continue;
+      if(bool(pDesc->MotionVectorJittered) != entry.jittered) continue;
       if(input->width() != entry.input_width) continue;
       if(input->height() != entry.input_height) continue;
       if(output->width() != entry.output_width) continue;
@@ -6319,12 +6321,14 @@ public:
       scaler_entry.output_pixel_format = output->pixelFormat();
       scaler_entry.depth_pixel_format = depth->pixelFormat();
       scaler_entry.motion_vector_pixel_format = motion_vector_format;
-      WMTFXTemporalScalerInfo info;
+      WMTFXTemporalScalerInfo info{};
       info.color_format = scaler_entry.color_pixel_format;
       info.output_format = scaler_entry.output_pixel_format;
       info.depth_format = scaler_entry.depth_pixel_format;
       info.motion_format = motion_vector_format;
       scaler_entry.auto_exposure = pDesc->AutoExposure;
+      scaler_entry.jittered = pDesc->MotionVectorJittered;
+      info.jittered_motion_vectors = scaler_entry.jittered;
       scaler_entry.input_width = input->width();
       scaler_entry.input_height = input->height();
       scaler_entry.output_width = output->width();
@@ -6337,7 +6341,9 @@ public:
       info.input_content_properties_enabled = true;
       info.input_content_min_scale = 1.0f;
       info.input_content_max_scale =  3.0f;
-      info.requires_synchronous_initialization = true;
+      // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
+      // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
+      info.requires_synchronous_initialization = false;
       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
       if (pDesc->MotionVectorInDisplayRes) {
         WMTTextureInfo tex_info{};

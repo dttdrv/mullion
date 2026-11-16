@@ -22,6 +22,8 @@ struct MTL_TEMPORAL_UPSCALE_D3D12_DESC {
   FLOAT PreExposure;
   FLOAT JitterOffsetX;
   FLOAT JitterOffsetY;
+  // the motion vectors were made with the jittered projections (NVSDK_NGX_DLSS_Feature_Flags_MVJittered)
+  BOOL MotionVectorJittered;
 };
 
 // a ray-traced frame, upscaled and denoised from its G-buffer (MTLFXTemporalDenoisedScaler; DLSS Ray Reconstruction)

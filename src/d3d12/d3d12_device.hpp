@@ -987,7 +987,10 @@ public:
   std::atomic<uint64_t> so_scratch_budget = kStagingBlockSize;
 };
 
-HRESULT CreateD3D12Device(IMTLDXGIAdapter *adapter, REFIID riid, void **ppDevice);
+// D3D12CreateDevice on a Mullion adapter: the adapter's device where it reaches `MinimumFeatureLevel`, E_INVALIDARG
+// where it does not, and S_FALSE without ppDevice where it does
+HRESULT
+CreateD3D12Device(IMTLDXGIAdapter *adapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void **ppDevice);
 
 // `pParent` is the state object an addition grows from, or null
 HRESULT CreateStateObject(

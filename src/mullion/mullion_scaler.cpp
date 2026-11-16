@@ -1,4 +1,6 @@
 #include "mullion_scaler.hpp"
+#include "log/log.hpp"
+#include "config/config.hpp"
 
 namespace mullion {
 
@@ -30,7 +32,24 @@ TemporalScaler::decRef() {
 }
 
 TemporalScaler::TemporalScaler(WMT::Device device, const WMTFXTemporalScalerInfo &info, bool metal4) {
-  scaler_ = metal4 ? device.newTemporalScaler4(info) : device.newTemporalScaler(info);
+  auto make = [&](const WMTFXTemporalScalerInfo &of) {
+    return metal4 ? device.newTemporalScaler4(of) : device.newTemporalScaler(of);
+  };
+  // metalfx.jitteredMotionVectors says so for an application that does not: one whose motion vectors carry the jitter
+  // and whose DLSS flags leave NVSDK_NGX_DLSS_Feature_Flags_MVJittered out, which shakes what moves. none is known
+  static const bool always = Config::getInstance().getOption<bool>("metalfx.jitteredMotionVectors", false);
+  auto asked = info;
+  asked.jittered_motion_vectors |= always;
+  scaler_ = make(asked);
+  if (!scaler_ && asked.jittered_motion_vectors) {
+    auto plain = info;
+    plain.jittered_motion_vectors = false;
+    if ((scaler_ = make(plain))) {
+      static std::atomic_flag warned;
+      if (!warned.test_and_set())
+        WARN("MetalFX: this macOS does not take the jitter out of motion vectors; they are read as they are");
+    }
+  }
   fence_ = device.newFence();
 }
 

@@ -5472,7 +5472,8 @@ public:
                                  uint32_t(depth_format),
                                  uint32_t(scaler_motion_format),
                                  uint32_t(!!pDesc->AutoExposure),
-                                 uint32_t(display_motion)};
+                                 uint32_t(display_motion),
+                                 uint32_t(!!pDesc->MotionVectorJittered)};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
@@ -5487,7 +5488,12 @@ public:
       info.input_content_max_scale = 3.0f;
       info.auto_exposure = pDesc->AutoExposure;
       info.input_content_properties_enabled = true;
-      info.requires_synchronous_initialization = true;
+      // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
+      // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization): the list is not held
+      // through the compilation each time a game changes its resolution or quality mode
+      info.requires_synchronous_initialization = false;
+      // the pass that brings motion vectors to the input resolution writes them in pixels and leaves their jitter in
+      info.jittered_motion_vectors = pDesc->MotionVectorJittered;
       cache->temporal = new TemporalScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
       if (!cache->temporal->scaler().handle) {
         cache->temporal = nullptr;
@@ -5611,7 +5617,8 @@ public:
       info.output_width = output->width();
       info.output_height = output->height();
       info.auto_exposure = pDesc->AutoExposure;
-      info.requires_synchronous_initialization = true;
+      // as the temporal scaler's (TemporalUpscale)
+      info.requires_synchronous_initialization = false;
       cache->denoised = new DenoisedScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
       if (!cache->denoised->scaler().handle) {
         cache->denoised = nullptr;

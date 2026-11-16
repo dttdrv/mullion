@@ -2030,11 +2030,28 @@ static const int SIGNALS[] = {
 #endif
 };
 
+// whether the descriptor takes what the info asks of the motion vectors
+static bool
+temporal_scaler_motion(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTemporalScalerInfo *info) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *)) {
+    desc.jitteredMotionVectorsEnabled = info->jittered_motion_vectors;
+    return true;
+  }
+#endif
+  return !info->jittered_motion_vectors;
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newTemporalScaler)(void *obj) {
   struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
   MTLFXTemporalScalerDescriptor *desc = [[MTLFXTemporalScalerDescriptor alloc] init];
   const struct WMTFXTemporalScalerInfo *info = params->info.ptr;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (!temporal_scaler_motion(desc, info)) {
+    [desc release];
+    return STATUS_SUCCESS;
+  }
   desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
   desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
   desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
@@ -2196,7 +2213,8 @@ CREATES(_MTLDevice_newTemporalScaler4)(void *obj) {
     desc.inputContentPropertiesEnabled = info->input_content_properties_enabled;
     desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
     desc.autoExposureEnabled = info->auto_exposure;
-    params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
+    if (temporal_scaler_motion(desc, info))
+      params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
     [desc release];
     [compiler release];
   }
