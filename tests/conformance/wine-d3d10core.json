@@ -207,9 +207,7 @@
   "verdict": "passed"
  },
  "test_multisample_resolve": {
-  "verdict": "failed",
-  "failed": 2,
-  "first": "d3d10core.c:18312: Test failed: Got 0xffbcffbc, expected 0xff80ff80 at (0, 0), sub-resource 0."
+  "verdict": "passed"
  },
  "test_null_sampler": {
   "verdict": "passed"

@@ -41,6 +41,9 @@ from pathlib import Path
 EVENT_END = "\x1f"
 # an unsampled GPU timestamp (Mullion profile record contract, pass)
 NO_SAMPLE = 18446744073709551615
+# a Metal 4 counter heap's entry that Metal did not write: "Invalidated entries produce 0 when resolved"
+# (MTL4Counters.h), and Metal drops a timestamp that follows another with no work between
+NOT_WRITTEN = 0
 
 
 def cpu_time(timestamp, calibration):
@@ -76,7 +79,7 @@ class Pass:
         if len(clock) % 2:
             raise ValueError("pass has an unpaired stage timestamp")
         self.stages = [(start, end) for start, end in zip(clock[::2], clock[1::2])
-                       if NO_SAMPLE not in (start, end)]
+                       if NO_SAMPLE not in (start, end) and NOT_WRITTEN not in (start, end)]
         self.gpu = sum(end - start for start, end in self.stages)
 
     def what(self):

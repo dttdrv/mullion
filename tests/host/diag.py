@@ -86,6 +86,11 @@ def profile(directory):
     assert partial.stages == [(20, 25)] and partial.gpu == 5
     near_missing = tool.Pass("a", "1", "0", "Compute", "0", "", str(int(missing) - 4), str(int(missing) - 1))
     assert near_missing.gpu == 3
+    # a pass whose end a Metal 4 heap did not write, and the next, which starts at that entry: "Invalidated entries
+    # produce 0 when resolved" (MTL4Counters.h)
+    unwritten = tool.Pass("a", "1", "0", "Blit", "0", "", "1000", "0")
+    after = tool.Pass("a", "1", "1", "Compute", "0", "", "0", "1500")
+    assert unwritten.stages == [] and unwritten.gpu == 0 and after.stages == [] and after.gpu == 0
     try:
         tool.Pass("a", "1", "0", "Compute", "0", "", "10")
     except ValueError:
