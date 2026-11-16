@@ -491,7 +491,10 @@ public:
         return hr;
       auto bytes = static_cast<const uint8_t *>(serialized->GetBufferPointer());
       blob_.assign(bytes, bytes + serialized->GetBufferSize());
+      if (FAILED(microsoft::DXBCGetRootSignature(blob_.data(), &pRawRootSig, &RawRootSigSize)))
+        return FAIL(E_FAIL);
     }
+    Digest = Sha1HashState::compute(pRawRootSig, RawRootSigSize);
 
     if (desc.NumParameters) {
       const bool local = desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;

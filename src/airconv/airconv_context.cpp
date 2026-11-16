@@ -209,8 +209,9 @@ removeNamedMetadata(llvm::Module &M, StringRef Name) {
 
 template<size_t N>
 void linkShader(llvm::Module &M, const unsigned char (&bitcode)[N]) {
-  auto buffer = MemoryBuffer::getMemBufferCopy(StringRef((const char *)bitcode, N));
-  Expected<std::unique_ptr<Module>> modOrErr = parseBitcodeFile(buffer->getMemBufferRef(), M.getContext());
+  // read in place, and lazily: the linker materializes only the functions the shader calls, and what they need
+  Expected<std::unique_ptr<Module>> modOrErr =
+      getLazyBitcodeModule(MemoryBufferRef(StringRef((const char *)bitcode, N), "air"), M.getContext());
 
   if (!modOrErr) {
     // not expected to see this unless something really bad happened in compile time

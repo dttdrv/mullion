@@ -144,7 +144,11 @@ Converted shaders are cached by each API, and in a persistent cache both share:
   conversion. With it disabled, each miss converts.
 - Both share a persistent cache in SQLite on the native side, versioned by `AIRCONV_VERSION`
   ([`mullion_shader_cache.cpp`](../src/mullion/mullion_shader_cache.cpp),
-  [`cache.c`](../src/winemetal/unix/cache.c)).
+  [`cache.c`](../src/winemetal/unix/cache.c)). Its lookups run on connections of their own, and its writes are
+  queued and applied in order on a thread that converts nothing.
+- The persistent cache also holds each shader's reflection, under the shader's SHA-1. A pipeline reads it from there,
+  and a shader's state is made (`SM50Initialize`) when one of its functions is first converted, so a pipeline whose
+  functions are stored is made without its bytecode being parsed.
 
 [CODE.md 4](CODE.md#4-shaders) gives the rules for changing converted output and cache keys.
 
