@@ -367,8 +367,8 @@ public:
     }
     format_inspector_.Inspect(GetMTLDevice());
     keep_structure_inputs = Config::getInstance().getOption<bool>("d3d12.keepAccelerationStructureInputs", true);
-    emulate_depth_bounds = Config::getInstance().getOption<bool>("d3d12.emulateDepthBounds", false);
-    timestamp_queries = Config::getInstance().getOption<bool>("d3d12.timestampQueries", false);
+    emulate_depth_bounds = Config::getInstance().getOption<bool>("d3d12.emulateDepthBounds", true);
+    timestamp_queries = Config::getInstance().getOption<bool>("d3d12.timestampQueries", true);
     immediate_markers = Config::getInstance().getOption<bool>("d3d12.immediateMarkers", false);
     report_emulated_features = Config::getInstance().getOption<bool>("d3d12.reportEmulatedFeatures", false);
     

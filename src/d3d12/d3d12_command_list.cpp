@@ -3640,8 +3640,8 @@ public:
       return;
     }
     if (Type == D3D12_QUERY_TYPE_TIMESTAMP) {
-      // nothing an application draws reads a GPU time, and sampling one shapes the passes around it
-      // (d3d12.timestampQueries)
+      // sampling one shapes the passes around it, which d3d12.timestampQueries=False leaves out: a profiler or a
+      // resolution scaler then reads zeros
       if (!device_->timestamp_queries)
         return;
       // the clock "at the instant that the GPU is finished with all the preceding workload" (D3D11.3 20.4.3): the
