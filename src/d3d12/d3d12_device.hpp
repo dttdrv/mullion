@@ -571,7 +571,7 @@ public:
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
-  // in `pso` for list topologies and in `pso_strip` for strips (none for points)
+  // in `pso` for list topologies and in a variant of its own for strips (GeometryPipeline; none for points)
   bool geometry_shader = false;
   // its `pso` is a mesh function alone that runs the vertex shader and passes a list of triangles on, culling them by
   // their cull distances, with no object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
@@ -584,14 +584,17 @@ public:
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
   bool shader_blend = false;
-  WMT::Reference<WMT::RenderPipelineState> pso_strip;
   // the vertex shader's output registers, which size a geometry pipeline's object threadgroups (get_gs_vertex_count)
   uint32_t vertex_registers = 0;
-  // with stream output, the pipelines of its counting pass, as `pso` and `pso_strip` (airconv_public.h,
+  // with stream output, its counting pass has pipelines of its own, for lists and for strips (airconv_public.h,
   // SM50_STREAM_OUTPUT_TARGETS)
   bool stream_output = false;
-  WMT::Reference<WMT::RenderPipelineState> so_count, so_count_strip;
-  // whether `pso` and `pso_strip` stream out in one pass, without their counting pass, after their filled sizes are
+  // a geometry pipeline's Metal pipeline for strips (`strip`), and for stream output's counting pass of lists or of
+  // strips (`counting`); for lists that draw it is `pso`. a list's are made with the pipeline, as the first draw is
+  // taken to be of a list, and a strip's when a draw first needs them, since many pipelines draw none. null when it
+  // cannot be made
+  virtual WMT::RenderPipelineState GeometryPipeline(bool strip, bool counting) = 0;
+  // whether lists and strips stream out in one pass, without their counting pass, after their filled sizes are
   // copied (SM50StreamOutputSinglePass); and whether the pipeline's draws rasterize nothing, stream output to no
   // rasterized stream (D3D11.3 14.1), so that a pass without attachments they begin covers no pixels.
   // MULLION_D3D12_FAST_STREAM_OUTPUT=0 turns both off
@@ -610,7 +613,8 @@ public:
   bool mesh_shader = false;
   uint32_t object_threads[3] = {1, 1, 1}, mesh_threads[3] = {1, 1, 1};
   // whether it has an object stage (an amplification shader, or conservative rasterization's), so DispatchMesh's grid
-  // is an object grid, and the most threadgroups a Metal mesh grid of it may have (0: not known)
+  // is an object grid, and the most threadgroups a Metal mesh grid of it may have, which `pso` tells once it is made
+  // (0: not known)
   bool object_stage = false;
   uint64_t mesh_grid_limit = 0;
   // whether it has a pixel shader, which PSInvocations count
@@ -825,8 +829,15 @@ public:
     uint64_t commands = 0;
   } indirect_command_buffers;
 
-  // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
-  std::atomic<uint32_t> max_mesh_threadgroups{0};
+  // the most mesh threadgroups an object threadgroup may start (MeshGridLimit), asked of the device once, when a
+  // tessellation pipeline first needs it
+  uint32_t
+  MaxMeshThreadgroups() {
+    std::call_once(mesh_grid_asked_, [&] { max_mesh_threadgroups_ = MeshGridLimit(GetMTLDevice()); });
+    return max_mesh_threadgroups_;
+  }
+  std::once_flag mesh_grid_asked_;
+  uint32_t max_mesh_threadgroups_ = 0;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads

@@ -815,7 +815,7 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA {
   /* a geometry shader after the domain shader, or 0: the mesh stage then runs both, in a mesh threadgroup for each
      primitive a workload may have and each geometry instance. an object threadgroup starts at most
      `max_mesh_threadgroups` of them, which lowers the factor (MTLRenderPipelineState's
-     maxTotalThreadgroupsPerMeshGrid); 0 while not known, when the pipeline is built to tell it */
+     maxTotalThreadgroupsPerMeshGrid); 0 when the device tells none, and one grid has them all */
   uint32_t max_mesh_threadgroups;
   sm50_shader_t geometry;
   /* conservative rasterization of the triangles the tessellator outputs, as SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's:
