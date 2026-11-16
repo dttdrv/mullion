@@ -754,7 +754,9 @@ public:
     std::unordered_map<Sha1Digest, std::weak_ptr<void>> made;
   } ray_functions;
   // the program's pipelines kept across launches as their GPU binaries (MTLBinaryArchive): a pipeline is looked up
-  // there before Metal compiles it, and one that is not there is added once it is compiled
+  // there before Metal compiles it, and one that is not there is handed back once it is compiled and added by the
+  // archive's thread after that (ArchivePipeline): Metal takes as long to add a pipeline as to compile it, and adds
+  // one at a time
   template <typename Info, typename Make>
   auto
   Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
@@ -768,18 +770,19 @@ public:
     if (auto found = make(info, error))
       return found;
     info.fail_on_binary_archive_miss = false;
-    info.binary_archive_for_serialization = archives.back();
+    info.keep_for_binary_archive = true;
     error = {};
     auto made = make(info, error);
     if (made)
-      PipelineArchived();
+      ArchivePipeline(made);
     return made;
   }
   // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
   // shader cache (ShaderCacheDirectory)
   virtual std::span<const obj_handle_t> PipelineArchives() = 0;
-  virtual void PipelineArchived() = 0;
-  // pipelines are made under it shared, and the archive is written under it whole
+  // a pipeline made with keep_for_binary_archive, for the archive's thread to add
+  virtual void ArchivePipeline(WMT::Object pipeline) = 0;
+  // pipelines are looked up under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
   // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=1 turns them on): one pipeline of each state but its targets'
   // formats, write masks and blending, compiled once while a pipeline holds it, and its specializations to those

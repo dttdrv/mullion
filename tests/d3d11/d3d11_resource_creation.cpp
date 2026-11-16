@@ -408,8 +408,17 @@ void main(uint3 id : SV_DispatchThreadID) {
             else if (bind == D3D11_BIND_DEPTH_STENCIL)
               valid &=
                   dimension != D3D11_RESOURCE_DIMENSION_TEXTURE3D && !!(support & D3D11_FORMAT_SUPPORT_DEPTH_STENCIL);
-            else if (bind == D3D11_BIND_UNORDERED_ACCESS)
-              valid &= !!(support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW);
+            else if (bind == D3D11_BIND_UNORDERED_ACCESS) {
+              // an sRGB format is asked as the format it encodes: Windows makes R8G8B8A8_UNORM_SRGB with the flag
+              // (Wine's d3d11 tests, test_create_unordered_access_view) and no view of it for unordered access
+              UINT encoded = support;
+              if (const char *srgb = strstr(format.name, "_SRGB"))
+                for (const auto &other : resource_formats)
+                  if (strlen(other.name) == size_t(srgb - format.name) &&
+                      !strncmp(other.name, format.name, srgb - format.name))
+                    CHECK(device->CheckFormatSupport(other.value, &encoded));
+              valid &= !!(encoded & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW);
+            }
             // a typeless format's own row lists no shader operations (Format support for Direct3D Feature Level 11.0
             // hardware), yet Windows makes its textures for shader resources, read through its family's typed views
             // (Wine's d3d11 tests, test_create_texture2d: R32G32B32A32_TYPELESS and R24G8_TYPELESS succeed)

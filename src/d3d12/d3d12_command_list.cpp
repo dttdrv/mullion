@@ -3008,11 +3008,6 @@ public:
   SetPipelineState(ID3D12PipelineState *pPSO) {
     if (Bundled() && Record([pso = Com<ID3D12PipelineState>(pPSO)](auto *l) { l->SetPipelineState(pso.ptr()); }))
       return;
-    // setting a pipeline state again takes its depth bias back, the same one included
-    if (depth_bias_) {
-      depth_bias_.reset();
-      dirty_state_.set(DirtyState::GraphicsPipelineState);
-    }
     if (!pPSO) {
       pso_graphics_ = nullptr;
       pso_compute_ = nullptr;
@@ -3034,6 +3029,9 @@ public:
     auto graphics_pso = static_cast<MTLD3D12GraphicsPipelineState *>(pPSO);
     if (pso_graphics_.ptr() == graphics_pso)
       return;
+    // another pipeline takes RSSetDepthBias's values back; the one that is set keeps them, as on Windows
+    // (vkd3d-proton's test_dynamic_depth_bias, which has the specification take them back there too)
+    depth_bias_.reset();
     // tessellation, geometry shaders and stream output bind root arguments to other stages
     // and a pipeline whose mesh stage reads them, or reads the vertex buffers (mesh_only), to others again
     auto stages = [&](MTLD3D12GraphicsPipelineState *p) {
@@ -5727,14 +5725,23 @@ public:
     if (!color || !output || !depth || !motion)
       return E_INVALIDARG;
     auto motion_format = MotionVectorFormat(motion->pixelFormat());
-    if (motion_format == WMTPixelFormatInvalid) {
+    // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer
+    // formats", DLSS Programming Guide 3.3): those in one MetalFX does not take, which a shader reads as floats, are
+    // read so by the pass below
+    bool formatted = motion_format == WMTPixelFormatInvalid && device_->downscale_motion &&
+                     !IsIntegerFormat(motion->pixelFormat()) && !DepthStencilPlanarFlags(motion->pixelFormat());
+    if (motion_format == WMTPixelFormatInvalid && !formatted) {
       ERR("TemporalUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
       return E_INVALIDARG;
     }
     // motion vectors at the output resolution are brought to the input's (DownscaleMotion), as 32-bit floats
     bool display_motion = pDesc->MotionVectorInDisplayRes && device_->downscale_motion &&
                           (motion->width() != color->width() || motion->height() != color->height());
-    auto scaler_motion_format = display_motion ? WMTPixelFormatRG32Float : motion_format;
+    bool motion_pass = display_motion || formatted;
+    auto scaler_motion_format = motion_pass ? WMTPixelFormatRG32Float : motion_format;
+    // the pass writes the input resolution's motion vectors, or as many as it reads where they are at it already
+    uint32_t pass_width = !motion_pass ? 0 : display_motion ? color->width() : motion->width(),
+             pass_height = !motion_pass ? 0 : display_motion ? color->height() : motion->height();
     auto depth_format = ScalarFloatFormat(depth->pixelFormat());
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
@@ -5750,7 +5757,9 @@ public:
                                  uint32_t(scaler_motion_format),
                                  uint32_t(!!pDesc->AutoExposure),
                                  uint32_t(display_motion),
-                                 uint32_t(!!pDesc->MotionVectorJittered)};
+                                 uint32_t(!!pDesc->MotionVectorJittered),
+                                 pass_width,
+                                 pass_height};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
@@ -5779,12 +5788,12 @@ public:
         return E_FAIL;
       }
       cache->motion = {};
-      if (display_motion) {
+      if (motion_pass) {
         WMTTextureInfo motion_info{};
         motion_info.type = WMTTextureType2D;
         motion_info.pixel_format = WMTPixelFormatRG32Float;
-        motion_info.width = info.input_width;
-        motion_info.height = info.input_height;
+        motion_info.width = pass_width;
+        motion_info.height = pass_height;
         motion_info.depth = 1;
         motion_info.array_length = 1;
         motion_info.mipmap_level_count = 1;
@@ -5794,7 +5803,7 @@ public:
         cache->motion = device_->GetMTLDevice().newTexture(motion_info);
         if (!cache->motion) {
           cache->temporal = nullptr;
-          ERR("TemporalUpscale: no texture for motion vectors at ", info.input_width, "x", info.input_height);
+          ERR("TemporalUpscale: no texture for motion vectors at ", pass_width, "x", pass_height);
           return E_FAIL;
         }
       }
@@ -5802,7 +5811,8 @@ public:
       Logger::info(str::format(
           "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
           info.output_height, device_->UsesMetal4() ? " (Metal 4)" : "",
-          display_motion ? ", motion vectors brought from the output resolution" : ""
+          display_motion ? ", motion vectors brought from the output resolution" : "",
+          formatted ? str::format(", motion vectors read from format ", motion->pixelFormat()) : ""
       ));
       // MULLION_LOG_LEVEL=debug: what the game gives the scaler, for an image that comes out wrong
       if (Logger::logLevel() <= LogLevel::Debug)
@@ -5817,7 +5827,8 @@ public:
             ", motion at output resolution ", pDesc->MotionVectorInDisplayRes
         ));
     }
-    if (display_motion)
+    // the pass writes the input resolution's motion vectors, or as many as it reads where they are at it already
+    if (motion_pass)
       DownscaleMotion(
           motion, UpscaleView(motion, motion_format), cache, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY
       );
@@ -5826,7 +5837,7 @@ public:
     pass->color = UpscaleView(color);
     pass->output = UpscaleView(output);
     pass->depth = UpscaleView(depth, depth_format);
-    pass->motion = display_motion ? WMT::Texture(cache->motion) : UpscaleView(motion, motion_format);
+    pass->motion = motion_pass ? WMT::Texture(cache->motion) : UpscaleView(motion, motion_format);
     pass->exposure =
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
     pass->props = WMTFXTemporalScalerProps{
@@ -5834,8 +5845,8 @@ public:
         pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
         bool(pDesc->InReset),
         bool(pDesc->DepthReversed),
-        display_motion ? 1.0f : pDesc->MotionVectorScaleX,
-        display_motion ? 1.0f : pDesc->MotionVectorScaleY,
+        motion_pass ? 1.0f : pDesc->MotionVectorScaleX,
+        motion_pass ? 1.0f : pDesc->MotionVectorScaleY,
         pDesc->JitterOffsetX,
         pDesc->JitterOffsetY,
         pDesc->PreExposure,

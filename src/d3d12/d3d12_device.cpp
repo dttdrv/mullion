@@ -309,8 +309,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   std::string archive_path_;
   mullion::mutex archive_mutex_;
   mullion::condition_variable archive_changed_;
-  // pipelines added to the archive so far, and of them to its last shard
-  uint64_t archived_ = 0;
+  // the pipelines to add to the archive, oldest first, and how many its last shard has
+  std::deque<WMT::Reference<WMT::Object>> archive_adds_;
   uint32_t shard_archived_ = 0;
   bool archive_closing_ = false;
   mullion::thread archive_writer_;
@@ -568,43 +568,48 @@ public:
   }
 
   void
-  PipelineArchived() override {
+  ArchivePipeline(WMT::Object pipeline) override {
     {
       std::lock_guard lock(archive_mutex_);
-      archived_++;
-      shard_archived_++;
+      archive_adds_.emplace_back(pipeline);
     }
     archive_changed_.notify_one();
   }
 
-  // writes the last shard once additions stop for as long as its last write took, or once it is full: a burst of new
-  // pipelines is written once, and pipelines wait on a write (archive_lock) only between bursts. the device's end
-  // writes what is left
+  // adds the pipelines to the last shard, one at a time, and writes it once additions stop for as long as its last
+  // write took, or once it is full: a burst of new pipelines is written once. nothing else adds to a shard or writes
+  // one, so no add meets another or a write, and pipelines wait (archive_lock) only for a write, between bursts. the
+  // device's end adds and writes what is left
   void
   WriteArchive() {
     env::setThreadName("mullion-archive-thread");
     std::unique_lock lock(archive_mutex_);
-    uint64_t written = 0;
     std::chrono::steady_clock::duration took{};
     for (;;) {
-      archive_changed_.wait(lock, [&] { return archive_closing_ || archived_ != written; });
-      auto full = [&] { return shard_archived_ >= kPipelinesPerArchive; };
-      for (uint64_t seen = written; !archive_closing_ && !full() && seen != archived_;) {
-        seen = archived_;
-        archive_changed_.wait_for(lock, took, [&] { return archive_closing_ || full(); });
+      archive_changed_.wait(lock, [&] { return archive_closing_ || !archive_adds_.empty(); });
+      while (!archive_adds_.empty() && shard_archived_ < kPipelinesPerArchive) {
+        auto pipeline = std::move(archive_adds_.front());
+        archive_adds_.pop_front();
+        lock.unlock();
+        // every shard was lost to a fault in Metal and no new one could be made: the pipelines are not kept
+        if (!archives_.empty())
+          archives_.back().add(pipeline);
+        pipeline = nullptr;
+        lock.lock();
+        shard_archived_++;
       }
-      if (archived_ == written)
+      if (shard_archived_ < kPipelinesPerArchive && !archive_closing_ &&
+          archive_changed_.wait_for(lock, took, [&] { return archive_closing_ || !archive_adds_.empty(); }))
+        continue;
+      if (!shard_archived_)
         return;
-      bool closing = archive_closing_;
+      bool last = archive_closing_ && archive_adds_.empty();
       lock.unlock();
       auto start = std::chrono::steady_clock::now();
       WMT::Reference<WMT::Error> error;
-      // every shard was lost to a fault in Metal and no new one could be made
-      if (archives_.empty())
-        return;
-      auto path = ShardPath(archives_.size() - 1);
-      uint64_t target;
-      {
+      std::string path;
+      if (!archives_.empty()) {
+        path = ShardPath(archives_.size() - 1);
         std::lock_guard whole(archive_lock);
         if (!archives_.back().serialize(path.c_str(), error)) {
           // Metal faulted writing the shard and holds its queue from then on, so a pipeline looked up in it, and its
@@ -618,21 +623,19 @@ public:
         // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
         // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")
         WMT::Reference<WMT::Error> unused;
-        if (!closing && archives_.size() < kMaxArchives)
+        if (!last && archives_.size() < kMaxArchives)
           if (auto next = GetMTLDevice().newBinaryArchive(nullptr, unused)) {
             archive_handles_.push_back(next.handle);
             archives_.push_back(std::move(next));
           }
-        // no pipeline is added while the archive is written whole
-        std::lock_guard counts(archive_mutex_);
-        target = archived_;
-        shard_archived_ = 0;
       }
       took = std::chrono::steady_clock::now() - start;
       if (error)
         ERR("Failed to write the pipeline archive ", path, ": ", error.description().getUTF8String());
       lock.lock();
-      written = target;
+      shard_archived_ = 0;
+      if (last)
+        return;
     }
   }
 

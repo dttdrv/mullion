@@ -2003,21 +2003,14 @@ ArgumentEncodingContext::isResolveSignatureMatched(RenderEncoderData *render, Re
       continue;
     if (color.attachment->allocation != resolve->src->allocation)
       continue;
+    // the view the resolve reads, and no other of the texture: the resolve's format says how the samples are
+    // averaged (an sRGB view's samples resolved as UNORM are averaged as stored), which the pass's own view would do
+    // in its format
     if (color.attachment->key == resolve->src->key) {
       ret.src = &color;
       ret.dst = resolve->dst;
       break;
     };
-    auto &descriptor_src = resolve->src->allocation->descriptor;
-    auto &descriptor_dst = resolve->dst->allocation->descriptor;
-    auto color_format = descriptor_src->pixelFormat(color.attachment->key);
-    auto view_src_in_color_format = descriptor_src->checkViewUseFormat(resolve->src->key, color_format);
-    if (color.attachment->key == view_src_in_color_format) {
-      auto view_dst_in_color_format = descriptor_dst->checkViewUseFormat(resolve->dst->key, color_format);
-      ret.src = &color;
-      ret.dst = descriptor_dst->view(view_dst_in_color_format, resolve->dst->allocation);
-      break;
-    }
   }
   return ret;
 }

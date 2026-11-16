@@ -1,7 +1,9 @@
 // contract: the bridge's shader store (src/winemetal/unix/cache.c), which converted shaders are kept in between
 // runs. a lookup returns the bytes last stored under its key, or nothing, from any number of threads at once; writes
 // are queued and take effect in the order they were asked for, a removal among them; and a process that ends in
-// order has stored everything it queued, so the next process finds it.
+// order has stored everything it queued, so the next process finds it. what one version of the converter stored is
+// a file of its own, and a process that opens the store at one version removes the files of the others, with those
+// of a store from before versions had their own, and nothing else.
 // the keys and sizes differ per entry and every byte of a value follows from its key, so a lookup that returns
 // another entry's bytes, or part of its own, is told from a right one.
 #import <Foundation/Foundation.h>
@@ -115,7 +117,8 @@ main(int argc, char **argv) {
   if (!directory)
     return printf("failed: no temporary directory\n"), 1;
   NSString *path = [NSString stringWithFormat:@"%s/shaders_test.db", directory];
-  struct unixcall_cache_alloc_init params = {{(void *)path.UTF8String}, 1, 0};
+  bool other = argc > 1 && !strcmp(argv[1], "other");
+  struct unixcall_cache_alloc_init params = {{(void *)path.UTF8String}, other ? 2 : 1, 0};
   _CacheWriter_alloc_init(&params);
   writer = params.ret_cache;
   params.ret_cache = 0;
@@ -123,6 +126,11 @@ main(int argc, char **argv) {
   reader = params.ret_cache;
   if (!writer || !reader)
     return printf("failed: the store did not open\n"), 1;
+  // the process of another version, which stores one entry and ends
+  if (other) {
+    store(1, 0);
+    return 0;
+  }
   const uint64_t queued = (uint64_t)1 << 40;
   // the process that only queues, and ends
   if (argc > 1 && !strcmp(argv[1], "queue")) {
@@ -170,7 +178,32 @@ main(int argc, char **argv) {
     printf("wrong: %u of %d entries a process queued before it ended are not stored\n", missing, kQueued);
     wrong++;
   }
-  [[NSFileManager defaultManager] removeItemAtPath:[NSString stringWithUTF8String:directory] error:nil];
+  // files as an earlier store left them, and two that are not the store's
+  NSFileManager *files = [NSFileManager defaultManager];
+  NSString *folder = [NSString stringWithUTF8String:directory];
+  NSArray<NSString *> *left = @[@"shaders_test.db", @"shaders_test.db-wal", @"shaders_test.v0.db"];
+  NSArray<NSString *> *unrelated = @[@"shaders_tests.db", @"pipelines_400_0.metallib"];
+  for (NSString *name in [left arrayByAddingObjectsFromArray:unrelated])
+    [files createFileAtPath:[folder stringByAppendingPathComponent:name] contents:[NSData data] attributes:nil];
+  char *another[] = {argv[0], "other", (char *)directory, NULL};
+  if (posix_spawn(&child, argv[0], NULL, NULL, another, environ) || waitpid(child, &status, 0) != child || status)
+    return printf("failed: the process of another version ended with %d\n", status), 1;
+  NSArray<NSString *> *now = [files contentsOfDirectoryAtPath:folder error:nil];
+  if (![now containsObject:@"shaders_test.v2.db"]) {
+    printf("wrong: the other version's store is not a file of its own\n");
+    wrong++;
+  }
+  for (NSString *name in now)
+    if ([name hasPrefix:@"shaders_test.v1."] || [left containsObject:name]) {
+      printf("wrong: %s is still there after another version opened the store\n", name.UTF8String);
+      wrong++;
+    }
+  for (NSString *name in unrelated)
+    if (![now containsObject:name]) {
+      printf("wrong: %s, which is not the store's, was removed\n", name.UTF8String);
+      wrong++;
+    }
+  [files removeItemAtPath:folder error:nil];
   printf(wrong ? "failed: %d wrong\n" : "passed\n", atomic_load(&wrong));
   return wrong != 0;
 }
