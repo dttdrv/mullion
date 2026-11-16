@@ -1774,9 +1774,13 @@ public:
     Com<ID3D12Fence> fence;
     if (!object || !handle)
       return E_INVALIDARG;
-    // only fences are shared so far, not resources and heaps
-    if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence))))
-      return E_NOTIMPL;
+    // fences, and committed textures on a shared heap; heaps and other resources are not shared so far
+    if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence)))) {
+      Com<ID3D12Resource> resource;
+      if (FAILED(object->QueryInterface(IID_PPV_ARGS(&resource))))
+        return E_NOTIMPL;
+      return static_cast<MTLD3D12Resource *>(resource.ptr())->CreateSharedHandle(attributes, access, name, handle);
+    }
     // a fence made with D3D12_FENCE_FLAG_SHARED, whose Access "is GENERIC_ALL" (ID3D12Device::CreateSharedHandle)
     if (access != GENERIC_ALL)
       return E_INVALIDARG;
@@ -1786,6 +1790,10 @@ public:
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
     InitReturnPtr(object);
+    // a shared texture's handle is its share's object; anything else is tried as a fence's
+    HRESULT texture = OpenSharedTexture(this, handle, riid, object);
+    if (texture != S_FALSE)
+      return texture;
     char mach_port_name[54];
     auto event = openSharedEvent(GetMTLDevice(), handle, mach_port_name);
     return OpenFence(this, std::move(event), mach_port_name, riid, object);

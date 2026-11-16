@@ -606,18 +606,6 @@ protected:
 
 #pragma region Resource Factory
 
-inline void MakeUniqueSharedName(char (&out)[54]) {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<uint64_t> dis;
-
-    uint64_t r1 = dis(gen);
-    uint64_t r2 = dis(gen);
-
-    std::snprintf(out, sizeof(out), "MULLION_shared_%016llx%016llx",
-                  static_cast<unsigned long long>(r1),
-                  static_cast<unsigned long long>(r2));
-}
 
 HRESULT
 CreateStagingBuffer(MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc,

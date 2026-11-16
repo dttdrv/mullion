@@ -21,6 +21,7 @@
 #include <bit>
 #include <cmath>
 #include "mullion_format.hpp"
+#include "mullion_shared_texture.hpp"
 #include "com/com_pointer.hpp"
 
 namespace mullion {
@@ -273,6 +274,73 @@ WithinSlices(UINT first, UINT count, UINT length) {
   return first < length && count <= length - first;
 }
 
+// A shared texture's object, as Direct3D 11 makes one (mullion_shared_texture.hpp): the carrier, a file mapping named
+// after the share's id, holds the share's identity, and every handle of the share is a handle to it. The texture holds
+// it, and the name the share was published under, for as long as it lives.
+struct D3D12TextureShare {
+  SharedTextureData data{};
+  HANDLE named_mapping = nullptr;
+  SharedTextureCarrier *carrier = nullptr;
+  HANDLE published_name = nullptr;
+
+  ~D3D12TextureShare() {
+    if (carrier)
+      UnmapViewOfFile(carrier);
+    if (named_mapping)
+      CloseHandle(named_mapping);
+    if (published_name)
+      CloseHandle(published_name);
+  }
+};
+
+// the Direct3D 11 description of a Direct3D 12 texture, which is what a share records, so that Direct3D 11 opens a
+// texture Direct3D 12 shared ("You can share a resource between Direct3D 11 and Direct3D 12", ID3D12Device::
+// CreateSharedHandle)
+static D3D11_TEXTURE2D_DESC1
+SharedDesc11(const D3D12_RESOURCE_DESC &desc) {
+  D3D11_TEXTURE2D_DESC1 out{};
+  out.Width = UINT(desc.Width);
+  out.Height = desc.Height;
+  out.MipLevels = desc.MipLevels;
+  out.ArraySize = desc.DepthOrArraySize;
+  out.Format = desc.Format;
+  out.SampleDesc = desc.SampleDesc;
+  out.Usage = D3D11_USAGE_DEFAULT;
+  if (!(desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE))
+    out.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+  if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+    out.BindFlags |= D3D11_BIND_RENDER_TARGET;
+  if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+    out.BindFlags |= D3D11_BIND_DEPTH_STENCIL;
+  if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+    out.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+  out.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+  return out;
+}
+
+// the Direct3D 12 description of a shared 2D texture, from the Direct3D 11 one its share records
+static D3D12_RESOURCE_DESC
+SharedDesc12(const D3D11_TEXTURE2D_DESC1 &desc) {
+  D3D12_RESOURCE_DESC out{};
+  out.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  out.Width = desc.Width;
+  out.Height = desc.Height;
+  out.DepthOrArraySize = UINT16(desc.ArraySize);
+  out.MipLevels = UINT16(desc.MipLevels);
+  out.Format = desc.Format;
+  out.SampleDesc = desc.SampleDesc;
+  out.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+  if (desc.BindFlags & D3D11_BIND_RENDER_TARGET)
+    out.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  if (desc.BindFlags & D3D11_BIND_DEPTH_STENCIL)
+    out.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  if (desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
+    out.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  if (!(desc.BindFlags & D3D11_BIND_SHADER_RESOURCE))
+    out.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+  return out;
+}
+
 class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_RESOURCE_DESC desc_;
   D3D12_HEAP_PROPERTIES heap_props_;
@@ -283,6 +351,49 @@ class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   // the heap a placed texture is on, which it keeps: the heap's residency is the texture's
   // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
   Com<MTLD3D12Heap, false> heap_;
+  // a committed texture on a shared heap, or one opened from a share: the share's object
+  std::unique_ptr<D3D12TextureShare> share_;
+
+  // Makes the texture a share: its Metal allocation's port registered under a unique name, and the share's object
+  // holding that name and the texture's description, which every handle of the share is a handle to.
+  HRESULT
+  CreateShare() {
+    auto allocation = texture->current();
+    if (!allocation || !allocation->machPort) {
+      ERR("D3D12Texture: a shared texture has no Metal port");
+      return E_FAIL;
+    }
+    auto share = std::make_unique<D3D12TextureShare>();
+    memcpy(share->data.tag, shared_texture_tag, sizeof(shared_texture_tag));
+    share->data.share_id = MakeShareId();
+    MakeUniqueSharedName(share->data.mach_port_name);
+    share->data.dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+    share->data.desc.desc2d = SharedDesc11(desc_);
+    // "Access ... Currently the only value this parameter accepts is GENERIC_ALL" (ID3D12Device::CreateSharedHandle):
+    // a share Direct3D 12 made is open for reading and writing to a Direct3D 11 that opens it by name
+    share->data.granted_access = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE;
+    if (!WMTBootstrapRegister(share->data.mach_port_name, allocation->texture().handle, allocation->machPort)) {
+      ERR("D3D12Texture: failed to register a shared texture's Metal port");
+      return E_FAIL;
+    }
+    ShareMappingName(share->data.share_id, share->data.mapping_name);
+    share->named_mapping = CreateFileMappingA(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedTextureCarrier), share->data.mapping_name
+    );
+    if (!share->named_mapping || GetLastError() == ERROR_ALREADY_EXISTS) {
+      ERR("D3D12Texture: failed to make the share's object: ", GetLastError());
+      return E_FAIL;
+    }
+    share->carrier = static_cast<SharedTextureCarrier *>(
+        MapViewOfFile(share->named_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedTextureCarrier))
+    );
+    if (!share->carrier)
+      return E_FAIL;
+    memset(share->carrier, 0, sizeof(SharedTextureCarrier));
+    share->carrier->data = share->data;
+    share_ = std::move(share);
+    return S_OK;
+  }
 
 public:
   MTLD3D12Texture(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12Resource>(pDevice) {}
@@ -350,6 +461,10 @@ public:
     MTL_DXGI_FORMAT_DESC format;
     MTLQueryDXGIFormat(device_->GetMTLDevice(), desc_.Format, format);
     UINT planes = format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR ? format.PlanarCount : 1;
+    // a committed 2D texture on a shared heap is a Metal shared texture, which other devices and processes open
+    // (ID3D12Device::CreateSharedHandle); other shared resources are not shared so far
+    const bool shared = !pHeap && !Reserved && !pTexture && (HeapFlags & D3D12_HEAP_FLAG_SHARED) && planes == 1 &&
+                        desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     uint64_t offset = HeapOffset;
     for (UINT plane = 0; plane < planes; plane++) {
       if (plane && FAILED(PopulateWMTTextureInfo(device_, texture_info, desc_, plane)))
@@ -359,6 +474,8 @@ public:
       // a shared texture is so only once the GPU writes it (a placed texture has its heap's storage mode)
       if ((!pHeap && !pTexture && !IsCpuVisibleHeap(pHeapProps)) || (pHeap && pHeap->private_storage))
         flags.set(TextureAllocationFlag::CpuInvisible);
+      if (shared)
+        flags.set(TextureAllocationFlag::Shared);
       if (Reserved) {
         if (planes > 1)
           return FAIL(E_INVALIDARG);
@@ -408,8 +525,105 @@ public:
       offset += size_and_align.size;
     }
 
+    if (shared && FAILED(CreateShare()))
+      return FAIL(E_FAIL);
     return S_OK;
   };
+
+  // Opens a share another texture made, from Direct3D 12, Direct3D 11 or another process: its Metal texture from the
+  // registered port, and the share's object held through `carried` or its name.
+  HRESULT
+  InitializeShared(const SharedTextureData &data, HANDLE carried) {
+    desc_ = SharedDesc12(data.desc.desc2d);
+    heap_props_ = {D3D12_HEAP_TYPE_DEFAULT};
+    heap_flags_ = D3D12_HEAP_FLAG_SHARED;
+    WMTTextureInfo texture_info{};
+    if (FAILED(PopulateWMTTextureInfo(device_, texture_info, desc_, ~0u)))
+      return FAIL(E_INVALIDARG);
+    if (!desc_.MipLevels)
+      desc_.MipLevels = texture_info.mipmap_level_count;
+    desc_.Alignment = desc_.SampleDesc.Count > 1 ? D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
+                                                 : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    mach_port_t mach_port = 0;
+    if (!WMTBootstrapLookUp(data.mach_port_name, &mach_port)) {
+      ERR("D3D12Texture: a shared texture's Metal port is gone");
+      return FAIL(E_INVALIDARG);
+    }
+    WMT::SharedNameHold hold(data.mach_port_name);
+    Rc<Texture> storage = new Texture(texture_info, device_->GetMTLDevice());
+    auto allocation = storage->import(mach_port);
+    if (!allocation || !allocation->texture())
+      return FAIL(E_FAIL);
+    hold.keep(allocation->texture().handle);
+    storage->rename(std::move(allocation));
+    device_->RegisterResidency(storage->current()->texture());
+    storage->centered = desc_.SampleDesc.Quality == DXGI_CENTER_MULTISAMPLE_QUALITY_PATTERN;
+    storage->paired = texture_info.sample_count < desc_.SampleDesc.Count;
+    texture = std::move(storage);
+
+    auto share = std::make_unique<D3D12TextureShare>();
+    share->data = data;
+    // the share's object, by its name, or the caller's handle where no name resolves it
+    share->named_mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, data.mapping_name);
+    if (!share->named_mapping && carried)
+      DuplicateHandle(
+          GetCurrentProcess(), carried, GetCurrentProcess(), &share->named_mapping, 0, FALSE, DUPLICATE_SAME_ACCESS
+      );
+    if (share->named_mapping)
+      share->carrier = static_cast<SharedTextureCarrier *>(
+          MapViewOfFile(share->named_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedTextureCarrier))
+      );
+    if (share->carrier && share->carrier->data.published_name[0])
+      share->published_name = OpenFileMappingW(FILE_MAP_READ, FALSE, share->carrier->data.published_name);
+    share_ = std::move(share);
+    return S_OK;
+  }
+
+  HRESULT
+  CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name, HANDLE *handle) override {
+    if (!share_ || !share_->named_mapping)
+      return E_NOTIMPL;
+    // "Currently the only value this parameter accepts is GENERIC_ALL" (ID3D12Device::CreateSharedHandle, Access)
+    if (access != GENERIC_ALL)
+      return E_INVALIDARG;
+    // "The name is limited to MAX_PATH characters" (ID3D12Device::CreateSharedHandle, Name)
+    if (name && wcslen(name) > MAX_PATH)
+      return E_INVALIDARG;
+    // a name is published as a mapping of the share's identity, as Direct3D 11 does (d3d11_texture_device.cpp), so
+    // that OpenSharedHandleByName and OpenSharedResourceByName find the share: "Creation fails if the name is already
+    // used" (IDXGIResource1::CreateSharedHandle)
+    if (name && !share_->published_name && share_->carrier) {
+      swprintf(share_->carrier->data.published_name, MAX_PATH + 1, L"%s", name);
+      swprintf(share_->data.published_name, MAX_PATH + 1, L"%s", name);
+      SECURITY_ATTRIBUTES internal = {sizeof(internal), nullptr, FALSE};
+      if (attributes)
+        internal = *attributes;
+      internal.bInheritHandle = FALSE;
+      HANDLE published =
+          CreateFileMappingW(INVALID_HANDLE_VALUE, &internal, PAGE_READWRITE, 0, sizeof(SharedTextureData), name);
+      if (!published)
+        return E_FAIL;
+      if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(published);
+        return DXGI_ERROR_NAME_ALREADY_EXISTS;
+      }
+      void *view = MapViewOfFile(published, FILE_MAP_WRITE, 0, 0, sizeof(SharedTextureData));
+      if (!view) {
+        CloseHandle(published);
+        return E_FAIL;
+      }
+      memcpy(view, &share_->data, sizeof(SharedTextureData));
+      UnmapViewOfFile(view);
+      share_->published_name = published;
+    }
+    // a handle to the share's own object, inherited or not as the caller asked
+    BOOL inherit = attributes ? attributes->bInheritHandle : FALSE;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), share_->named_mapping, GetCurrentProcess(), handle, 0, inherit, DUPLICATE_SAME_ACCESS
+        ))
+      return E_FAIL;
+    return S_OK;
+  }
 
   ~MTLD3D12Texture() {
     EndAfterWorkInFlight(device_, [device = device_, texture = std::move(texture)] {
@@ -1321,6 +1535,25 @@ CreateCommittedTexture(
     return hr;
   if (!ppResource)
     return S_FALSE;
+  return texture->QueryInterface(riid, ppResource);
+}
+
+HRESULT
+OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE handle, REFIID riid, void **ppResource) {
+  SharedTextureData data{};
+  void *view = handle ? MapViewOfFile(handle, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData)) : nullptr;
+  if (!view)
+    return S_FALSE;
+  memcpy(&data, view, sizeof(data));
+  UnmapViewOfFile(view);
+  if (memcmp(data.tag, shared_texture_tag, sizeof(shared_texture_tag)))
+    return S_FALSE;
+  if (data.mach_port_name[sizeof(data.mach_port_name) - 1] || data.dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+    return E_INVALIDARG;
+  auto texture = Com(new MTLD3D12Texture(pDevice));
+  HRESULT hr = texture->InitializeShared(data, handle);
+  if (FAILED(hr))
+    return hr;
   return texture->QueryInterface(riid, ppResource);
 }
 
