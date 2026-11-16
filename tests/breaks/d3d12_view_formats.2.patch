@@ -1,0 +1,12 @@
+# a pass's pipeline keeps the description's depth stencil format whatever its view's
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -2063,7 +2063,7 @@
+     // how its texture is written, where Metal's pipeline does and must name the pass's formats, so the pass's
+     // pipeline takes the view's: for a depth stencil view, and for a render target view of the pipeline's format in
+     // its other encoding, sRGB or not, which the pixel shader's outputs and the blending fit as they are
+-    bool other_dsv = DSVPlanar && !dsv_any_format && DSVFormat != dsv_format_;
++    bool other_dsv = false;
+     uint32_t other_encoding = 0;
+     for (unsigned i = 0; i < std::size(Colors); i++) {
+       auto view = WMTPixelFormat(ORIGINAL_FORMAT(Colors[i])), own = WMTPixelFormat(ORIGINAL_FORMAT(color_formats_[i]));

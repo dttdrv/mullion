@@ -55,6 +55,9 @@ struct IndirectComputeCommandData {
   uint64_t statistics;
   WMTIndirectCommandBufferExecutionRange execution_range;
   uint64_t dispatches;
+  // the list's root arguments, where the signature changes some: the resolver copies them to each command it runs
+  // (rootsig_qwords) before the command's own, zero otherwise
+  uint64_t rootsig_base;
 };
 
 // what a command signature's resolver makes of an indirect DispatchRays command: the arguments of the pipeline's
@@ -138,9 +141,23 @@ struct IndirectRenderCommandData {
   // the extra commands indexed draws have claimed so far, past the draws: indices past the view or after the address
   // wraps; and the resolver's threads that have finished
   uint32_t extras_claimed, extras_done;
+  // the list's root arguments and its vertex buffer table, where the signature changes some of either: the resolver
+  // copies them to each command it runs (rootsig_qwords, vertex_buffer) before the command's own, zero otherwise
+  uint64_t rootsig_base, vertex_base;
 };
+// where the resolver's own declarations of the two have these (mullion_compute_command_data and
+// mullion_render_command_data, d3d12_command_signature.cpp), which Metal lays out as its compiler does
+static_assert(offsetof(IndirectComputeCommandData, rootsig_base) == 104 && sizeof(IndirectComputeCommandData) == 112);
+static_assert(
+    offsetof(IndirectRenderCommandData, rootsig_base) == 280 &&
+    offsetof(IndirectRenderCommandData, vertex_base) == 288 && sizeof(IndirectRenderCommandData) == 296
+);
 
 constexpr unsigned kIndexedCommands = 4;
+
+// the most commands of an ExecuteIndirect that the list draws one by one where their arguments are: more of them go
+// into an indirect command buffer, which Metal runs with one call
+constexpr unsigned kIndirectDrawsInPlace = 24;
 
 // the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were
 constexpr unsigned kMostWords = 6;

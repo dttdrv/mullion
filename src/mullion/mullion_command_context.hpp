@@ -44,8 +44,6 @@ template <typename Context> struct SimpleCommandContext {
   void setComputeBuffer(uint32_t index, const Rc<Buffer> &buffer, uint32_t offset, uint32_t length, int flags);
   void *setComputeBytes(uint32_t index, uint32_t length);
 
-  WMT::Library getDefaultLibrary();
-
   void startRenderPass();
   /**
   All attachements (including depth-stencil) must have the same array length and sample count
