@@ -192,3 +192,22 @@ SM50GetRayShader(
   UNIX_CALL(sm50_get_ray_shader, &params);
   return params.ret;
 }
+
+AIRCONV_API int
+SM50CompileRayDispatcher(
+    enum SM50_RAY_DISPATCHER Dispatcher, const struct SM50_RAY_DISPATCHED_SHADER *pShaders, uint32_t ShaderCount,
+    uint32_t Table, enum SM50_SHADER_METAL_VERSION MetalVersion, sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
+) {
+  struct sm50_compile_ray_dispatcher_params params;
+  params.dispatcher = Dispatcher;
+  params.shaders = pShaders;
+  params.bitcode = ppBitcode;
+  params.error = ppError;
+  params.shader_count = ShaderCount;
+  params.table = Table;
+  params.metal_version = MetalVersion;
+  NTSTATUS status = UNIX_CALL(sm50_compile_ray_dispatcher, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}

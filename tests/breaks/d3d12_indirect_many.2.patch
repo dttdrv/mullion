@@ -1,0 +1,12 @@
+# a draw in place reads its arguments a draw's arguments apart, not the signature's stride
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4093,7 +4093,7 @@
+         draw.type = WMTRenderCommandDrawIndirect;
+         draw.primitive_type = primitive_type;
+         draw.indirect_args_buffer = arg_buffer->buffer->current()->buffer();
+-        draw.indirect_args_offset = ArgBufferOffset + uint64_t(i) * sig->ByteStride;
++        draw.indirect_args_offset = ArgBufferOffset + uint64_t(i) * sizeof(D3D12_DRAW_ARGUMENTS);
+       }
+       return;
+     }

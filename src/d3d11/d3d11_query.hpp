@@ -189,6 +189,10 @@ public:
   virtual TimestampQuery *End() = 0;
 };
 
+// whether timestamp queries sample the GPU's clock (d3d11.timestampQueries, on by default). sampling one ends the pass
+// and waits for the work before it; without it a query reads zero at once
+bool TimestampQueriesSampled();
+
 HRESULT CreateTimestampQuery(MTLD3D11Device *pDevice,
                               const D3D11_QUERY_DESC1 *pDesc,
                               ID3D11Query1 **ppQuery);

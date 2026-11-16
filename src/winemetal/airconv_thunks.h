@@ -14,7 +14,7 @@ enum airconv_unixcalls {
   unix_sm50_free_error,
   unix_sm50_compile_geometry_pipeline_vertex,
   unix_sm50_compile_geometry_pipeline_geometry,
-  unix_sm50_compile_tessellation_vertex,
+  unix_sm50_compile_ray_dispatcher,
   unix_sm50_compile_tessellation_hull,
   unix_sm50_compile_tessellation_domain,
   unix_sm50_get_arguments_info = 88,
@@ -242,6 +242,30 @@ struct sm50_get_ray_shader_params32 {
 };
 
 COMPATIBLE_STRUCT32(sm50_get_ray_shader_params, 32)
+
+struct sm50_compile_ray_dispatcher_params {
+  const struct SM50_RAY_DISPATCHED_SHADER *shaders;
+  sm50_bitcode_t *bitcode;
+  sm50_error_t *error;
+  uint32_t dispatcher;
+  uint32_t shader_count;
+  uint32_t table;
+  uint32_t metal_version;
+  int ret;
+};
+
+struct sm50_compile_ray_dispatcher_params32 {
+  uint32_t shaders;
+  uint32_t bitcode;
+  uint32_t error;
+  uint32_t dispatcher;
+  uint32_t shader_count;
+  uint32_t table;
+  uint32_t metal_version;
+  int ret;
+};
+
+COMPATIBLE_STRUCT32(sm50_compile_ray_dispatcher_params, 32)
 
 struct sm50_get_arguments_info_params32 {
   sm50_shader_t shader;

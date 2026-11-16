@@ -118,6 +118,72 @@ InternalCommandLibrary::ComputePipeline(const std::string &name) {
   return pipeline;
 }
 
+WMT::RenderPipelineState
+InternalCommandLibrary::ClearPipeline(WMTPixelFormat format, uint32_t sample_count, uint32_t dsv_flag, bool resolve) {
+  uint64_t key = uint64_t(format) << 32 | uint64_t(sample_count) << 3 | uint64_t(resolve) << 2 | dsv_flag;
+  std::lock_guard lock(clear_mutex_);
+  auto [at, fresh] = clear_pipelines_.try_emplace(key);
+  if (!fresh)
+    return at->second;
+  // a stencil clear alone has no fragment function: the stencil reference is what it writes
+  const char *fragment = nullptr;
+  WMTRenderPipelineInfo info;
+  WMT::InitializeRenderPipelineInfo(info);
+  info.raster_sample_count = sample_count;
+  if (dsv_flag) {
+    if (resolve)
+      fragment = dsv_flag & 1 ? "fs_resolve_depth" : "fs_resolve_stencil";
+    else if (dsv_flag & 1)
+      fragment = "fs_clear_rt_depth";
+    info.depth_pixel_format = dsv_flag & 1 ? format : WMTPixelFormatInvalid;
+    info.stencil_pixel_format = dsv_flag & 2 ? format : WMTPixelFormatInvalid;
+  } else {
+    info.colors[0].pixel_format = format;
+    if (!IsIntegerFormat(format))
+      fragment = resolve ? "fs_resolve_float" : "fs_clear_rt_float";
+    else if (MTLGetUnsignedIntegerFormat(format) == format)
+      fragment = resolve ? "fs_resolve_uint" : "fs_clear_rt_uint";
+    else
+      fragment = resolve ? "fs_resolve_sint" : "fs_clear_rt_sint";
+  }
+  auto vertex_function = library_.newFunction("vs_clear_rt");
+  WMT::Reference<WMT::Function> fragment_function;
+  if (fragment)
+    fragment_function = library_.newFunction(fragment);
+  info.vertex_function = vertex_function;
+  info.fragment_function = fragment_function;
+  info.rasterization_enabled = true;
+  info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+  WMT::Reference<WMT::Error> error;
+  at->second = device_.newRenderPipelineState(info, error);
+  if (!at->second)
+    ERR("Failed to create the clear pipeline of format ", format, ", ", sample_count, " samples, planes ", dsv_flag,
+        resolve ? ", resolving: " : ": ", error.description().getUTF8String());
+  return at->second;
+}
+
+WMT::DepthStencilState
+InternalCommandLibrary::ClearDepthStencilState(uint32_t dsv_flag) {
+  std::lock_guard lock(clear_mutex_);
+  auto &state = clear_depth_stencil_states_[dsv_flag & 3];
+  if (!state) {
+    WMTDepthStencilInfo info{};
+    info.depth_compare_function = WMTCompareFunctionAlways;
+    info.depth_write_enabled = dsv_flag & 1;
+    if (dsv_flag & 2) {
+      info.front_stencil.enabled = true;
+      info.front_stencil.depth_stencil_pass_op = WMTStencilOperationReplace;
+      info.front_stencil.depth_fail_op = WMTStencilOperationReplace;
+      info.front_stencil.stencil_fail_op = WMTStencilOperationReplace;
+      info.front_stencil.stencil_compare_function = WMTCompareFunctionAlways;
+      info.front_stencil.read_mask = 0xff;
+      info.front_stencil.write_mask = 0xff;
+    }
+    state = device_.newDepthStencilState(info);
+  }
+  return state;
+}
+
 InternalCommandLibrary::StandIn
 InternalCommandLibrary::UnboundTexture(WMTTextureType type, SM50_SAMPLE_TYPE sample, bool write) {
   std::lock_guard lock(pipelines_mutex_);

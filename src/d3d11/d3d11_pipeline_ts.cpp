@@ -24,11 +24,8 @@
 #include "d3d11_pipeline.hpp"
 #include "d3d11_shader.hpp"
 #include "log/log.hpp"
-#include "thread.hpp"
 
 namespace mullion {
-
-static mullion::mutex ts_global_mutex;
 
 class MTLCompiledTessellationPipelineImpl: public MTLCompiledTessellationMeshPipeline {
 public:
@@ -77,7 +74,7 @@ public:
   // the vertex-hull and domain shaders, for what the device says a mesh grid may have, and how many object
   // threadgroups then share a patch group's mesh threadgroups
   void GetTessellationShaders() {
-    max_mesh_threadgroups = device_->GetMullionDevice().max_mesh_threadgroups;
+    max_mesh_threadgroups = device_->GetMullionDevice().maxMeshThreadgroups();
     auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(hull_reflection.Tessellator.Partition);
     auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(hull_reflection.Tessellator.Domain);
     auto factor = dxbc::get_final_factor(hull_reflection.Tessellator.MaxFactor, partitioning, max_potential_factor).second;
@@ -193,21 +190,10 @@ public:
     // FIXME: might be different on AMD GPU, if it's ever supported
     info.object_tgsize_is_multiple_of_sgwidth = true;
 
-    {
-      std::lock_guard<mullion::mutex> lock(ts_global_mutex);
-      state_rasterization_ =
-          device_->GetMTLDevice().newRenderPipelineState(info, err);
-    }
+    state_rasterization_ = device_->GetMTLDevice().newRenderPipelineState(info, err);
     if (state_rasterization_ == nullptr) {
       ERR("Failed to create tessellation raster PSO: ",
           err.description().getUTF8String());
-    }
-    // only a pipeline tells what a grid may have: the device's first is built to ask, then built for it
-    if (!max_mesh_threadgroups && state_rasterization_ != nullptr) {
-      device_->GetMullionDevice().max_mesh_threadgroups =
-          std::min<uint64_t>(state_rasterization_.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX);
-      GetTessellationShaders();
-      return RunThreadpoolWork();
     }
 
     return this;

@@ -12,8 +12,8 @@
 // resolved exports compile even when others need an external function, root binding or subobject. imported and
 // inherited ray generation, miss and callable identifiers execute, writing their payload to a readback buffer.
 // the original and added objects "must both opt-in" (DXR spec, AddToStateObject).
-// additions are executable state objects. oversized stack requests also execute:
-// "Stack size in bytes" (DXR spec, SetPipelineStackSize).
+// additions are executable state objects. oversized stack requests also execute, with and without a callable
+// shader in the pipeline: "Stack size in bytes" (DXR spec, SetPipelineStackSize).
 #include "d3d12_test.hpp"
 #include <array>
 
@@ -362,6 +362,11 @@ main(int argc, char **argv) {
       auto generated = plain ? L"trace_generate" : use == 3 ? L"added_generate" : exported_name(L"generate");
       if (use == 5)
         trace_properties->SetPipelineStackSize(default_stack);
+      // a stack in bytes that no sum of the shaders' stack sizes gives, where a callable shader could use it
+      if (use == 1) {
+        properties->SetPipelineStackSize(64 * 1024);
+        expect(properties->GetPipelineStackSize() == 64 * 1024, "a stack size in bytes was not retained");
+      }
       const UINT stride = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
       std::vector<uint8_t> table((count + 2) * stride);
       auto record = [&](UINT index, const std::wstring &name) {

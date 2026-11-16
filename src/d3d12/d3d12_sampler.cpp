@@ -18,6 +18,8 @@
 
 #include "Metal.hpp"
 #include "d3d12_device.hpp"
+#include "util_env.hpp"
+#include <shared_mutex>
 
 namespace mullion {
 
@@ -65,76 +67,6 @@ constexpr WMTSamplerAddressMode kAddressModeMap[] = {
     //  around 0), and then clamps to the maximum value.
     WMTSamplerAddressModeMirrorClampToEdge // 5 - 1
 };
-
-void
-PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_STATIC_SAMPLER_DESC const &Desc) {
-
-  InfoOut.lod_average = false;
-  InfoOut.mip_filter = WMTSamplerMipFilterNotMipmapped;
-  // filter
-  if (D3D12_DECODE_MIN_FILTER(Desc.Filter)) { // LINEAR = 1
-    InfoOut.min_filter = WMTSamplerMinMagFilterLinear;
-  } else {
-    InfoOut.min_filter = WMTSamplerMinMagFilterNearest;
-  }
-  if (D3D12_DECODE_MAG_FILTER(Desc.Filter)) { // LINEAR = 1
-    InfoOut.mag_filter = WMTSamplerMinMagFilterLinear;
-  } else {
-    InfoOut.mag_filter = WMTSamplerMinMagFilterNearest;
-  }
-  if (D3D12_DECODE_MIP_FILTER(Desc.Filter)) { // LINEAR = 1
-    InfoOut.mip_filter = WMTSamplerMipFilterLinear;
-  } else {
-    InfoOut.mip_filter = WMTSamplerMipFilterNearest;
-  }
-
-  InfoOut.lod_min_clamp = Desc.MinLOD;
-  // "max(MinLOD, min(MaxLOD, LOD))": MinLOD takes precedence (D3D11.3 7.18.11)
-  InfoOut.lod_max_clamp = std::max(Desc.MinLOD, Desc.MaxLOD);
-
-  // Anisotropy
-  if (D3D12_DECODE_IS_ANISOTROPIC_FILTER(Desc.Filter)) {
-    InfoOut.max_anisotroy = std::clamp(Desc.MaxAnisotropy, 1u, 16u);
-  } else {
-    InfoOut.max_anisotroy = 1;
-  }
-
-  // address modes
-  // U-S  V-T W-R
-  if (Desc.AddressU > 0 && Desc.AddressU < 6) {
-    InfoOut.s_address_mode = kAddressModeMap[Desc.AddressU - 1];
-  }
-  if (Desc.AddressV > 0 && Desc.AddressV < 6) {
-    InfoOut.t_address_mode = kAddressModeMap[Desc.AddressV - 1];
-  }
-  if (Desc.AddressW > 0 && Desc.AddressW < 6) {
-    InfoOut.r_address_mode = kAddressModeMap[Desc.AddressW - 1];
-  }
-
-  InfoOut.compare_function = WMTCompareFunctionNever;
-  if (D3D12_DECODE_IS_COMPARISON_FILTER(Desc.Filter)) {
-    if (Desc.ComparisonFunc < 1 || Desc.ComparisonFunc > 8) {
-      WARN("CreateSamplerState: invalid ComparisonFunc");
-    } else {
-      InfoOut.compare_function = kCompareFunctionMap[Desc.ComparisonFunc];
-    }
-  }
-  switch (Desc.BorderColor) {
-  case D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK:
-    InfoOut.border_color = WMTSamplerBorderColorTransparentBlack;
-    break;
-  case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
-  // root signature 1.2's for a sampler of D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR: D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT
-  case D3D12_STATIC_BORDER_COLOR(3):
-    InfoOut.border_color = WMTSamplerBorderColorOpaqueBlack;
-    break;
-  default:
-    InfoOut.border_color = WMTSamplerBorderColorOpaqueWhite;
-    break;
-  }
-  InfoOut.support_argument_buffers = true;
-  InfoOut.normalized_coords = true;
-}
 
 bool
 PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLER_DESC const &Desc) {
@@ -203,6 +135,69 @@ PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLE
   InfoOut.support_argument_buffers = true;
   InfoOut.normalized_coords = true;
   return custom;
+}
+
+D3D12_SAMPLER_DESC
+SamplerDescription(const D3D12_STATIC_SAMPLER_DESC &Desc) {
+  D3D12_SAMPLER_DESC desc{Desc.Filter,     Desc.AddressU,      Desc.AddressV,       Desc.AddressW,
+                          Desc.MipLODBias, Desc.MaxAnisotropy, Desc.ComparisonFunc, {},
+                          Desc.MinLOD,     Desc.MaxLOD};
+  switch (Desc.BorderColor) {
+  case D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK:
+    break;
+  case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
+  // root signature 1.2's for a sampler of D3D12_SAMPLER_FLAG_UINT_BORDER_COLOR:
+  // D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT
+  case D3D12_STATIC_BORDER_COLOR(3):
+    desc.BorderColor[3] = 1.0f;
+    break;
+  default:
+    std::fill_n(desc.BorderColor, 4, 1.0f);
+    break;
+  }
+  return desc;
+}
+
+HRESULT
+GetSampler(MTLD3D12Device *pDevice, const D3D12_SAMPLER_DESC &Desc, MTLD3D12CachedSampler &SamplerOut) {
+  static_assert(
+      sizeof(D3D12_SAMPLER_DESC) == sizeof(MTLD3D12SamplerKey) && alignof(D3D12_SAMPLER_DESC) == alignof(uint32_t)
+  );
+  MTLD3D12SamplerKey key;
+  memcpy(key.data(), &Desc, sizeof(key));
+  auto &samplers = pDevice->samplers;
+  {
+    std::shared_lock lock(samplers.mutex);
+    if (auto found = samplers.made.find(key); found != samplers.made.end()) {
+      SamplerOut = found->second;
+      return S_OK;
+    }
+  }
+
+  MTLD3D12CachedSampler made;
+  WMTSamplerInfo info;
+  bool custom = PopulateWMTSamplerInfo(pDevice->GetMTLDevice(), info, Desc);
+  // MULLION_AIRCONV_SKIP=custom-border keeps pipelines without the custom border path, so such a sampler reads a
+  // border Metal has (the skip is in the shader cache's key)
+  static const bool borders = env::getEnvVar("MULLION_AIRCONV_SKIP").find("custom-border") == std::string::npos;
+  if (custom && borders)
+    made.emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
+  made.sampler = Sampler::createSampler(
+      pDevice->GetMTLDevice(), info, Desc.MipLODBias, custom ? Desc.BorderColor : nullptr, SamplerReduction(Desc.Filter)
+  );
+  if (made.sampler == nullptr)
+    return FAIL(E_OUTOFMEMORY);
+  if (made.sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
+    made.emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+
+  std::unique_lock lock(samplers.mutex);
+  // descriptions an application never repeats (a LOD bias that follows a changing resolution) would be kept for the
+  // device's life: past as many as a heap shaders see holds, the device starts over. the descriptors and root
+  // signatures that have a sampler keep it
+  if (samplers.made.size() >= D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE)
+    samplers.made.clear();
+  SamplerOut = samplers.made.try_emplace(key, std::move(made)).first->second;
+  return S_OK;
 }
 
 } // namespace mullion

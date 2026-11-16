@@ -1844,6 +1844,10 @@ struct WMTFXTemporalScalerInfo {
   bool auto_exposure;
   bool input_content_properties_enabled;
   bool requires_synchronous_initialization;
+  // the motion vectors hold the jitter of the frames they are between, which MetalFX takes out with the jitter
+  // offsets of each frame (MTLFXTemporalScalerDescriptor.jitteredMotionVectorsEnabled, macOS 27): no scaler is made
+  // where MetalFX lacks it
+  bool jittered_motion_vectors;
 };
 
 struct WMTFXSpatialScalerInfo {
@@ -2204,7 +2208,9 @@ enum WMTMetalVersion : uint32_t {
 
 WINEMETAL_API obj_handle_t MTLDevice_newBinaryArchive(obj_handle_t device, const char *url, obj_handle_t *err_out);
 
-WINEMETAL_API void MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out);
+// false when the call did not run to its end: a fault in Metal while it wrote the archive, which Wine returns as the
+// call's status. the archive's queue is then held for good, and no call on the archive returns
+WINEMETAL_API bool MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out);
 
 WINEMETAL_API obj_handle_t DispatchData_alloc_init(uint64_t native_ptr, uint64_t length);
 

@@ -89,6 +89,10 @@ GPUShaderFlags(WMT::Device device) {
   uint32_t flags = 0;
   if (!device.supportsFamily(WMTGPUFamilyApple8))
     flags |= SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64;
+  // a NaN texture coordinate is 0 once it is snapped to fixed point (D3D11.3 3.2.4.1), so a sample reads the first
+  // texel of that axis; what Metal's sampler reads for a NaN is not defined. MULLION_SHADER_FLAGS without the flag,
+  // or d3d11.sampleNaNToZero = False, leaves coordinates as they are
+  flags |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
   if (!device.supportsFamily(WMTGPUFamilyApple9))
     flags |= SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES | SM50_SHADER_FLAG_COHERENT_GROUP_SYNC;
   return SM50_SHADER_FLAG(flags | SwitchedShaderFlags());
@@ -104,6 +108,32 @@ MeshBytesPerDraw(WMT::Device device) {
   // "up to 4 GB of payload and mesh geometry per draw for devices in the Apple7 and Apple8 GPU families" (Metal
   // Feature Set Tables): 2^32 bytes, which 2^21 mesh threadgroups of 2 KB fill (measured on an M1 Pro)
   return device.supportsFamily(WMTGPUFamilyApple7) && !device.supportsFamily(WMTGPUFamilyApple9) ? 1ull << 32 : -1ull;
+}
+
+uint32_t
+MeshGridLimit(WMT::Device device) {
+  static const char source[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct Vertex {
+  float4 position [[position]];
+};
+[[mesh]] void grid_limit(mesh<Vertex, void, 3, 1, topology::triangle> out) {
+  out.set_primitive_count(0);
+}
+)";
+  WMT::Reference<WMT::Error> error;
+  auto library = device.newLibraryWithSource(source, error);
+  auto function = library ? library.newFunction("grid_limit") : WMT::Reference<WMT::Function>{};
+  WMTMeshRenderPipelineInfo info;
+  WMT::InitializeMeshRenderPipelineInfo(info);
+  info.mesh_function = function.handle;
+  info.rasterization_enabled = false;
+  auto pipeline = function ? device.newRenderPipelineState(info, error) : WMT::Reference<WMT::RenderPipelineState>{};
+  if (!pipeline) {
+    ERR("Failed to ask the device's mesh grid limit: ", error ? error.description().getUTF8String() : "no function");
+    return 0;
+  }
+  return uint32_t(std::min<uint64_t>(pipeline.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX));
 }
 
 } // namespace mullion

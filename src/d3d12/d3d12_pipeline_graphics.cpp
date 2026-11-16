@@ -336,16 +336,20 @@ MTLD3D12PipelineState::InitializeShader(
       !ShaderFeaturesSupported(Device, Bytecode.pShaderBytecode, Bytecode.BytecodeLength))
     return FAIL(E_INVALIDARG);
 
+  // the reflection of a shader seen before, in this process or an earlier one, leaves its bytecode unparsed
+  auto &cache = ShaderCache::getInstance(WMTMetalVersion(Device->GetMetalVersion()));
+  auto digest = ShaderDigest(Bytecode.pShaderBytecode, Bytecode.BytecodeLength);
+  if (ShaderReflection stored; cache.getReflection(digest, stored)) {
+    *pRefl = stored.reflection;
+    return S_OK;
+  }
   SM50Error error;
   if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl, &error)) {
-    ERR(
-        "Failed to initialize shader ", Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string(),
-        ": ", SM50GetErrorMessageString(error)
-    );
+    ERR("Failed to initialize shader ", digest.string(), ": ", SM50GetErrorMessageString(error));
     DumpShaders({Bytecode});
     return FAIL(E_INVALIDARG);
   }
-
+  cache.setReflection(digest, ReadShaderReflection(*ppShader, *pRefl));
   return S_OK;
 }
 
@@ -372,14 +376,10 @@ GetPipelineKey(const Desc &desc, Sha1Digest &key, bool depth_bounds = false,
     else if (code.BytecodeLength)
       hash(ShaderDigest(code.pShaderBytecode, code.BytecodeLength));
   };
-  const void *root = nullptr;
-  UINT root_size = 0;
-  if (desc.pRootSignature) {
-    static_cast<MTLD3D12RootSignature *>(desc.pRootSignature)->GetBlob(&root);
-    if (FAILED(microsoft::DXBCGetRootSignature(root, &root, &root_size)))
-      return FAIL(E_INVALIDARG);
-  }
-  bytes(root, root_size);
+  // a root signature by the digest it took of its serialized description when it was made
+  hash(bool(desc.pRootSignature));
+  if (desc.pRootSignature)
+    hash(static_cast<MTLD3D12RootSignature *>(desc.pRootSignature)->Digest);
   constexpr bool compute = std::is_same_v<Desc, D3D12_COMPUTE_PIPELINE_STATE_DESC>;
   hash(compute, desc.NodeMask, desc.Flags);
   if constexpr (compute) {
@@ -448,8 +448,8 @@ PipelineKey(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &Desc, Sha1Digest &Key, boo
 
 WMT::Reference<WMT::Function>
 CompileFunction(
-    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, std::span<const D3D12_SHADER_BYTECODE> shaders,
-    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, MTLD3D12RootSignature *root_signature,
+    std::span<const D3D12_SHADER_BYTECODE> shaders, SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
     const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
         &compile
 ) {
@@ -509,17 +509,15 @@ CompileFunction(
     case SM50_SHADER_PSO_TESSELLATOR: {
       auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics] =
           *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
-      hash(factor, size, groups, bool(geometry), conservative, flat, noperspective, barycentrics);
+      // `geometry` is the conversion state of a shader among `shaders`, which tell whether there is one
+      hash(factor, size, groups, conservative, flat, noperspective, barycentrics);
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:
     case SM50_SHADER_ROOT_SIGNATURE2: {
-      auto [next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
-      UINT size;
-      if (FAILED(microsoft::DXBCGetRootSignature(code, &code, &size)))
-        return {};
-      bytes(code, size);
-      hash(samplers);
+      // the bytes are the pipeline's root signature's, which its digest names
+      auto &[next, type, code, length, samplers] = *(SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+      hash(root_signature->Digest, samplers);
       break;
     }
     case SM50_SHADER_STREAM_OUTPUT: {
@@ -565,14 +563,20 @@ CompileFunction(
     }
     return keep(kept);
   };
-  if (enabled) {
+  // the function a pipeline of the device already holds
+  auto made = [&]() -> WMT::Reference<WMT::Function> {
+    if (!enabled)
+      return {};
     std::unique_lock lock(shared.mutex);
     if (auto found = shared.made.find(key); found != shared.made.end())
       if (auto kept = found->second.lock()) {
         lock.unlock();
         return keep(kept);
       }
-  }
+    return {};
+  };
+  if (auto function = made())
+    return function;
   auto load = [&](WMT::Reference<WMT::DispatchData> data, WMT::Reference<WMT::Error> &error) {
     auto library = device->GetMTLDevice().newLibrary(data, error);
     auto function = library ? library.newFunction(name) : WMT::Reference<WMT::Function>{};
@@ -595,12 +599,12 @@ CompileFunction(
   auto cached = [&]() -> WMT::Reference<WMT::Function> {
     WMT::Reference<WMT::DispatchData> data;
     if (auto reader = cache.getReader())
-      data = reader->get(key);
+      data = reader.get(key);
     if (data) {
       if (auto function = load(data, error))
         return function;
       if (auto writer = cache.getWriter())
-        writer->set(key, {});
+        writer.set(key, {});
     }
     return {};
   };
@@ -628,6 +632,9 @@ CompileFunction(
       pending.insert(key);
       conversion.emplace(key);
     }
+    // what the conversion waited for made is with its pipeline first: its write to the store is queued
+    if (auto function = made())
+      return function;
     if (auto function = cached())
       return function;
   }
@@ -648,13 +655,14 @@ CompileFunction(
     return {};
   }
   if (auto writer = cache.getWriter())
-    writer->set(key, data);
+    writer.set(key, data);
   return function;
 }
 
 class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12PipelineObject<MTLD3D12GraphicsPipelineState> {
 protected:
-  // held for the pipeline's life, so that pipelines and variants made of the same shaders share their initialization
+  // those a conversion initialized are held for the pipeline's life, so that pipelines and variants made of the same
+  // shaders share their initialization
   SM50Shader shader_vs, shader_hs, shader_ds, shader_gs, shader_ps, shader_as, shader_ms;
   MTL_SHADER_REFLECTION ref_vs;
   MTL_SHADER_REFLECTION ref_ps{};
@@ -681,6 +689,10 @@ protected:
   std::unordered_map<uint32_t, WMT::Reference<WMT::Function>> pixel_shaders_;
   // the targets the pixel shader blends itself (ShaderBlend)
   uint32_t blend_mask_ = 0;
+  // the formats of the description's render targets and depth stencil view, which a pass's views may differ from
+  // (RenderTargets)
+  WMTPixelFormat color_formats_[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+  WMTPixelFormat dsv_format_ = WMTPixelFormatInvalid;
 
   // a mesh pipeline is made whole: its specialization gives the fragment stage zeros for the mesh stage's
   // per-primitive outputs (d3d12_mesh)
@@ -796,6 +808,8 @@ protected:
     WMT::Reference<WMT::Function> ps;
     D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip_cut;
     uint32_t primitive; // D3D10_SB_PRIMITIVE of the topology type
+    // without a geometry shader, the mesh stage passes the vertex shader's primitives on to the rasterizer
+    bool pass_through;
     bool clip_distance_varyings, cull_distance_varyings;
     bool quad_lines, barycentrics;
     // conservative rasterization, of the hull of a triangle's pixels where it can, and how the pixel shader
@@ -809,6 +823,12 @@ protected:
   mullion::mutex topology_mutex_;
   // by topology and stream output's counting pass
   std::unordered_map<uint32_t, WMT::Reference<WMT::RenderPipelineState>> topology_variants_;
+  // a geometry pipeline's variants (GeometryPipeline) by [strip][counting], but for `pso`, and which of them were
+  // attempted: one that could not be made is not made again for every draw
+  WMT::Reference<WMT::RenderPipelineState> geometry_variants_[2][2];
+  bool geometry_attempted_[2][2] = {};
+  // whether its primitives come in strips at all: points do not
+  bool geometry_strips_ = false;
 
   static SM50_SHADER_COMPILATION_ARGUMENT_DATA *
   RootSignature(
@@ -859,15 +879,19 @@ protected:
 
   WMT::Reference<WMT::Function>
   GeometryFunction(
-      GeometryInputs &in, sm50_shader_t shader_vs, sm50_shader_t shader_gs, D3D12_SHADER_BYTECODE GS,
+      GeometryInputs &in, SM50Shader &shader_vs, SM50Shader &shader_gs, D3D12_SHADER_BYTECODE GS,
       SM50_SHADER_PSO_GEOMETRY_SHADER_DATA &pso_gs, HRESULT &status
   ) {
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
+    D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
     return CompileFunction(
-        device_, this, std::array{D3D12_SHADER_BYTECODE{in.vs.data(), in.vs.size()}, GS},
+        device_, this, in.root_signature.ptr(), std::array{VS, GS},
         RootSignature(rootsig, in.root_signature.ptr(), &pso_gs), "gs_main",
         [&](auto args, auto name, auto bitcode, auto error) {
-          auto result = SM50CompileGeometryPipelineGeometry(shader_vs, shader_gs, args, name, bitcode, error);
+          sm50_shader_t vs, gs;
+          int result = shader_vs.Get(VS, vs, error) && shader_gs.Get(GS, gs, error)
+                           ? SM50CompileGeometryPipelineGeometry(vs, gs, args, name, bitcode, error)
+                           : int(SM50_COMPILE_FAILED);
           if (result)
             status = E_INVALIDARG;
           return result;
@@ -877,7 +901,7 @@ protected:
 
   WMT::Reference<WMT::RenderPipelineState>
   GeometryVariant(
-      const std::shared_ptr<GeometryInputs> &inputs, sm50_shader_t shader_vs, sm50_shader_t shader_gs,
+      const std::shared_ptr<GeometryInputs> &inputs, SM50Shader &shader_vs, SM50Shader &shader_gs,
       D3D12_SHADER_BYTECODE GS, bool strip, bool counting, uint32_t primitive, bool pass_through, HRESULT &status,
       bool single = false, bool mesh_only = false, WMT::Reference<WMT::RenderPipelineState> *target = nullptr,
       std::vector<std::function<void()>> *later = nullptr
@@ -896,8 +920,11 @@ protected:
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_vs;
     auto args_vs = RootSignature(rootsig_vs, in.root_signature.ptr(), &in.ia_layout);
     auto vs_func = CompileFunction(
-        device_, this, std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
-          auto result = SM50CompileGeometryPipelineVertex(shader_vs, shader_gs, args, name, bitcode, error);
+        device_, this, in.root_signature.ptr(), std::array{VS, GS}, args_vs, "vsgs_main", [&](auto args, auto name, auto bitcode, auto error) {
+          sm50_shader_t vs, gs;
+          int result = shader_vs.Get(VS, vs, error) && shader_gs.Get(GS, gs, error)
+                           ? SM50CompileGeometryPipelineVertex(vs, gs, args, name, bitcode, error)
+                           : int(SM50_COMPILE_FAILED);
           if (result)
             status = E_INVALIDARG;
           return result;
@@ -911,16 +938,14 @@ protected:
       return variant;
     // a pipeline statistics query's variant counts in the geometry shader as well
     std::function<WMT::Reference<WMT::Function>()> statistics;
-    if (shader_gs && !counting) {
-      statistics_geometry_ = true;
+    if (GS.pShaderBytecode && !counting) {
+      // the list's variant, made with the pipeline, has set it before one made at a draw would
+      if (!statistics_geometry_)
+        statistics_geometry_ = true;
       statistics = [this, inputs, strip, primitive, pass_through, single] {
         auto &in = *inputs;
         D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()}, GS{in.gs.data(), in.gs.size()};
         SM50Shader shader_vs, shader_gs;
-        MTL_SHADER_REFLECTION reflection;
-        if (FAILED(InitializeShader(device_, VS, &shader_vs, &reflection)) ||
-            FAILED(InitializeShader(device_, GS, &shader_gs, &reflection)))
-          return WMT::Reference<WMT::Function>{};
         SM50_SHADER_STREAM_OUTPUT_DATA so;
         auto pso_gs = GeometryArguments(in, so, strip, false, primitive, pass_through, true, single);
         HRESULT status;
@@ -930,11 +955,11 @@ protected:
     auto info = in.info;
     info.object_function = mesh_only ? obj_handle_t{} : vs_func.handle;
     info.mesh_function = gs_func.handle;
-    bool rasterized = (shader_gs || pass_through) && !counting && (!in.stream_output || so.rasterized_stream != ~0u);
+    bool rasterized = (GS.pShaderBytecode || pass_through) && !counting && (!in.stream_output || so.rasterized_stream != ~0u);
     info.fragment_function = rasterized ? in.ps.handle : obj_handle_t{};
     info.rasterization_enabled = rasterized;
     info.payload_memory_length = mesh_only ? 0
-                                 : !counting && SM50StreamOutputDirect(single, !!shader_gs, pass_through)
+                                 : !counting && SM50StreamOutputDirect(single, !!GS.pShaderBytecode, pass_through)
                                      ? SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE
                                      : SM50_GEOMETRY_PAYLOAD_SIZE;
     // `later`: Metal's compile of it into `*target` on a compile thread (DeferredPipeline), as a plain pipeline's.
@@ -1093,16 +1118,36 @@ public:
     if (!variant && topology_inputs_) {
       auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
       auto &in = *topology_inputs_;
-      SM50Shader shader_vs;
-      MTL_SHADER_REFLECTION reflection;
+      SM50Shader shader_vs, no_gs;
       HRESULT hr;
       bool strip = topology == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ || topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ;
       auto primitive = patch ? D3D_PRIMITIVE_1_CONTROL_POINT_PATCH + (topology - D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST)
                        : in.primitive == D3D_PRIMITIVE_LINE ? D3D_PRIMITIVE_LINE_ADJ
                                                             : D3D_PRIMITIVE_TRIANGLE_ADJ;
       // patches only stream out: nothing rasterizes them without a tessellator
-      if (SUCCEEDED(InitializeShader(device_, {in.vs.data(), in.vs.size()}, &shader_vs, &reflection)))
-        variant = GeometryVariant(topology_inputs_, shader_vs, {}, {}, strip, counting, primitive, !patch, hr);
+      variant = GeometryVariant(topology_inputs_, shader_vs, no_gs, {}, strip, counting, primitive, !patch, hr);
+      if (variant && device_->NamesPasses())
+        device_->PipelineMade(name, "graphics", start);
+    }
+    return variant;
+  }
+
+  WMT::RenderPipelineState
+  GeometryPipeline(bool strip, bool counting) final {
+    if (strip && !geometry_strips_)
+      return {};
+    std::lock_guard<mullion::mutex> lock(topology_mutex_);
+    auto &variant = geometry_variants_[strip][counting];
+    if (!variant && !geometry_attempted_[strip][counting] && topology_inputs_) {
+      geometry_attempted_[strip][counting] = true;
+      auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+      auto &in = *topology_inputs_;
+      HRESULT hr;
+      auto GS = in.gs.empty() ? D3D12_SHADER_BYTECODE{} : D3D12_SHADER_BYTECODE{in.gs.data(), in.gs.size()};
+      variant = GeometryVariant(
+          topology_inputs_, shader_vs, shader_gs, GS, strip, counting, in.primitive, in.pass_through, hr,
+          strip ? so_single_strip : so_single
+      );
       if (variant && device_->NamesPasses())
         device_->PipelineMade(name, "graphics", start);
     }
@@ -1144,7 +1189,7 @@ public:
       // Windows accepts non-renderable formats as null slots (vkd3d-proton test_render_target_support_validation).
       if (!any_bit_set(device_->GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::Color))
         continue;
-      rt.pixel_format = format_desc.PixelFormat;
+      rt.pixel_format = color_formats_[i] = format_desc.PixelFormat;
       rtv_mask |= 1u << i;
 
       // an undeclared output leaves the target alone even with blending (D3D11.3 16.9.1)
@@ -1187,6 +1232,7 @@ public:
         return hr;
       }
       auto dsv_flags = dsv_mask = DepthStencilPlanarFlags(format_desc.PixelFormat);
+      dsv_format_ = format_desc.PixelFormat;
       if (dsv_flags & 1)
         info.depth_pixel_format = format_desc.PixelFormat;
       if (dsv_flags & 2)
@@ -1437,13 +1483,16 @@ public:
     auto root_signature = [&](SM50_SHADER_ROOT_SIGNATURE_DATA &rootsig, void *next) {
       return RootSignature(rootsig, pDesc->pRootSignature, next);
     };
-    auto function = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, SM50_SHADER_COMPILATION_ARGUMENT_DATA *args,
+    auto function = [&](SM50Shader &shader, D3D12_SHADER_BYTECODE code, SM50_SHADER_COMPILATION_ARGUMENT_DATA *args,
                         const char *name, D3D12_SHADER_BYTECODE linked = {}) {
       auto shaders = std::array{code, linked};
       return CompileFunction(
-          device_, this, std::span(shaders).first(linked.pShaderBytecode ? 2 : 1), args, name,
-          [shader](auto args, auto name, auto bitcode, auto error) {
-            return SM50Compile(shader, args, name, bitcode, error);
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::span(shaders).first(linked.pShaderBytecode ? 2 : 1), args, name,
+          [&shader, code](auto args, auto name, auto bitcode, auto error) {
+            sm50_shader_t initialized;
+            return shader.Get(code, initialized, error) ? SM50Compile(initialized, args, name, bitcode, error)
+                                                        : int(SM50_COMPILE_FAILED);
           }
       );
     };
@@ -1468,7 +1517,7 @@ public:
       return hr;
     if (pDesc->GS.pShaderBytecode && FAILED(hr = InitializeShader(device_, pDesc->GS, &shader_gs, &ref_gs)))
       return hr;
-    gs_instances = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.InstanceCount : 1;
+    gs_instances = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.InstanceCount : 1;
     // the stage before stream output and the rasterizer: the geometry shader, or the vertex shader
     auto last_stage = pDesc->GS.pShaderBytecode ? pDesc->GS : pDesc->VS;
     std::vector<SM50_STREAM_OUTPUT_ELEMENT2> so_elements;
@@ -1569,7 +1618,7 @@ public:
     // a mesh stage that runs a shader of the pipeline's reads its root arguments; the vertex shader's primitives passed
     // on alone read none (mesh_only below runs the vertex shader there too)
     mesh_reads_root_arguments = mesh_shader || tessellation || pDesc->GS.pShaderBytecode;
-    mesh_instances = sm50_shader_t(shader_gs) ? gs_instances : pass_through;
+    mesh_instances = bool(pDesc->GS.pShaderBytecode) ? gs_instances : pass_through;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     patches = plain && stream_output && pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
@@ -1683,7 +1732,7 @@ public:
       data_ps.quad_lines = quad_lines && ref_ps.PixelShader.Barycentrics;
       data_ps.coarse_shading = false;
       // the primitive's shading rate, from the stage before the rasterizer: a domain or mesh shader has none
-      data_ps.shading_rate_varying = sm50_shader_t(shader_gs)      ? ref_gs.ShadingRateOutput
+      data_ps.shading_rate_varying = bool(pDesc->GS.pShaderBytecode)      ? ref_gs.ShadingRateOutput
                                      : tessellation || mesh_shader ? 0
                                                                    : ref_vs.ShadingRateOutput;
       coarse_shading = !ref_ps.PixelShader.FineShading;
@@ -1705,9 +1754,6 @@ public:
            ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth, bool bare) mutable {
             D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
             SM50Shader shader;
-            MTL_SHADER_REFLECTION reflection;
-            if (FAILED(InitializeShader(device_, bytecode, &shader, &reflection)))
-              return WMT::Reference<WMT::Function>{};
             auto data = data_ps;
             data.pipeline_statistics = statistics;
             data.late_tests = late;
@@ -1724,9 +1770,12 @@ public:
             auto name =
                 ps_name + "_" +
                 std::to_string(blends | statistics << 8 | late << 9 | coarse << 10 | depth << 11 | bare << 12);
-            return CompileFunction(device_, this, std::span(&bytecode, 1), arguments, name.c_str(),
-                                   [&shader](auto args, auto name, auto bitcode, auto error) {
-                                     return SM50Compile(shader, args, name, bitcode, error);
+            return CompileFunction(device_, this, signature.ptr(), std::span(&bytecode, 1), arguments, name.c_str(),
+                                   [&](auto args, auto name, auto bitcode, auto error) {
+                                     sm50_shader_t initialized;
+                                     return shader.Get(bytecode, initialized, error)
+                                                ? SM50Compile(initialized, args, name, bitcode, error)
+                                                : int(SM50_COMPILE_FAILED);
                                    });
           };
     }
@@ -1764,6 +1813,7 @@ public:
       in->barycentrics = ps_func && ref_ps.PixelShader.Barycentrics;
       in->strip_cut = pDesc->IBStripCutValue;
       in->primitive = pDesc->PrimitiveTopologyType;
+      in->pass_through = pass_through;
       in->conservative = conservative;
       in->conservative_hull = conservative_hull;
       in->conservative_inner = ps_func && ref_ps.PixelShader.InnerCoverage;
@@ -1778,7 +1828,7 @@ public:
     };
 
     if (mesh_shader) {
-      auto compile = [&](sm50_shader_t shader, D3D12_SHADER_BYTECODE code, void *args, const char *name,
+      auto compile = [&](SM50Shader &shader, D3D12_SHADER_BYTECODE code, void *args, const char *name,
                          D3D12_SHADER_BYTECODE linked = {}) {
         SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
         return function(shader, code, root_signature(rootsig, args), name, linked);
@@ -1813,14 +1863,28 @@ public:
       mesh_info.rasterization_enabled = true;
       // the most a payload may be (D3D12 mesh shader specification, "Amplification shader output payload")
       mesh_info.payload_memory_length = 16384;
-      if (!(pso = CreatePipeline(mesh_info, err))) {
+      // DispatchMesh splits a grid by what the pipeline itself says one may have
+      if (DeferredPipeline::Enabled()) {
+        // Metal's compile of it on a compile thread, with its functions, as a plain pipeline's below
+        deferred = std::make_shared<DeferredPipeline>([self = this, mesh_info, as_func, ms_func, ps_func]() {
+          WMT::Reference<WMT::Error> error;
+          if (!(self->pso = self->CreatePipeline(mesh_info, error)))
+            ERR("Failed to create mesh shader PSO of shaders ", self->name, ": ", error.description().getUTF8String());
+          else
+            self->mesh_grid_limit = self->pso.maxTotalThreadgroupsPerMeshGrid();
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = CreatePipeline(mesh_info, err))) {
         ERR("Failed to create mesh shader PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({AS, MS, pDesc->PS});
         return E_FAIL;
+      } else {
+        mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
       }
-      mesh_grid_limit = pso.maxTotalThreadgroupsPerMeshGrid();
     } else if (geometry_shader) {
-      // a strip's primitives share vertices, so strips and lists each have their pipeline
+      // a strip's primitives share vertices, so strips and lists each have their pipeline, and so has stream output's
+      // counting pass of each. those a list draws with are made here; a strip's are made when a draw first needs them
+      // (GeometryPipeline), as each is two conversions and a Metal pipeline, and most pipelines never draw a strip
       auto inputs = geometry_inputs();
       if (!inputs)
         return FAIL(E_FAIL);
@@ -1829,8 +1893,8 @@ public:
       // a strip, and a geometry shader, if any, emits the same each time
       static const bool one_pass = env::getEnvVar("MULLION_D3D12_FAST_STREAM_OUTPUT") != "0";
       rasterless = one_pass && stream_output && so_data.rasterized_stream == ~0u;
-      auto input = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive : uint32_t(pDesc->PrimitiveTopologyType);
-      bool fixed = one_pass && stream_output && !patches && (!sm50_shader_t(shader_gs) || ref_gs.GeometryShader.FixedEmits);
+      auto input = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.Primitive : uint32_t(pDesc->PrimitiveTopologyType);
+      bool fixed = one_pass && stream_output && !patches && (!bool(pDesc->GS.pShaderBytecode) || ref_gs.GeometryShader.FixedEmits);
       so_single = SM50StreamOutputSinglePass(input, false, false, fixed);
       so_single_strip =
           SM50StreamOutputSinglePass(input, true, pDesc->IBStripCutValue != D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, fixed);
@@ -1846,27 +1910,27 @@ public:
         );
         return SUCCEEDED(hr);
       };
-      bool strips = sm50_shader_t(shader_gs) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
-                              : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+      geometry_strips_ = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.Primitive != D3D_PRIMITIVE_POINT
+                                                         : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
       // lists of triangles a vertex shader's cull distances pass through: a mesh function alone runs the vertex shader
       // and passes them on, with no object stage before it, which costs about as much as the triangles themselves
       // (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only). strips keep the object stage, as do stream output,
       // conservative rasterization, quadrilateral lines and geometry shaders. MULLION_D3D12_CULL_MESH_ONLY=0 keeps it
       // everywhere
       static const bool mesh_only_lists = env::getEnvVar("MULLION_D3D12_CULL_MESH_ONLY") != "0";
-      mesh_only = mesh_only_lists && pass_through && !sm50_shader_t(shader_gs) && ref_vs.CullDistances &&
+      mesh_only = mesh_only_lists && pass_through && !bool(pDesc->GS.pShaderBytecode) && ref_vs.CullDistances &&
                   pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !stream_output &&
                   !conservative && !quad_lines;
       mesh_reads_root_arguments |= mesh_only;
-      if (!patches && (!variant(pso, false, false, mesh_only) || (strips && !variant(pso_strip, true))))
+      if (!patches && !variant(pso, false, false, mesh_only))
         return hr;
       // a one-pass variant has no counting pass
-      if (!patches && stream_output &&
-          ((!so_single && !variant(so_count, false, true)) ||
-           (strips && !so_single_strip && !variant(so_count_strip, true, true))))
-        return hr;
-      if (adjacency || patches)
-        topology_inputs_ = inputs;
+      if (!patches && stream_output && !so_single) {
+        geometry_attempted_[false][true] = true;
+        if (!variant(geometry_variants_[false][true], false, true))
+          return hr;
+      }
+      topology_inputs_ = inputs;
       if (!later.empty()) {
         deferred = std::make_shared<DeferredPipeline>([jobs = std::move(later)] {
           for (auto &job : jobs)
@@ -1906,7 +1970,6 @@ public:
       pso_tess.type = SM50_SHADER_PSO_TESSELLATOR;
       pso_tess.max_potential_tess_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
       pso_tess.mesh_vertex_size = ref_ds.PostTessellator.MeshVertexSize;
-      pso_tess.geometry = shader_gs;
       pso_tess.conservative = conservative;
       pso_tess.flat_inputs = pixel_shader ? ref_ps.PixelShader.FlatInputs : 0;
       pso_tess.noperspective_inputs = pixel_shader ? ref_ps.PixelShader.NoPerspectiveInputs : 0;
@@ -1919,69 +1982,75 @@ public:
       mesh_info.object_tgsize_is_multiple_of_sgwidth = true;
       threads_per_patch = ref_hs.ThreadsPerPatch;
 
-      auto build = [&]() -> HRESULT {
-        // a geometry shader's primitives each take a mesh threadgroup; a grid has as many as the device lets it, and
-        // the object threadgroups of several grids share a patch group's
-        pso_tess.max_mesh_threadgroups = device_->max_mesh_threadgroups;
-        auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(ref_hs.Tessellator.Partition);
-        auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(ref_hs.Tessellator.Domain);
-        auto factor = dxbc::get_final_factor(ref_hs.Tessellator.MaxFactor, partitioning, pso_tess.max_potential_tess_factor).second;
-        bool geometry = sm50_shader_t(shader_gs);
-        tessellation_parts = dxbc::tessellation_grids(
-                                 dxbc::get_max_potential_workload_count(factor, domain, partitioning) * (32 / threads_per_patch),
-                                 geometry ? dxbc::get_max_workload_vertices(factor, domain)
-                                          : dxbc::tessellation_pieces(
-                                                factor, domain,
-                                                microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE(ref_hs.Tessellator.OutputPrimitive),
-                                                pso_tess.mesh_vertex_size, pso_tess.conservative
-                                            ).count,
-                                 geometry ? ref_gs.GeometryShader.InstanceCount : 1, pso_tess.max_mesh_threadgroups
-        ).parts;
-        SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
-        root_signature(rootsig_gs, &pso_tess);
-        rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
-        auto ds_func = CompileFunction(
-            device_, this, std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
-            [&](auto args, auto name, auto bitcode, auto error) {
-              return SM50CompileTessellationPipelineDomain(shader_hs, shader_ds, args, name, bitcode, error);
-            }
-        );
-        if (!ds_func)
-          return FAIL(E_INVALIDARG);
-        mesh_info.mesh_function = ds_func.handle;
+      // a geometry shader's primitives each take a mesh threadgroup; a grid has as many as the device lets it, and
+      // the object threadgroups of several grids share a patch group's
+      pso_tess.max_mesh_threadgroups = device_->MaxMeshThreadgroups();
+      auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(ref_hs.Tessellator.Partition);
+      auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(ref_hs.Tessellator.Domain);
+      auto factor = dxbc::get_final_factor(ref_hs.Tessellator.MaxFactor, partitioning, pso_tess.max_potential_tess_factor).second;
+      bool geometry = bool(pDesc->GS.pShaderBytecode);
+      tessellation_parts = dxbc::tessellation_grids(
+                               dxbc::get_max_potential_workload_count(factor, domain, partitioning) * (32 / threads_per_patch),
+                               geometry ? dxbc::get_max_workload_vertices(factor, domain)
+                                        : dxbc::tessellation_pieces(
+                                              factor, domain,
+                                              microsoft::D3D11_SB_TESSELLATOR_OUTPUT_PRIMITIVE(ref_hs.Tessellator.OutputPrimitive),
+                                              pso_tess.mesh_vertex_size, pso_tess.conservative
+                                          ).count,
+                               geometry ? ref_gs.GeometryShader.InstanceCount : 1, pso_tess.max_mesh_threadgroups
+      ).parts;
+      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_ds, rootsig_gs;
+      root_signature(rootsig_gs, &pso_tess);
+      rootsig_gs.type = SM50_SHADER_ROOT_SIGNATURE2;
+      auto args_ds = root_signature(rootsig_ds, &rootsig_gs);
+      auto ds_func = CompileFunction(
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::array{pDesc->HS, pDesc->DS, pDesc->GS}, args_ds, "ds_main",
+          [&](auto args, auto name, auto bitcode, auto error) {
+            sm50_shader_t hs, ds;
+            return shader_hs.Get(pDesc->HS, hs, error) && shader_ds.Get(pDesc->DS, ds, error) &&
+                           shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
+                       ? SM50CompileTessellationPipelineDomain(hs, ds, args, name, bitcode, error)
+                       : int(SM50_COMPILE_FAILED);
+          }
+      );
+      if (!ds_func)
+        return FAIL(E_INVALIDARG);
+      mesh_info.mesh_function = ds_func.handle;
 
-        // the object stage fetches indices itself, through the index buffer view each draw binds
-        data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
-        data_ia_layout.next = &pso_tess;
-        SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
-        root_signature(rootsig_vs, &data_ia_layout);
-        rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
-        auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
-        auto vshs_func = CompileFunction(
-            device_, this, std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
-            [&](auto args, auto name, auto bitcode, auto error) {
-              return SM50CompileTessellationPipelineHull(shader_vs, shader_hs, args, name, bitcode, error);
-            }
-        );
-        if (!vshs_func)
-          return FAIL(E_INVALIDARG);
-        mesh_info.object_function = vshs_func.handle;
-        pipeline_descriptors_.erase(pso.handle);
-        if (!(pso = CreatePipeline(mesh_info, err))) {
-          ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
-          DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
-          return E_FAIL;
-        }
-        return S_OK;
-      };
-      if (FAILED(hr = build()))
-        return hr;
-      // only a pipeline tells what a grid may have: the device's first is built to ask, then built for it
-      if (!pso_tess.max_mesh_threadgroups) {
-        device_->max_mesh_threadgroups = std::min<uint64_t>(pso.maxTotalThreadgroupsPerMeshGrid(), UINT32_MAX);
-        if (FAILED(hr = build()))
-          return hr;
+      // the object stage fetches indices itself, through the index buffer view each draw binds
+      data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_VIEW;
+      data_ia_layout.next = &pso_tess;
+      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig_hs, rootsig_vs;
+      root_signature(rootsig_vs, &data_ia_layout);
+      rootsig_vs.type = SM50_SHADER_ROOT_SIGNATURE2;
+      auto args_hs = root_signature(rootsig_hs, &rootsig_vs);
+      auto vshs_func = CompileFunction(
+          device_, this, static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature),
+          std::array{pDesc->VS, pDesc->HS, pDesc->GS}, args_hs, "vshs_main",
+          [&](auto args, auto name, auto bitcode, auto error) {
+            sm50_shader_t vs, hs;
+            return shader_vs.Get(pDesc->VS, vs, error) && shader_hs.Get(pDesc->HS, hs, error) &&
+                           shader_gs.Get(pDesc->GS, pso_tess.geometry, error)
+                       ? SM50CompileTessellationPipelineHull(vs, hs, args, name, bitcode, error)
+                       : int(SM50_COMPILE_FAILED);
+          }
+      );
+      if (!vshs_func)
+        return FAIL(E_INVALIDARG);
+      mesh_info.object_function = vshs_func.handle;
+      if (DeferredPipeline::Enabled()) {
+        // Metal's compile of it on a compile thread, with its functions, as a plain pipeline's above
+        deferred = std::make_shared<DeferredPipeline>([self = this, mesh_info, vshs_func, ds_func, ps_func]() {
+          WMT::Reference<WMT::Error> error;
+          if (!(self->pso = self->CreatePipeline(mesh_info, error)))
+            ERR("Failed to create tessellation PSO of shaders ", self->name, ": ", error.description().getUTF8String());
+        });
+        DeferredPipeline::Queue(deferred);
+      } else if (!(pso = CreatePipeline(mesh_info, err))) {
+        ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
+        DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});
+        return E_FAIL;
       }
     }
 
@@ -2026,19 +2095,31 @@ public:
   WMT::RenderPipelineState
   RenderTargets(
       WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
-      WMTPixelFormat DSVFormat
+      WMTPixelFormat DSVFormat, const WMTPixelFormat (&Colors)[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]
   ) override {
     Mask &= rtv_mask;
     DSVPlanar &= dsv_mask;
     // a pipeline of any depth stencil format is made without one, which a pass without a view keeps
     bool any_format = dsv_any_format && DSVPlanar;
+    // D3D12 leaves drawing to a view of another format than the pipeline's undefined, and titles do it: a pipeline
+    // of R8G8B8A8_UNORM into an sRGB view of the target, or of one depth format over a view of another. a view decides
+    // how its texture is written, where Metal's pipeline does and must name the pass's formats, so the pass's
+    // pipeline takes the view's: for a depth stencil view, and for a render target view of the pipeline's format in
+    // its other encoding, sRGB or not, which the pixel shader's outputs and the blending fit as they are
+    bool other_dsv = DSVPlanar && !dsv_any_format && DSVFormat != dsv_format_;
+    uint32_t other_encoding = 0;
+    for (unsigned i = 0; i < std::size(Colors); i++) {
+      auto view = WMTPixelFormat(ORIGINAL_FORMAT(Colors[i])), own = WMTPixelFormat(ORIGINAL_FORMAT(color_formats_[i]));
+      if ((Mask & (1u << i)) && view != own && Forget_sRGB(view) == Forget_sRGB(own))
+        other_encoding |= 1u << i;
+    }
     Statistics &= pixel_shader || statistics_geometry_;
     Coarse &= pixel_shader && coarse_shading;
     // a pixel shader's discard of the depth bounds test takes its samples out of an occlusion query only before the
     // depth and stencil tests
     bool late = Occluded && depth_bounds_emulated && pixel_shader;
-    if (!Pipeline ||
-        (!Statistics && !late && !Coarse && Mask == rtv_mask && (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
+    if (!Pipeline || (!Statistics && !late && !Coarse && Mask == rtv_mask && !other_encoding && !other_dsv &&
+                      (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
       return Pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
     auto described = pipeline_descriptors_.find(Pipeline.handle);
@@ -2050,7 +2131,8 @@ public:
                (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
                (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3)) |
                (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4)) |
-               (uint64_t(any_format ? DSVFormat : WMTPixelFormatInvalid) << 32);
+               (other_encoding << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 5)) |
+               (uint64_t(any_format || other_dsv ? DSVFormat : WMTPixelFormatInvalid) << 32);
     auto found = descriptor.variants.find(key);
     if (found != descriptor.variants.end())
       return found->second;
@@ -2084,13 +2166,18 @@ public:
           for (unsigned i = 0; i < std::size(info.colors); i++)
             if (!(Mask & (1u << i)))
               info.colors[i] = {.pixel_format = WMTPixelFormatInvalid};
+            else if (other_encoding & (1u << i))
+              // in the channel order the pixel shader was made for
+              info.colors[i].pixel_format = WMTPixelFormat(
+                  (info.colors[i].pixel_format & WMTPixelFormatCustomSwizzle) | ORIGINAL_FORMAT(Colors[i])
+              );
           if (!(DSVPlanar & 1))
             info.depth_pixel_format = WMTPixelFormatInvalid;
-          else if (any_format)
+          else if (any_format || other_dsv)
             info.depth_pixel_format = DSVFormat;
           if (!(DSVPlanar & 2))
             info.stencil_pixel_format = WMTPixelFormatInvalid;
-          else if (any_format)
+          else if (any_format || other_dsv)
             info.stencil_pixel_format = DSVFormat;
           return MetalPipeline(info, error);
         },
@@ -2183,7 +2270,9 @@ CreateGraphicsPipelineState(
   if (cached)
     pso->cached_shaders = *cached;
   pso->depth_bounds = depth_bounds && pDevice->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
-  pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds;
+  // without Metal's test the pixel shader's stands in when d3d12.emulateDepthBounds asks: it costs a pass over the
+  // depth attachment for each range, and what it drops is shading an application culls, not what it draws
+  pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds && pDevice->emulate_depth_bounds;
   HRESULT hr = pso->Initialize(&desc, AS, MS, depth_stencil2);
   if (FAILED(hr))
     return hr;

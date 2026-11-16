@@ -70,9 +70,10 @@ HRESULT PipelineKey(
 );
 HRESULT CreatePipelineLibrary(MTLD3D12Device *Device, const void *Blob, SIZE_T Size, REFIID Iid, void **Library);
 
+// `root_signature`: the one its SM50_SHADER_ROOT_SIGNATURE arguments are of
 WMT::Reference<WMT::Function> CompileFunction(
-    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, std::span<const D3D12_SHADER_BYTECODE> shaders,
-    SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
+    MTLD3D12Device *device, MTLD3D12PipelineState *pipeline, MTLD3D12RootSignature *root_signature,
+    std::span<const D3D12_SHADER_BYTECODE> shaders, SM50_SHADER_COMPILATION_ARGUMENT_DATA *arguments, const char *name,
     const std::function<int(SM50_SHADER_COMPILATION_ARGUMENT_DATA *, const char *, sm50_bitcode_t *, sm50_error_t *)>
         &compile
 );
@@ -94,6 +95,9 @@ struct PipelineStateStream {
 // application may free once the pipeline is made (MTLD3D12PipelineState::left_out)
 void Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStream &stream);
 
+// a shader's conversion state (SM50Initialize). a pipeline reads a shader's reflection from the shader cache where
+// one is stored (MTLD3D12PipelineState::InitializeShader), and the state is made when a conversion first asks for
+// it: a pipeline whose functions are stored too never has its bytecode parsed. used by one thread at a time
 class SM50Shader {
   sm50_shader_t sm50_shader_{};
 
@@ -103,8 +107,19 @@ public:
     return &sm50_shader_;
   }
 
-  operator sm50_shader_t() {
-    return sm50_shader_;
+  // the state of `code` in `shader`, null for no bytecode. false when the bytecode cannot be initialized, with what
+  // is wrong with it in `error`
+  bool
+  Get(D3D12_SHADER_BYTECODE code, sm50_shader_t &shader, sm50_error_t *error) {
+    if (!sm50_shader_ && code.pShaderBytecode) {
+      MTL_SHADER_REFLECTION reflection;
+      sm50_shader_t initialized{};
+      if (SM50Initialize(code.pShaderBytecode, code.BytecodeLength, &initialized, &reflection, error))
+        return false;
+      sm50_shader_ = initialized;
+    }
+    shader = sm50_shader_;
+    return true;
   }
 
   ~SM50Shader() {

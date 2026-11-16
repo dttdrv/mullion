@@ -1,0 +1,11 @@
+# a NaN texture coordinate reaches the sampler as it is
+--- a/src/mullion/mullion_info.cpp
++++ b/src/mullion/mullion_info.cpp
+@@ -92,7 +92,6 @@
+   // a NaN texture coordinate is 0 once it is snapped to fixed point (D3D11.3 3.2.4.1), so a sample reads the first
+   // texel of that axis; what Metal's sampler reads for a NaN is not defined. MULLION_SHADER_FLAGS without the flag,
+   // or d3d11.sampleNaNToZero = False, leaves coordinates as they are
+-  flags |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
+   if (!device.supportsFamily(WMTGPUFamilyApple9))
+     flags |= SM50_SHADER_FLAG_COLLAPSE_CULLED_LINES | SM50_SHADER_FLAG_COHERENT_GROUP_SYNC;
+   return SM50_SHADER_FLAG(flags | SwitchedShaderFlags());
