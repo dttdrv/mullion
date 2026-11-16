@@ -2,7 +2,8 @@
 // draws to the same target from successive lists land in submission order (D3D11.3 functional specification, 4.2
 // Fixed Order of Pipeline Results), what a list clears at its start is cleared, a target only the next list draws to
 // gets its pixels, depth one list wrote is what the next one tests against, and a list after them that copies the
-// targets sees all of it. each case is some lists of a slow draw each, then a list that copies, in one call.
+// targets sees all of it, and so do draws of ExecuteIndirect, whose arguments a list reads where it runs. each case is
+// some lists of a slow draw each, then a list that copies, in one call.
 // argv[2] "child": the same in a process that encodes every run of passes on several threads
 // (MULLION_D3D12_PARALLEL_COMMANDS, MULLION_D3D12_ENCODE_THREADS); the test starts it itself.
 // argv[2] "bench": how long a call of lists takes that each draw once to one large target, as a game's lists recorded
@@ -25,13 +26,19 @@ uint slow() {
   return value + (v & mask);
 }
 uint ps() : SV_Target { return slow(); }
+// a quad over half the target, the left one for vertices 0 to 5 and the right one for 6 to 11
+float4 half(uint id : SV_VertexID) : SV_Position {
+  uint c = id % 6;
+  float x = c == 1 || c == 2 || c == 4, y = c == 2 || c == 4 || c == 5;
+  return float4(x - 1 + id / 6, 1 - 2 * y, depth, 1);
+}
 struct Two { uint a : SV_Target0; uint b : SV_Target1; };
 Two both() { Two two = {slow(), value + 1}; return two; }
 )hlsl";
 
-enum Case { Order, Clear, Targets, Depth, Cases };
+enum Case { Order, Clear, Targets, Depth, Indirect, Cases };
 static const char *names[] = {"draws in order", "a clear that begins a list", "a target only the next list has",
-                              "depth a list wrote"};
+                              "depth a list wrote", "indirect draws"};
 
 static int
 run(int argc, char **argv) {
@@ -39,8 +46,8 @@ run(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return 77;
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"),
-       both = compiler.compile(hlsl, "both", "ps");
-  if (!expect(!vs.empty() && !ps.empty() && !both.empty(), "HLSL did not compile"))
+       both = compiler.compile(hlsl, "both", "ps"), halves = compiler.compile(hlsl, "half", "vs");
+  if (!expect(!vs.empty() && !ps.empty() && !both.empty() && !halves.empty(), "HLSL did not compile"))
     return verdict();
 
   ComPtr<ID3D12Device> device;
@@ -58,9 +65,12 @@ run(int argc, char **argv) {
   desc.NumRenderTargets = 1;
   desc.RTVFormats[0] = DXGI_FORMAT_R32_UINT;
   desc.SampleDesc = {1, 0};
-  // one target; one and depth, which a draw nearer than what is there writes; two targets
-  ComPtr<ID3D12PipelineState> one, deep, two;
+  // one target; one and depth, which a draw nearer than what is there writes; two targets; one target's halves
+  ComPtr<ID3D12PipelineState> one, deep, two, half;
   CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&one)));
+  desc.VS = bytecode(halves);
+  CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&half)));
+  desc.VS = bytecode(vs);
   desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   desc.DepthStencilState.DepthEnable = TRUE;
   desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -153,6 +163,36 @@ run(int argc, char **argv) {
   auto draw = [&](UINT i, auto &&...arguments) {
     return record(allocators[i].Get(), recorded[i].Get(), arguments...);
   };
+  // each list's command, which draws the half it names; the signature's commands only draw
+  D3D12_INDIRECT_ARGUMENT_DESC argument{D3D12_INDIRECT_ARGUMENT_TYPE_DRAW};
+  D3D12_COMMAND_SIGNATURE_DESC signature_desc{sizeof(D3D12_DRAW_ARGUMENTS), 1, &argument};
+  ComPtr<ID3D12CommandSignature> signature;
+  CHECK(device->CreateCommandSignature(&signature_desc, nullptr, IID_PPV_ARGS(&signature)));
+  auto commands = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, lists * sizeof(D3D12_DRAW_ARGUMENTS),
+                         D3D12_RESOURCE_STATE_GENERIC_READ);
+  CHECK(commands ? S_OK : E_FAIL);
+  auto draw_indirect = [&](UINT i, UINT value, UINT side_drawn) {
+    D3D12_DRAW_ARGUMENTS *mapped;
+    HRESULT hr;
+    if (FAILED(hr = commands->Map(0, nullptr, (void **)&mapped)))
+      return hr;
+    mapped[i] = {6, 1, 6 * side_drawn, 0};
+    commands->Unmap(0, nullptr);
+    auto list = recorded[i].Get();
+    if (FAILED(hr = allocators[i]->Reset()) || FAILED(hr = list->Reset(allocators[i].Get(), half.Get())))
+      return hr;
+    list->SetGraphicsRootSignature(roots.Get());
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->OMSetRenderTargets(1, rtvs, TRUE, nullptr);
+    D3D12_VIEWPORT viewport{0, 0, float(side), float(side), 0, 1};
+    D3D12_RECT scissor{0, 0, LONG(side), LONG(side)};
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    UINT constants[4] = {value, work, 0, 0};
+    list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
+    list->ExecuteIndirect(signature.Get(), 1, commands.Get(), i * sizeof(D3D12_DRAW_ARGUMENTS), nullptr, 0);
+    return list->Close();
+  };
 
   if (bench) {
     constexpr UINT passes = 32;
@@ -238,6 +278,15 @@ run(int argc, char **argv) {
         CHECK(draw(lists - 1, two.Get(), base + lists - 1, work, 0, split));
         want[0][0] = base + lists - 1, want[0][1] = base + lists - 2;
         want[1][0] = base + lists, want[1][1] = base + 10;
+      } else if (c == Indirect) {
+        // each list draws a half, which changes from repeat to repeat, over what the lists before drew
+        UINT last[2] = {};
+        for (UINT i = 0; i < lists; i++) {
+          CHECK(draw_indirect(i, base + i, (i + r) & 1));
+          last[(i + r) & 1] = base + i;
+        }
+        want[0][0] = last[0], want[0][1] = last[1];
+        want[1][0] = want[1][1] = base + 10;
       } else {
         // the first list draws at the middle depth; the next ones farther, which fail the test, then nearer
         CHECK(draw(0, deep.Get(), base, work, 0.5f));

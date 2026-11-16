@@ -1,0 +1,13 @@
+# a list's last pass runs the resolvers of the next list's first alone, not of the lists after that
+# family native
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -1945,7 +1945,7 @@
+       // goes on in the first of each list after it that joins, while that first is also its list's last
+       for (j = parallel ? std::max(j, i + 1) : recorded.size(); i < j; i++) {
+         chain.clear();
+-        for (auto k = i + 1; k < j && joins[k] && (k == i + 1 || ends[k - 1].first == ends[k - 1].second); k++)
++        for (auto k = i + 1; k < j && joins[k] && k == i + 1; k++)
+           chain.push_back(ends[k].first);
+         encode(encode, recorded[i], keeps.allocators[i].ptr(), chain.empty() ? nullptr : ends[i].second, chain);
+       }

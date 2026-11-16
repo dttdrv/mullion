@@ -465,7 +465,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   // of Metal's: their draws may run in order in one ("the second command list (D) may begin executing work before all
   // work from the first (C) has finished", ID3D12CommandQueue::ExecuteCommandLists), and Metal then neither stores
   // the attachments nor loads them again. so `b` is no ordering point, has the attachments `a` stores and loads them,
-  // counts in the same occlusion window, and needs nothing before its draws nor a timestamp of either's end
+  // counts in the same occlusion window, and needs no timestamp of either's end. its resolvers run before the pass it
+  // goes on in (EncodePass's `joined`): as no ordering point is between the two, what they read was there then too
   static bool
   Continues(const EncoderData *a, const EncoderData *b, uint32_t scissors, uint32_t viewports) {
     if (!a || !b || a->type != EncoderType::Render || b->type != EncoderType::Render ||
@@ -481,7 +482,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     for (unsigned i = 0; i < x->colors.size(); i++)
       if (!same(x->colors[i], y->colors[i]) || x->colors[i].resolve_attachment || y->colors[i].resolve_attachment)
         return false;
-    return same(x->depth, y->depth) && same(x->stencil, y->stencil) && !y->before_head.next.ptr &&
+    return same(x->depth, y->depth) && same(x->stencil, y->stencil) &&
            x->visibility_buffer == y->visibility_buffer && x->rasterless == y->rasterless &&
            x->render_target_width == y->render_target_width && x->render_target_height == y->render_target_height &&
            x->render_target_array_length == y->render_target_array_length &&
@@ -1602,7 +1603,7 @@ public:
     OpenPass open;
     // a list's passes, and those of the list the queue records on. `kept` goes on in the next list's first
     auto encode = [&](auto &encode, EncoderData *current, MTLD3D12CommandAllocator *allocator,
-                      const EncoderData *kept = nullptr) -> void {
+                      const EncoderData *kept = nullptr, std::span<EncoderData *const> joined = {}) -> void {
       auto records = record_totals_
                          ? static_cast<MTLD3D12CommandAllocatorImpl *>(allocator)->GPURecordsFor(current) : nullptr;
       // records commands on the queue's list, which is free once what it recorded before has run, as are that
@@ -1734,7 +1735,7 @@ public:
         case EncoderType::ComputeParts:
         case EncoderType::Resolve:
           if (!EncodePass(cmdbuf, current, attachment, sparse_mappings, *scope.inflight, records, sync, open,
-                          current == kept && unresolved_.empty()))
+                          current == kept && unresolved_.empty(), joined))
             return;
           // its encoder began with an aliasing barrier the queue carried (OrderAliases)
           order_aliases_ = false;
@@ -1934,8 +1935,9 @@ public:
     // lists whose every pass encodes on any thread, as many as follow each other: their passes, and what they cost.
     // not with what keeps state of a slot's own (profiles, GPU records, encoder counts)
     std::vector<std::pair<EncoderData *, uint64_t>> passes;
-    // which of them goes on in the next list's first
+    // which of them goes on in the next list's first, and the passes that go on in a list's last
     std::vector<char> kept;
+    std::vector<EncoderData *> chain;
     bool parallel = EncodeThreads() > 1 && !profile_ && !record_totals_ && !isolate &&
                     !diag::trace_encoders;
     for (size_t i = 0; i < recorded.size();) {
@@ -1970,9 +1972,14 @@ public:
         i = j;
         continue;
       }
-      // one thread encodes the lists of a run in order, and without encoding threads all of them
-      for (j = parallel ? std::max(j, i + 1) : recorded.size(); i < j; i++)
-        encode(encode, recorded[i], keeps.allocators[i].ptr(), i + 1 < j && joins[i + 1] ? ends[i].second : nullptr);
+      // one thread encodes the lists of a run in order, and without encoding threads all of them. a list's last pass
+      // goes on in the first of each list after it that joins, while that first is also its list's last
+      for (j = parallel ? std::max(j, i + 1) : recorded.size(); i < j; i++) {
+        chain.clear();
+        for (auto k = i + 1; k < j && joins[k] && (k == i + 1 || ends[k - 1].first == ends[k - 1].second); k++)
+          chain.push_back(ends[k].first);
+        encode(encode, recorded[i], keeps.allocators[i].ptr(), chain.empty() ? nullptr : ends[i].second, chain);
+      }
     }
   };
 
@@ -1984,7 +1991,7 @@ public:
   EncodePass(
       MetalCommandBuffer cmdbuf, EncoderData *current, WMTSampleBufferAttachmentInfo &attachment,
       WMT::Buffer sparse_mappings, InflightCommandBuffer &inflight, const GPUListRecords *records, const PassSync &sync,
-      OpenPass &open, bool keep
+      OpenPass &open, bool keep, std::span<EncoderData *const> joined = {}
   ) {
     auto wait = [&](auto &encoder) { encoder.waitForFences(sync.waits, sync.wait_count); };
     // a Metal 4 pass of compute or blit work with no fence of its own is a segment of the buffer's one compute
@@ -2067,17 +2074,30 @@ public:
         render_pass_info.render_target_height = data->render_target_height;
         render_pass_info.visibility_buffer = data->visibility_buffer;
       }
-      if (data->before_head.next.get()) {
+      // its work before it, and that of the passes that go on in it
+      auto befores = [&](auto &&each) {
+        each(data);
+        for (auto pass : joined)
+          each(static_cast<RenderEncoderData *>(pass));
+      };
+      bool before_any = false, omitted_any = false;
+      befores([&](auto pass) { before_any |= !!pass->before_head.next.get(), omitted_any |= !!pass->omitted; });
+      if (before_any) {
         if (diag::trace_encoders)
           inflight.physical[WMTMetal4Compute]++;
         auto before = cmdbuf.computeCommandEncoder(true);
         wait(before);
-        before.encodeCommands(&data->before_head);
+        befores([&](auto pass) {
+          if (pass->before_head.next.get())
+            before.encodeCommands(&pass->before_head);
+        });
         end(before);
-        if (data->omitted) {
+        if (omitted_any) {
           size_t count = 0;
-          for (auto omitted = data->omitted; omitted; omitted = omitted->next)
-            count += omitted->words;
+          befores([&](auto pass) {
+            for (auto omitted = pass->omitted; omitted; omitted = omitted->next)
+              count += omitted->words;
+          });
           WMTBufferInfo info{count * sizeof(uint32_t), WMTResourceStorageModeShared};
           auto buffer = device_->GetMTLDevice().newBuffer(info);
           if (!buffer) {
@@ -2092,14 +2112,16 @@ public:
             if (sync.update.handle)
               copy.waitForFence(sync.update);
           size_t offset = 0;
-          for (auto omitted = data->omitted; omitted; omitted = omitted->next) {
-            copy.copyFromBuffer(omitted->buffer, omitted->offset, buffer, offset * sizeof(uint32_t), omitted->words * sizeof(uint32_t));
-            inflight.omitted.emplace_back(
-                buffer, std::span(static_cast<const uint32_t *>(info.memory.get()) + offset, omitted->words),
-                omitted->scratch
-            );
-            offset += omitted->words;
-          }
+          befores([&](auto pass) {
+            for (auto omitted = pass->omitted; omitted; omitted = omitted->next) {
+              copy.copyFromBuffer(omitted->buffer, omitted->offset, buffer, offset * sizeof(uint32_t), omitted->words * sizeof(uint32_t));
+              inflight.omitted.emplace_back(
+                  buffer, std::span(static_cast<const uint32_t *>(info.memory.get()) + offset, omitted->words),
+                  omitted->scratch
+              );
+              offset += omitted->words;
+            }
+          });
           end(copy);
         }
       }
@@ -2133,7 +2155,7 @@ public:
       };
       for (unsigned i = 0; i < sync.wait_count; i++)
         wait_for(sync.waits[i], WMTRenderStagePreRaster);
-      if (data->before_head.next.get() && sync.update.handle)
+      if (before_any && sync.update.handle)
         wait_for(sync.update, WMTRenderStagePreRaster);
       for (unsigned i = 0; i < sync.pixel_count; i++)
         wait_for(sync.pixels[i], WMTRenderStageFragment);
@@ -2345,12 +2367,21 @@ public:
       InflightCommandBuffer unused;
       WMTSampleBufferAttachmentInfo unsampled{};
       OpenPass render;
+      std::vector<EncoderData *> chain;
       auto &open = k ? groups[k] : scope.inflight->groups;
       for (auto i = bounds[k]; i < bounds[k + 1] && !lost; i++) {
         if (diag::events && !render.encoder.handle)
           open.Enter(buffers[k], queue_events_ + (passes[i].first->event_path ? passes[i].first->event_path : ""));
+        // the passes that go on in one this opens: the next of each kept pass
+        chain.clear();
+        for (auto q = i + 1; kept[i] && !render.encoder.handle && q < bounds[k + 1]; q++)
+          if (passes[q].first->type != EncoderType::Null) {
+            chain.push_back(passes[q].first);
+            if (!kept[q])
+              break;
+          }
         if (!EncodePass(buffers[k], passes[i].first, unsampled, sparse_mappings, unused, nullptr, syncs[i], render,
-                        kept[i]))
+                        kept[i], chain))
           lost = true;
       }
     };
