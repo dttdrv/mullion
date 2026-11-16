@@ -1449,6 +1449,12 @@ public:
     auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     stream_output = pDesc->StreamOutput.NumEntries;
     mesh_shader = MS.pShaderBytecode;
+    // a pipeline with a mesh shader "must not have any other shader types attached (VS, GS, HS, DS)" (DirectX-Specs,
+    // Mesh Shader, CreatePipelineState); its input layout and topology type are ignored (vkd3d-proton's
+    // test_mesh_shader_create_pipeline, on Windows)
+    if (mesh_shader && (pDesc->VS.pShaderBytecode || pDesc->HS.pShaderBytecode || pDesc->DS.pShaderBytecode ||
+                        pDesc->GS.pShaderBytecode))
+      return FAIL(E_INVALIDARG);
     pixel_shader = pDesc->PS.pShaderBytecode;
     strip_cut = pDesc->IBStripCutValue;
 
