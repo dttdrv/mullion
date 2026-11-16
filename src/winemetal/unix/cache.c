@@ -80,6 +80,26 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
   return path;
 }
 
+// what one converter version stored is a file of its own beside the name asked for: "shaders.db" at version 7 is
+// "shaders.v7.db"
+static NSString *
+versioned(NSString *path, uint64_t version) {
+  return [[[path stringByDeletingPathExtension] stringByAppendingFormat:@".v%llu", version]
+      stringByAppendingPathExtension:path.pathExtension];
+}
+
+// no version reads what another stored, so a store that kept each grew by a whole version's conversions at every new
+// one: the files of the others go, those of the name itself among them (a store from before a version had its own).
+// a process that still has one open keeps it until it ends
+static void
+remove_other_versions(NSString *path, NSString *kept) {
+  NSString *directory = [path stringByDeletingLastPathComponent];
+  NSString *stem = [[[path lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"."];
+  for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil])
+    if ([name hasPrefix:stem] && ![name hasPrefix:[kept lastPathComponent]])
+      unlink([[directory stringByAppendingPathComponent:name] fileSystemRepresentation]);
+}
+
 @implementation CacheReader
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
@@ -91,7 +111,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
       [self release];
       return nil;
     }
-    _dbPath = [dbPath copy];
+    _dbPath = [versioned(dbPath, version) copy];
     _sqlGet = [[NSString alloc] initWithFormat:@"SELECT value FROM cache_%llu WHERE key = ?;", version];
     // the first connection tells whether the store can be read at all
     if (!reader_open(_dbPath, _sqlGet, &_idle[0])) {
@@ -189,6 +209,8 @@ writes(void) {
       return nil;
     }
 
+    remove_other_versions(dbPath, versioned(dbPath, version));
+    dbPath = versioned(dbPath, version);
     NSString *lockPath = [dbPath stringByAppendingString:@"-lock"];
     _lock_fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
     if (_lock_fd < 0) {
