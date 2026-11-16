@@ -498,8 +498,14 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
         from argparse import Namespace
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # a and b each end once the other has started, so they overlap whenever the runner starts them beside
+            # each other, however late a loaded machine starts the second; one that never sees the other ends alone
             script = ("import sys, time; name, at = sys.argv[1], sys.argv[2]; log = open(at + '/runs', 'a', buffering=1)\n"
-                      "log.write(f'start {name} {time.time()}\\n'); time.sleep(0.5)\n"
+                      "log.write(f'start {name} {time.time()}\\n'); other = {'a': 'b', 'b': 'a'}.get(name)\n"
+                      "late = time.time() + 20\n"
+                      "while other and f'start {other} ' not in open(at + '/runs').read() and time.time() < late:\n"
+                      "    time.sleep(0.01)\n"
+                      "other or time.sleep(0.5)\n"
                       "first = name != 'flaky' or not __import__('os').path.exists(at + '/flaky')\n"
                       "name == 'flaky' and open(at + '/flaky', 'a'); log.write(f'end {name} {time.time()}\\n')\n"
                       "ok = name != 'serial' and (name != 'flaky' or not first)\n"
