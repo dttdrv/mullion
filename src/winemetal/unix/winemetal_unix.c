@@ -472,6 +472,10 @@ _NSObject_description(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// what a pipeline made with keep_for_binary_archive is made of, kept on it until it is added to an archive
+// (_MTLBinaryArchive_add)
+static char archive_descriptor;
+
 static NTSTATUS
 CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
   struct unixcall_mtldevice_newcomputepso *params = obj;
@@ -494,13 +498,8 @@ CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
   params->ret_pso =
       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
   params->ret_error = (obj_handle_t)[err retain];
-  if (!err && info->binary_archive_for_serialization) {
-    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
-    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
-    @synchronized((id)info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
-    }
-  }
+  if (!err && info->keep_for_binary_archive)
+    objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   [descriptor release];
   return STATUS_SUCCESS;
 }
@@ -739,13 +738,8 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
                                                                                            reflection:nil
                                                                                                 error:&err];
   params->ret_error = (obj_handle_t)[err retain];
-  if (!err && info->binary_archive_for_serialization) {
-    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
-    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
-    @synchronized((id)info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-    }
-  }
+  if (!err && info->keep_for_binary_archive)
+    objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   [descriptor release];
   return STATUS_SUCCESS;
 }
@@ -898,13 +892,8 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
   params->ret_error = (obj_handle_t)[err retain];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
-    if (!err && info->binary_archive_for_serialization) {
-      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
-      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
-      @synchronized((id)info->binary_archive_for_serialization) {
-        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-      }
-    }
+    if (!err && info->keep_for_binary_archive)
+      objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   }
 #endif
   [descriptor release];
@@ -3841,6 +3830,31 @@ _MTLBinaryArchive_serialize(void *obj) {
 }
 
 static NTSTATUS
+_MTLBinaryArchive_add(void *obj) {
+  struct unixcall_generic_obj_obj_noret *params = obj;
+  id<MTLBinaryArchive> archive = (id<MTLBinaryArchive>)params->handle;
+  id pipeline = (id)params->arg, descriptor = objc_getAssociatedObject(pipeline, &archive_descriptor);
+  NSError *err = nil;
+  // the archives the pipeline was looked up in are not asked again: one of them may have been lost to a fault in
+  // Metal since, and holds whoever asks it
+  [descriptor setBinaryArchives:nil];
+  if ([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class])
+    [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+  else if ([descriptor isKindOfClass:MTLComputePipelineDescriptor.class])
+    [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+  else if (@available(macOS 15, *)) {
+    if ([descriptor isKindOfClass:MTLMeshRenderPipelineDescriptor.class])
+      [archive addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    else if ([descriptor isKindOfClass:MTLTileRenderPipelineDescriptor.class])
+      [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+  }
+#endif
+  objc_setAssociatedObject(pipeline, &archive_descriptor, nil, OBJC_ASSOCIATION_RETAIN);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _DispatchData_alloc_init(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
   params->ret = (obj_handle_t)dispatch_data_create((void *)params->handle, params->arg, NULL, NULL);
@@ -4637,13 +4651,8 @@ CREATES(_MTLDevice_newTileRenderPipelineState)(void *obj) {
   params->ret_error = (obj_handle_t)[err retain];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
-    if (!err && info->binary_archive_for_serialization) {
-      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
-      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
-      @synchronized((id)info->binary_archive_for_serialization) {
-        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-      }
-    }
+    if (!err && info->keep_for_binary_archive)
+      objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   }
 #endif
   [descriptor release];
@@ -7523,6 +7532,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_sparseTailHolds,
     &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
+    &_MTLBinaryArchive_add,
 };
 
 #ifndef MULLION_NATIVE
@@ -7740,6 +7750,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_sparseTailHolds,
     &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
+    &_MTLBinaryArchive_add,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");
