@@ -1523,6 +1523,24 @@ public:
       return hr;
     if (pDesc->GS.pShaderBytecode && FAILED(hr = InitializeShader(device_, pDesc->GS, &shader_gs, &ref_gs)))
       return hr;
+    // a geometry shader of points, lines or triangles takes what the stage before it makes: the primitives of the
+    // topology type, with their adjacency or without, or the tessellator's, which have none. Direct3D 12 refuses
+    // another input (vkd3d-proton's test_gs_topology_mismatch, which runs on Windows)
+    if (auto input = pDesc->GS.pShaderBytecode ? ref_gs.GeometryShader.Primitive : 0;
+        input && input <= D3D_PRIMITIVE_TRIANGLE_ADJ) {
+      bool adjacent = input == D3D_PRIMITIVE_LINE_ADJ || input == D3D_PRIMITIVE_TRIANGLE_ADJ;
+      uint32_t takes = input == D3D_PRIMITIVE_LINE_ADJ       ? D3D_PRIMITIVE_LINE
+                       : input == D3D_PRIMITIVE_TRIANGLE_ADJ ? D3D_PRIMITIVE_TRIANGLE
+                                                             : input;
+      // D3D12_PRIMITIVE_TOPOLOGY_TYPE's point, line and triangle are D3D_PRIMITIVE's, and the tessellator's two
+      // windings are both triangles
+      uint32_t made = tessellation
+                          ? std::min<uint32_t>(ref_hs.Tessellator.OutputPrimitive, MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW)
+                          : uint32_t(pDesc->PrimitiveTopologyType);
+      if (tessellation ? takes != made || adjacent
+                       : pDesc->PrimitiveTopologyType != D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH && takes != made)
+        return FAIL(E_INVALIDARG);
+    }
     gs_instances = bool(pDesc->GS.pShaderBytecode) ? ref_gs.GeometryShader.InstanceCount : 1;
     // the stage before stream output and the rasterizer: the geometry shader, or the vertex shader
     auto last_stage = pDesc->GS.pShaderBytecode ? pDesc->GS : pDesc->VS;

@@ -392,9 +392,7 @@
   "first": "test_create_reserved_resource:1143: Test failed: Failed to create reserved resource, hr 0x80070057."
  },
  "test_create_root_signature": {
-  "verdict": "failed",
-  "failed": 2,
-  "first": "test_create_root_signature:122: Test failed: Got unexpected hr 0."
+  "verdict": "passed"
  },
  "test_create_sampler": {
   "verdict": "passed"
@@ -598,9 +596,7 @@
   "first": "test_dual_source_blending_dxil:1185: Test failed: Unexpected result, hr 0."
  },
  "test_dynamic_depth_bias": {
-  "verdict": "failed",
-  "failed": 1,
-  "first": "test_dynamic_depth_bias:2196:Test 1: Test failed: Got 0, expected 1."
+  "verdict": "passed"
  },
  "test_dynamic_depth_stencil_write": {
   "verdict": "passed"
@@ -812,14 +808,10 @@
   "verdict": "passed"
  },
  "test_gs_topology_mismatch_dxbc": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "test_gs_topology_mismatch_dxbc:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
+  "verdict": "passed"
  },
  "test_gs_topology_mismatch_dxil": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "test_gs_topology_mismatch_dxil:4896:Test 0,1: Test failed: Got hr 0, expected 0x80070057."
+  "verdict": "passed"
  },
  "test_hull_shader_control_point_phase_dxbc": {
   "verdict": "passed"

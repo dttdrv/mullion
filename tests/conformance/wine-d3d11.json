@@ -65,9 +65,7 @@
   "verdict": "passed"
  },
  "test_constant_buffer_offset": {
-  "verdict": "failed",
-  "failed": 10,
-  "first": "d3d11.c:34434: Test failed: Got offset 1."
+  "verdict": "passed"
  },
  "test_copy_subresource_region": {
   "verdict": "passed"
@@ -129,10 +127,7 @@
   "verdict": "passed"
  },
  "test_create_unordered_access_view": {
-  "verdict": "crashed",
-  "at": "d3d11_test.exe: test_create_unordered_access_view at d3d11.c:20239:9",
-  "failed": 1,
-  "first": "d3d11.c:20219: Test failed: Test 16: Got unexpected hr 0x80070057."
+  "verdict": "passed"
  },
  "test_cs_uav_store": {
   "verdict": "passed"
@@ -326,9 +321,7 @@
   "verdict": "passed"
  },
  "test_multisample_resolve": {
-  "verdict": "failed",
-  "failed": 2,
-  "first": "d3d11.c:31630: Test failed: Got 0xffbcffbc, expected 0xff80ff80 at (0, 0, 0), sub-resource 0."
+  "verdict": "passed"
  },
  "test_negative_viewports": {
   "verdict": "failed",
