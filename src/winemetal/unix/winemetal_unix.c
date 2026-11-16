@@ -498,7 +498,7 @@ CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
   params->ret_pso =
       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
   params->ret_error = (obj_handle_t)[err retain];
-  if (!err && info->keep_for_binary_archive)
+  if (params->ret_pso && info->keep_for_binary_archive)
     objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   [descriptor release];
   return STATUS_SUCCESS;
@@ -738,7 +738,7 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
                                                                                            reflection:nil
                                                                                                 error:&err];
   params->ret_error = (obj_handle_t)[err retain];
-  if (!err && info->keep_for_binary_archive)
+  if (params->ret_pso && info->keep_for_binary_archive)
     objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   [descriptor release];
   return STATUS_SUCCESS;
@@ -892,7 +892,7 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
   params->ret_error = (obj_handle_t)[err retain];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
-    if (!err && info->keep_for_binary_archive)
+    if (params->ret_pso && info->keep_for_binary_archive)
       objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   }
 #endif
@@ -4651,7 +4651,7 @@ CREATES(_MTLDevice_newTileRenderPipelineState)(void *obj) {
   params->ret_error = (obj_handle_t)[err retain];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
-    if (!err && info->keep_for_binary_archive)
+    if (params->ret_pso && info->keep_for_binary_archive)
       objc_setAssociatedObject((id)params->ret_pso, &archive_descriptor, descriptor, OBJC_ASSOCIATION_RETAIN);
   }
 #endif
