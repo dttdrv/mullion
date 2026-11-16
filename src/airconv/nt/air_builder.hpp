@@ -302,8 +302,17 @@ public:
 
   Value *CreateConvertToFloat(Value *Val, Signedness SrcSign = Signedness::Signed);
   Value *CreateConvertToHalf(Value *Val, Signedness SrcSign = Signedness::Signed);
-  Value *CreateConvertToSigned(Value *Val);
-  Value *CreateConvertToUnsigned(Value *Val);
+  // a float or half as an integer of `Bits` bits by Direct3D's rule: rounded toward zero, clamped to the integer's
+  // range, and 0 for a NaN (D3D11.3 22.13.3 ftoi, 22.13.4 ftou, which define it for 32 bits)
+  Value *CreateConvertToInteger(Value *Val, Signedness Sign, uint32_t Bits = 32);
+  Value *
+  CreateConvertToSigned(Value *Val) {
+    return CreateConvertToInteger(Val, Signedness::Signed);
+  }
+  Value *
+  CreateConvertToUnsigned(Value *Val) {
+    return CreateConvertToInteger(Val, Signedness::Unsigned);
+  }
 
   CallInst *CreateDeviceCoherentLoad(Type *Ty, Value *Ptr);
   CallInst *CreateDeviceCoherentStore(Value *Val, Value *Ptr);
@@ -401,7 +410,15 @@ public:
 
   Value *CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant = true);
 
-  Value *CreateIsNaN(Value *Operand);
+  // the classes of IEEE 754 that DXIL's IsNaN, IsInf, IsFinite and IsNormal ask for (DXIL.rst, "Unary operations").
+  // each is read from the value's bits, of any width, which no floating-point setting of a compiler can fold as it
+  // can a comparison with an infinity
+  enum class FPClass { nan, infinite, finite, normal };
+  Value *CreateIsFPClass(FPClass Class, Value *Operand);
+  Value *
+  CreateIsNaN(Value *Operand) {
+    return CreateIsFPClass(FPClass::nan, Operand);
+  }
 
   enum FPBinOp {
     fmax,

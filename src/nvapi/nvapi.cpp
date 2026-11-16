@@ -4,6 +4,7 @@
 #include "log/log.hpp"
 #include "nvapi_lite_common.h"
 #include "util_string.hpp"
+#include "util_env.hpp"
 #include "config/config.hpp"
 #include <algorithm>
 #include "winemetal.h"
@@ -993,15 +994,18 @@ static void *QueryInterfaceImpl(NvU32 id) {
 
 }; // namespace mullion
 
-// NVAPI answers only programs Mullion shows an NVIDIA GPU to (dxgi.customVendorId = 10de): any other, Steam's GPU
-// queries among them, finds no NVAPI, as it would on another vendor's GPU
+// NVAPI answers only programs Mullion shows an NVIDIA GPU to: those DXGI turns NVEXT on for (NvidiaExtensionRequested
+// in dxgi.cpp: MULLION_ENABLE_NVEXT=1, or dxgi.customVendorId = 10de unless MULLION_ENABLE_NVEXT=0). any other,
+// Steam's GPU queries among them, finds no NVAPI, as it would on another vendor's GPU
 extern "C" BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
   if (reason != DLL_PROCESS_ATTACH)
     return TRUE;
+  auto env = mullion::env::getEnvVar("MULLION_ENABLE_NVEXT");
   auto vendor = mullion::Config::getInstance().getOption<std::string>("dxgi.customVendorId");
   std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) { return std::tolower(c); });
-  if (vendor != "10de" && vendor != "0x10de")
+  bool requested = env == "1" || env == "0" ? env == "1" : vendor == "10de" || vendor == "0x10de";
+  if (!requested)
     return FALSE;
   DisableThreadLibraryCalls(instance);
   return TRUE;

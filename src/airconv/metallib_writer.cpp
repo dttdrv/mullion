@@ -27,7 +27,8 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
   uint32_t fn_count = 0;
 
   raw_svector_ostream bitcode_stream(bitcode);
-  WriteBitcodeToFile(module, bitcode_stream, false, nullptr, true);
+  // without the module hash of ThinLTO, which nothing reads: the functions are named by the hash taken below
+  WriteBitcodeToFile(module, bitcode_stream, false, nullptr, false);
 
   auto hash =
     compute_sha256_hash((const uint8_t *)bitcode.data(), bitcode.size());

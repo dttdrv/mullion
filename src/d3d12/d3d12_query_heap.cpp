@@ -28,8 +28,11 @@ public:
   MTLD3D12QueryHeapImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12QueryHeap>(pDevice) {}
 
   ~MTLD3D12QueryHeapImpl() {
+    // stream output adds to the results by their address: they stay for the work in flight (~MTLD3D12Buffer)
     if (results && desc.Type == D3D12_QUERY_HEAP_TYPE_SO_STATISTICS)
-      this->device_->UnregisterResidency(results);
+      EndAfterWorkInFlight(this->device_, [device = this->device_, buffer = std::move(results)] {
+        device->UnregisterResidency(buffer);
+      });
   }
 
   HRESULT

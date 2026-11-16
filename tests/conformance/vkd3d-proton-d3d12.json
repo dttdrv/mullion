@@ -1269,9 +1269,7 @@
   "verdict": "passed"
  },
  "test_renderpass_rendering": {
-  "verdict": "failed",
-  "failed": 8,
-  "first": "test_renderpass_rendering:1504: Test failed: Got 0xdeadbeef, expected 0xff0000ff at (0, 0, 0)."
+  "verdict": "passed"
  },
  "test_renderpass_resolve_suspend_resume": {
   "verdict": "passed"

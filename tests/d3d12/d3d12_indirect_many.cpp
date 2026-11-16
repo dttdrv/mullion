@@ -5,8 +5,10 @@
 // command n draws pixel n with n + 1, or adds n + 1 to word n; all other cells stay zero. draw and indexed draw
 // read vertex n from their start locations (D3D11.3 8.4.1, 8.6.1), while a dispatch takes n from its root constant.
 // counts cover empty, partial and multiple threadgroups, with and without count buffers, and the final cell is
-// always a guard. Metal Feature Set Tables, "Maximum threads per threadgroup", gives Apple7/8/9 a ceiling of 1024;
-// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf. the actual pipeline limit may be lower.
+// always a guard. the maxima also lie on both sides of 24, the most commands Mullion draws one by one where their
+// arguments are, and the argument stride is wider than a draw's arguments, so a command read at the wrong stride
+// draws another vertex. Metal Feature Set Tables, "Maximum threads per threadgroup", gives Apple7/8/9 a ceiling of
+// 1024; https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf. the actual pipeline limit may be lower.
 #include "d3d12_test.hpp"
 #include <algorithm>
 
@@ -154,7 +156,7 @@ main(int argc, char **argv) {
   CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), pso.Get(), IID_PPV_ARGS(&list)));
   CHECK(list->Close());
 
-  std::vector<UINT> maxima{commands};
+  std::vector<UINT> maxima{commands, 23, 24, 25, 26};
   for (UINT boundary = 1; boundary <= threadgroup_limit; boundary *= 2)
     for (UINT maximum : {boundary - 1, boundary, boundary + 1})
       maxima.push_back(maximum);

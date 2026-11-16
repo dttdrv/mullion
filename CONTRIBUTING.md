@@ -2,8 +2,7 @@
 
 Mullion takes bug reports, results from games and code. Its code follows [CODE.md](docs/CODE.md), and
 [TESTING.md](docs/TESTING.md) describes how to build and run the tests. Both apply to every contributor, maintainers
-included. Parts marked `{suite: ...}` wait on the reworked test suite, and are filled in with each update from v0.5
-on.
+included.
 
 Mullion is a separate project from [DXMT](https://github.com/3Shain/dxmt), which it is built on. Problems with Mullion
 are reported here, not to DXMT. Mullion does not forward contributions to DXMT.
@@ -65,9 +64,11 @@ ever seen passing has not shown that it detects the defect.
 **3.2 Run the suite on what is submitted.** The new test and the existing tests of every path the change reaches run
 on a build with assertions enabled (Meson's `debugoptimized` or `debug`
 [build type](https://mesonbuild.com/Builtin-options.html)), under Metal's API validation, as every GPU family the
-change can reach: {suite: the command, and the GPU families and modes it runs by default}. New tests, and tests of
-timing, threading or the order of work, run more than once, since one pass does not show that a result is stable:
-{suite: how a run is repeated}.
+change can reach: `tests/run.py --build <build> --wine <wine> --validate <tests>` runs the named tests as the Mac's
+own GPU, as Apple9, Apple8 and Apple7, and as those three again with Direct3D 12 kept off Metal 4 (`--family` names
+others, or fewer). New tests, and tests of timing, threading or the order of work, run more than once, since one pass
+does not show that a result is stable: `--repeat <n>` runs each test that many times, and a test passes only when it
+gives the same passing answer every time.
 
 **3.3 Test the final revision.** The evidence covers the exact revision submitted, built from that source, with the
 tests loading the libraries that build produced. After a rebase, a split or any further edit, the checks it affects
@@ -76,14 +77,18 @@ version, the commands and their results.
 
 **3.4 Report everything that did not pass.** Failures, skipped tests and checks that could not run are listed
 separately, and none of them counts as a pass. Failures from every attempt are included, also those that passed when
-run again: {suite: how retries are run and reported}. A failure counts as already known only when it matches an entry
-of the list of known failures it was run against, and the report names that list and the failure's cause:
-{suite: the list of known failures, and how an entry is matched}. A change that fixes a known failure removes its
-entry. The runner's exit status alone does not show that every test passed.
+run again: with `--jobs`, a test that failed while others ran beside it runs once more alone, and the run lists each
+test that passed only then. A failure counts as already known only when it matches an entry of the list of known
+failures it was run against, and the report names that list and the failure's cause: `tests/known.txt` has a line for
+each, with the GPU family, the test, what the test said and the cause, and an entry matches by what the test said,
+with its count and the digest of its wrong results. The run fails on a failure or skip the list does not have, and on
+a listed test that passes. A change that fixes a known failure removes its entry. The runner's exit status alone does
+not show that every test passed.
 
 **3.5 Measure a speed change.** [CODE.md 5.1](docs/CODE.md#5-performance) says what to measure. The pull request
 gives the conditions, the number of runs and their spread, and shows that the output did not change:
-{suite: the performance runner and its report}.
+`tests/perf/perf_probe.py run` writes every value its scenes printed for a build into a file, and
+`tests/perf/perf_probe.py compare` sets two such files side by side.
 
 **3.6 Without the right Mac, open a draft.** A contributor without access to a Mac, or to the GPU family a change
 affects, opens the pull request as a draft and lists the checks that are missing. It can be reviewed, and leaves draft

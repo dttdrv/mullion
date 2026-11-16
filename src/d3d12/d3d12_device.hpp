@@ -34,10 +34,12 @@
 #include "mullion_info.hpp"
 #include "mullion_presenter.hpp"
 #include "mullion_ring_bump_allocator.hpp"
+#include "mullion_sampler.hpp"
 #include "mullion_texture.hpp"
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
 #include "sha1/sha1_util.hpp"
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -46,6 +48,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -110,6 +113,11 @@ class SpatialScaler;
 
 bool ExperimentalShaderModelsEnabled();
 HRESULT DeserializeLibraryRootSignature(const void *Library, SIZE_T Size, LPCWSTR Name, REFIID riid, void **Deserializer);
+// the root signature a DXIL library defines as the global or local root signature subobject of a name
+HRESULT CreateLibraryRootSignature(
+    class MTLD3D12Device *pDevice, const void *pLibrary, SIZE_T LibraryLength, LPCWSTR Name, REFIID riid,
+    void **ppRootSignature
+);
 
 // a subobject a DXIL library defines, of the kinds a state object takes from one: their numbers are D3D12's
 // subobject types
@@ -437,11 +445,18 @@ public:
   virtual void AddRefPrivate() = 0;
   virtual void ReleasePrivate() = 0;
 
+  // the SHA-1 of its serialized description, taken once: what names it in the keys of pipelines and of the shaders
+  // converted for it
+  Sha1Digest Digest;
   // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT, which a pipeline with stream output needs of it
   bool StreamOutput;
   uint32_t UploadQwords;
   uint32_t ParameterSlots;
   uint32_t const *SlotQwordOffsets;
+  // each parameter's type, beside its offset
+  D3D12_ROOT_PARAMETER_TYPE const *SlotTypes;
+  // how many 32-bit values each parameter of constants has; 0 for the others
+  uint32_t const *SlotConstants;
   // the root arguments holding the CBV/SRV/UAV and sampler heaps' GPU addresses, for directly indexed heaps
   // (D3D12_ROOT_SIGNATURE_FLAG_*_HEAP_DIRECTLY_INDEXED); ~0u without
   uint32_t ResourceHeapQword = ~0u;
@@ -568,7 +583,7 @@ public:
   // the largest whole factor its hull shader's patches can have (MaxTessFactor)
   uint32_t tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
-  // in `pso` for list topologies and in `pso_strip` for strips (none for points)
+  // in `pso` for list topologies and in a variant of its own for strips (GeometryPipeline; none for points)
   bool geometry_shader = false;
   // its `pso` is a mesh function alone that runs the vertex shader and passes a list of triangles on, culling them by
   // their cull distances, with no object stage (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's mesh_only)
@@ -581,14 +596,17 @@ public:
   bool uses_uav = false;
   // its pixel shader blends a target itself, reading the blend factor after the depth ranges (SM50_SHADER_BLEND)
   bool shader_blend = false;
-  WMT::Reference<WMT::RenderPipelineState> pso_strip;
   // the vertex shader's output registers, which size a geometry pipeline's object threadgroups (get_gs_vertex_count)
   uint32_t vertex_registers = 0;
-  // with stream output, the pipelines of its counting pass, as `pso` and `pso_strip` (airconv_public.h,
+  // with stream output, its counting pass has pipelines of its own, for lists and for strips (airconv_public.h,
   // SM50_STREAM_OUTPUT_TARGETS)
   bool stream_output = false;
-  WMT::Reference<WMT::RenderPipelineState> so_count, so_count_strip;
-  // whether `pso` and `pso_strip` stream out in one pass, without their counting pass, after their filled sizes are
+  // a geometry pipeline's Metal pipeline for strips (`strip`), and for stream output's counting pass of lists or of
+  // strips (`counting`); for lists that draw it is `pso`. a list's are made with the pipeline, as the first draw is
+  // taken to be of a list, and a strip's when a draw first needs them, since many pipelines draw none. null when it
+  // cannot be made
+  virtual WMT::RenderPipelineState GeometryPipeline(bool strip, bool counting) = 0;
+  // whether lists and strips stream out in one pass, without their counting pass, after their filled sizes are
   // copied (SM50StreamOutputSinglePass); and whether the pipeline's draws rasterize nothing, stream output to no
   // rasterized stream (D3D11.3 14.1), so that a pass without attachments they begin covers no pixels.
   // MULLION_D3D12_FAST_STREAM_OUTPUT=0 turns both off
@@ -607,7 +625,8 @@ public:
   bool mesh_shader = false;
   uint32_t object_threads[3] = {1, 1, 1}, mesh_threads[3] = {1, 1, 1};
   // whether it has an object stage (an amplification shader, or conservative rasterization's), so DispatchMesh's grid
-  // is an object grid, and the most threadgroups a Metal mesh grid of it may have (0: not known)
+  // is an object grid, and the most threadgroups a Metal mesh grid of it may have, which `pso` tells once it is made
+  // (0: not known)
   bool object_stage = false;
   uint64_t mesh_grid_limit = 0;
   // whether it has a pixel shader, which PSInvocations count
@@ -646,9 +665,11 @@ public:
   // whether its pixel shader has a variant of coarse pixels (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool coarse_shading = false;
 
+  // `Pipeline` for the pass's attachments: the render targets of `Mask`, whose views' formats are `Colors`, and the
+  // planes `DSVPlanar` of a depth stencil view of `DSVFormat`
   virtual WMT::RenderPipelineState RenderTargets(
-      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics = false,
-      bool Occluded = false, bool Coarse = false, WMTPixelFormat DSVFormat = WMTPixelFormatInvalid
+      WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
+      WMTPixelFormat DSVFormat, const WMTPixelFormat (&Colors)[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]
   ) = 0;
   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
 };
@@ -675,6 +696,22 @@ public:
 // them all waits for the first to complete
 using TimestampSamples = diag::TimestampSamples;
 
+// a sampler the device has made, and what of MTLD3D12Device::kSamplerEmulations pipelines emulate for it
+struct MTLD3D12CachedSampler {
+  Rc<Sampler> sampler;
+  unsigned emulations = 0;
+};
+
+// a sampler description's bytes, which have no padding: what the device's samplers are kept by
+using MTLD3D12SamplerKey = std::array<uint32_t, sizeof(D3D12_SAMPLER_DESC) / sizeof(uint32_t)>;
+
+struct MTLD3D12SamplerKeyHash {
+  size_t
+  operator()(const MTLD3D12SamplerKey &key) const {
+    return std::hash<std::string_view>()({reinterpret_cast<const char *>(key.data()), sizeof(key)});
+  }
+};
+
 class MTLD3D12Device : public ID3D12Device15 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
@@ -689,6 +726,11 @@ public:
   // it (MTLD3D12PipelineState::left_out)
   static constexpr unsigned kSamplerEmulations = SM50_SHADER_FLAG_NO_CUSTOM_BORDER | SM50_SHADER_FLAG_NO_MINMAX_FILTER;
   std::atomic<unsigned> sampler_emulations{0};
+  // the samplers made so far, by description (GetSampler): the same description again takes the one made for it
+  struct {
+    mullion::shared_mutex mutex;
+    std::unordered_map<MTLD3D12SamplerKey, MTLD3D12CachedSampler, MTLD3D12SamplerKeyHash> made;
+  } samplers;
   // the bytecode lean pipelines keep, once per shader however many pipelines share it
   struct {
     mullion::mutex mutex;
@@ -704,6 +746,13 @@ public:
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const SharedFunction>> made;
   } functions;
+  // the ray tracing shaders state objects are made of, by their conversion's key (d3d12_state_object.cpp), which
+  // names their Metal function: a pipeline links one function of a name, so there is one while any state object
+  // holds it
+  struct {
+    mullion::mutex mutex;
+    std::unordered_map<Sha1Digest, std::weak_ptr<void>> made;
+  } ray_functions;
   // the program's pipelines kept across launches as their GPU binaries (MTLBinaryArchive): a pipeline is looked up
   // there before Metal compiles it, and one that is not there is added once it is compiled
   template <typename Info, typename Make>
@@ -799,8 +848,15 @@ public:
     uint64_t commands = 0;
   } indirect_command_buffers;
 
-  // the most mesh threadgroups an object threadgroup may start, which a pipeline tells; 0 until one has
-  std::atomic<uint32_t> max_mesh_threadgroups{0};
+  // the most mesh threadgroups an object threadgroup may start (MeshGridLimit), asked of the device once, when a
+  // tessellation pipeline first needs it
+  uint32_t
+  MaxMeshThreadgroups() {
+    std::call_once(mesh_grid_asked_, [&] { max_mesh_threadgroups_ = MeshGridLimit(GetMTLDevice()); });
+    return max_mesh_threadgroups_;
+  }
+  std::once_flag mesh_grid_asked_;
+  uint32_t max_mesh_threadgroups_ = 0;
   // the room a render pass's compute tessellator has for its points and indices: as much as a pass has needed, which
   // grows as passes need more (MTLD3D12CommandAllocatorImpl::Reset). memory counts only where the GPU writes
   std::atomic<uint32_t> tessellation_point_room{1u << 18}, tessellation_index_room{3u << 18};
@@ -889,7 +945,8 @@ public:
   // the address alone, and what ends with it (the buffer's acceleration structures)
   virtual void UnregisterVA(BufferAllocation *allocation) = 0;
 
-  // pEnd, when given, is where the addresses that find the same buffer end: its end, or the next buffer's start
+  // the buffer an address lies in, or none. pEnd, when given, is where the addresses that find the same buffer end:
+  // its end, or the next buffer's start
   virtual BufferAllocation *
   LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset, uint64_t *pEnd = nullptr) = 0;
 
@@ -932,6 +989,7 @@ public:
 
   // sums occlusion queries' visibility counts into their heaps (sum_occlusion)
   WMT::Reference<WMT::ComputePipelineState> occlusion_sum;
+  WMT::Reference<WMT::ComputePipelineState> binary_occlusion_resolve;
   // writes pipeline statistics queries' results into their heaps (sum_pipeline_statistics)
   WMT::Reference<WMT::ComputePipelineState> pipeline_statistics_sum;
   // applies a predication region to its draws' and dispatches' arguments (predicate)
@@ -959,12 +1017,28 @@ public:
   // (d3d12.keepAccelerationStructureInputs)
   bool keep_structure_inputs = true;
 
+  // work an application can do without, each done in full when its option says so (mullion.conf). on by default, as
+  // what a title draws or reads changes without them: the depth bounds test where Metal has none
+  // (d3d12.emulateDepthBounds), without which those draws shade the fragments the test would have dropped
+  bool emulate_depth_bounds = true;
+  // timestamp queries (d3d12.timestampQueries): without them a query samples nothing and a resolve writes nothing
+  bool timestamp_queries = true;
+  // off by default, as an application reads nothing from them but timing:
+  // WriteBufferImmediate's markers (d3d12.immediateMarkers): without them only DEFAULT values are written
+  bool immediate_markers = false;
+  // the tiers of what shaders emulate (d3d12.reportEmulatedFeatures): conservative rasterization, variable rate
+  // shading, sampler feedback and programmed sample positions, reported as absent without it
+  bool report_emulated_features = false;
+
   // the scratch area each list's indirect stream output commands share, from D3D11's start (kStagingBlockSize): a
   // command that lacked room was not run, and grows it for lists recorded later
   std::atomic<uint64_t> so_scratch_budget = kStagingBlockSize;
 };
 
-HRESULT CreateD3D12Device(IMTLDXGIAdapter *adapter, REFIID riid, void **ppDevice);
+// D3D12CreateDevice on a Mullion adapter: the adapter's device where it reaches `MinimumFeatureLevel`, E_INVALIDARG
+// where it does not, and S_FALSE without ppDevice where it does
+HRESULT
+CreateD3D12Device(IMTLDXGIAdapter *adapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void **ppDevice);
 
 // `pParent` is the state object an addition grows from, or null
 HRESULT CreateStateObject(
@@ -1094,10 +1168,15 @@ HRESULT OpenFence(
     void **ppFence
 );
 
-void PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_STATIC_SAMPLER_DESC const &Desc);
-
 // true when the sampler needs a custom border color (SM50_SAMPLER_BORDER)
 bool PopulateWMTSamplerInfo(WMT::Device Device, WMTSamplerInfo &InfoOut, D3D12_SAMPLER_DESC const &Desc);
+
+// the device's sampler of a description, made when the device has none: Metal's sampler states, and what a shader
+// reads beside them. E_OUTOFMEMORY when Metal makes none
+HRESULT GetSampler(MTLD3D12Device *pDevice, const D3D12_SAMPLER_DESC &Desc, MTLD3D12CachedSampler &SamplerOut);
+
+// a root signature's static sampler as a sampler in a heap would describe it, with its border color's values
+D3D12_SAMPLER_DESC SamplerDescription(const D3D12_STATIC_SAMPLER_DESC &Desc);
 
 // a filter's reduction, when it is a minimum or maximum filter (SM50_SAMPLER_REDUCTION)
 inline SM50_SAMPLER_REDUCTION

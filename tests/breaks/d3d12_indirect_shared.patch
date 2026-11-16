@@ -1,0 +1,13 @@
+# the commands of a signature that changes no root argument read root arguments a table apart, where only one is
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4149,8 +4149,8 @@ public:
+       cmd->rootsig_base = cmd->rootsig_qwords;
+       cmd->rootsig_qwords = ReserveRootArguments(rootsig_graphics_.ptr(), MaxCommandCount);
+       cmd->rootsig_qwords += allocator_->gpu_heap_buffer_address_;
+-      cmd->rootsig_qwords_stride = rootsig_graphics_->UploadQwords;
+     }
++    cmd->rootsig_qwords_stride = rootsig_graphics_->UploadQwords;
+     cmd->static_samplers = EncodeStaticSamplers(rootsig_graphics_.ptr());
+     cmd->static_samplers += allocator_->gpu_heap_buffer_address_;
+     auto [VBOffset, VBStride] = PopulateVertexBufferTable();

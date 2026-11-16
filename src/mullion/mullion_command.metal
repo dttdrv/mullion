@@ -990,6 +990,15 @@ struct VisibilitySlot {
   results[sum.query] = sum.binary ? ulong(total != 0) : total;
 }
 
+// results resolved as binary occlusion queries': whether any sample passed, of a result that may be the samples' count
+[[kernel]] void resolve_binary_occlusion(
+    device const ulong *results [[buffer(0)]],
+    device ulong *resolved [[buffer(1)]],
+    uint i [[thread_position_in_grid]]
+) {
+  resolved[i] = results[i] != 0;
+}
+
 // a pipeline statistics query's result (D3D12_QUERY_DATA_PIPELINE_STATISTICS or ..._STATISTICS1, `size` counts): the
 // counts known when its work was recorded, plus its GPU draw counts and indirect dispatches
 struct PipelineStatisticsSum {

@@ -495,8 +495,11 @@ CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
   params->ret_error = (obj_handle_t)[err retain];
   if (!err && info->binary_archive_for_serialization) {
-    [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor
-                                                                                                      error:&err];
+    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+    @synchronized((id)info->binary_archive_for_serialization) {
+      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
   }
   [descriptor release];
   return STATUS_SUCCESS;
@@ -530,6 +533,15 @@ sample_positions(id descriptor, const struct WMTRenderPassInfo *info) {
         0.5f + info->sample_positions[i].x / 16.0f, 0.5f + info->sample_positions[i].y / 16.0f
     );
   [descriptor setSamplePositions:positions count:count];
+}
+
+// whether a render pass samples both ends of both its stages, vertex then fragment: four indices from its start. a
+// pass sampled only at its end has a start of MTLCounterDontSample, which no count is taken from: as a number it is
+// all ones, and index 2 would be four from it
+static bool
+SamplesVertexStage(const struct WMTSampleBufferAttachmentInfo *sample) {
+  return sample->start_of_encoder_sample_index != MTLCounterDontSample &&
+         sample->end_of_encoder_sample_index - sample->start_of_encoder_sample_index + 1 == WMTRenderTimestampSamples;
 }
 
 static NTSTATUS
@@ -589,8 +601,7 @@ renderCommandEncoder(void *obj, const struct WMTSampleBufferAttachmentInfo *samp
 
   if (sample) {
     MTLRenderPassSampleBufferAttachmentDescriptor *samples = descriptor.sampleBufferAttachments[0];
-    bool vertex = sample->start_of_encoder_sample_index != MTLCounterDontSample &&
-        sample->end_of_encoder_sample_index - sample->start_of_encoder_sample_index + 1 == WMTRenderTimestampSamples;
+    bool vertex = SamplesVertexStage(sample);
     samples.sampleBuffer = (id<MTLCounterSampleBuffer>)sample->sample_buffer;
     samples.startOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index : MTLCounterDontSample;
     samples.endOfVertexSampleIndex = vertex ? sample->start_of_encoder_sample_index + 1 : MTLCounterDontSample;
@@ -729,8 +740,11 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
                                                                                                 error:&err];
   params->ret_error = (obj_handle_t)[err retain];
   if (!err && info->binary_archive_for_serialization) {
-    [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor
-                                                                                                     error:&err];
+    // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+    // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+    @synchronized((id)info->binary_archive_for_serialization) {
+      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
   }
   [descriptor release];
   return STATUS_SUCCESS;
@@ -885,9 +899,11 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
     if (!err && info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization
-          addMeshRenderPipelineFunctionsWithDescriptor:descriptor
-                                                 error:&err];
+      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+      @synchronized((id)info->binary_archive_for_serialization) {
+        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      }
     }
   }
 #endif
@@ -2028,11 +2044,28 @@ static const int SIGNALS[] = {
 #endif
 };
 
+// whether the descriptor takes what the info asks of the motion vectors
+static bool
+temporal_scaler_motion(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTemporalScalerInfo *info) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *)) {
+    desc.jitteredMotionVectorsEnabled = info->jittered_motion_vectors;
+    return true;
+  }
+#endif
+  return !info->jittered_motion_vectors;
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newTemporalScaler)(void *obj) {
   struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
   MTLFXTemporalScalerDescriptor *desc = [[MTLFXTemporalScalerDescriptor alloc] init];
   const struct WMTFXTemporalScalerInfo *info = params->info.ptr;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (!temporal_scaler_motion(desc, info)) {
+    [desc release];
+    return STATUS_SUCCESS;
+  }
   desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
   desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
   desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
@@ -2194,7 +2227,8 @@ CREATES(_MTLDevice_newTemporalScaler4)(void *obj) {
     desc.inputContentPropertiesEnabled = info->input_content_properties_enabled;
     desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
     desc.autoExposureEnabled = info->auto_exposure;
-    params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
+    if (temporal_scaler_motion(desc, info))
+      params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
     [desc release];
     [compiler release];
   }
@@ -2712,6 +2746,16 @@ thunk_SM50GetArgumentsInfo(void *args) {
 }
 
 static NTSTATUS
+thunk_SM50CompileRayDispatcher(void *args) {
+  struct sm50_compile_ray_dispatcher_params *params = args;
+  params->ret = SM50CompileRayDispatcher(
+      params->dispatcher, params->shaders, params->shader_count, params->table, params->metal_version, params->bitcode,
+      params->error
+  );
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 thunk_SM50GetRayShader(void *args) {
   struct sm50_get_ray_shader_params *params = args;
   params->ret = SM50GetRayShader(params->shader, params->index, params->name, params->name_size, params->info);
@@ -3146,6 +3190,16 @@ thunk32_SM50CompileGeometryPipelineGeometry(void *args) {
 
   sm50_compilation_argument32_free(&first_arg);
 
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_SM50CompileRayDispatcher(void *args) {
+  struct sm50_compile_ray_dispatcher_params32 *params = args;
+  params->ret = SM50CompileRayDispatcher(
+      params->dispatcher, UInt32ToPtr(params->shaders), params->shader_count, params->table, params->metal_version,
+      UInt32ToPtr(params->bitcode), UInt32ToPtr(params->error)
+  );
   return STATUS_SUCCESS;
 }
 
@@ -4604,9 +4658,11 @@ CREATES(_MTLDevice_newTileRenderPipelineState)(void *obj) {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
     if (!err && info->binary_archive_for_serialization) {
-      [(id<MTLBinaryArchive>)info->binary_archive_for_serialization
-          addTileRenderPipelineFunctionsWithDescriptor:descriptor
-                                                 error:&err];
+      // one add at a time: adds of the same function from two threads leave the archive with an entry Metal faults on,
+      // here or when it writes the archive (macOS 27.3, -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+      @synchronized((id)info->binary_archive_for_serialization) {
+        [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      }
     }
   }
 #endif
@@ -5538,8 +5594,14 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Buffer : NSObject {
   id<MTL4CommandAllocator> allocator;
   id<MTLSharedEvent> event;
   id<MTLFence> fence;
+  // what the buffer's encoders use is resident through this set and kept by `allocations` until the buffer is done:
+  // Metal 4 keeps nothing a command buffer names, and the device's own set (useResidencySet in MTL4CommandBuffer_new)
+  // has the application's resources alone, not the pipelines, indirect command buffers, visibility and scratch
+  // buffers, drawables' textures and uploaded bytes that passes use beside them. `recent` is the allocations last
+  // asked about, by address: a pass binds the same few for each of its draws
   id<MTLResidencySet> residency;
   NSMutableSet *allocations;
+  id recent[64];
   NSMutableSet *objects;
   id<MTLBuffer> bytes;
   uint64_t bytes_used;
@@ -5598,19 +5660,52 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Encoder : NSObject {
 }
 @end
 
+// what a command buffer the GPU is done with leaves for the queue's next ones: its residency set, emptied, and its
+// argument tables, with nothing bound: a new set took two microseconds and each new table one, where they were
+// measured, of every command buffer of a frame of many submissions
+API_AVAILABLE(macos(26.0)) @interface MullionMetal4Parts : NSObject {
+@public
+  id<MTLResidencySet> residency;
+  id<MTL4ArgumentTable> tables[Metal4BindingStageCount];
+  // what the tables were made for
+  struct WMTMetal4BindingCounts bindings;
+}
+@end
+
+@implementation MullionMetal4Parts
+- (void)dealloc {
+  for (unsigned i = 0; i < Metal4BindingStageCount; i++)
+    [tables[i] release];
+  [residency release];
+  [super dealloc];
+}
+@end
+
+// a queue's pool of what no work holds, one for each `key`
+static NSMutableArray *
+API_AVAILABLE(macos(26.0)) metal4_pool(id<MTL4CommandQueue> queue, const void *key) {
+  @synchronized(queue) {
+    NSMutableArray *pool = objc_getAssociatedObject(queue, key);
+    if (!pool) {
+      pool = [NSMutableArray array];
+      objc_setAssociatedObject(queue, key, pool, OBJC_ASSOCIATION_RETAIN);
+    }
+    return pool;
+  }
+}
+
 // the queue's allocators that no work holds: a new one costs its command buffer tens of microseconds to make, and its
 // commit as long again before the GPU starts it, where a reset one costs neither
 static NSMutableArray *
 API_AVAILABLE(macos(26.0)) metal4_allocators(id<MTL4CommandQueue> queue) {
   static char key;
-  @synchronized(queue) {
-    NSMutableArray *pool = objc_getAssociatedObject(queue, &key);
-    if (!pool) {
-      pool = [NSMutableArray array];
-      objc_setAssociatedObject(queue, &key, pool, OBJC_ASSOCIATION_RETAIN);
-    }
-    return pool;
-  }
+  return metal4_pool(queue, &key);
+}
+
+static NSMutableArray *
+API_AVAILABLE(macos(26.0)) metal4_parts(id<MTL4CommandQueue> queue) {
+  static char key;
+  return metal4_pool(queue, &key);
 }
 
 @implementation MullionMetal4Buffer
@@ -5645,14 +5740,38 @@ API_AVAILABLE(macos(26.0)) metal4_allocators(id<MTL4CommandQueue> queue) {
 }
 - (void)dealloc {
   dispatch_release(feedback_ready);
+  // the GPU is done with the commands once the buffer's feedback came, and never had those of one not committed
+  bool done = finished || feedback.status < WMTCommandBufferStatusCommitted;
+  MullionMetal4Parts *parts = done && residency ? [[MullionMetal4Parts alloc] init] : nil;
+  if (parts) {
+    // the next buffer's passes start as with new tables, as a render pass leaves them (MTL4CommandEncoder_endEncoding)
+    for (unsigned stage = 0; stage < Metal4BindingStageCount; stage++) {
+      for (unsigned i = 0; i < buffers_set[stage]; i++)
+        [tables[stage] setAddress:0 atIndex:i];
+      for (unsigned i = 0; i < textures_set[stage]; i++)
+        [tables[stage] setTexture:(MTLResourceID){0} atIndex:i];
+      parts->tables[stage] = tables[stage];
+      tables[stage] = nil;
+    }
+    // a set gives its allocations up at its next commit
+    [residency removeAllAllocations];
+    [residency commit];
+    parts->residency = residency;
+    residency = nil;
+    parts->bindings = bindings;
+    NSMutableArray *pool = metal4_parts(queue);
+    @synchronized(pool) {
+      [pool addObject:parts];
+    }
+    [parts release];
+  }
   for (unsigned i = 0; i < Metal4BindingStageCount; i++)
     [tables[i] release];
   [objects release];
   [allocations release];
   [residency release];
   [buffer release];
-  // the GPU is done with the commands once the buffer's feedback came, and never had those of one not committed
-  if (allocator && (finished || feedback.status < WMTCommandBufferStatusCommitted)) {
+  if (allocator && done) {
     [allocator reset];
     NSMutableArray *pool = metal4_allocators(queue);
     @synchronized(pool) {
@@ -5672,7 +5791,14 @@ API_AVAILABLE(macos(26.0)) metal4_allocators(id<MTL4CommandQueue> queue) {
 
 static void
 API_AVAILABLE(macos(26.0)) metal4_resident(MullionMetal4Buffer *state, id<MTLAllocation> resource) {
-  if (resource && ![state->allocations containsObject:resource]) {
+  if (!resource)
+    return;
+  // an object's address is a multiple of 16
+  id *recent = &state->recent[((uintptr_t)resource >> 4) % (sizeof(state->recent) / sizeof(state->recent[0]))];
+  if (*recent == resource)
+    return;
+  *recent = resource;
+  if (![state->allocations containsObject:resource]) {
     [state->allocations addObject:resource];
     [state->residency addAllocation:resource];
   }
@@ -5798,8 +5924,27 @@ _MTL4CommandBuffer_new(void *obj) {
     state->allocations = [[NSMutableSet alloc] init];
     state->objects = [[NSMutableSet alloc] init];
     state->feedback_ready = dispatch_group_create();
-    state->residency =
-        [state->device newResidencySetWithDescriptor:[[[MTLResidencySetDescriptor alloc] init] autorelease] error:nil];
+    NSMutableArray *parts_pool = metal4_parts(state->queue);
+    MullionMetal4Parts *parts;
+    @synchronized(parts_pool) {
+      parts = [[parts_pool lastObject] retain];
+      if (parts)
+        [parts_pool removeLastObject];
+    }
+    // tables made for other counts go with their set
+    if (parts && !memcmp(&parts->bindings, &state->bindings, sizeof(state->bindings))) {
+      state->residency = parts->residency;
+      parts->residency = nil;
+      for (unsigned i = 0; i < Metal4BindingStageCount; i++) {
+        state->tables[i] = parts->tables[i];
+        parts->tables[i] = nil;
+      }
+    }
+    [parts release];
+    if (!state->residency)
+      state->residency =
+          [state->device newResidencySetWithDescriptor:[[[MTLResidencySetDescriptor alloc] init] autorelease]
+                                                 error:nil];
     if (!state->buffer || !state->allocator || !state->residency || !state->objects || !state->allocations) {
       [state fail:nil];
       p->ret = (obj_handle_t)state;
@@ -5823,7 +5968,7 @@ API_AVAILABLE(macos(26.0)) metal4_begin_samples(
   if (state->samples.sample_buffer && state->samples.start_of_encoder_sample_index != MTLCounterDontSample) {
     uint64_t first = state->samples.start_of_encoder_sample_index;
     if (state->render) {
-      bool vertex = state->samples.end_of_encoder_sample_index - first + 1 == WMTRenderTimestampSamples;
+      bool vertex = SamplesVertexStage(&state->samples);
       if (vertex)
         [(id<MTL4RenderCommandEncoder>)state->encoder
             writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
@@ -6010,8 +6155,7 @@ _MTL4CommandEncoder_endEncoding(void *obj) {
       return STATUS_SUCCESS;
     if (state->samples.sample_buffer) {
       if (state->render) {
-        if (state->samples.end_of_encoder_sample_index - state->samples.start_of_encoder_sample_index + 1 ==
-            WMTRenderTimestampSamples)
+        if (SamplesVertexStage(&state->samples))
           [(id<MTL4RenderCommandEncoder>)state->encoder
               writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
                                  afterStage:MTLRenderStageVertex
@@ -7269,7 +7413,7 @@ const void *__wine_unix_call_funcs[] = {
     &thunk_SM50FreeError,
     &thunk_SM50CompileGeometryPipelineVertex,
     &thunk_SM50CompileGeometryPipelineGeometry,
-    NULL,
+    &thunk_SM50CompileRayDispatcher,
     &thunk_SM50CompileTessellationPipelineHull,
     &thunk_SM50CompileTessellationPipelineDomain,
     &_MTLCommandEncoder_setLabel,
@@ -7486,7 +7630,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &thunk_SM50FreeError,
     &thunk32_SM50CompileGeometryPipelineVertex,
     &thunk32_SM50CompileGeometryPipelineGeometry,
-    NULL,
+    &thunk32_SM50CompileRayDispatcher,
     &thunk32_SM50CompileTessellationPipelineHull,
     &thunk32_SM50CompileTessellationPipelineDomain,
     &_MTLCommandEncoder_setLabel,

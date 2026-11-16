@@ -1,5 +1,6 @@
 #include "d3d11_query.hpp"
 #include "mullion_query.hpp"
+#include "config/config.hpp"
 
 namespace mullion {
 
@@ -103,6 +104,10 @@ class MTLD3D11TimestampQueryImpl : public MTLD3DQueryBase<MTLD3D11TimestampQuery
 
   virtual HRESULT
   GetData(void *data) override {
+    if (!TimestampQueriesSampled()) {
+      *((uint64_t *)data) = 0;
+      return S_OK;
+    }
     if (state_ != QueryState::Signaled) {
       latest_status_ = query_->getValue(&latest_value_);
       if (latest_status_ == S_FALSE)
@@ -117,6 +122,8 @@ class MTLD3D11TimestampQueryImpl : public MTLD3DQueryBase<MTLD3D11TimestampQuery
 
   virtual TimestampQuery *
   End() override {
+    if (!TimestampQueriesSampled())
+      return nullptr;
     if (state_ == QueryState::Issued) {
       // discard previous query
       query_ = new TimestampQuery();
@@ -125,6 +132,12 @@ class MTLD3D11TimestampQueryImpl : public MTLD3DQueryBase<MTLD3D11TimestampQuery
     return query_.ptr();
   };
 };
+
+bool
+TimestampQueriesSampled() {
+  static const bool sampled = Config::getInstance().getOption<bool>("d3d11.timestampQueries", true);
+  return sampled;
+}
 
 HRESULT
 CreateTimestampQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID3D11Query1 **ppQuery) {

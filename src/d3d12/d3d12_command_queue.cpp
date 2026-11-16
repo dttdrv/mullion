@@ -491,26 +491,17 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
            scissors + y->scissors <= WMT::kPassRectangles && viewports + y->viewports <= WMT::kPassRectangles;
   }
 
-  // how many commands a pass has: what encoding it costs
+  // how many commands a pass has, with the one each of its lists starts with: what encoding it costs
   static uint64_t
   Commands(const EncoderData *pass) {
-    auto count = [](const void *head) {
-      uint64_t n = 0;
-      for (auto cmd = static_cast<const wmtcmd_base *>(head); cmd; cmd = static_cast<const wmtcmd_base *>(cmd->next.ptr))
-        n++;
-      return n;
-    };
     switch (pass->type) {
     case EncoderType::Clear:
-    case EncoderType::Render: {
-      auto data = static_cast<const RenderEncoderData *>(pass);
-      return count(&data->cmd_head) + count(&data->before_head);
-    }
+    case EncoderType::Render:
+      return pass->commands + 2;
     case EncoderType::Blit:
-      return count(&static_cast<const BlitEncoderData *>(pass)->cmd_head);
     case EncoderType::Compute:
     case EncoderType::ComputeParts:
-      return count(&static_cast<const ComputeEncoderData *>(pass)->cmd_head);
+      return pass->commands + 1;
     default:
       return 1;
     }
@@ -875,10 +866,6 @@ private:
 
     uint64_t internal_seq = 1;
     for (;;) {
-      // what feedback has come, without waiting for more: the next command buffer's completion is not held behind it.
-      // what is still to come is read at the next one, or by GetDeviceRemovedReason, which waits for it
-      if (Metal4 || EventWait())
-        SettleFeedback(false);
       inflight_cmdbuf_seq_.wait(internal_seq, std::memory_order_acquire);
       if (inflight_cmdbuf_stop_.load() == internal_seq)
         break;
@@ -1064,6 +1051,12 @@ private:
       }
 
       inflight = {};
+      // what feedback has come of the command buffers before, without waiting for more: this one's completion is not
+      // held behind it. what is still to come is read at the next one, or by GetDeviceRemovedReason, which waits for
+      // it. before the fences: a command buffer keeps what its passes used until it is settled, and an application
+      // that sees its fence reached takes what it released before as given back (d3d12_copy_memory)
+      if (Metal4 || EventWait())
+        SettleFeedback(false);
       retired_.Reach(internal_seq);
 
       inflight_cmdbuf_count_.fetch_sub(1, std::memory_order_release);

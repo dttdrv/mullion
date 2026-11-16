@@ -2,8 +2,8 @@
 
 This document describes how Mullion's tests are built, written, run and reported. The rules for when a change needs a
 test are in [CODE.md 6.1](CODE.md#6-tests), and what a pull request reports is in [CONTRIBUTING.md
-3](../CONTRIBUTING.md#3-showing-that-it-works). The suite is being reworked, so the commands, options and formats it
-will provide are marked `{suite: ...}` until they exist. They are filled in with each update from v0.5 on.
+3](../CONTRIBUTING.md#3-showing-that-it-works). The suite is being reworked, and this document follows it:
+what it says of a command is what the command does today.
 
 ## 1. What each check shows
 
@@ -21,15 +21,16 @@ Each kind of check establishes something different, and none stands in for anoth
 - A performance run measures time, and means something only when the output it measured was correct
   ([section 10](#10-performance)).
 
-What a contributor without a Mac can build and run: {suite: checks available without a Mac, supported hosts,
-prerequisites and build commands}. The pull request then lists the checks still missing, as [CONTRIBUTING.md
-3.6](../CONTRIBUTING.md#3-showing-that-it-works) describes, and they are run on a Mac: {suite: how a draft asks for the
-checks it is missing}.
+What a contributor without a Mac can build and run: nothing, since every part builds with Xcode's Metal toolchain, on
+macOS. The pull request then lists the checks still missing, as [CONTRIBUTING.md
+3.6](../CONTRIBUTING.md#3-showing-that-it-works) describes, and they are run on a Mac: the draft's description lists
+them under what was not run.
 
 ## 2. Building the tests
 
 The tests build with the rest of Mullion, as described in the [README](../README.md#building), with the test options
-added: {suite: prerequisites and build commands}.
+added: `-Denable_tests=true`, and `-Db_ndebug=false` for the assertions of 2.1. The Direct3D tests also need Microsoft's
+shader compilers ([section 4](#4-shader-compilers-and-generated-shaders)).
 
 **2.1 Build with assertions enabled.** Correctness runs use a build in which assertions are compiled in, in every
 component the change reaches. The effective build options are what count, not the name of the build directory. Meson
@@ -46,8 +47,9 @@ test while they run. A test that loads a library from a build in progress shows 
 
 Tests run in a Wine installation and a Wine prefix used for nothing else. Both start without other graphics libraries or
 DLL overrides, and every addition is recorded: the Mullion build, the shader compilers and the fixtures. Mullion is
-installed into the Wine installation as well as the prefix, so a fresh prefix alone is not a clean environment: {suite:
-clean Wine and prefix setup}.
+installed into the Wine installation as well as the prefix, so a fresh prefix alone is not a clean environment:
+`tests/run.py` installs the build's libraries into the Wine it is given before it runs anything (`--no-install` leaves
+that Wine as it is), and makes the prefix when it is missing (`--prefix`, by default `tests-prefix` in the build).
 
 An arm64 Wine runs Windows programs on macOS only with the 4KB-page entitlement, which a Wine built and signed ad hoc
 cannot have: macOS ends such a Wine's processes. The tests then run in a signed Wine of another product, such as
@@ -62,18 +64,18 @@ x86_64 build's tests (`build-win64.txt`). A test program of an architecture the 
 an x86_64 Wine, x86_64 programs in an arm64 Wine without FEX) is not run, and the tests of the host's own still run when
 macOS ends the Wine: the run lists each test it did not run, with why, apart from its results.
 
-A run records what it actually loaded, so a result can be traced to the source that produced it: {suite: loaded artifact
-manifest}. The record covers the source revision and any local changes, the build options, the Wine version, and for
-each test executable, library and shader compiler loaded, its resolved path, its content hash and the build that
-produced it, with the effective DLL overrides and runtime options.
+A result is traced to the source that produced it by what the pull request states, since the runner does not record what
+it loaded yet: the source revision and any local changes, the build options, the Wine version, and for each test
+executable, library and shader compiler loaded, its resolved path, its content hash and the build that produced it, with
+the effective DLL overrides and runtime options.
 
 ## 4. Shader compilers and generated shaders
 
 Tests compile HLSL with Microsoft's compilers: the DXBC compiler, available through
 [Winetricks](https://github.com/Winetricks/winetricks), and the DXIL compiler from
 [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler). A compiler counts as present when it
-matches the architecture of the test process, loads, and compiles every profile the tests use: {suite: compiler packages
-by architecture, setup and verification}. A missing compiler is missing coverage, never a pass.
+matches the architecture of the test process, loads, and compiles every profile the tests use: `tests/compilers.py`,
+described below, fetches them for arm64, x64 and x86. A missing compiler is missing coverage, never a pass.
 
 `tests/compilers.py <build>/tests-compilers` downloads both, once, from Microsoft's releases (DXC's release and the
 Windows SDK's `Redist\D3D`, at the versions and SHA-256 hashes it pins), for arm64, x64 and x86. `run.py` puts those of
@@ -83,9 +85,10 @@ lacks. A test whose compiler the prefix lacks for its architecture is listed as 
 Wine's own `d3dcompiler_47` does not count, as it compiles fewer of the tests' shaders.
 
 The LLVM IR Mullion generates passes the LLVM verifier before it is optimized or compiled for Metal ([CODE.md
-4.1](CODE.md#4-shaders)): {suite: verification, unoptimized conversion included}. A failure that follows unverified
-output is read only after the output passes. A change to cached shader output is tested without the cache, with output
-reused by a second process, and with output stored by an older version rejected ([CODE.md 4.2](CODE.md#4-shaders)).
+4.1](CODE.md#4-shaders)): the converter runs the verifier itself on every module it makes. A failure that follows
+unverified output is read only after the output passes. A change to cached shader output is tested without the cache,
+with output reused by a second process, and with output stored by an older version rejected ([CODE.md
+4.2](CODE.md#4-shaders)).
 
 ## 5. Writing a test
 
@@ -110,23 +113,31 @@ pass as a correct one. A checksum alone does not do, since reordered or cancelli
 names the presentation path it uses and checks the pixels that path displayed.
 
 **5.5 Register every variant.** A test is registered for each API version, shader front end, ABI and capability it
-applies to, with its time limit and whether it can share the GPU with other tests: {suite: test helper and registration
-example}. Every registered variant appears when the tests are listed.
+applies to, with its time limit and whether it can share the GPU with other tests: a test directory's `meson.build`
+names each test once, with its extra sources and its suites, and registers it for each shader front end with its time
+limit, and a test of the `timing` suite never runs beside another. `d3d12_test.hpp` has what a test is written with:
+`front_end` gives the compiler of its variant, `step` names what it is doing, `expect` makes each check and `verdict`
+prints its last line. Every registered variant appears when the tests are listed.
 
 ## 6. Running tests and reading results
 
-A run lists the tests and configurations it needs, runs them, and accounts for each one: {suite: discovery, selection
-and run commands}. An unknown test name, a missing binary or an empty selection stops the run with an error.
+A run lists the tests and configurations it needs, runs them, and accounts for each one: `tests/run.py --build <build>
+--wine <wine>` runs every test the build declares, or those whose names begin with the names given after it (`--exact`
+takes whole names, `--suite` a suite). An unknown test name, a missing binary or an empty selection stops the run with
+an error.
 
 A test passes when it observed the expected result, completed, and raised no unexpected Metal validation or device
 error. A test of error handling declares the error it expects, and checks the outputs, the cleanup and the completion
 state the API defines for it, with the test process exiting normally. Results are reported as passed, failed, skipped,
-unsupported, crashed, timed out or not run because setup failed: {suite: result format and exit status}. A required test
-that did not run leaves the run incomplete.
+unsupported, crashed, timed out or not run because setup failed: the runner's own verdicts are passed, failed and
+skipped, and what a test said last tells a crash or a test that outlived its time from wrong results. Each test's line
+has the family it ran as, its verdict, its time and what it said, and the last lines count the verdicts and how many of
+them the list of known failures has. The run's exit status is zero only when nothing differs from that list. A required
+test that did not run leaves the run incomplete.
 
 The suite's own failure handling is tested too: missing inputs, unknown tests, contradictory results, interrupted
-processes, stale builds, a changed failure report and a failure followed by a passing retry: {suite: runner checks and
-CI coverage}.
+processes, stale builds, a changed failure report and a failure followed by a passing retry: `tests/host` has the tests
+of the runner's own parts, its lock, its memory admission and its installer among them.
 
 **6.1 Run under validation.** Correctness runs enable Metal's [API
 validation](https://developer.apple.com/documentation/xcode/validating-your-apps-metal-api-usage).
@@ -149,21 +160,25 @@ check does not hide it.
 **7.1 A control fails for the defect.** A failing control runs the same test with the same expectations on the code
 without the change, or with the repaired behaviour deliberately broken in isolation. It reaches the changed operation
 and gives the wrong result the defect causes. A crash or a timeout counts only when it is traced to that defect, and a
-build, compiler, fixture or loader failure does not count: {suite: failing control and maintained fault}.
+build, compiler, fixture or loader failure does not count: `tests/breaks/<test>[.<n>].patch` is a maintained fault, a
+change to the source that its test must notice. `tests/faults.py` copies the source, applies one, builds it and runs the
+test, and the fault is caught when the test gives an answer it does not give without it.
 
 **7.2 Repeat what can vary.** New tests, and tests of timing, lifetime, threading or order, run several times, in fresh
-processes and, where it applies, repeatedly within one process: {suite: repeats and retry reporting}. Every attempt is
-reported. A failure followed by a passing retry is still a failure, and a run repeated alone can help find interference
-but does not replace the first result. Passing a fixed number of repeats does not show that a race is absent.
+processes and, where it applies, repeatedly within one process: `--repeat <n>` runs each test that many times, and with
+`--jobs` a test that failed beside others runs once more alone and is listed. Every attempt is reported. A failure
+followed by a passing retry is still a failure, and a run repeated alone can help find interference but does not replace
+the first result. Passing a fixed number of repeats does not show that a race is absent.
 
 ## 8. GPU families
 
 Each result names the physical GPU and the capabilities exposed during the run, with the macOS and Wine versions, the
 ABI and the shader front end. `MULLION_GPU_FAMILY` ([CODE.md 1.5](CODE.md#1-design)) masks selected capability queries,
-so the fallback paths an older Mac takes can run on a newer one: {suite: GPU family and host matrix}.
-`d3d11_gpu_family` holds the masked answers to Apple's Metal feature set tables. Under a masked family the bridge
-also ends the process, naming the feature, where Mullion uses something that family lacks, so a check that is missing
-fails the run instead of passing on the newer GPU.
+so the fallback paths an older Mac takes can run on a newer one: `tests/run.py` runs each test as the Mac's own GPU, as
+Apple9, Apple8 and Apple7, and as those three with Direct3D 12 kept off Metal 4, unless `--family` names others.
+`d3d11_gpu_family` holds the masked answers to Apple's Metal feature set tables. Under a masked family the bridge also
+ends the process, naming the feature, where Mullion uses something that family lacks, so a check that is missing fails
+the run instead of passing on the newer GPU.
 
 Other queries still describe the physical GPU, so a masked run is not a run on the older GPU. It does not reproduce an
 older GPU's scheduling, compiler, memory, timing or driver behaviour, and cannot measure its performance. A change to
@@ -172,33 +187,40 @@ one GPU's own behaviour is tested on that GPU.
 ## 9. Conformance, coverage and faults
 
 **9.1 Known failures stay failures.** A known failure is listed with its test and case, its configuration, what it
-reported, its cause and the issue that tracks it: {suite: known-failure format and comparison}. A run compares its
-results with that list. A changed report from a listed test, a new failure, an unexpected pass and a missing result each
-show as a difference. A change that fixes a listed failure removes it. A crash, a timeout or a test that stopped early
-is never a known failure, since it hides the cases after it. The list compared against is an identified, reviewed
-baseline, and a change to it, or to an expected result, needs evidence independent of the run being compared. "No new
-failures" and "every test passed" are reported as different results.
+reported, its cause and the issue that tracks it: `tests/known.txt` has a line for each, `<family> <test> <what it said>
+-- <cause>`, where a failure says how many results were wrong and gives a digest of them. `--known` names another list,
+and `--record` writes a run's own in that form. A run compares its results with that list. A changed report from a
+listed test, a new failure, an unexpected pass and a missing result each show as a difference. A change that fixes a
+listed failure removes it. A crash, a timeout or a test that stopped early is never a known failure, since it hides the
+cases after it. The list compared against is an identified, reviewed baseline, and a change to it, or to an expected
+result, needs evidence independent of the run being compared. "No new failures" and "every test passed" are reported as
+different results.
 
 **9.2 Conformance runs account for every case.** The [Wine](https://gitlab.winehq.org/wine/wine) and
 [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) Direct3D tests run against Mullion from pinned
-revisions, with any patches kept and explained: {suite: conformance inputs, commands and report}. Each upstream check
-keeps its own result, a test that ran only partly is reported as partial, and an absent or empty suite fails the run.
+revisions, with any patches kept and explained: `tests/conformance.py` builds Wine's tests from a Wine source tree and
+its build (`--wine-source`, `--wine-build`) and vkd3d-proton's from a checkout (`--vkd3d-proton`), runs each test
+function in a process of its own, and prints every verdict that differs from the one `tests/conformance` records.
+`--update` records the run, and `--conformance-family` runs the suites as an older GPU family. Each upstream check keeps
+its own result, a test that ran only partly is reported as partial, and an absent or empty suite fails the run.
 
 **9.3 Coverage and fault scores are measurements, not proof.** Coverage states what was counted and what it was counted
 against. A deliberate fault is caught only when a test gives the wrong answer the fault causes. Faults that survive, do
-not build or give no answer are reported as such: {suite: coverage and mutation commands and report}.
+not build or give no answer are reported as such: `tests/faults.py <test or patch>` prints for each fault that it was
+caught, was not caught or does not build.
 
 ## 10. Performance
 
 A performance run starts from the work the change removes ([CODE.md 5.1](CODE.md#5-performance)) and compares the same
-source with and without the change, after both have shown correct output: {suite: performance commands and report}.
-Inputs, build options, the machine's load, shader compilers, cache state and warm-up match between the two, and runs
-alternate between them. Timed runs have validation off, record any other diagnostics that were on, and last long enough
-to measure the effect claimed. Every repetition is kept, with CPU submission time, GPU time and total time reported
-separately, along with the number of runs, their spread and their slowest cases. Shader compilation and steady execution
-are measured separately. A run excluded from the result stays in the report with its reason.
+source with and without the change, after both have shown correct output: `tests/perf/perf_probe.py run` measures a
+build's scenes into a file, `compare` sets two such files side by side, and `tests/run.py --benchmark` runs the
+benchmarks the tests declare. Inputs, build options, the machine's load, shader compilers, cache state and warm-up match
+between the two, and runs alternate between them. Timed runs have validation off, record any other diagnostics that were
+on, and last long enough to measure the effect claimed. Every repetition is kept, with CPU submission time, GPU time and
+total time reported separately, along with the number of runs, their spread and their slowest cases. Shader compilation
+and steady execution are measured separately. A run excluded from the result stays in the report with its reason.
 
 ## 11. What a pull request reports
 
-A pull request reports the evidence [CONTRIBUTING.md 3](../CONTRIBUTING.md#3-showing-that-it-works) asks for, in the
-suite's report format: {suite: pull request evidence}.
+A pull request reports the evidence [CONTRIBUTING.md 3](../CONTRIBUTING.md#3-showing-that-it-works) asks for, as the
+runner printed it: the command, the line of every test that did not pass, and the counts the run ended with.

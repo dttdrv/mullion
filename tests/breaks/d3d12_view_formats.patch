@@ -1,0 +1,12 @@
+# a pass's pipeline keeps the description's render target format whatever its view's
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -2067,7 +2067,7 @@
+     uint32_t other_encoding = 0;
+     for (unsigned i = 0; i < std::size(Colors); i++) {
+       auto view = WMTPixelFormat(ORIGINAL_FORMAT(Colors[i])), own = WMTPixelFormat(ORIGINAL_FORMAT(color_formats_[i]));
+-      if ((Mask & (1u << i)) && view != own && Forget_sRGB(view) == Forget_sRGB(own))
++      if ((Mask & (1u << i)) && view != own && false)
+         other_encoding |= 1u << i;
+     }
+     Statistics &= pixel_shader || statistics_geometry_;

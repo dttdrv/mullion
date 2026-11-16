@@ -72,6 +72,9 @@ struct EncoderData {
   // the path of the application's events the pass began in, each name ended by diag::kEventEnd (diag::events)
   const char *event_path = nullptr;
   PassOverlap overlap = PassOverlap::Ordered;
+  // the commands recorded in a pass of draws, copies or dispatches, counted as they are recorded: what encoding it
+  // costs (MTLD3D12CommandQueue's Commands)
+  uint32_t commands = 0;
 };
 
 struct RenderEncoderColorAttachmentData {

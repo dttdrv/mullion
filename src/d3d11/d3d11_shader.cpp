@@ -15,8 +15,8 @@ getGlobalShaderFlag(MTLD3D11Device *pDevice) {
   static std::once_flag get_shader_flag_once;
   std::call_once(get_shader_flag_once, [=]() {
     shader_flag = GPUShaderFlags(pDevice->GetMullionDevice().device());
-    if (Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", false))
-      shader_flag |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
+    if (!Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", true))
+      shader_flag = SM50_SHADER_FLAG(shader_flag & ~SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO);
     if (Config::getInstance().getOption<bool>("d3d11.defuseFma", false))
       shader_flag |= SM50_SHADER_FLAG_DEFUSE_FMA;
   });
@@ -153,8 +153,11 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
+    auto handle = shader->handle();
+    if (!handle)
+      return nullptr;
     if (SM50Compile(
-            shader->handle(),
+            handle,
             (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data_gs_passthrough,
             func_name, &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
@@ -216,7 +219,10 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
-    if (SM50Compile(shader->handle(),
+    auto handle = shader->handle();
+    if (!handle)
+      return nullptr;
+    if (SM50Compile(handle,
                                (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&data,
                                func_name, &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
@@ -240,7 +246,10 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
-    if (SM50Compile(shader->handle(), (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)common, func_name,
+    auto handle = shader->handle();
+    if (!handle)
+      return nullptr;
+    if (SM50Compile(handle, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)common, func_name,
                                &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
       SM50FreeError(sm50_err);
@@ -289,13 +298,16 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     pso_tess.max_potential_tess_factor = variant.max_potential_tess_factor;
     pso_tess.mesh_vertex_size = variant.mesh_vertex_size;
     pso_tess.max_mesh_threadgroups = variant.max_mesh_threadgroups;
-    if (variant.geometry_shader_handle)
-      pso_tess.geometry = variant.geometry_shader_handle->handle();
+    if (variant.geometry_shader_handle && !(pso_tess.geometry = variant.geometry_shader_handle->handle()))
+      return nullptr;
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
+    auto vertex = variant.vertex_shader_handle->handle(), hull = shader->handle();
+    if (!vertex || !hull)
+      return nullptr;
     if (SM50CompileTessellationPipelineHull(
-            variant.vertex_shader_handle->handle(), shader->handle(), 
+            vertex, hull,
             (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ia_layout, func_name,
             &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
@@ -337,13 +349,16 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     pso_tess.max_potential_tess_factor = variant.max_potential_tess_factor;
     pso_tess.mesh_vertex_size = variant.mesh_vertex_size;
     pso_tess.max_mesh_threadgroups = variant.max_mesh_threadgroups;
-    if (variant.geometry_shader_handle)
-      pso_tess.geometry = variant.geometry_shader_handle->handle();
+    if (variant.geometry_shader_handle && !(pso_tess.geometry = variant.geometry_shader_handle->handle()))
+      return nullptr;
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
+    auto hull = variant.hull_shader_handle->handle(), domain = shader->handle();
+    if (!hull || !domain)
+      return nullptr;
     if (SM50CompileTessellationPipelineDomain(
-            variant.hull_shader_handle->handle(), shader->handle(),
+            hull, domain,
             (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&gs_passthrough, func_name,
             &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
@@ -422,8 +437,12 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
+    auto vertex = shader->handle();
+    auto geometry_handle = variant.geometry_shader_handle ? variant.geometry_shader_handle->handle() : sm50_shader_t{};
+    if (!vertex || (variant.geometry_shader_handle && !geometry_handle))
+      return nullptr;
     if (SM50CompileGeometryPipelineVertex(
-            shader->handle(), variant.geometry_shader_handle ? variant.geometry_shader_handle->handle() : sm50_shader_t{},
+            vertex, geometry_handle,
             (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&geometry, func_name,
             &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));
@@ -463,8 +482,12 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;
+    auto vertex = variant.vertex_shader_handle->handle();
+    auto geometry_handle = shader == variant.vertex_shader_handle ? sm50_shader_t{} : shader->handle();
+    if (!vertex || (shader != variant.vertex_shader_handle && !geometry_handle))
+      return nullptr;
     if (SM50CompileGeometryPipelineGeometry(
-            variant.vertex_shader_handle->handle(), shader == variant.vertex_shader_handle ? sm50_shader_t{} : shader->handle(),
+            vertex, geometry_handle,
             (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&geometry, func_name,
             &compile_result, &sm50_err)) {
       ERR("Failed to compile shader: ", SM50GetErrorMessageString(sm50_err));

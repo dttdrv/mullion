@@ -428,7 +428,7 @@ convert_dxbc_vertex_hull_shader(
   bool native = pso_tess && pso_tess->native;
   // the compute tessellator's: the factors as floats, as the hull shader made them
   bool compute = native && pso_tess->compute;
-  // the most a grid has (tessellation_grids). left out while the pipeline is to tell what the device lets one have
+  // the most a grid has (tessellation_grids). left out when the device tells no limit, for Metal to apply its own
   uint32_t grid_limit = pso_tess ? pso_tess->max_mesh_threadgroups : 0;
   if (!native && (!pso_tess || grid_limit)) {
     auto grids = tessellation_grids(max_workload_count * patch_per_group, workload_primitives, geometry_instances, grid_limit);
