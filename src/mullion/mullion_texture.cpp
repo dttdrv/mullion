@@ -112,28 +112,32 @@ Texture::prepareAllocationViews(TextureAllocation *allocation) {
   allocation->version_ = version_;
 }
 
+// a view's fields, which fill 64 bits between them
+static uint64_t
+ViewWord(const TextureViewDescriptor &descriptor) {
+  return uint64_t(descriptor.format) | uint64_t(descriptor.type) << 24 | uint64_t(descriptor.firstMiplevel) << 32 |
+         uint64_t(descriptor.miplevelCount) << 36 | uint64_t(descriptor.firstArraySlice) << 40 |
+         uint64_t(descriptor.arraySize) << 52;
+}
+
+// every descriptor an application writes for the texture asks for its view, and nearly always for one the texture
+// has: that is found under the shared lock, so threads writing descriptors of one texture do not wait for each other,
+// and only a new view takes the lock alone
 TextureViewKey
 Texture::createView(TextureViewDescriptor const &descriptor) {
-  std::unique_lock<mullion::shared_mutex> lock(mutex_);
-  unsigned i = 0;
-  for (; i < version_; i++) {
-    if (viewDescriptors_[i].format != descriptor.format)
-      continue;
-    if (viewDescriptors_[i].type != descriptor.type)
-      continue;
-    if (viewDescriptors_[i].firstMiplevel != descriptor.firstMiplevel)
-      continue;
-    if (viewDescriptors_[i].miplevelCount != descriptor.miplevelCount)
-      continue;
-    if (viewDescriptors_[i].firstArraySlice != descriptor.firstArraySlice)
-      continue;
-    if (viewDescriptors_[i].arraySize != descriptor.arraySize)
-      continue;
-    return TextureViewKey(descriptor, i, info_.mipmap_level_count);
+  auto word = ViewWord(descriptor);
+  {
+    std::shared_lock<mullion::shared_mutex> lock(mutex_);
+    if (auto found = viewIndices_.find(word); found != viewIndices_.end())
+      return TextureViewKey(descriptor, found->second, info_.mipmap_level_count);
   }
-  viewDescriptors_.push_back(descriptor);
-  version_ = version_ + 1;
-  return TextureViewKey(descriptor, i, info_.mipmap_level_count);
+  std::unique_lock<mullion::shared_mutex> lock(mutex_);
+  auto [view, added] = viewIndices_.try_emplace(word, version_);
+  if (added) {
+    viewDescriptors_.push_back(descriptor);
+    version_ = version_ + 1;
+  }
+  return TextureViewKey(descriptor, view->second, info_.mipmap_level_count);
 }
 
 Texture::Texture(const WMTTextureInfo &descriptor, WMT::Device device) :
@@ -148,6 +152,7 @@ Texture::Texture(const WMTTextureInfo &descriptor, WMT::Device device) :
       .firstArraySlice = 0,
       .arraySize = arrayLength(),
   });
+  viewIndices_.emplace(ViewWord(viewDescriptors_[0]), 0);
   version_ = 1;
   fullView = TextureViewKey(viewDescriptors_[0], 0, info_.mipmap_level_count);
 }
@@ -172,6 +177,7 @@ Texture::Texture(
       .firstArraySlice = 0,
       .arraySize = 1,
   });
+  viewIndices_.emplace(ViewWord(viewDescriptors_[0]), 0);
   version_ = 1;
   fullView = TextureViewKey(viewDescriptors_[0], 0, info_.mipmap_level_count);
 }

@@ -404,37 +404,54 @@ D3D12CreateRootSignatureDeserializer(const void *pBytecode, SIZE_T DataSize, REF
 
 #pragma endregion
 
-inline std::pair<std::vector<uint32_t>, uint32_t>
+// each parameter's first qword in the root arguments, its type and the 32-bit values it has when it is constants,
+// and the qwords they take together
+struct RootSignatureSlots {
+  std::vector<uint32_t> qword_offsets;
+  std::vector<D3D12_ROOT_PARAMETER_TYPE> types;
+  std::vector<uint32_t> constants;
+  uint32_t qwords = 0;
+};
+
+inline RootSignatureSlots
 CalculateRootSignatureQwordOffsets(const D3D12_ROOT_SIGNATURE_DESC1 &Desc) {
-  uint32_t current_offset = 0;
-  std::vector<uint32_t> out;
+  RootSignatureSlots slots;
 
   for (unsigned i = 0; i < Desc.NumParameters; i++) {
     auto &Parameter = Desc.pParameters[i];
 
     switch (Parameter.ParameterType) {
     case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
-      out.push_back(current_offset++);
+      slots.qword_offsets.push_back(slots.qwords++);
       break;
     case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
-      out.push_back(current_offset);
-      current_offset += (Parameter.Constants.Num32BitValues / 2) + (Parameter.Constants.Num32BitValues & 1);
+      slots.qword_offsets.push_back(slots.qwords);
+      slots.qwords += (Parameter.Constants.Num32BitValues / 2) + (Parameter.Constants.Num32BitValues & 1);
       break;
     case D3D12_ROOT_PARAMETER_TYPE_CBV:
     case D3D12_ROOT_PARAMETER_TYPE_SRV:
     case D3D12_ROOT_PARAMETER_TYPE_UAV:
-      out.push_back(current_offset++);
+      slots.qword_offsets.push_back(slots.qwords++);
       break;
+    default:
+      continue;
     }
+    slots.types.push_back(Parameter.ParameterType);
+    slots.constants.push_back(
+        Parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS ? Parameter.Constants.Num32BitValues : 0
+    );
   }
 
-  return {out, current_offset};
+  return slots;
 }
 
 class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignature> {
 
   std::vector<uint8_t> blob_;
+  LPCWSTR subobject_;
   std::vector<uint32_t> qword_offsets_;
+  std::vector<D3D12_ROOT_PARAMETER_TYPE> slot_types_;
+  std::vector<uint32_t> slot_constants_;
 
   std::vector<Rc<Sampler>> static_samplers_; // which is not really "static"
   /**
@@ -447,8 +464,12 @@ class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignatu
   WMT::Reference<WMT::Buffer> static_samplers_buffer_;
 
 public:
-  MTLD3D12RootSignatureImpl(MTLD3D12Device *pDevice, const void *pBytecode, SIZE_T BytecodeLength) :
-      MTLD3D12DeviceChild<MTLD3D12RootSignature>(pDevice) {
+  // of a container's root signature, or of the root signature subobject of that name in a library
+  MTLD3D12RootSignatureImpl(
+      MTLD3D12Device *pDevice, const void *pBytecode, SIZE_T BytecodeLength, LPCWSTR Subobject = nullptr
+  ) :
+      MTLD3D12DeviceChild<MTLD3D12RootSignature>(pDevice),
+      subobject_(Subobject) {
     blob_.resize(BytecodeLength);
     memcpy(blob_.data(), pBytecode, BytecodeLength);
   }
@@ -466,7 +487,10 @@ public:
     const void *pRawRootSig;
     UINT RawRootSigSize;
     bool from_library = false;
-    HRESULT hr = RootSignaturePart(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize, nullptr, &from_library);
+    HRESULT hr =
+        RootSignaturePart(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize, subobject_, &from_library);
+    // the name is the caller's, for the length of the call
+    subobject_ = nullptr;
     if (FAILED(hr))
       return hr;
 
@@ -585,13 +609,12 @@ public:
     NumStaticSamplers = desc.NumStaticSamplers;
     if (NumStaticSamplers) {
       for (unsigned i = 0; i < desc.NumStaticSamplers; i++) {
-        WMTSamplerInfo info;
-        PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, desc.pStaticSamplers[i]);
-
-        auto sampler = Sampler::createSampler(
-            device_->GetMTLDevice(), info, desc.pStaticSamplers[i].MipLODBias, nullptr,
-            SamplerReduction(desc.pStaticSamplers[i].Filter)
-        );
+        // a static sampler is the device's sampler of its description, as one in a heap is
+        MTLD3D12CachedSampler cached;
+        hr = GetSampler(device_, SamplerDescription(desc.pStaticSamplers[i]), cached);
+        if (FAILED(hr))
+          return hr;
+        auto &sampler = cached.sampler;
         static_samplers_encoded_.push_back(sampler->sampler_state_handle);
         static_samplers_encoded_.push_back(sampler->sampler_state_cube_handle);
         static_samplers_encoded_.push_back(sampler->metadata);
@@ -611,8 +634,11 @@ public:
       }
     }
 
-    auto [offsets, total_qwords] = CalculateRootSignatureQwordOffsets(desc);
-    qword_offsets_ = offsets;
+    auto slots = CalculateRootSignatureQwordOffsets(desc);
+    qword_offsets_ = std::move(slots.qword_offsets);
+    slot_types_ = std::move(slots.types);
+    slot_constants_ = std::move(slots.constants);
+    auto total_qwords = slots.qwords;
     /* after the parameters, in the order the shader compiler declares them (dxbc_binding_rootsig.cpp) */
     if (desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED)
       ResourceHeapQword = total_qwords++;
@@ -623,6 +649,8 @@ public:
     StreamOutput = desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
     ParameterSlots = qword_offsets_.size();
     SlotQwordOffsets = qword_offsets_.data();
+    SlotTypes = slot_types_.data();
+    SlotConstants = slot_constants_.data();
 
     return S_OK;
   }
@@ -663,6 +691,24 @@ CreateRootSignature(
   InitReturnPtr(ppRootSignature);
 
   auto root_sig = Com(new MTLD3D12RootSignatureImpl(pDevice, pBytecode, BytecodeLength));
+  HRESULT hr = root_sig->Initialize();
+  if (FAILED(hr))
+    return hr;
+  return root_sig->QueryInterface(riid, ppRootSignature);
+}
+
+HRESULT
+CreateLibraryRootSignature(
+    MTLD3D12Device *pDevice, const void *pLibrary, SIZE_T LibraryLength, LPCWSTR Name, REFIID riid,
+    void **ppRootSignature
+) {
+  InitReturnPtr(ppRootSignature);
+  if (!Name)
+    return FAIL(E_INVALIDARG);
+  if (!pLibrary || !LibraryLength)
+    return FAIL(E_INVALIDARG);
+
+  auto root_sig = Com(new MTLD3D12RootSignatureImpl(pDevice, pLibrary, LibraryLength, Name));
   HRESULT hr = root_sig->Initialize();
   if (FAILED(hr))
     return hr;
