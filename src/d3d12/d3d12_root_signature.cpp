@@ -454,8 +454,11 @@ public:
   }
 
   ~MTLD3D12RootSignatureImpl() {
+    // shaders read the static samplers by the buffer's address: it stays for the work in flight (~MTLD3D12Buffer)
     if (static_samplers_buffer_)
-      device_->UnregisterResidency(static_samplers_buffer_);
+      EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(static_samplers_buffer_)] {
+        device->UnregisterResidency(buffer);
+      });
   }
 
   HRESULT

@@ -71,8 +71,9 @@ the fence is signalled. Destroying the queue can cancel held work instead: its a
 completion callbacks, and that work never retires. Another thread waits for completion, resolves results the CPU reads,
 releases the allocators, and signals the fences that follow.
 
-Keeping an allocator alive does not make it safe to reset while the GPU still reads it. Waiting first is the
-application's duty, as [`ID3D12CommandAllocator::Reset`][allocator-reset] specifies.
+Waiting for its lists before an allocator is reset is the application's duty, as
+[`ID3D12CommandAllocator::Reset`][allocator-reset] specifies. An allocator reset earlier logs an error and leaves what
+its lists recorded to the queues, which keep it until the work they were given has completed.
 
 [allocator-reset]: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12commandallocator-reset
 
