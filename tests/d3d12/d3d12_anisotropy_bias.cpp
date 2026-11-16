@@ -8,7 +8,8 @@
 // axis-aligned powers of two, so every expected LOD is a whole mip. MaxAnisotropy 1 and a bias of 0 are controls;
 // footprints longer and shorter than MaxAnisotropy on both axes, a 2D and a 2D array texture, descriptor and static
 // samplers, and biases of both signs vary what the conversion of each instruction depends on. the static samplers are
-// listed out of register order after one of another stage, so each is told apart by its register.
+// listed out of register order after one of another stage, so each is told apart by its register. the textures are
+// twice as wide as they are high, so a footprint's ratio in texels is not its ratio in texture coordinates.
 #include "d3d12_test.hpp"
 #include <algorithm>
 #include <bit>
@@ -84,9 +85,9 @@ main(int argc, char **argv) {
     device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&res));
     return res;
   };
-  auto color = texture(DXGI_FORMAT_R32_FLOAT, size, size, slices, mips, D3D12_RESOURCE_FLAG_NONE,
+  auto color = texture(DXGI_FORMAT_R32_FLOAT, size, size / 2, slices, mips, D3D12_RESOURCE_FLAG_NONE,
                        D3D12_RESOURCE_STATE_COPY_DEST);
-  auto depth = texture(DXGI_FORMAT_R32_TYPELESS, size, size, 1, mips, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+  auto depth = texture(DXGI_FORMAT_R32_TYPELESS, size, size / 2, 1, mips, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
                        D3D12_RESOURCE_STATE_DEPTH_WRITE);
   auto target = texture(DXGI_FORMAT_R32_FLOAT, 2 * quads, 2, targets, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
                         D3D12_RESOURCE_STATE_RENDER_TARGET);

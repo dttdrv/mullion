@@ -2484,8 +2484,45 @@ Converter::SampleImplicit(
   if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)
     Isotropic =
         ir.CreateOr(Isotropic, ir.CreateICmpEQ(ir.CreateTrunc(SamplerMetadata, ir.getInt16Ty()), ir.getInt16(0)));
+  // Metal adds a bias to the LOD of the footprint's minor axis and holds the result to the anisotropy's limit:
+  // max(log2(minor) + bias, log2(major / limit)), a sampler's own bias and a sample's alike (an M5 Pro, macOS 27.3),
+  // where Direct3D adds the bias to the limited LOD: max(log2(minor), log2(major / limit)) + bias (7.18.11). they are
+  // the same while the footprint's ratio is within the limit, scaled by the bias where that is below zero, and there
+  // the sample reads Metal's own LOD as well: only a longer footprint takes the gradients. the ratio r of the
+  // footprint's axes, in texels, has r + 1 / r = (|dx|^2 + |dy|^2) / |dx x dy|, which is taken against the limit's
+  // without a root: r is at least one, and so is the limit that is asked
+  auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
+  {
+    auto Float = air.getFloatTy();
+    auto Size = [&](Texture::Query Axis) {
+      return ir.CreateUIToFP(air.CreateTextureQuery(Tex.Texture, Tex.Handle, Axis, ir.getInt32(0)), Float);
+    };
+    auto Width = Size(Texture::width), Height = Size(Texture::height);
+    auto XU = ir.CreateFMul(ir.CreateExtractElement(DDX, uint64_t(0)), Width),
+         XV = ir.CreateFMul(ir.CreateExtractElement(DDX, uint64_t(1)), Height),
+         YU = ir.CreateFMul(ir.CreateExtractElement(DDY, uint64_t(0)), Width),
+         YV = ir.CreateFMul(ir.CreateExtractElement(DDY, uint64_t(1)), Height);
+    auto Squares = ir.CreateFAdd(
+        ir.CreateFAdd(ir.CreateFMul(XU, XU), ir.CreateFMul(XV, XV)),
+        ir.CreateFAdd(ir.CreateFMul(YU, YU), ir.CreateFMul(YV, YV))
+    );
+    auto Area = air.CreateFPUnOp(AIRBuilder::fabs, ir.CreateFSub(ir.CreateFMul(XU, YV), ir.CreateFMul(XV, YU)));
+    auto Limit = ir.CreateFMul(
+        ir.CreateUIToFP(Anisotropy, Float),
+        air.CreateFPUnOp(
+            AIRBuilder::exp2, air.CreateFPBinOp(AIRBuilder::fmin, Bias, llvm::ConstantFP::get(Float, 0.0))
+        )
+    );
+    auto Within = ir.CreateAnd(
+        ir.CreateFCmpOGE(Limit, llvm::ConstantFP::get(Float, 1.0)),
+        ir.CreateFCmpOLE(
+            Squares,
+            ir.CreateFMul(ir.CreateFAdd(Limit, ir.CreateFDiv(llvm::ConstantFP::get(Float, 1.0), Limit)), Area)
+        )
+    );
+    Isotropic = ir.CreateOr(Isotropic, Within);
+  }
   auto Gradients = [&] {
-    auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
     return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
                                 BiasGradient(DDY, Bias), MinLOD, Offset, Reference);
   };
