@@ -22,8 +22,57 @@
 #include "mullion_dynamic.hpp"
 #include "mullion_format.hpp"
 #include "d3d11_resource.hpp"
+#include "util_env.hpp"
+#include <random>
 
 namespace mullion {
+
+#pragma region Shared Buffer
+
+// A buffer two devices share, in one process or two, is one file mapping: its identity in the first granule and
+// its bytes in the granules after, which each device wraps in a Metal buffer of its own (a Metal buffer does not
+// cross processes; the pages under it do). The mapping is named after the share's id, so a legacy handle, which is
+// that id and no kernel handle, resolves in any process of the session for as long as a buffer of the share lives
+// anywhere: "If no resource objects exist on any devices that refer to this resource, the handle is no longer
+// valid" (Microsoft Learn, IDXGIResource::GetSharedHandle). Shared textures work the same way
+// (d3d11_texture_device.cpp) and their handles carry the same marker bit.
+//
+// Only a VR runtime needs this (SteamVR's compositor and its applications pass each other a frame's bookkeeping in
+// shared constant buffers), so it is on only with MULLION_METALVR (env::metalVR). Without it a buffer created
+// with D3D11_RESOURCE_MISC_SHARED has no shared handle, as before.
+struct SharedBufferData {
+  char tag[16];
+  uint64_t share_id;
+  D3D11_BUFFER_DESC desc;
+};
+
+static constexpr char shared_buffer_tag[16] = "MULLION_buffer";
+static constexpr uint64_t shared_buffer_handle_marker = uint64_t(1) << 30;
+// a view of a mapping starts on a multiple of the allocation granularity (MapViewOfFile, dwFileOffsetLow), which
+// is also a multiple of every page size a Metal buffer over the view has to be aligned to
+static constexpr uint64_t shared_buffer_granule = 65536;
+
+static void
+SharedBufferName(uint64_t id, char (&out)[64]) {
+  snprintf(out, 64, "MULLION_shared_buffer_%016llx", (unsigned long long)id);
+}
+
+// the share's bytes in this process, kept mapped and its mapping kept open for as long as the Metal buffer over
+// them lives
+static std::shared_ptr<void>
+MapSharedBufferContents(HANDLE mapping, uint64_t length) {
+  void *contents = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, DWORD(shared_buffer_granule), SIZE_T(length));
+  if (!contents) {
+    CloseHandle(mapping);
+    return {};
+  }
+  return std::shared_ptr<void>(contents, [mapping](void *view) {
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+  });
+}
+
+#pragma endregion
 
 struct BufferViewInfo {
   BufferViewKey viewKey;
@@ -40,6 +89,8 @@ private:
 #endif
   bool structured;
   bool allow_raw_view;
+  // the share this buffer belongs to, which its legacy handle names; 0 for a buffer of its own
+  uint64_t share_id_ = 0;
 
   Rc<DynamicBuffer> dynamic_;
 
@@ -145,9 +196,11 @@ public:
     }
   }
 
-  // a buffer over another API's Metal buffer (WrapBuffer), whose contents it keeps: UpdateSubresource copies on the GPU
-  D3D11Buffer(const tag_buffer::DESC1 *pDesc, Rc<Buffer> &&buffer, MTLD3D11Device *device) :
-      TResourceBase<tag_buffer>(*pDesc, device) {
+  // a buffer over another API's Metal buffer (WrapBuffer) or over a share's pages (`share`, its id), whose
+  // contents it keeps: UpdateSubresource copies on the GPU
+  D3D11Buffer(const tag_buffer::DESC1 *pDesc, Rc<Buffer> &&buffer, MTLD3D11Device *device, uint64_t share = 0) :
+      TResourceBase<tag_buffer>(*pDesc, device),
+      share_id_(share) {
     buffer_ = std::move(buffer);
     structured = pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     allow_raw_view = pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
@@ -160,6 +213,16 @@ public:
       return E_POINTER;
 
     return TResourceBase<tag_buffer>::QueryInterface(riid, ppvObject);
+  }
+
+  HRESULT
+  GetSharedHandle(HANDLE *pSharedHandle) override {
+    if (!share_id_)
+      return TResourceBase<tag_buffer>::GetSharedHandle(pSharedHandle);
+    if (!pSharedHandle)
+      return E_INVALIDARG;
+    *pSharedHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(share_id_ | shared_buffer_handle_marker));
+    return S_OK;
   }
 
   Rc<StagingResource>
@@ -390,13 +453,118 @@ public:
   }
 };
 
+// the Metal buffer of this device over a share's bytes
+static Rc<Buffer>
+WrapSharedBuffer(MTLD3D11Device *pDevice, HANDLE mapping, const D3D11_BUFFER_DESC &desc) {
+  const uint64_t length = align(uint64_t(desc.ByteWidth), shared_buffer_granule);
+  auto contents = MapSharedBufferContents(mapping, length);
+  if (!contents)
+    return nullptr;
+  auto buffer = Rc<Buffer>(new Buffer(length, pDevice->GetMTLDevice()));
+  auto allocation = buffer->allocate({}, 0, std::move(contents));
+  if (!allocation->buffer())
+    return nullptr;
+  buffer->rename(std::move(allocation));
+  return buffer;
+}
+
+static HRESULT
+CreateSharedBuffer(
+    MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData,
+    ID3D11Buffer **ppBuffer
+) {
+  const uint64_t length = align(uint64_t(pDesc->ByteWidth), shared_buffer_granule);
+  const uint64_t size = shared_buffer_granule + length;
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  HANDLE mapping = nullptr;
+  uint64_t id = 0;
+  // an id is 30 random bits: one already in use anywhere in the session is drawn again
+  for (int attempt = 0; attempt < 8 && !mapping; attempt++) {
+    id = gen() & (shared_buffer_handle_marker - 1);
+    char name[64];
+    SharedBufferName(id, name);
+    mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, DWORD(size >> 32), DWORD(size), name);
+    if (mapping && GetLastError() == ERROR_ALREADY_EXISTS) {
+      CloseHandle(mapping);
+      mapping = nullptr;
+    }
+  }
+  if (!mapping) {
+    ERR("D3D11Buffer: Failed to create a shared buffer's mapping: ", GetLastError());
+    return E_OUTOFMEMORY;
+  }
+  auto *data = static_cast<SharedBufferData *>(MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedBufferData)));
+  if (!data) {
+    ERR("D3D11Buffer: Failed to write a shared buffer's identity: ", GetLastError());
+    CloseHandle(mapping);
+    return E_OUTOFMEMORY;
+  }
+  memcpy(data->tag, shared_buffer_tag, sizeof(shared_buffer_tag));
+  data->share_id = id;
+  data->desc = *pDesc;
+  UnmapViewOfFile(data);
+
+  // the mapping is the buffer's from here on: its contents' view closes it
+  auto buffer = WrapSharedBuffer(pDevice, mapping, *pDesc);
+  if (!buffer) {
+    ERR("D3D11Buffer: Failed to make a shared buffer of ", pDesc->ByteWidth, " bytes");
+    return E_OUTOFMEMORY;
+  }
+  // a new mapping's pages are zero, as a buffer without initial data is
+  if (pInitialData && pInitialData->pSysMem)
+    buffer->current()->updateContents(0, pInitialData->pSysMem, pDesc->ByteWidth);
+  *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new D3D11Buffer(pDesc, std::move(buffer), pDevice, id)));
+  return S_OK;
+}
+
 HRESULT
 CreateBuffer(
     MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData,
     ID3D11Buffer **ppBuffer
 ) {
+  // a default buffer alone: a share's pages are written where they are, and a dynamic buffer's are replaced
+  if ((pDesc->MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)) &&
+      pDesc->Usage == D3D11_USAGE_DEFAULT && env::metalVR())
+    return CreateSharedBuffer(pDevice, pDesc, pInitialData, ppBuffer);
   *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new D3D11Buffer(pDesc, pInitialData, pDevice)));
   return S_OK;
+}
+
+HRESULT
+ImportSharedBuffer(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppBuffer) {
+  if (!env::metalVR() || !(uint64_t(uintptr_t(hResource)) & shared_buffer_handle_marker))
+    return DXGI_ERROR_NOT_FOUND;
+  const uint64_t id = uint64_t(uintptr_t(hResource)) & (shared_buffer_handle_marker - 1);
+  char name[64];
+  SharedBufferName(id, name);
+  HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
+  if (!mapping)
+    return DXGI_ERROR_NOT_FOUND;
+  InitReturnPtr(ppBuffer);
+  if (!ppBuffer) {
+    CloseHandle(mapping);
+    return S_FALSE;
+  }
+  SharedBufferData data = {};
+  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedBufferData));
+  if (view) {
+    memcpy(&data, view, sizeof(data));
+    UnmapViewOfFile(view);
+  }
+  if (!view || memcmp(data.tag, shared_buffer_tag, sizeof(shared_buffer_tag)) || data.share_id != id ||
+      !data.desc.ByteWidth) {
+    WARN("ImportSharedBuffer: handle is not a shared buffer");
+    CloseHandle(mapping);
+    return E_INVALIDARG;
+  }
+  auto buffer = WrapSharedBuffer(pDevice, mapping, data.desc);
+  if (!buffer) {
+    ERR("ImportSharedBuffer: Failed to open a shared buffer of ", data.desc.ByteWidth, " bytes");
+    return E_OUTOFMEMORY;
+  }
+  Com<D3D11Buffer> opened = new D3D11Buffer(&data.desc, std::move(buffer), pDevice, id);
+  return opened->QueryInterface(riid, ppBuffer);
 }
 
 HRESULT

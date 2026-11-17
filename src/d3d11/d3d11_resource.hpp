@@ -662,6 +662,10 @@ HRESULT WrapBuffer(
 
 HRESULT ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppTexture);
 
+// A buffer another device shared, by its legacy handle. DXGI_ERROR_NOT_FOUND says the handle names no shared buffer
+// (it may name a texture), or that shared buffers are off (env::metalVR).
+HRESULT ImportSharedBuffer(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppBuffer);
+
 HRESULT ImportSharedTextureByName(
     MTLD3D11Device *pDevice, LPCWSTR lpName, DWORD dwDesiredAccess, REFIID riid, void **ppTexture
 );
