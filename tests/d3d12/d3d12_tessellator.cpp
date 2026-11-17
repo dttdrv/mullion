@@ -95,10 +95,38 @@ main(int argc, char **argv) {
   auto arguments = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(D3D12_DRAW_ARGUMENTS), D3D12_RESOURCE_STATE_GENERIC_READ);
   D3D12_DRAW_ARGUMENTS *indirect_draw;
   CHECK(arguments->Map(0, nullptr, (void **)&indirect_draw));
+  // a pipeline without tessellation and an indirect draw of no vertices for it: a pass with one copies its indirect
+  // commands' words in the work before it (RenderEncoderData::omitted)
+  static const char plain_hlsl[] = "float4 vs() : SV_Position { return 0; }\nfloat2 ps() : SV_Target { return 0; }\n";
+  ComPtr<ID3D12PipelineState> plain;
+  {
+    auto vs = compiler.compile(plain_hlsl, "vs", "vs"), ps = compiler.compile(plain_hlsl, "ps", "ps");
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+    desc.pRootSignature = rs.Get();
+    desc.VS = bytecode(vs);
+    desc.PS = bytecode(ps);
+    desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    desc.SampleMask = ~0u;
+    desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.NumRenderTargets = 1;
+    desc.RTVFormats[0] = format;
+    desc.SampleDesc = {1, 0};
+    if (vs.empty() || ps.empty() || FAILED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&plain)))) {
+      printf("failed: no pipeline without tessellation\n");
+      return 1;
+    }
+  }
+  auto nothing = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(D3D12_DRAW_ARGUMENTS), D3D12_RESOURCE_STATE_GENERIC_READ);
+  D3D12_DRAW_ARGUMENTS *no_draw;
+  CHECK(nothing->Map(0, nullptr, (void **)&no_draw));
+  *no_draw = {0, 1, 0, 0};
 
   // draws `count` patches with the pipeline `times` in one pass, the log bound if there is one, and leaves the target
-  // readable in `pixels`; an indirect draw is the same draw from a buffer
-  auto draw = [&](ID3D12PipelineState *pso, UINT count, ID3D12Resource *log, bool indirect = false, UINT times = 1) {
+  // readable in `pixels`; an indirect draw is the same draw from a buffer. `plain_after`: then the plain pipeline's
+  // indirect draw of nothing, in the same pass
+  auto draw = [&](ID3D12PipelineState *pso, UINT count, ID3D12Resource *log, bool indirect = false, UINT times = 1,
+                  bool plain_after = false) {
     if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), pso)))
       return E_FAIL;
     const float clear[4] = {};
@@ -119,6 +147,11 @@ main(int argc, char **argv) {
         list->ExecuteIndirect(signature.Get(), 1, arguments.Get(), 0, nullptr, 0);
       else
         list->DrawInstanced(count, 1, 0, 0);
+    if (plain_after) {
+      list->SetPipelineState(plain.Get());
+      list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      list->ExecuteIndirect(signature.Get(), 1, nothing.Get(), 0, nullptr, 0);
+    }
     transition(list.Get(), target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION src{target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
         dst{pixels.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprint}};
@@ -240,7 +273,8 @@ main(int argc, char **argv) {
         }
         // every patch alone, then the fullest as many at once; the first of them, without a geometry shader, drawn
         // again in the pass until it has made more than 2^21 points: a pass draws all its patches however many there
-        // are, more than a pass is likely to hold
+        // are, more than a pass is likely to hold. its arguments outgrow their buffer, and the plain pipeline's draw
+        // after them gives the pass work before it of two kinds
         for (size_t i = 0; i < std::size(alone) + fullest; i++) {
           auto &patch = alone[i % std::size(alone)];
           UINT count = i < std::size(alone) ? 1 : patches;
@@ -248,8 +282,10 @@ main(int argc, char **argv) {
                            ? 1
                            : 1 + (1u << 21) / (count * expected_points(domain, partitioning, patch).size());
           std::fill_n(factors, count, patch);
-          // the counter-clockwise ones through ExecuteIndirect
-          CHECK(draw(pso.Get(), count, nullptr, !clockwise, times));
+          // every other one of each winding through ExecuteIndirect, which takes no tessellator of Metal's, and the
+          // long one directly
+          bool indirect = i != std::size(alone) && (i + clockwise) % 2;
+          CHECK(draw(pso.Get(), count, nullptr, indirect, times, times > 1));
           char *read_pixels;
           CHECK(pixels->Map(0, nullptr, (void **)&read_pixels));
           unsigned wrong = 0;
