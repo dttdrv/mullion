@@ -1501,8 +1501,6 @@ public:
   virtual HRESULT STDMETHODCALLTYPE CreateFence(UINT64 InitialValue,
                                                 D3D11_FENCE_FLAG Flags,
                                                 REFIID riid, void **ppFence) final {
-    if (feature_flags_ & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
-      return E_FAIL;
     return mullion::CreateFence(this, InitialValue, Flags, riid, ppFence);
   };
 
