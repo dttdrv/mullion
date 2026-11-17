@@ -700,7 +700,7 @@ protected:
   MetalPipeline(const WMTMeshRenderPipelineInfo &info, WMT::Reference<WMT::Error> &error) {
     return device_->Archived(info, error, [&](auto &info, auto &error) {
       return device_->GetMTLDevice().newRenderPipelineState(info, error);
-    });
+    }, library_key);
   }
 
   // the Metal pipeline of `info`: on Metal 4, specialized from the device's flexible pipeline of the rest of its state
@@ -717,7 +717,7 @@ protected:
     if (!flexible.enabled)
       return device_->Archived(info, error, [&](auto &info, auto &error) {
         return device_->GetMTLDevice().newRenderPipelineState(info, error);
-      });
+      }, library_key);
     Sha1HashState fixed, colors;
     auto hash = [](Sha1HashState &h, const auto &...values) { (h.update(values), ...); };
     for (auto &[format, rgb, alpha, src_rgb, dst_rgb, src_alpha, dst_alpha, mask, blending] : info.colors)
@@ -1897,7 +1897,7 @@ public:
           else
             self->mesh_grid_limit = self->pso.maxTotalThreadgroupsPerMeshGrid();
         });
-        DeferredPipeline::Queue(deferred);
+        device_->Defer(deferred, library_key);
       } else if (!(pso = CreatePipeline(mesh_info, err))) {
         ERR("Failed to create mesh shader PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({AS, MS, pDesc->PS});
@@ -1960,7 +1960,7 @@ public:
           for (auto &job : jobs)
             job();
         });
-        DeferredPipeline::Queue(deferred);
+        device_->Defer(deferred, library_key);
       }
     } else if (!tessellation) {
       data_ia_layout.next = &clip_data;
@@ -1980,7 +1980,7 @@ public:
           if (!(self->pso = self->CreatePipeline(info, error)))
             ERR("Failed to create PSO of shaders ", self->name, ": ", error.description().getUTF8String());
         });
-        DeferredPipeline::Queue(deferred);
+        device_->Defer(deferred, library_key);
       } else if (!(pso = CreatePipeline(info, err))) {
         ERR("Failed to create PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->VS, pDesc->PS});
@@ -2070,7 +2070,7 @@ public:
           if (!(self->pso = self->CreatePipeline(mesh_info, error)))
             ERR("Failed to create tessellation PSO of shaders ", self->name, ": ", error.description().getUTF8String());
         });
-        DeferredPipeline::Queue(deferred);
+        device_->Defer(deferred, library_key);
       } else if (!(pso = CreatePipeline(mesh_info, err))) {
         ERR("Failed to create tessellation PSO of shaders ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->VS, pDesc->HS, pDesc->DS, pDesc->GS, pDesc->PS});

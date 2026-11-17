@@ -1,0 +1,15 @@
+# a written shard's pipelines are not recorded as the archive's
+# family native
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -652,10 +652,6 @@
+           archives_.back().handle = NULL_OBJECT_HANDLE;
+           archives_.pop_back();
+           archive_handles_.pop_back();
+-        } else {
+-          auto &cache = ShaderCache::getInstance(WMTMetalVersion(metal_version_));
+-          for (auto &key : keys)
+-            cache.setArchived(ArchiveKey(key));
+         }
+         // the next pipelines go to a new shard: Metal fails to write an archive again once it holds a pipeline whose
+         // vertex function it held before (macOS 27.3: "expecting 'fragment' stage in pipeline no. '1'")

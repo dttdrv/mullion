@@ -747,7 +747,7 @@ public:
   // one at a time
   template <typename Info, typename Make>
   auto
-  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
+  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make, const Sha1Digest &pipeline) {
     std::shared_lock lock(archive_lock);
     auto archives = PipelineArchives();
     if (archives.empty())
@@ -762,14 +762,26 @@ public:
     error = {};
     auto made = make(info, error);
     if (made)
-      ArchivePipeline(made);
+      ArchivePipeline(made, pipeline);
     return made;
   }
   // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
   // shader cache (ShaderCacheDirectory)
   virtual std::span<const obj_handle_t> PipelineArchives() = 0;
-  // a pipeline made with keep_for_binary_archive, for the archive's thread to add
-  virtual void ArchivePipeline(WMT::Object pipeline) = 0;
+  // a pipeline made with keep_for_binary_archive, for the archive's thread to add, and the key of the D3D12 pipeline
+  // it is made for (PipelineKey), recorded once its file is written (InArchive)
+  virtual void ArchivePipeline(WMT::Object pipeline, const Sha1Digest &key) = 0;
+  // whether the archive holds a Metal pipeline made for a D3D12 pipeline of this key
+  virtual bool InArchive(const Sha1Digest &key) = 0;
+  // Metal's compile of a D3D12 pipeline of this key ahead of its first draw, on the compile threads, unless the
+  // archive holds it: then its first draw makes it from there, which is a lookup, and one the application never draws
+  // is never made. a Metal pipeline costs the process its memory from when it is made to the process's end, released
+  // or not (macOS 27.3)
+  void
+  Defer(std::shared_ptr<DeferredPipeline> pipeline, const Sha1Digest &key) {
+    if (!InArchive(key))
+      DeferredPipeline::Queue(std::move(pipeline));
+  }
   // pipelines are looked up under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
   // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=1 turns them on): one pipeline of each state but its targets'
