@@ -6,7 +6,7 @@
  
    Tys.push_back(getTextureRWPositionType(Texture));
 -  Ops.push_back(Pos);
-+  Ops.push_back(CreateAnd(Pos, ConstantInt::get(Pos->getType(), 0xffff)));
++  Ops.push_back(builder.CreateAnd(Pos, ConstantInt::get(Pos->getType(), 0xffff)));
  
    if (TexInfo.is_cube) {
      Tys.push_back(getIntTy());
