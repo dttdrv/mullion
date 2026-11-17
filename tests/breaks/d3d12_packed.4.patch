@@ -1,12 +1,12 @@
 # zero extends signed dot4 operands
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -3371,7 +3371,7 @@
-       auto bytes = [&](Value *v) {
-         auto b = ir.CreateBitCast(v, FixedVectorType::get(ir.getInt8Ty(), 4));
-         auto wide = FixedVectorType::get(ir.getInt32Ty(), 4);
--        return op == Dot4AddI8Packed ? ir.CreateSExt(b, wide) : ir.CreateZExt(b, wide);
-+        return op == Dot4AddI8Packed ? ir.CreateZExt(b, wide) : ir.CreateZExt(b, wide);
-       };
-       // summed lane by lane: Metal's compiler service crashes on llvm.vector.reduce.add
-       auto products = ir.CreateMul(bytes(a(2)), bytes(a(3)));
+@@ -4262,7 +4262,7 @@
+         for (unsigned i = 0; i < 2; i++) {
+           auto wide = [&](Value *h) {
+             auto e = ir.CreateExtractElement(h, i);
+-            return is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
++            return is_signed ? ir.CreateZExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
+           };
+           ret = ir.CreateAdd(ret, ir.CreateMul(wide(x), wide(y), "", !is_signed, true));
+         }
