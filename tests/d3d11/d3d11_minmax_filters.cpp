@@ -156,7 +156,9 @@ main(int argc, char **argv) {
     std::copy_n(extra.data(), 4, c.extra);
     cases.push_back(c);
   };
-  for (UINT sampler : {0, 1, 2, 3, 4})
+  // the ordinary sampler first: the draws share a pass, whose first pipeline then has no reduction in its pixel
+  // shader, and the minimum one after it must take another
+  for (UINT sampler : {4, 0, 1, 2, 3})
     for (float u : {0.5f, 0.25f, 0.75f, 0.4f, 0.6f})
       add(0, 0, sampler, {u, 0.5f});
   for (UINT sampler = first_address; sampler < specs.size(); sampler++)
