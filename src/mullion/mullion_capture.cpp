@@ -33,6 +33,10 @@ enum class State {
 struct Capture {
   const bool enabled = env::getEnvVar("MTL_CAPTURE_ENABLED") == "1" &&
                        env::getExeBaseName() == env::getEnvVar("MULLION_CAPTURE_EXECUTABLE");
+  // MULLION_CAPTURE_BY_CHUNK=1: count committed command buffers instead of presented frames, for a process that
+  // renders without presenting (a VR compositor hands its frames to the headset's driver)
+  const bool by_chunk = enabled && env::getEnvVar("MULLION_CAPTURE_BY_CHUNK") == "1";
+  uint64_t chunks = 0;
   mullion::mutex mutex;
   State state = State::Idle;
   uint64_t next_capture_frame = 0;
@@ -255,6 +259,8 @@ CaptureState::frame(WMT::Device device, uint64_t frame) {
   if (!capture.enabled)
     return;
   std::lock_guard lock(capture.mutex);
+  if (capture.by_chunk)
+    frame = ++capture.chunks;
   switch (capture.getNextAction(frame)) {
   case NextAction::StartCapture: {
     // Metal takes one capture at a time, and the stop of the last one may wait for what this thread commits next

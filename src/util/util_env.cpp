@@ -45,6 +45,14 @@ std::string getEnvVar(const char *name) {
   return value;
 }
 
+bool metalVR() {
+  static const bool on = [] {
+    auto value = getEnvVar("MULLION_METALVR");
+    return !value.empty() && value != "0";
+  }();
+  return on;
+}
+
 size_t matchFileExtension(const std::string &name, const char *ext) {
   auto pos = name.find_last_of('.');
 

@@ -268,6 +268,13 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) = 0;
+
+  // a handle that shares the resource (ID3D12Device::CreateSharedHandle): only a committed texture on a shared heap
+  // is shared so far, others are E_NOTIMPL
+  virtual HRESULT
+  CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name, HANDLE *handle) {
+    return E_NOTIMPL;
+  }
 };
 
 // GetResourceTiling of a resource that is not reserved, which has no tiles: no tiles, a zero packed mip description
@@ -1121,6 +1128,10 @@ HRESULT CreateCommittedTexture(
     REFIID riid, void **ppResource, D3D12SwapChainBufferRefs *pBufferRefs = nullptr,
     const MullionMetalResource *pTexture = nullptr
 );
+
+// the texture a shared handle names, from Direct3D 12, Direct3D 11 or another process (OpenSharedHandle): S_FALSE when
+// the handle is not a shared texture's, for the caller to try it as a fence's
+HRESULT OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE handle, REFIID riid, void **ppResource);
 
 HRESULT
 CreatePlacedTexture(

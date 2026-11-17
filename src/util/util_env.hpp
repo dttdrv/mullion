@@ -37,6 +37,15 @@ constexpr bool is32BitHostPlatform() { return sizeof(void *) == 4; }
 std::string getEnvVar(const char *name);
 
 /**
+ * \brief Whether the features only a VR runtime needs are on
+ *
+ * MULLION_METALVR, set to anything but 0 by what runs a VR runtime
+ * (MetalVR sets it for SteamVR and the applications it starts).
+ * Without it Mullion behaves as it does for every other program.
+ */
+bool metalVR();
+
+/**
  * \brief Checks whether a file name has a given extension
  *
  * \param [in] name File name

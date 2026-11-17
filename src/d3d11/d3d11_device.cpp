@@ -849,6 +849,9 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedResource(HANDLE hResource, REFIID ReturnedInterface, void **ppResource) override {
+    HRESULT hr = ImportSharedBuffer(this, hResource, ReturnedInterface, ppResource);
+    if (hr != DXGI_ERROR_NOT_FOUND)
+      return hr;
     return ImportSharedTexture(this, hResource, ReturnedInterface, ppResource);
   }
 

@@ -606,18 +606,6 @@ protected:
 
 #pragma region Resource Factory
 
-inline void MakeUniqueSharedName(char (&out)[54]) {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<uint64_t> dis;
-
-    uint64_t r1 = dis(gen);
-    uint64_t r2 = dis(gen);
-
-    std::snprintf(out, sizeof(out), "MULLION_shared_%016llx%016llx",
-                  static_cast<unsigned long long>(r1),
-                  static_cast<unsigned long long>(r2));
-}
 
 HRESULT
 CreateStagingBuffer(MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc,
@@ -673,6 +661,10 @@ HRESULT WrapBuffer(
 );
 
 HRESULT ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppTexture);
+
+// A buffer another device shared, by its legacy handle. DXGI_ERROR_NOT_FOUND says the handle names no shared buffer
+// (it may name a texture), or that shared buffers are off (env::metalVR).
+HRESULT ImportSharedBuffer(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void **ppBuffer);
 
 HRESULT ImportSharedTextureByName(
     MTLD3D11Device *pDevice, LPCWSTR lpName, DWORD dwDesiredAccess, REFIID riid, void **ppTexture
