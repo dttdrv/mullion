@@ -20,6 +20,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <bit>
 #include <memory>
@@ -2279,16 +2280,30 @@ AIRCONV_API int SM50CompileRayDispatcher(
 }
 
 namespace {
+// a bytecode by its length and two unrelated 64-bit hashes of it, so that the parse does not keep a copy of the
+// bytecode beside its own (a DXIL shader's parse holds its module's bitcode: the copy doubled what a shader kept)
+struct BytecodeKey {
+  size_t size;
+  uint64_t xx, std;
+  bool operator==(const BytecodeKey &) const = default;
+  explicit BytecodeKey(std::string_view bytecode) :
+      size(bytecode.size()),
+      xx(llvm::xxHash64(llvm::StringRef(bytecode.data(), bytecode.size()))),
+      std(std::hash<std::string_view>{}(bytecode)) {}
+};
+struct BytecodeKeyHash {
+  size_t operator()(const BytecodeKey &key) const { return key.xx; }
+};
 // what SM50Initialize made of each bytecode that pipelines still use: a pipeline made of shaders another pipeline
 // already uses shares their parse (for DXIL, the whole module parsed again for its reflection) and its reflection.
 // compilations only read a shader (a library's ray shaders aside, which are not shared), so they can share it
 struct InitializedShader {
-  std::string bytecode;
+  BytecodeKey key;
   MTL_SHADER_REFLECTION reflection;
   unsigned references;
 };
 std::mutex initialized_mutex;
-std::unordered_map<std::string_view, mullion::dxbc::SM50ShaderInternal *> initialized_by_bytecode;
+std::unordered_map<BytecodeKey, mullion::dxbc::SM50ShaderInternal *, BytecodeKeyHash> initialized_by_bytecode;
 std::unordered_map<mullion::dxbc::SM50ShaderInternal *, std::unique_ptr<InitializedShader>> initialized;
 } // namespace
 
@@ -2303,10 +2318,10 @@ AIRCONV_API int SM50Initialize(
   }();
   if (!share || !pBytecode || !BytecodeSize || !ppShader)
     return SM50InitializeUncached(pBytecode, BytecodeSize, ppShader, pRefl, ppError);
-  std::string_view bytecode(static_cast<const char *>(pBytecode), BytecodeSize);
+  BytecodeKey key(std::string_view(static_cast<const char *>(pBytecode), BytecodeSize));
   {
     std::lock_guard lock(initialized_mutex);
-    if (auto found = initialized_by_bytecode.find(bytecode); found != initialized_by_bytecode.end()) {
+    if (auto found = initialized_by_bytecode.find(key); found != initialized_by_bytecode.end()) {
       auto &entry = *initialized.at(found->second);
       entry.references++;
       if (pRefl)
@@ -2326,15 +2341,15 @@ AIRCONV_API int SM50Initialize(
   if (shader->shader_type == mullion::dxbc::kShaderLibrary)
     return 0;
   std::lock_guard lock(initialized_mutex);
-  if (auto found = initialized_by_bytecode.find(bytecode); found != initialized_by_bytecode.end()) {
+  if (auto found = initialized_by_bytecode.find(key); found != initialized_by_bytecode.end()) {
     // another thread made the same meanwhile
     delete shader;
     initialized.at(found->second)->references++;
     *ppShader = found->second;
     return 0;
   }
-  auto entry = std::make_unique<InitializedShader>(InitializedShader{std::string(bytecode), reflection, 1});
-  initialized_by_bytecode.emplace(entry->bytecode, shader);
+  initialized_by_bytecode.emplace(key, shader);
+  auto entry = std::make_unique<InitializedShader>(InitializedShader{key, reflection, 1});
   initialized.emplace(shader, std::move(entry));
   return 0;
 }
@@ -2346,7 +2361,7 @@ AIRCONV_API void SM50Destroy(sm50_shader_t pShader) {
     if (auto found = initialized.find(shader); found != initialized.end()) {
       if (--found->second->references)
         return;
-      initialized_by_bytecode.erase(found->second->bytecode);
+      initialized_by_bytecode.erase(found->second->key);
       initialized.erase(found);
     }
   }
