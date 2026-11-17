@@ -1,0 +1,14 @@
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index 9a75d9da..058972b3 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -68,8 +68,7 @@ DriverVersion() {
+ static void
+ DriverBranch(NvAPI_ShortString branch) {
+   auto text = std::format("r{}_00", DriverVersion() / 100);
+-  memset(branch, 0, sizeof(NvAPI_ShortString));
+-  memcpy(branch, text.c_str(), std::min(text.size(), sizeof(NvAPI_ShortString) - 1));
++  memcpy(branch, text.c_str(), text.size());
+ }
+ 
+ NVAPI_INTERFACE
