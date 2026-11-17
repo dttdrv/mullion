@@ -2077,12 +2077,16 @@ public:
       // draw's primitives are its triangles: a pixel shader that reads SV_PrimitiveID takes the patch from a varying
       auto output = ref_hs.Tessellator.OutputPrimitive;
       bool compute = device_->UsesMetal4();
-      bool native =
-          !geometry && !conservative && !clips && !ref_ds.CullDistances && !ref_vs.UAVSlotMask && !ref_hs.UAVSlotMask &&
-          (domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI || domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD) &&
-          (compute || partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER ||
-           partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_POW2) &&
-          (output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW || output == MTL_TESSELLATOR_TRIANGLE_CCW);
+      // with Metal 4, a pipeline whose depth bounds the pixel shader tests keeps the mesh pipeline too: after a native
+      // draw that wrote depth, the mesh draw that follows it finds the samples in the bounds again, in a compute pass,
+      // which would end the native draw's pass before its record says that the mesh draw follows (both drew)
+      bool native = !(compute && depth_bounds_emulated) && !geometry && !conservative && !clips &&
+                    !ref_ds.CullDistances && !ref_vs.UAVSlotMask && !ref_hs.UAVSlotMask &&
+                    (domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI ||
+                     domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD) &&
+                    (compute || partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER ||
+                     partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_POW2) &&
+                    (output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW || output == MTL_TESSELLATOR_TRIANGLE_CCW);
       bool patch_varying = native && compute && pixel_shader && ref_ps.PixelShader.PrimitiveID;
       // the tessellator's functions and what its two Metal pipelines are made of; the pipelines themselves are made
       // with the mesh pipeline, below

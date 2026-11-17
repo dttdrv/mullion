@@ -1685,6 +1685,18 @@ public:
   } hull_bound_{};
   bool native_bound_ = false;
 
+  // the state of the mesh draw that follows a native one on the compute tessellator, in the native draw's pass: the
+  // pass's end copies the native draw's record, which says that a mesh draw follows only once that is encoded. or of
+  // the mesh draw that draws a whole draw whose hull buffers had no room, which no record waits for
+  bool
+  FallbackPreDraw() {
+    auto pass = allocator_->encoder_current;
+    if (PreDraw() == DrawCallStatus::Invalid)
+      return false;
+    assert(!tessellation_draw_ || allocator_->encoder_current == pass);
+    return true;
+  }
+
   // whether a draw takes Metal's tessellator: one direct draw of a pipeline that has it, with no pipeline statistics
   // to count, which Metal does not count after its tessellator
   bool
@@ -1720,10 +1732,16 @@ public:
     TessellationInputs inputs{View, ControlPoints};
     uint64_t group_bytes = uint64_t(groups) * pso_graphics_->patch_group_size * Args.InstanceCount;
     uint64_t factor_stride = uint64_t(groups) * per_group * pso_graphics_->patch_factor_size;
+    tessellation_draw_ = nullptr;
+    // the hull kernel's groups and factors grow with the draw's patches, where its mesh draw holds none of them: when
+    // the recording arena has no room for them, that draws the whole draw instead of the list being cut off
+    auto [header, patches_offset] = allocator_->AllocateGPUHeap(SM50_TESSELLATION_HEADER + group_bytes, 16, false);
+    auto [factors, factors_offset] =
+        allocator_->AllocateGPUHeap(factor_stride * Args.InstanceCount, sizeof(uint32_t), false);
+    if (!header || !factors)
+      return true;
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(inputs) + sizeof(Args), 16);
-    auto [header, patches_offset] = allocator_->AllocateGPUHeap(SM50_TESSELLATION_HEADER + group_bytes, 16);
-    auto [factors, factors_offset] = allocator_->AllocateGPUHeap(factor_stride * Args.InstanceCount, sizeof(uint32_t));
-    if (!mapped || !header || !factors)
+    if (!mapped)
       return false;
     if (allocator_->records_) {
       allocator_->RecordGPUHeap(mapped, sizeof(inputs) + sizeof(Args), "tessellation inputs", sizeof(inputs),
@@ -2062,9 +2080,11 @@ public:
     if (native) {
       D3D12_DRAW_ARGUMENTS args{VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
       // where the pass's compute tessellator may have no room, its mesh draw follows
-      if (EncodeNativeTessellationDraw(args, VertexCountPerInstance, cp_count, {}) &&
-          PreDraw() != DrawCallStatus::Invalid)
-        tessellation_draw_->record.fallback = EncodeTessellationDraw(args, VertexCountPerInstance, cp_count, {});
+      if (EncodeNativeTessellationDraw(args, VertexCountPerInstance, cp_count, {}) && FallbackPreDraw()) {
+        auto fallback = EncodeTessellationDraw(args, VertexCountPerInstance, cp_count, {});
+        if (tessellation_draw_)
+          tessellation_draw_->record.fallback = fallback;
+      }
       return;
     }
     if (pso_graphics_->threads_per_patch) {
@@ -2125,9 +2145,11 @@ public:
           IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation, StartInstanceLocation
       };
       if (EncodeNativeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_)) &&
-          PreDraw() != DrawCallStatus::Invalid)
-        tessellation_draw_->record.fallback =
-            EncodeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_));
+          FallbackPreDraw()) {
+        auto fallback = EncodeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_));
+        if (tessellation_draw_)
+          tessellation_draw_->record.fallback = fallback;
+      }
       return;
     }
     if (pso_graphics_->threads_per_patch) {
