@@ -210,9 +210,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       group_half_ ^= 1;
       group_count_ = 0;
     }
-    // a late pass's vertices wait for the group before the last, whose passes each waited for all before them; work
-    // it does before its own (before_head) may read what the last group wrote
-    bool late = pass->late && !ordered_next && !static_cast<const RenderEncoderData *>(pass)->before_head.next.ptr;
+    // a late pass's vertices and its work before it (before_head) wait for the group before the last, whose passes each
+    // waited for all before them: what they read was written before a barrier that is not for pixel shading alone, so
+    // before the last group
+    bool late = pass->late && !ordered_next;
     for (unsigned i = 0; i < previous_count_; i++)
       (late ? sync.pixels[sync.pixel_count++] : sync.waits[sync.wait_count++]) =
           group_fences_[(group_half_ ^ 1) * kGroupPasses + i];
