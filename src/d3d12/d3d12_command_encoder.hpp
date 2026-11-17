@@ -113,9 +113,9 @@ struct RenderEncoderStencilAttachmentData {
 };
 
 // a render pass's compute-tessellated draws (TessellationPass), gathered while it is recorded: the records and where
-// each draw's indices are to be, each draw's patches after the draws' before it, what a patch slot has made at the
-// most in passes before, and the most the draws can make, which tell whether a draw needs a mesh draw where the arena
-// has no room and size the arena once the pass ends
+// each draw's indices are to be, each draw's patches after the draws' before it, what a patch slot and a pass have
+// made at the most in passes before, and the most the draws can make, which tell whether a draw needs a mesh draw
+// where the arena has no room and size the arena once the pass ends
 struct TessellationBatch {
   struct Draw {
     TessellationDraw record;
@@ -128,14 +128,14 @@ struct TessellationBatch {
   uint32_t draws = 0, patches = 0;
   // the buffer over the arguments its first draw's hull kernel writes through (FinishTessellation)
   obj_handle_t heap = 0;
-  uint32_t slot_points = 0, slot_indices = 0;
+  uint32_t slot_points = 0, slot_indices = 0, pass_points = 0, pass_indices = 0;
   uint64_t most_points = 0, most_indices = 0;
 
-  // the arena's room for the slots so far: as much as they make at what a slot has made, no more than they can make
-  // or a pass takes
+  // the arena's room for the slots so far: as much as they make at what a slot has made, no more than a pass has
+  // made, they can make, or a pass takes
   uint32_t
-  Room(uint32_t slot, uint64_t most, uint32_t cap) const {
-    return std::min({uint64_t(patches) * slot, most, uint64_t(cap)});
+  Room(uint32_t slot, uint32_t pass, uint64_t most, uint32_t cap) const {
+    return std::min({uint64_t(patches) * slot, uint64_t(pass), most, uint64_t(cap)});
   }
 };
 

@@ -1771,7 +1771,8 @@ static tess_counts tessellation_counts(device const uint *heap, TessellationDraw
   for (uint d = thread_index; d < pass.draw_count; d += threads) {
     TessellationDraw draw = draws[d];
     device const uint *start = counts + 3 * draw.first, *end = counts + 3 * (draw.first + draw.patches);
-    bool fits = end[1] <= pass.point_room && 3 * end[2] <= pass.index_room;
+    // triangles against the room's whole ones: three times a pass's triangles may not fit in 32 bits
+    bool fits = end[1] <= pass.point_room && end[2] <= pass.index_room / 3;
     device uint *arguments = heap + draw.arguments;
     arguments[0] = fits ? 3 * (end[2] - start[2]) : 0;
     arguments[1] = 1;
@@ -1786,7 +1787,7 @@ static tess_counts tessellation_counts(device const uint *heap, TessellationDraw
     uint fit = pass.patches;
     for (uint d = 0; d < pass.draw_count; d++) {
       device const uint *end = counts + 3 * (draws[d].first + draws[d].patches);
-      if (end[1] > pass.point_room || 3 * end[2] > pass.index_room) {
+      if (end[1] > pass.point_room || end[2] > pass.index_room / 3) {
         fit = draws[d].first;
         break;
       }
@@ -1796,7 +1797,7 @@ static tess_counts tessellation_counts(device const uint *heap, TessellationDraw
     pass.emit_groups[1] = 1;
     pass.emit_groups[2] = 1;
     pass.need_points = counts[3 * pass.patches + 1];
-    pass.need_indices = 3 * counts[3 * pass.patches + 2];
+    pass.need_indices = 3 * min(counts[3 * pass.patches + 2], 0xffffffffu / 3);
   }
 }
 

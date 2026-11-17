@@ -472,18 +472,20 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
   if (encoder_last)
     return FAIL(E_FAIL);
-  // the passes' compute tessellators ran: the next passes have room for what a slot made at the most
-  auto grow = [](std::atomic<uint32_t> &slot, const char *what, uint64_t need, uint32_t slots) {
-    auto made = slots ? uint32_t((need + slots - 1) / slots) : 0;
-    for (auto now = slot.load(); made > now;)
-      if (slot.compare_exchange_weak(now, made)) {
-        Logger::info(str::format("CommandAllocator: a tessellated patch has room for ", made, " ", what));
+  // the passes' compute tessellators ran: the next passes have room for what a slot and a pass made at the most
+  auto grow = [](std::atomic<uint32_t> &most, uint32_t made, const char *what) {
+    for (auto now = most.load(); made > now;)
+      if (most.compare_exchange_weak(now, made)) {
+        Logger::info(str::format("CommandAllocator: a tessellated ", what, " ", made));
         break;
       }
   };
   for (auto pass : std::exchange(tessellation_passes_, {})) {
-    grow(device_->tessellation_slot_points, "points", pass->need_points, pass->patches);
-    grow(device_->tessellation_slot_indices, "indices", pass->need_indices, pass->patches);
+    auto slot = [&](uint64_t need) { return pass->patches ? uint32_t((need + pass->patches - 1) / pass->patches) : 0; };
+    grow(device_->tessellation_slot_points, slot(pass->need_points), "patch has room for points:");
+    grow(device_->tessellation_slot_indices, slot(pass->need_indices), "patch has room for indices:");
+    grow(device_->tessellation_pass_points, pass->need_points, "pass has room for points:");
+    grow(device_->tessellation_pass_indices, pass->need_indices, "pass has room for indices:");
   }
   // "the runtime will not allow a reset while a command list is still being executed": the lists' recording is what
   // the queues' threads still encode and the GPU still reads. Windows' drivers survive the reset and applications
@@ -1096,8 +1098,10 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
   auto [pass, pass_offset] = AllocateGPUHeap(sizeof(TessellationPass), 16);
   // the arena (TessellationBatch::Room). a point is {patch, u, v} (tess_point), at a whole point from the heap's start,
   // as the indices number them
-  uint32_t point_room = batch->Room(batch->slot_points, batch->most_points, device_->kTessellationMostPoints),
-           index_room = batch->Room(batch->slot_indices, batch->most_indices, device_->kTessellationMostIndices);
+  uint32_t point_room = batch->Room(batch->slot_points, batch->pass_points, batch->most_points,
+                                    device_->kTessellationMostPoints),
+           index_room = batch->Room(batch->slot_indices, batch->pass_indices, batch->most_indices,
+                                    device_->kTessellationMostIndices);
   constexpr size_t point = 3 * sizeof(uint32_t);
   auto points = std::get<1>(AllocateGPUHeap(uint64_t(point_room + 1) * point, 16));
   points += (point - points % point) % point;

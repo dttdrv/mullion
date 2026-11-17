@@ -1160,11 +1160,7 @@ public:
 
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false, bool Native = false) {
-    // a sampler that needs what the pipeline leaves out may have come since it was set (MTLD3D12PipelineState::left_out)
-    while (pso_graphics_ && (pso_graphics_->left_out & device_->sampler_emulations)) {
-      pso_graphics_ = static_cast<MTLD3D12GraphicsPipelineState *>(pso_graphics_->Fuller(device_));
-      dirty_state_.set(DirtyState::GraphicsPipelineState);
-    }
+    TakeFuller();
     if (!pso_graphics_)
       return DrawCallStatus::Invalid;
     // Metal's tessellator binds the domain shader's stage as a vertex stage, the mesh pipeline as a mesh stage
@@ -1693,9 +1689,21 @@ public:
   // to count, which Metal does not count after its tessellator
   bool
   Native() {
-    // the tessellator's kernel is made with the pipeline (DeferredPipeline)
+    // of the pipeline the draw takes, whose tessellator's kernel is made with it (DeferredPipeline)
+    TakeFuller();
+    if (!pso_graphics_)
+      return false;
     pso_graphics_->WaitPipeline();
     return pso_graphics_->hull && active_statistics_.empty();
+  }
+
+  // a sampler that needs what the pipeline leaves out may have come since it was set (MTLD3D12PipelineState::left_out)
+  void
+  TakeFuller() {
+    while (pso_graphics_ && (pso_graphics_->left_out & device_->sampler_emulations)) {
+      pso_graphics_ = static_cast<MTLD3D12GraphicsPipelineState *>(pso_graphics_->Fuller(device_));
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
+    }
   }
 
   // a draw on Metal's tessellator: its hull kernel runs in the work before the pass (as the resolvers of indirect
@@ -1788,6 +1796,8 @@ public:
       batch->heap = obj_handle_t(allocator_->gpu_heap_buffer_);
       batch->slot_points = device_->tessellation_slot_points;
       batch->slot_indices = device_->tessellation_slot_indices;
+      batch->pass_points = device_->tessellation_pass_points;
+      batch->pass_indices = device_->tessellation_pass_indices;
     }
     auto [arguments, arguments_offset] = allocator_->AllocateGPUHeap(5 * sizeof(uint32_t), 16);
     auto draw = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch::Draw), alignof(TessellationBatch::Draw)))
@@ -1824,8 +1834,10 @@ public:
     cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
     cmd.indirect_args_offset = arguments_offset;
     // the slots after it only add room
-    return batch->most_points > batch->Room(batch->slot_points, batch->most_points, device_->kTessellationMostPoints) ||
-           batch->most_indices > batch->Room(batch->slot_indices, batch->most_indices, device_->kTessellationMostIndices);
+    return batch->most_points > batch->Room(batch->slot_points, batch->pass_points, batch->most_points,
+                                            device_->kTessellationMostPoints) ||
+           batch->most_indices > batch->Room(batch->slot_indices, batch->pass_indices, batch->most_indices,
+                                             device_->kTessellationMostIndices);
   }
 
   static bool
