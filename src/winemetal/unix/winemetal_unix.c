@@ -4906,6 +4906,7 @@ NTSTATUS _CacheReader_get(void *obj);
 NTSTATUS _CacheWriter_alloc_init(void *obj);
 NTSTATUS _CacheWriter_set(void *obj);
 NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
+NTSTATUS _WMTRemoveOtherVersions(void *obj);
 
 // the Metal descriptor of a WMTAccelerationStructureInfo, autoreleased
 static MTLAccelerationStructureDescriptor *
@@ -7556,6 +7557,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
     &_MTLBinaryArchive_add,
+    &_WMTRemoveOtherVersions,
 };
 
 #ifndef MULLION_NATIVE
@@ -7774,6 +7776,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_sparseResidencyInTiles,
     &_MTLDevice_newSpecializedRenderPipeline,
     &_MTLBinaryArchive_add,
+    &_WMTRemoveOtherVersions,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

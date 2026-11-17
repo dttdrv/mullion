@@ -89,14 +89,13 @@ versioned(NSString *path, uint64_t version) {
 }
 
 // no version reads what another stored, so a store that kept each grew by a whole version's conversions at every new
-// one: the files of the others go, those of the name itself among them (a store from before a version had its own).
-// a process that still has one open keeps it until it ends
+// one: the files beside `stem` whose names start as its does and not as `kept`'s go. a process that still has one
+// open keeps it until it ends
 static void
-remove_other_versions(NSString *path, NSString *kept) {
-  NSString *directory = [path stringByDeletingLastPathComponent];
-  NSString *stem = [[[path lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"."];
+remove_other_versions(NSString *stem, NSString *kept) {
+  NSString *directory = [stem stringByDeletingLastPathComponent];
   for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil])
-    if ([name hasPrefix:stem] && ![name hasPrefix:[kept lastPathComponent]])
+    if ([name hasPrefix:[stem lastPathComponent]] && ![name hasPrefix:[kept lastPathComponent]])
       unlink([[directory stringByAppendingPathComponent:name] fileSystemRepresentation]);
 }
 
@@ -209,7 +208,9 @@ writes(void) {
       return nil;
     }
 
-    remove_other_versions(dbPath, versioned(dbPath, version));
+    // those of the name itself among them: a store from before a version had its own
+    remove_other_versions([[dbPath stringByDeletingPathExtension] stringByAppendingString:@"."],
+                          versioned(dbPath, version));
     dbPath = versioned(dbPath, version);
     NSString *lockPath = [dbPath stringByAppendingString:@"-lock"];
     _lock_fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
@@ -367,6 +368,18 @@ _CacheWriter_set(void *obj) {
   CacheWriter *writer = (CacheWriter *)params->cache;
   [writer set:key value:(dispatch_data_t)params->value_data];
   [key release];
+  return 0;
+}
+
+int
+_WMTRemoveOtherVersions(void *obj) {
+  struct unixcall_remove_other_versions *params = obj;
+  // the calling thread may have no pool of its own
+  @autoreleasepool {
+    NSString *stem = resolve_cache_dir([NSString stringWithUTF8String:params->stem.ptr], true);
+    if (stem)
+      remove_other_versions(stem, [NSString stringWithUTF8String:params->kept.ptr]);
+  }
   return 0;
 }
 

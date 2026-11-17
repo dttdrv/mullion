@@ -436,6 +436,10 @@ struct unixcall_cache_set {
   obj_handle_t value_data;
 };
 
+struct unixcall_remove_other_versions {
+  struct WMTConstMemoryPointer stem, kept;
+};
+
 struct unixcall_setmetalcachepath {
   struct WMTConstMemoryPointer path;
   uint64_t ret_success;

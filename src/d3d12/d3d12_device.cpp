@@ -551,7 +551,11 @@ public:
       WMT::Reference<WMT::BinaryArchive> added;
       if (directory.empty() || !(added = GetMTLDevice().newBinaryArchive(nullptr, error)))
         return;
-      archive_path_ = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+      // a converter version finds none of the pipelines another one archived, and every shard is read and held at
+      // start: the shards of the others go before any is read, as the shader store's do (CacheWriter_alloc_init)
+      auto pipelines = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+      archive_path_ = str::format(pipelines, "v", kMullionShaderCacheVersion, "_");
+      WMTRemoveOtherVersions(pipelines.c_str(), archive_path_.c_str());
       // shards are read in order up to the first one Metal cannot read (none yet, or a damaged one), where this
       // launch's shards start
       while (archives_.size() + 1 < kMaxArchives)
