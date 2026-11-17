@@ -482,13 +482,13 @@ struct SignatureContext {
 
 RegisterComponentType component_type_from_pixel_format(air::MTLPixelFormat format);
 
-// the input a stage that writes rasterized positions scales them with (llvm::air::AIRBuilder::RasterScale)
-// (all SM50_RASTER_SCALE_WORDS for a stage that reads the mesh group origin)
+// the input a stage that writes rasterized positions scales them with (llvm::air::AIRBuilder::RasterScale), one
+// buffer whatever words of it the stage reads: a buffer argument's array size is the buffer slots it takes
 inline uint32_t
-DefineRasterScale(air::FunctionSignatureBuilder &signature, uint32_t words = 1) {
+DefineRasterScale(air::FunctionSignatureBuilder &signature) {
   return signature.DefineInput(air::ArgumentBindingBuffer{
       .location_index = SM50_BINDING_INDEX_RASTER_SCALE,
-      .array_size = words,
+      .array_size = 1,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
       .type = air::msl_float,
