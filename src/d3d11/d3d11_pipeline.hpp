@@ -41,6 +41,7 @@ struct MTL_GRAPHICS_PIPELINE_DESC {
   // the lines it passes on are quadrilaterals (SM50_SHADER_PSO_GEOMETRY_SHADER_DATA)
   bool QuadLines;
   bool PipelineStatistics = false;
+  bool PixelMinMaxFiltering = true;
 };
 
 struct MTL_COMPUTE_PIPELINE_DESC {
@@ -96,6 +97,7 @@ template <> struct hash<MTL_GRAPHICS_PIPELINE_DESC> {
     state.add((size_t)v.PassThrough);
     state.add(v.QuadLines);
     state.add(v.PipelineStatistics);
+    state.add(v.PixelMinMaxFiltering);
     state.add((size_t)v.SampleCount);
     state.add((size_t)v.NumColorAttachments);
     for (unsigned i = 0; i < v.NumColorAttachments; i++) {
@@ -169,7 +171,7 @@ template <> struct equal_to<MTL_GRAPHICS_PIPELINE_DESC> {
            (x.ClipDistances == y.ClipDistances) &&
            (x.GSPassthrough == y.GSPassthrough) && (x.SOLayout == y.SOLayout) &&
            (x.InputPrimitive == y.InputPrimitive) && (x.PassThrough == y.PassThrough) && (x.QuadLines == y.QuadLines) &&
-           (x.PipelineStatistics == y.PipelineStatistics);
+           (x.PipelineStatistics == y.PipelineStatistics) && (x.PixelMinMaxFiltering == y.PixelMinMaxFiltering);
   }
 };
 } // namespace std
