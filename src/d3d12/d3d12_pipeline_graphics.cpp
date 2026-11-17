@@ -794,7 +794,8 @@ protected:
   // topologies with adjacency a draw may bring: Metal has none, D3D12_PRIMITIVE_TOPOLOGY_TYPE does not tell them
   // from the others, and only a mesh stage can leave the adjacent vertices out (D3D11.3 8.15)
   struct GeometryInputs {
-    std::string vs, gs;                      // bytecode
+    // bytecode, the geometry shader's null for none (KeepShader)
+    std::shared_ptr<const std::string> vs, gs;
     // private, as every reference a pipeline keeps to its root signature: on Windows the signature's count is the
     // same after the pipeline is made (vkd3d-proton, test_create_graphics_pipeline_state)
     Com<MTLD3D12RootSignature, false> root_signature;
@@ -818,6 +819,11 @@ protected:
     uint32_t flat_inputs, noperspective_inputs;
   };
   std::shared_ptr<GeometryInputs> topology_inputs_;
+  // kept bytecode as Direct3D 12 describes it, none for none
+  static D3D12_SHADER_BYTECODE
+  Bytecode(const std::shared_ptr<const std::string> &kept) {
+    return kept ? D3D12_SHADER_BYTECODE{kept->data(), kept->size()} : D3D12_SHADER_BYTECODE{};
+  }
   // whether a pipeline's geometry shader can count pipeline statistics
   bool statistics_geometry_ = false;
   mullion::mutex topology_mutex_;
@@ -862,8 +868,8 @@ protected:
     pso_gs.clip_distance_varyings = in.clip_distance_varyings;
     pso_gs.cull_distance_varyings = in.cull_distance_varyings && pso_gs.pass_through;
     pso_gs.quad_lines = in.quad_lines && pass_through && !counting;
-    pso_gs.conservative = in.conservative && !counting && (!in.gs.empty() || pass_through);
-    pso_gs.conservative_hull = pso_gs.conservative && in.conservative_hull && in.gs.empty();
+    pso_gs.conservative = in.conservative && !counting && (in.gs || pass_through);
+    pso_gs.conservative_hull = pso_gs.conservative && in.conservative_hull && !in.gs;
     pso_gs.conservative_inner = in.conservative_inner;
     pso_gs.barycentrics = in.barycentrics && (pso_gs.quad_lines || pso_gs.conservative);
     pso_gs.flat_inputs = in.flat_inputs;
@@ -883,7 +889,7 @@ protected:
       SM50_SHADER_PSO_GEOMETRY_SHADER_DATA &pso_gs, HRESULT &status
   ) {
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-    D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
+    auto VS = Bytecode(in.vs);
     return CompileFunction(
         device_, this, in.root_signature.ptr(), std::array{VS, GS},
         RootSignature(rootsig, in.root_signature.ptr(), &pso_gs), "gs_main",
@@ -910,7 +916,7 @@ protected:
     auto &in = *inputs;
     WMT::Reference<WMT::RenderPipelineState> variant;
     WMT::Reference<WMT::Error> err;
-    D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()};
+    auto VS = Bytecode(in.vs);
     SM50_SHADER_STREAM_OUTPUT_DATA so;
     auto pso_gs = GeometryArguments(in, so, strip, counting, primitive, pass_through, false, single);
     pso_gs.mesh_only = mesh_only;
@@ -944,7 +950,7 @@ protected:
         statistics_geometry_ = true;
       statistics = [this, inputs, strip, primitive, pass_through, single] {
         auto &in = *inputs;
-        D3D12_SHADER_BYTECODE VS{in.vs.data(), in.vs.size()}, GS{in.gs.data(), in.gs.size()};
+        auto VS = Bytecode(in.vs), GS = Bytecode(in.gs);
         SM50Shader shader_vs, shader_gs;
         SM50_SHADER_STREAM_OUTPUT_DATA so;
         auto pso_gs = GeometryArguments(in, so, strip, false, primitive, pass_through, true, single);
@@ -1143,7 +1149,7 @@ public:
       auto start = device_->NamesPasses() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
       auto &in = *topology_inputs_;
       HRESULT hr;
-      auto GS = in.gs.empty() ? D3D12_SHADER_BYTECODE{} : D3D12_SHADER_BYTECODE{in.gs.data(), in.gs.size()};
+      auto GS = Bytecode(in.gs);
       variant = GeometryVariant(
           topology_inputs_, shader_vs, shader_gs, GS, strip, counting, in.primitive, in.pass_through, hr,
           strip ? so_single_strip : so_single
@@ -1772,11 +1778,11 @@ public:
       if (!(ps_func = function(shader_ps, pDesc->PS, root_signature(rootsig, &data_ps), ps_name.c_str())))
         return FAIL(E_INVALIDARG);
       pixel_shader_ =
-          [this, code = std::string((const char *)pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength),
+          [this, code = device_->KeepShader(pDesc->PS),
            signature = Com<MTLD3D12RootSignature, false>(static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)),
            data_ps, common,
            ps_name](bool statistics, bool late, bool coarse, uint32_t blends, bool depth, bool bare) mutable {
-            D3D12_SHADER_BYTECODE bytecode{code.data(), code.size()};
+            D3D12_SHADER_BYTECODE bytecode{code->data(), code->size()};
             SM50Shader shader;
             auto data = data_ps;
             data.pipeline_statistics = statistics;
@@ -1820,9 +1826,9 @@ public:
 
     auto geometry_inputs = [&] {
       auto in = std::make_shared<GeometryInputs>();
-      in->vs.assign((const char *)pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength);
+      in->vs = device_->KeepShader(pDesc->VS);
       if (pDesc->GS.pShaderBytecode)
-        in->gs.assign((const char *)pDesc->GS.pShaderBytecode, pDesc->GS.BytecodeLength);
+        in->gs = device_->KeepShader(pDesc->GS);
       in->root_signature = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature);
       in->elements = elements;
       in->ia_layout = data_ia_layout;
@@ -2322,15 +2328,8 @@ Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStre
   auto &graphics = owned->desc_graphics;
   for (auto code : {&cs.CS, &graphics.VS, &graphics.PS, &graphics.DS, &graphics.HS, &graphics.GS, &owned->desc_as,
                     &owned->desc_ms})
-    if (code->pShaderBytecode) {
-      auto key = ShaderDigest(code->pShaderBytecode, code->BytecodeLength);
-      std::lock_guard<mullion::mutex> lock(device->lean_shaders.mutex);
-      auto &kept = device->lean_shaders.bytes[key];
-      auto shader = kept.lock();
-      if (!shader)
-        kept = shader = std::make_shared<const std::string>((const char *)code->pShaderBytecode, code->BytecodeLength);
-      code->pShaderBytecode = owned->shaders.emplace_back(std::move(shader))->data();
-    }
+    if (code->pShaderBytecode)
+      code->pShaderBytecode = owned->shaders.emplace_back(device->KeepShader(*code))->data();
   cs.CachedPSO = graphics.CachedPSO = {};
   owned->signature = static_cast<MTLD3D12RootSignature *>(cs.pRootSignature ? cs.pRootSignature : graphics.pRootSignature);
   auto &so = graphics.StreamOutput;
@@ -2347,6 +2346,17 @@ Lean(MTLD3D12PipelineState &pso, MTLD3D12Device *device, const PipelineStateStre
     element.SemanticName = keep(element.SemanticName, strlen(element.SemanticName) + 1);
   layout.pInputElementDescs = owned->elements.data();
   pso.lean = owned;
+}
+
+std::shared_ptr<const std::string>
+MTLD3D12Device::KeepShader(D3D12_SHADER_BYTECODE code) {
+  auto key = ShaderDigest(code.pShaderBytecode, code.BytecodeLength);
+  std::lock_guard<mullion::mutex> lock(kept_shaders.mutex);
+  auto &kept = kept_shaders.bytes[key];
+  auto shader = kept.lock();
+  if (!shader)
+    kept = shader = std::make_shared<const std::string>((const char *)code.pShaderBytecode, code.BytecodeLength);
+  return shader;
 }
 
 ID3D12PipelineState *
