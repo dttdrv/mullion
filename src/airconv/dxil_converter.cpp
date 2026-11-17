@@ -4243,16 +4243,27 @@ convert_dxil(
     }
     case Dot4AddI8Packed:
     case Dot4AddU8Packed: {
-      auto bytes = [&](Value *v) {
-        auto b = ir.CreateBitCast(v, FixedVectorType::get(ir.getInt8Ty(), 4));
-        auto wide = FixedVectorType::get(ir.getInt32Ty(), 4);
-        return op == Dot4AddI8Packed ? ir.CreateSExt(b, wide) : ir.CreateZExt(b, wide);
+      // bytes 0 and 2, then 1 and 3, as the halves of one word of two 16-bit values: Apple GPUs multiply those at
+      // about twice the rate of bytes widened to 32 bits one by one. a signed byte is (u ^ 0x80) - 0x80 in its half
+      bool is_signed = op == Dot4AddI8Packed;
+      auto halves = [&](Value *v, unsigned shift) {
+        Value *w = ir.CreateAnd(ir.CreateLShr(v, shift), 0x00ff00ff);
+        auto h = ir.CreateBitCast(is_signed ? ir.CreateXor(w, 0x00800080) : w, FixedVectorType::get(ir.getInt16Ty(), 2));
+        return is_signed ? ir.CreateSub(h, ConstantInt::get(h->getType(), 0x80)) : h;
       };
-      // summed lane by lane: Metal's compiler service crashes on llvm.vector.reduce.add
-      auto products = ir.CreateMul(bytes(a(2)), bytes(a(3)));
+      // summed lane by lane: Metal's compiler service crashes on llvm.vector.reduce.add. the sum wraps; a product of
+      // two bytes fits 16 bits
       ret = a(1);
-      for (unsigned i = 0; i < 4; i++)
-        ret = ir.CreateAdd(ret, ir.CreateExtractElement(products, i));
+      for (unsigned shift : {0u, 8u}) {
+        auto x = halves(a(2), shift), y = halves(a(3), shift);
+        for (unsigned i = 0; i < 2; i++) {
+          auto wide = [&](Value *h) {
+            auto e = ir.CreateExtractElement(h, i);
+            return is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
+          };
+          ret = ir.CreateAdd(ret, ir.CreateMul(wide(x), wide(y), "", !is_signed, true));
+        }
+      }
       break;
     }
     case Pack4x8: {
