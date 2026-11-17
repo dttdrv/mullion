@@ -1886,7 +1886,7 @@ _MTLDevice_supportsSamplerReduction(void *obj) {
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   uint64_t registry = device.registryID;
   // "Sampler minimum and maximum reduction", Apple10
-  if (!family_has(10)) {
+  if (!family_has(10) || ![device supportsFamily:MTLGPUFamilyApple10]) {
     params->ret = false;
     return STATUS_SUCCESS;
   }
