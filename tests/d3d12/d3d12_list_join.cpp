@@ -2,7 +2,8 @@
 // draws to the same target from successive lists land in submission order (D3D11.3 functional specification, 4.2
 // Fixed Order of Pipeline Results), what a list clears at its start is cleared, a target only the next list draws to
 // gets its pixels, depth one list wrote is what the next one tests against, and a list after them that copies the
-// targets sees all of it, and so do draws of ExecuteIndirect, whose arguments a list reads where it runs. each case is
+// targets sees all of it, and so do draws of ExecuteIndirect, whose arguments and count a list reads where it runs
+// (a count buffer, so Mullion resolves the commands in work of their own before the pass). each case is
 // some lists of a slow draw each, then a list that copies, in one call.
 // argv[2] "child": the same in a process that encodes every run of passes on several threads
 // (MULLION_D3D12_PARALLEL_COMMANDS, MULLION_D3D12_ENCODE_THREADS); the test starts it itself.
@@ -171,6 +172,13 @@ run(int argc, char **argv) {
   auto commands = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, lists * sizeof(D3D12_DRAW_ARGUMENTS),
                          D3D12_RESOURCE_STATE_GENERIC_READ);
   CHECK(commands ? S_OK : E_FAIL);
+  // each command's count, one
+  auto count = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(UINT), D3D12_RESOURCE_STATE_GENERIC_READ);
+  CHECK(count ? S_OK : E_FAIL);
+  void *mapped_count;
+  CHECK(count->Map(0, nullptr, &mapped_count));
+  *static_cast<UINT *>(mapped_count) = 1;
+  count->Unmap(0, nullptr);
   // the left half's quad, then the right half's
   float corners[12][2];
   for (UINT id = 0; id < 12; id++) {
@@ -205,7 +213,7 @@ run(int argc, char **argv) {
     list->RSSetScissorRects(1, &scissor);
     UINT constants[4] = {value, work, 0, 0};
     list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
-    list->ExecuteIndirect(signature.Get(), 1, commands.Get(), i * sizeof(D3D12_DRAW_ARGUMENTS), nullptr, 0);
+    list->ExecuteIndirect(signature.Get(), 1, commands.Get(), i * sizeof(D3D12_DRAW_ARGUMENTS), count.Get(), 0);
     return list->Close();
   };
 
