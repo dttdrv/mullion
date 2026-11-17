@@ -61,7 +61,8 @@ def main(argv=None):
     declared = {t["name"] for build in args.build for path in [build / "meson-info" / "intro-tests.json"] if path.exists()
                 for t in json.loads(path.read_text())}
     common = [*[a for b in args.build[1:] for a in ("--build", b)], "--wine", args.wine,
-              *(["--prefix", args.prefix] if args.prefix else []), *(["--validate"] if args.validate else [])]
+              *(["--prefix", args.prefix] if args.prefix else []), *(["--validate"] if args.validate else []),
+              *(["--compilers", args.compilers] if args.compilers else [])]
     # what the unfaulted build answers, once per test and families in each run, as the source may have changed since
     answers = library.with_name(library.name + "-fault-answers")
     shutil.rmtree(answers, ignore_errors=True)
