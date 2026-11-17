@@ -35,6 +35,7 @@
 #include <fstream>
 #include <mutex>
 #include <array>
+#include <map>
 #include <unordered_set>
 #include <deque>
 #include <variant>
@@ -670,7 +671,8 @@ protected:
   struct PipelineDescriptor {
     std::variant<WMTRenderPipelineInfo, WMTMeshRenderPipelineInfo> info;
     std::vector<WMT::Reference<WMT::Function>> functions;
-    std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> variants;
+    // by RenderTargets' key and the formats of the pass's targets the pipeline does not write, two to a word
+    std::map<std::array<uint64_t, 5>, WMT::Reference<WMT::RenderPipelineState>> variants;
     // the geometry shader that counts pipeline statistics, made when first used
     std::function<WMT::Reference<WMT::Function>()> statistics_geometry_shader;
     WMT::Reference<WMT::Function> statistics_gs;
@@ -2237,6 +2239,10 @@ public:
       WMT::RenderPipelineState Pipeline, uint32_t Mask, uint32_t DSVPlanar, bool Statistics, bool Occluded, bool Coarse,
       WMTPixelFormat DSVFormat, const WMTPixelFormat (&Colors)[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT]
   ) override {
+    // a pass may have targets this pipeline does not write, as one a pipeline of more targets began (the list's
+    // SetPipelineState): its variant names them in the pass's formats, as Metal has a pipeline name every target of
+    // its pass, and writes none of them
+    uint32_t unwritten = Mask & ~rtv_mask, unwritten_planes = DSVPlanar & ~dsv_mask;
     Mask &= rtv_mask;
     DSVPlanar &= dsv_mask;
     // a pipeline of any depth stencil format is made without one, which a pass without a view keeps
@@ -2259,7 +2265,7 @@ public:
     // depth and stencil tests
     bool late = Occluded && depth_bounds_emulated && pixel_shader;
     if (!Pipeline || (!Statistics && !late && !Coarse && Mask == rtv_mask && !other_encoding && !other_dsv &&
-                      (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
+                      !unwritten && !unwritten_planes && (dsv_any_format ? !DSVPlanar : DSVPlanar == dsv_mask)))
       return Pipeline;
     std::lock_guard<mullion::mutex> lock(render_targets_mutex_);
     auto described = pipeline_descriptors_.find(Pipeline.handle);
@@ -2267,12 +2273,18 @@ public:
     if (described == pipeline_descriptors_.end())
       return Pipeline;
     auto &descriptor = described->second;
-    auto key = Mask | (DSVPlanar << D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) |
-               (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
-               (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3)) |
-               (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4)) |
-               (other_encoding << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 5)) |
-               (uint64_t(any_format || other_dsv ? DSVFormat : WMTPixelFormatInvalid) << 32);
+    std::array<uint64_t, 5> key{
+        Mask | (DSVPlanar << D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT) |
+        (uint32_t(Statistics) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 2)) |
+        (uint32_t(late) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 3)) |
+        (uint32_t(Coarse) << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 4)) |
+        (other_encoding << (D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 5)) |
+        (unwritten_planes << (2 * D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 5)) |
+        (uint64_t(any_format || other_dsv || unwritten_planes ? DSVFormat : WMTPixelFormatInvalid) << 32)
+    };
+    for (unsigned i = 0; i < std::size(Colors); i++)
+      if (unwritten & (1u << i))
+        key[1 + i / 2] |= uint64_t(ORIGINAL_FORMAT(Colors[i])) << (32 * (i % 2));
     auto found = descriptor.variants.find(key);
     if (found != descriptor.variants.end())
       return found->second;
@@ -2306,18 +2318,24 @@ public:
               info.mesh_function = descriptor.statistics_gs;
             }
           for (unsigned i = 0; i < std::size(info.colors); i++)
-            if (!(Mask & (1u << i)))
+            if (unwritten & (1u << i))
+              info.colors[i] = {.pixel_format = WMTPixelFormat(ORIGINAL_FORMAT(Colors[i]))};
+            else if (!(Mask & (1u << i)))
               info.colors[i] = {.pixel_format = WMTPixelFormatInvalid};
             else if (other_encoding & (1u << i))
               // in the channel order the pixel shader was made for
               info.colors[i].pixel_format = WMTPixelFormat(
                   (info.colors[i].pixel_format & WMTPixelFormatCustomSwizzle) | ORIGINAL_FORMAT(Colors[i])
               );
-          if (!(DSVPlanar & 1))
+          if (unwritten_planes & 1)
+            info.depth_pixel_format = DSVFormat;
+          else if (!(DSVPlanar & 1))
             info.depth_pixel_format = WMTPixelFormatInvalid;
           else if (any_format || other_dsv)
             info.depth_pixel_format = DSVFormat;
-          if (!(DSVPlanar & 2))
+          if (unwritten_planes & 2)
+            info.stencil_pixel_format = DSVFormat;
+          else if (!(DSVPlanar & 2))
             info.stencil_pixel_format = WMTPixelFormatInvalid;
           else if (any_format || other_dsv)
             info.stencil_pixel_format = DSVFormat;
