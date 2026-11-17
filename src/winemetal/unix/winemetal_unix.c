@@ -2280,7 +2280,8 @@ CREATES(_MTLDevice_newFrameInterpolator)(void *obj) {
     desc.inputHeight = info->input_height;
     desc.outputWidth = info->output_width;
     desc.outputHeight = info->output_height;
-    desc.requiresPrevColorTexture = NO;
+    // set by name: macOS 26's SDK, which release builds use, does not declare it
+    [desc setValue:@NO forKey:@"requiresPrevColorTexture"];
     params->ret = params->metal4 ? (obj_handle_t)[desc newFrameInterpolatorWithDevice:device compiler:compiler]
                                  : (obj_handle_t)[desc newFrameInterpolatorWithDevice:device];
     [desc release];
