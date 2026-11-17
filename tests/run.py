@@ -29,8 +29,17 @@ from pathlib import Path
 
 # what a test's last word and exit status make of it (tests/*/..._test.hpp)
 RESULTS = {"passed": 0, "skipped": 77}
-# a runner that is told to end ends as one that is interrupted: through its finally clauses
-signal.signal(signal.SIGTERM, lambda *_: sys.exit("ended"))
+# a runner that is told to end ends as one that is interrupted: through its finally clauses. its threads start no
+# more tests and stop waiting for the machine's lock, or the process would wait for them (alone)
+ENDING = threading.Event()
+
+
+def end(*_):
+    ENDING.set()
+    sys.exit("ended")
+
+
+signal.signal(signal.SIGTERM, end)
 # how long a test waits for a machine short of memory before the run gives up
 PATIENCE = 1800
 # how long the machine's lock is left free for a job that waits for it
@@ -176,9 +185,13 @@ def alone():
     # MULLION_TEST_URGENT marks a run that others let go first, for as long as it lives: a check of one change
     # waits for one test of a long run, not for its turns
     urgent = lock and os.environ.get("MULLION_TEST_URGENT")
+    if ENDING.is_set():
+        sys.exit("ended")
     with HOLDERS:
         # a waiter, which says so in the lock's .waiting directory, gets the lock once the tests that hold it end
         while lock and HOLDERS.count and not urgent and waiting(lock + ".waiting"):
+            if ENDING.is_set():
+                sys.exit("ended")
             HOLDERS.wait(1)
         if urgent and not hasattr(alone, "marker"):
             alone.marker = Path(lock + ".urgent", str(os.getpid()))
@@ -204,6 +217,9 @@ def alone():
                             os.kill(int(Path(lock, "pid").read_text()), 0)
                         except (ProcessLookupError, FileNotFoundError, ValueError):
                             shutil.rmtree(lock, ignore_errors=True)
+            if ENDING.is_set():
+                asking.unlink(missing_ok=True)
+                sys.exit("ended")
             time.sleep(5)
         HOLDERS.count += 1
     try:
