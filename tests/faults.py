@@ -2,7 +2,9 @@
 """whether each fault of tests/breaks makes its test give a new answer.
 
 a fault is tests/breaks/<test>[.<n>].patch: a change to the source that the test must notice. its `# family <f>` lines
-name the families it runs as, the GPU's own when it has none. the source is copied beside the first build, the patch
+name the families it runs as, the GPU's own when it has none; a `# validate` line runs it, faulted and not, under
+Metal's validation, for a fault that only Metal's own checks see (an access past a buffer's end gives back what was
+written there). the source is copied beside the first build, the patch
 applied, and built with that build's options; run.py then runs the test, every front end of it, on that build. a fault
 is caught when the test then gives an answer it does not give on the first build, unfaulted: an answer it had before
 is not the fault's. a test that stops early without the fault cannot tell a fault from what it stopped at.
@@ -68,8 +70,9 @@ def main(argv=None):
     for patch in patches(args.faults):
         test = re.sub(r"(\.\d+)?\.patch$", "", patch.name)
         families = ",".join(re.findall(r"^# family (\S+)", patch.read_text(), re.M) or ["native"])
+        validate = ["--validate"] if re.search(r"^# validate$", patch.read_text(), re.M) and not args.validate else []
         names = sorted(declared & {test, test + "_dxil", test + "_dxbc"})
-        before = answers / f"{test}-{families}.txt"
+        before = answers / f"{test}-{families}{'-validated' if validate else ''}.txt"
         # by content, not times: a file the last fault changed comes back newer than its objects, so it is rebuilt
         subprocess.run(["rsync", "-rlpc", "--delete", "--exclude", ".git", f"{SOURCE}/", f"{source}/"], check=True)
         if subprocess.run(["git", "apply", patch.resolve()], cwd=source, capture_output=True).returncode:
@@ -80,11 +83,11 @@ def main(argv=None):
             said = f"no test {test}"
         else:
             if not before.exists():
-                out = subprocess.run([sys.executable, RUN, "--build", library, *common, "--family", families, "--record",
-                                      before, "--exact", *names], capture_output=True, text=True)
+                out = subprocess.run([sys.executable, RUN, "--build", library, *common, *validate, "--family", families,
+                                      "--record", before, "--exact", *names], capture_output=True, text=True)
             if before.exists():
-                out = subprocess.run([sys.executable, RUN, "--build", faulted, *common, "--family", families, "--known",
-                                      before, "--exact", *names], capture_output=True, text=True)
+                out = subprocess.run([sys.executable, RUN, "--build", faulted, *common, *validate, "--family", families,
+                                      "--known", before, "--exact", *names], capture_output=True, text=True)
             new = [line[5:] for line in out.stdout.splitlines() if line.startswith("new: ")]
             if new:
                 print(f"{patch.name}: caught, {new[0]}", flush=True)
