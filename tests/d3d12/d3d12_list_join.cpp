@@ -27,7 +27,7 @@ uint slow() {
 }
 uint ps() : SV_Target { return slow(); }
 // a quad over half the target, the left one for vertices 0 to 5 and the right one for 6 to 11
-float4 half(uint id : SV_VertexID) : SV_Position {
+float4 sides(uint id : SV_VertexID) : SV_Position {
   uint c = id % 6;
   float x = c == 1 || c == 2 || c == 4, y = c == 2 || c == 4 || c == 5;
   return float4(x - 1 + id / 6, 1 - 2 * y, depth, 1);
@@ -46,7 +46,7 @@ run(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return 77;
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"),
-       both = compiler.compile(hlsl, "both", "ps"), halves = compiler.compile(hlsl, "half", "vs");
+       both = compiler.compile(hlsl, "both", "ps"), halves = compiler.compile(hlsl, "sides", "vs");
   if (!expect(!vs.empty() && !ps.empty() && !both.empty() && !halves.empty(), "HLSL did not compile"))
     return verdict();
 
