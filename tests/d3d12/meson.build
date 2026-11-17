@@ -43,6 +43,9 @@ exe = executable('d3d12_trace_log', ['d3d12_trace_log.cpp'], dependencies: d3d12
 test('d3d12_trace_log', exe, timeout: 600)
 exe = executable('d3d12_copy_memory', ['d3d12_copy_memory.cpp'], dependencies: d3d12_test_deps)
 test('d3d12_copy_memory_dxbc', exe, args: ['dxbc'], timeout: 600)
+exe = executable('d3d12_archive_memory', ['d3d12_archive_memory.cpp'], dependencies: d3d12_test_deps)
+# an object freed as a zombie keeps its memory, and the test measures what is freed
+test('d3d12_archive_memory_dxil', exe, args: ['dxil'], env: ['NSZombieEnabled=NO'], timeout: 600)
 exe = executable('d3d12_xrbias', ['d3d12_xrbias.cpp'], dependencies: d3d12_test_deps)
 foreach front_end : ['dxil', 'dxbc']
   test('d3d12_xrbias_' + front_end, exe, args: [ front_end ], suite: 'window', timeout: 600)
