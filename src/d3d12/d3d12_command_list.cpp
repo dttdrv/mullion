@@ -299,12 +299,17 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   uint64_t order_serial_ = 0, plain_serial_ = 0;
   const EncoderData *plain_pass_ = nullptr;
   std::vector<const Texture *> overlap_targets_;
+  // an ordering point since the last pass a draw or dispatch began that the vertex stages of draws after it may
+  // depend on (EncoderData::late)
+  bool vertex_order_ = false;
 
   // work after this point waits for work before it: the open pass too, which barriers that do not end it (Order),
-  // queries and stream output leave open, and whose later draws or dispatches may read what passes before it wrote
+  // queries and stream output leave open, and whose later draws or dispatches may read what passes before it wrote.
+  // `vertices`: work after it may read in a vertex stage what work before it wrote
   void
-  OrderingPoint() {
+  OrderingPoint(bool vertices = true) {
     order_serial_++;
+    vertex_order_ |= vertices;
     if (allocator_->encoder_current)
       allocator_->encoder_current->overlap = PassOverlap::Ordered;
   }
@@ -323,6 +328,10 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
       return texture && std::ranges::find(overlap_targets_, texture) != overlap_targets_.end();
     });
     pass->overlap = !follows ? PassOverlap::Ordered : shared ? PassOverlap::Shared : PassOverlap::Independent;
+    // only barriers whose work after them is pixel shading, render targets or depth since the last such pass
+    pass->late = !first && !follows && plain_pass_ && allocator_->encoder_last == plain_pass_ && !vertex_order_ &&
+                 pass->type == EncoderType::Render;
+    vertex_order_ = false;
     for (auto texture : targets)
       if (texture)
         overlap_targets_.push_back(texture);
@@ -1297,6 +1306,9 @@ public:
         shading_rate_pass_ = allocator_->encoder_current;
       if (!active_queries_.empty())
         CountVisibility();
+    } else if (vertex_order_) {
+      // a draw whose vertices may read what the pass's own work since it began did not
+      allocator_->encoder_current->late = false;
     }
 
     // the conservative rasterizer's viewports and state, bound again when they or the pipeline change
@@ -3134,7 +3146,12 @@ public:
 
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
     WriteMarkers();
-    OrderingPoint();
+    constexpr auto pixels = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE |
+                            D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    OrderingPoint(std::ranges::any_of(std::span(barriers, Count), [&](auto &barrier) {
+      auto after = barrier.Transition.StateAfter;
+      return barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !after || (after & ~pixels);
+    }));
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |
                        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
     // Metal orders passes that reach one memory through a reserved buffer and through another resource only with
@@ -5597,7 +5614,17 @@ public:
   Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) {
     WriteMarkers();
     barrier_serial_++;
-    OrderingPoint();
+    constexpr auto pixels =
+        D3D12_BARRIER_SYNC_PIXEL_SHADING | D3D12_BARRIER_SYNC_DEPTH_STENCIL | D3D12_BARRIER_SYNC_RENDER_TARGET;
+    bool vertices = false;
+    for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
+      for (UINT32 i = 0; i < group.NumBarriers; i++) {
+        auto after = group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? group.pGlobalBarriers[i].SyncAfter
+                     : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].SyncAfter
+                                                                : group.pBufferBarriers[i].SyncAfter;
+        vertices |= !after || (after & ~pixels);
+      }
+    OrderingPoint(vertices);
     // an access to or from NO_ACCESS hands memory from one resource to another that aliases it (Enhanced Barriers,
     // Resource Aliasing), after which another may take the addresses. once a reserved buffer exists, an access from
     // NO_ACCESS, which makes a resource the one that uses the memory, is ordered as ResourceBarrier orders an ALIASING

@@ -1,0 +1,14 @@
+# an enhanced barrier's SyncAfter is taken as pixel shading alone
+# family native
+# family native-metal3
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -5046,7 +5046,7 @@ public:
+         auto after = group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? group.pGlobalBarriers[i].SyncAfter
+                      : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].SyncAfter
+                                                                 : group.pBufferBarriers[i].SyncAfter;
+-        vertices |= !after || (after & ~pixels);
++        (void)after;
+       }
+     OrderingPoint(vertices);
+     // an access to or from NO_ACCESS hands memory from one resource to another that aliases it (Enhanced Barriers,

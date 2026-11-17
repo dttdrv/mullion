@@ -1,0 +1,13 @@
+# a late pass's fragments wait for nothing of the group before it
+# family native-metal3
+# family 7-metal3
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -216,6 +216,6 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+     bool late = pass->late && !ordered_next;
+     for (unsigned i = 0; i < previous_count_; i++)
+-      (late ? sync.pixels[sync.pixel_count++] : sync.waits[sync.wait_count++]) =
++      (late ? sync.pixels[kGroupPasses - 1] : sync.waits[sync.wait_count++]) =
+           group_fences_[(group_half_ ^ 1) * kGroupPasses + i];
+     for (unsigned i = 0; late && i < older_count_; i++)
+       sync.waits[sync.wait_count++] = group_fences_[group_half_ * kGroupPasses + i];
