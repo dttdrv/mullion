@@ -2083,6 +2083,7 @@ public:
         }
         before.encodeCommands(&data->before_head);
         end(before);
+        // the next encoder begins with it: the copy below, whose end updates the fence the pass waits for, or the pass
         if constexpr (Metal4)
           if (data->order_aliases)
             cmdbuf.orderAliases(false);
@@ -2113,10 +2114,6 @@ public:
             offset += omitted->words;
           }
           end(copy);
-          // the copy's encoder began with that barrier: the pass is not ordered after it, and asks for its own
-          if constexpr (Metal4)
-            if (data->order_aliases)
-              cmdbuf.orderAliases(false);
         }
       }
       if (diag::trace_encoders)
