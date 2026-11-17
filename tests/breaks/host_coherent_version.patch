@@ -1,12 +1,11 @@
 # a kernel with a device-coherent texture access keeps Metal 4's AIR
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -1349,7 +1349,7 @@
-         return f.getName().startswith("air.") && f.getName().contains("_texture") &&
-                f.getName().contains(".device_coherent");
+@@ -1258,5 +1258,5 @@
+         return uav.second.global_coherent && (uav.second.read || uav.second.written) &&
+                uav.second.resource_type != shader::common::ResourceType::NonApplicable;
        }))
--    setup_metal_version(module, SM50_SHADER_METAL_320);
+-    metal_version = SM50_SHADER_METAL_320;
 +    (void)0;
- 
-   return llvm::Error::success();
- };
+   SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+   args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);

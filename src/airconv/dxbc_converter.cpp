@@ -258,8 +258,6 @@ void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_v
 
   auto airVersion = module.getOrInsertNamedMetadata("air.version");
   auto airLangVersion = module.getOrInsertNamedMetadata("air.language_version");
-  airVersion->clearOperands();
-  airLangVersion->clearOperands();
   switch (metal_version) {
   case SM50_SHADER_METAL_320: {
     airVersion->addOperand(
@@ -1253,6 +1251,14 @@ llvm::Error convert_dxbc_compute_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  // Apple's compiler on the M5 Ultra (macOS 27.3) aborts on a device-coherent texture access in Metal 4's AIR, and
+  // builds the same module as Metal 3.2's (#238): a kernel that reads or writes a globally coherent texture says
+  // Metal 3.2. decided before any code is made, since code takes the forms of its module's version
+  if (metal_version == SM50_SHADER_METAL_400 && llvm::any_of(shader_info->uavMap, [](auto &uav) {
+        return uav.second.global_coherent && (uav.second.read || uav.second.written) &&
+               uav.second.resource_type != shader::common::ResourceType::NonApplicable;
+      }))
+    metal_version = SM50_SHADER_METAL_320;
   SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
   args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
@@ -1341,15 +1347,6 @@ llvm::Error convert_dxbc_compute_shader(
   builder.CreateRetVoid();
 
   module.getOrInsertNamedMetadata("air.kernel")->addOperand(function_metadata);
-
-  // Apple's compiler on the M5 Ultra (macOS 27.3) aborts on a device-coherent texture access in Metal 4's AIR, and
-  // builds the same module as Metal 3.2's (#238). a kernel's code is the same for both: it asks only whether the
-  // version is at least 3.2
-  if (metal_version == SM50_SHADER_METAL_400 && llvm::any_of(module.functions(), [](llvm::Function &f) {
-        return f.getName().startswith("air.") && f.getName().contains("_texture") &&
-               f.getName().contains(".device_coherent");
-      }))
-    setup_metal_version(module, SM50_SHADER_METAL_320);
 
   return llvm::Error::success();
 };
