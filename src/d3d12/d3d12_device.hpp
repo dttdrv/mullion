@@ -570,6 +570,18 @@ public:
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
+  // with Metal's tessellator, `hull` runs its vertex and hull shaders before the pass, writing each group of patches'
+  // control points and constants (patch_group_size bytes) and each patch's factors (patch_factor_size bytes, Metal's
+  // MTL*TessellationFactorsHalf) for `pso_patches`, its domain and pixel shaders; `pso` stays the mesh pipeline, for the
+  // draws Metal's tessellator does not take
+  WMT::Reference<WMT::ComputePipelineState> hull;
+  WMT::Reference<WMT::RenderPipelineState> pso_patches;
+  uint32_t patch_group_size = 0, patch_factor_size = 0;
+  // with Metal 4, the tessellator is in compute (TessellationDraw), and `pso_patches` is a plain vertex pipeline
+  bool compute_tessellation = false;
+  uint32_t tessellation_kind = 0;
+  // the largest whole factor its hull shader's patches can have (MaxTessFactor)
+  uint32_t tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in a variant of its own for strips (GeometryPipeline; none for points)
   bool geometry_shader = false;
@@ -848,6 +860,14 @@ public:
   }
   std::once_flag mesh_grid_asked_;
   uint32_t max_mesh_threadgroups_ = 0;
+  // the most points and indices a patch slot of a render pass's compute tessellator has made, and a pass, which size
+  // the arenas of the passes after them by their slots and no larger than a pass has needed: none until a pass has
+  // made some, more as passes make more (MTLD3D12CommandAllocatorImpl::Reset). what a pass makes past its arena its
+  // mesh draws draw
+  std::atomic<uint32_t> tessellation_slot_points{0}, tessellation_slot_indices{0};
+  std::atomic<uint32_t> tessellation_pass_points{0}, tessellation_pass_indices{0};
+  // the most a pass takes: 12 MB of points and of indices
+  static constexpr uint32_t kTessellationMostPoints = 1u << 20, kTessellationMostIndices = 3u << 20;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads

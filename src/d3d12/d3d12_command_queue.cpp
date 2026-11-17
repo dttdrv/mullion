@@ -2072,8 +2072,21 @@ public:
           inflight.physical[WMTMetal4Compute]++;
         auto before = cmdbuf.computeCommandEncoder(true);
         wait(before);
+        // a hull kernel reads the pass's resources as its draws' vertex stages do
+        if (sparse_mappings) {
+          inflight.sparse_mappings = sparse_mappings;
+          wmtcmd_compute_setbuffer binding{};
+          binding.type = WMTComputeCommandSetBuffer;
+          binding.buffer = sparse_mappings;
+          binding.index = kSparseBufferArgumentIndex;
+          before.encodeCommands(reinterpret_cast<const wmtcmd_compute_nop *>(&binding));
+        }
         before.encodeCommands(&data->before_head);
         end(before);
+        // the next encoder begins with it: the copy below, whose end updates the fence the pass waits for, or the pass
+        if constexpr (Metal4)
+          if (data->order_aliases)
+            cmdbuf.orderAliases(false);
         if (data->omitted) {
           size_t count = 0;
           for (auto omitted = data->omitted; omitted; omitted = omitted->next)
