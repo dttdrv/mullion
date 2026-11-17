@@ -1,0 +1,13 @@
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index 9a75d9da..bee4b5f1 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -60,7 +60,7 @@ DriverVersion() {
+       if (nvidia >= 30000)
+         return nvidia;
+     }
+-    return NvU32(99999);
++    return NvU32(NVAPI_SDK_VERSION);
+   }();
+   return version;
+ }

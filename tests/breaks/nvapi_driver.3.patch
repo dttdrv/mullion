@@ -1,0 +1,13 @@
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index 9a75d9da..b25e528b 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -94,7 +94,7 @@ NvAPI_GetDisplayDriverVersion(NvDisplayHandle hNvDisplay, NV_DISPLAY_DRIVER_VERS
+   if (pVersion->version != NV_DISPLAY_DRIVER_VERSION_VER)
+     return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+ 
+-  pVersion->drvVersion = DriverVersion();
++  pVersion->drvVersion = 99999;
+   pVersion->bldChangeListNum = 0;
+   DriverBranch(pVersion->szBuildBranchString);
+   memset(pVersion->szAdapterString, 0, sizeof(pVersion->szAdapterString));
