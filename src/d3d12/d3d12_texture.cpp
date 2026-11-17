@@ -22,6 +22,7 @@
 #include <cmath>
 #include "mullion_format.hpp"
 #include "mullion_shared_texture.hpp"
+#include "util_env.hpp"
 #include "com/com_pointer.hpp"
 
 namespace mullion {
@@ -463,8 +464,9 @@ public:
     UINT planes = format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR ? format.PlanarCount : 1;
     // a committed 2D texture on a shared heap is a Metal shared texture, which other devices and processes open
     // (ID3D12Device::CreateSharedHandle); other shared resources are not shared so far
+    // only a VR runtime shares textures between processes this way, so only with MULLION_METALVR (env::metalVR)
     const bool shared = !pHeap && !Reserved && !pTexture && (HeapFlags & D3D12_HEAP_FLAG_SHARED) && planes == 1 &&
-                        desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                        desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && env::metalVR();
     uint64_t offset = HeapOffset;
     for (UINT plane = 0; plane < planes; plane++) {
       if (plane && FAILED(PopulateWMTTextureInfo(device_, texture_info, desc_, plane)))
@@ -1540,6 +1542,8 @@ CreateCommittedTexture(
 
 HRESULT
 OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE handle, REFIID riid, void **ppResource) {
+  if (!env::metalVR())
+    return S_FALSE;
   SharedTextureData data{};
   void *view = handle ? MapViewOfFile(handle, FILE_MAP_READ, 0, 0, sizeof(SharedTextureData)) : nullptr;
   if (!view)

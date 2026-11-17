@@ -1774,10 +1774,11 @@ public:
     Com<ID3D12Fence> fence;
     if (!object || !handle)
       return E_INVALIDARG;
-    // fences, and committed textures on a shared heap; heaps and other resources are not shared so far
+    // fences, and for a VR runtime (env::metalVR) committed textures on a shared heap; heaps and other resources
+    // are not shared so far
     if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence)))) {
       Com<ID3D12Resource> resource;
-      if (FAILED(object->QueryInterface(IID_PPV_ARGS(&resource))))
+      if (!env::metalVR() || FAILED(object->QueryInterface(IID_PPV_ARGS(&resource))))
         return E_NOTIMPL;
       return static_cast<MTLD3D12Resource *>(resource.ptr())->CreateSharedHandle(attributes, access, name, handle);
     }

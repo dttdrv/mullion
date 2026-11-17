@@ -91,6 +91,8 @@ TextureDesc() {
 
 int
 main(int argc, char **argv) {
+  // sharing a texture this way is for a VR runtime, which says so before it makes a device (env::metalVR)
+  SetEnvironmentVariableA("MULLION_METALVR", "1");
   Device12 a, b;
   if (!expect(a.create() && b.create(), "two Direct3D 12 devices"))
     return verdict();
