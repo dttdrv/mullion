@@ -1,0 +1,11 @@
+# the check for a globally coherent texture looks at buffers
+--- a/src/airconv/dxbc_converter.cpp
++++ b/src/airconv/dxbc_converter.cpp
+@@ -1257,6 +1257,6 @@
+   if (metal_version == SM50_SHADER_METAL_400 && llvm::any_of(shader_info->uavMap, [](auto &uav) {
+         return uav.second.global_coherent && (uav.second.read || uav.second.written) &&
+-               uav.second.resource_type != shader::common::ResourceType::NonApplicable;
++               uav.second.resource_type == shader::common::ResourceType::NonApplicable;
+       }))
+     metal_version = SM50_SHADER_METAL_320;
+   SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;

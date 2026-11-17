@@ -50,6 +50,14 @@ static cl::opt<std::string> RootSignature(
   "root-signature", cl::desc("Bind resources as a serialized D3D12 root signature does (D3D12SerializeRootSignature)")
 );
 
+static cl::opt<SM50_SHADER_METAL_VERSION> MetalVersion(
+  "metal-version", cl::init(SM50_SHADER_METAL_320), cl::desc("Convert for a device of this Metal version"),
+  cl::values(
+    clEnumValN(SM50_SHADER_METAL_310, "310", "Metal 3.1"), clEnumValN(SM50_SHADER_METAL_320, "320", "Metal 3.2"),
+    clEnumValN(SM50_SHADER_METAL_400, "400", "Metal 4")
+  )
+);
+
 static cl::opt<bool> NoCustomBorder(
   "no-custom-border", cl::init(false),
   cl::desc("Leave out custom border colors, as a pipeline made before any sampler has one does")
@@ -260,7 +268,7 @@ int main(int argc, char **argv) {
   }
 
   SM50_SHADER_COMMON_DATA data;
-  data.metal_version = SM50_SHADER_METAL_320;
+  data.metal_version = MetalVersion;
   data.flags = NoCustomBorder ? SM50_SHADER_FLAG_NO_CUSTOM_BORDER : SM50_SHADER_FLAG{};
   data.simd_width = 0; // no device to ask; a vertex shader's wave has no lane count here
   data.next = 0;
