@@ -1,10 +1,10 @@
 # the configured memory cap is not applied
 --- a/src/dxgi/dxgi_adapter.cpp
 +++ b/src/dxgi/dxgi_adapter.cpp
-@@ -80,7 +80,7 @@
-       : device_(device), factory_(factory), options_(config) {
+@@ -93,7 +93,7 @@
      auto identity = IdentityOf(device);
-     // what Metal recommends the device's working set be, or less where the configuration says
+     // the GPU's share of the system's memory, no more than Metal recommends the device's working set be, or less where
+     // the configuration says
 -    memory_ = options_.maxDeviceMemory ? std::min(identity.memory, options_.maxDeviceMemory) : identity.memory;
 +    memory_ = identity.memory;
  

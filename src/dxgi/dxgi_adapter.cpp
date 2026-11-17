@@ -49,14 +49,24 @@ LUID GetAdapterLuid(WMT::Device device) {
   return std::bit_cast<LUID>(__builtin_bswap64(device.registryID()));
 }
 
-// what an adapter reports of its Metal device before the configuration: the LUID, the GPU's name and the working set
-// Metal recommends. none of them changes while the process runs, and a factory makes a new adapter at every
-// enumeration, so they are found once for each device
+// what an adapter reports of its Metal device before the configuration: the LUID, the GPU's name and the memory it
+// may use. none of them changes while the process runs, and a factory makes a new adapter at every enumeration, so
+// they are found once for each device
 struct DeviceIdentity {
   LUID luid;
   WCHAR name[sizeof(DXGI_ADAPTER_DESC3::Description) / sizeof(WCHAR)];
   uint64_t memory;
 };
+
+// the system memory Windows lets a GPU use of `total`: "MIN((TotalSystemMemory * 80%), MAX((TotalSystemMemory - 16
+// GB), (TotalSystemMemory * 50%))" (Calculating Graphics Memory, Windows drivers, Microsoft Learn), half of it up to 32
+// GB. the rest is the CPU's, which on unified memory holds the application's own memory beside what its GPU uses:
+// Metal's recommended working set is about three quarters of it, and leaves that out
+static uint64_t
+GraphicsShare(uint64_t total) {
+  constexpr uint64_t kGB = uint64_t(1) << 30;
+  return std::min(total / 5 * 4, std::max(total > 16 * kGB ? total - 16 * kGB : 0, total / 2));
+}
 
 static DeviceIdentity
 IdentityOf(WMT::Device device) {
@@ -69,7 +79,9 @@ IdentityOf(WMT::Device device) {
     identity.luid = GetAdapterLuid(device);
     std::memset(identity.name, 0, sizeof(identity.name));
     device.name().getCString((char *)identity.name, sizeof(identity.name), WMTUTF16StringEncoding);
-    identity.memory = device.recommendedMaxWorkingSetSize();
+    MEMORYSTATUSEX status{sizeof(status)};
+    GlobalMemoryStatusEx(&status);
+    identity.memory = std::min(device.recommendedMaxWorkingSetSize(), GraphicsShare(status.ullTotalPhys));
   }
   return known->second;
 }
@@ -79,7 +91,8 @@ public:
   MTLDXGIAdapter(WMT::Device device, IDXGIFactory *factory, Config &config)
       : device_(device), factory_(factory), options_(config) {
     auto identity = IdentityOf(device);
-    // what Metal recommends the device's working set be, or less where the configuration says
+    // the GPU's share of the system's memory, no more than Metal recommends the device's working set be, or less where
+    // the configuration says
     memory_ = options_.maxDeviceMemory ? std::min(identity.memory, options_.maxDeviceMemory) : identity.memory;
 
     if (!options_.customDeviceDesc.empty()) {

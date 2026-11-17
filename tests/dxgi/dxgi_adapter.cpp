@@ -12,7 +12,8 @@
 //   DXGI_MEMORY_SEGMENT_GROUP_LOCAL refer to the same memory" (D3D12_MEMORY_POOL), so the non-local group of such an
 //   adapter has no budget and no usage. a reservation set (SetVideoMemoryReservation) is the current one; one above
 //   what is available is refused, and a budget event is set when registered, as Windows drivers do (DXVK's
-//   dxgi_adapter.cpp records both).
+//   dxgi_adapter.cpp records both). a unified memory adapter shares no more of the system's memory, and budgets no
+//   more, than Windows lets a GPU use of it (Calculating Graphics Memory): half of it up to 32 GB.
 // - the adapter has the GPU's name and, for applications that leave unless they know the vendor, AMD's vendor ID;
 //   the configuration names another (dxgi.customVendorId), Apple's own included, and changes nothing else. the
 //   environment's (MULLION_CONFIG) overrides the file's, also after the file opens another executable's section.
@@ -234,6 +235,27 @@ main(int argc, char **argv) {
   CHECK(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local));
   expect(local.Budget && local.AvailableForReservation && local.AvailableForReservation <= local.Budget && !local.CurrentReservation,
          "the local group's budget and reservation");
+  D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)));
+  // a GPU that shares the system's memory has no more of it than Windows lets one use: "SharedSystemMemory =
+  // MIN(MIN(SumOfCommitLimitOnAllApertureSegment, ...), MaxSharedSystemMemory)", where "MaxSharedSystemMemory =
+  // TotalSystemMemoryAvailableForGraphics - DedicatedSystemMemory" and "TotalSystemMemoryAvailableForGraphics =
+  // MIN((TotalSystemMemory * 80%), MAX((TotalSystemMemory - 16 GB), (TotalSystemMemory * 50%))" (Calculating
+  // Graphics Memory, https://learn.microsoft.com/en-us/windows-hardware/drivers/display/calculating-graphics-memory).
+  // the local group's budget is of that memory, the one segment group of unified memory (D3D12_MEMORY_POOL)
+  if (architecture.UMA) {
+    MEMORYSTATUSEX status{sizeof(status)};
+    CHECK(GlobalMemoryStatusEx(&status) ? S_OK : E_FAIL);
+    const UINT64 total = status.ullTotalPhys, gb = UINT64(1) << 30;
+    const UINT64 share = std::min(total / 5 * 4, std::max(total > 16 * gb ? total - 16 * gb : 0, total / 2));
+    DXGI_ADAPTER_DESC1 shared;
+    CHECK(adapter->GetDesc1(&shared));
+    printf("system memory %llu MB, for graphics %llu MB; shared system memory %llu MB, budget %llu MB\n", total >> 20,
+           share >> 20, UINT64(shared.SharedSystemMemory) >> 20, local.Budget >> 20);
+    expect(shared.SharedSystemMemory + shared.DedicatedSystemMemory <= share,
+           "the adapter shares more of the system's memory than a GPU may use");
+    expect(local.Budget <= share, "the local budget is more of the system's memory than a GPU may use");
+  }
   // the configuration's cap is the adapter's memory and the local budget, where the GPU has more; usage stays what it is
   if (memory_cap) {
     DXGI_ADAPTER_DESC1 capped;
@@ -242,8 +264,6 @@ main(int argc, char **argv) {
            "the adapter's memory is not the configured cap");
     expect(local.Budget == memory_cap, "the local budget is not the configured cap");
   }
-  D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
-  CHECK(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)));
   if (architecture.UMA)
     expect(!non_local.Budget && !non_local.CurrentUsage && !non_local.AvailableForReservation,
            "unified memory has a non-local group");

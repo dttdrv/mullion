@@ -1,0 +1,12 @@
+# the adapter reports Metal's whole working set, not the GPU's share of the system's memory
+--- a/src/dxgi/dxgi_adapter.cpp
++++ b/src/dxgi/dxgi_adapter.cpp
+@@ -81,7 +81,7 @@
+     device.name().getCString((char *)identity.name, sizeof(identity.name), WMTUTF16StringEncoding);
+     MEMORYSTATUSEX status{sizeof(status)};
+     GlobalMemoryStatusEx(&status);
+-    identity.memory = std::min(device.recommendedMaxWorkingSetSize(), GraphicsShare(status.ullTotalPhys));
++    identity.memory = device.recommendedMaxWorkingSetSize();
+   }
+   return known->second;
+ }
