@@ -661,6 +661,11 @@ protected:
   // calls `Fn` of `Texture`, answering 0 where the texture stands for an unbound one
   Value *CreateTextureCall(const Texture &Texture, FunctionCallee Fn, ArrayRef<Value *> Ops);
 
+  // whether the module is AIR 2.8 (Metal 4) or later, whose reads and texture atomics take more arguments
+  bool IsAIR28();
+  // a read's or a texture atomic's offset after its position and array index, 0, where the module's AIR takes one
+  void PushTexelOffset(const Texture &Texture, SmallVectorImpl<Type *> &Tys, SmallVectorImpl<Value *> &Ops);
+
   Value *
   GetOffset(const Texture &Texture, const int32_t ImmOffset[3]) {
     switch (Texture.kind) {
