@@ -1365,8 +1365,9 @@ public:
       if (device_->NamesPasses())
         device_->NamePass(allocator_->encoder_current, pso_graphics_->name, pipeline);
 
+      // the planes the pipeline has: a pass may have more (SetPipelineState)
       auto dsso = pso_graphics_->GetDepthStencilState(
-          static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags,
+          static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags & pso_graphics_->dsv_mask,
           static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_readonly_flags
       );
       if (dsso.handle != pass_dsso_) {
@@ -2970,10 +2971,17 @@ public:
     // the vertex buffer table has an entry for each slot the pipeline reads, and is bound to the stages above
     if (!pso_graphics_ || pso_graphics_->slot_mask != graphics_pso->slot_mask)
       dirty_state_.set(DirtyState::VertexBuffer);
-    if (!pso_graphics_ || pso_graphics_->forced_sample_count != graphics_pso->forced_sample_count ||
-        ((pso_graphics_->rtv_mask ^ graphics_pso->rtv_mask) & ((1u << num_rtvs) - 1)) ||
-        (dsv.Texture && ((pso_graphics_->dsv_mask ^ graphics_pso->dsv_mask) &
-                         DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)))))
+    // a pass has the targets its first pipeline writes (PreDraw). a pipeline that writes no other target draws in it
+    // and leaves the rest of them alone (RenderTargets); one that writes a target the pass lacks starts the next
+    bool restart = !pso_graphics_ || pso_graphics_->forced_sample_count != graphics_pso->forced_sample_count;
+    if (auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+        !restart && pass && pass->type == EncoderType::Render) {
+      for (unsigned i = 0; i < num_rtvs; i++)
+        restart |= (graphics_pso->rtv_mask & (1u << i)) && rtvs[i].Texture && !pass->colors[i].attachment;
+      restart |= dsv.Texture && (graphics_pso->dsv_mask & DepthStencilPlanarFlags(dsv.Texture->pixelFormat(dsv.View)) &
+                                 ~pass->dsv_planar_flags);
+    }
+    if (restart)
       allocator_->InvalidateCurrentPass();
     if (graphics_pso->shader_blend)
       dirty_state_.set(DirtyState::BlendFactor);
