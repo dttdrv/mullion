@@ -10,7 +10,10 @@
 //   lists (the PSV0 part: DirectXShaderCompiler, DxilPipelineStateValidation.h, PSVResourceBindInfo0); the input
 //   layout has the vertex shader's input signature (ISG1: DxilContainer.h, DxilProgramSignatureElement), an
 //   element a register, of the signature's component type; the targets have the types the pixel shader's output
-//   signature (OSG1) gives its SV_Target outputs, and depth when it or no pixel shader writes it.
+//   signature (OSG1) gives its SV_Target outputs, and depth when it or no pixel shader writes it. the root signature
+//   indexes the descriptor heaps directly when a stage's shader does (its feature info, SFI0:
+//   ShaderFeatureInfo_ResourceDescriptorHeapIndexing and _SamplerDescriptorHeapIndexing, DxilConstants.h): pipeline
+//   creation fails without D3D12_ROOT_SIGNATURE_FLAG_*_HEAP_DIRECTLY_INDEXED (DirectX-Specs, HLSL Dynamic Resources).
 // a stage has another's inputs when each input of the later stage that an earlier stage must write (all but the
 // rasterizer's own: SV_IsFrontFace, SV_SampleIndex, SV_Coverage, SV_InnerCoverage, and SV_PrimitiveID) is an output
 // of the earlier one with the name, index, register and type, and no component the earlier does not have: what
@@ -27,6 +30,8 @@ enum Kind { Pixel, Vertex, Geometry, Hull, Domain, Compute };
 // DxilProgramSigSemantic and DxilProgramSigCompType
 enum { PrimitiveID = 7, IsFrontFace = 9, SampleIndex = 10, Target = 64, Depth = 65, Coverage = 66, DepthGE = 67, DepthLE = 68, InnerCoverage = 70 };
 enum { UInt32 = 1, SInt32 = 2, Float32 = 3 };
+// ShaderFeatureInfo_ResourceDescriptorHeapIndexing and _SamplerDescriptorHeapIndexing (DxilConstants.h)
+constexpr UINT64 ResourceHeapIndexing = 0x2000000, SamplerHeapIndexing = 0x4000000;
 
 struct Element {
   const char *name;
@@ -37,6 +42,7 @@ struct Element {
 struct Shader {
   std::string hash, code;
   UINT kind = ~0u, lanes[2] = {0, ~0u}, primitive = 0;
+  UINT64 features = 0;
   std::vector<Element> in, out;
   std::vector<D3D12_DESCRIPTOR_RANGE> views, samplers;
 
@@ -55,6 +61,8 @@ struct Shader {
       std::string tag = code.substr(part, 4);
       if (tag == "DXIL") {
         kind = word(body) >> 16;
+      } else if (tag == "SFI0") {
+        features = word(body) | UINT64(word(body + 4)) << 32;
       } else if (tag == "ISG1" || tag == "OSG1") {
         // DxilProgramSignature, then its elements of 32 bytes
         for (UINT e = 0; e < word(body); e++) {
@@ -151,7 +159,12 @@ main(int argc, char **argv) {
     std::string names;
     bool waves = true;
     std::vector<D3D12_ROOT_PARAMETER> parameters;
+    auto flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     for (auto stage : stages) {
+      if (stage->features & ResourceHeapIndexing)
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+      if (stage->features & SamplerHeapIndexing)
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
       const char *kinds[] = {"ps", "vs", "gs", "hs", "ds", "cs"};
       names += std::string(names.empty() ? "" : ", ") + kinds[stage->kind] + " " + stage->hash;
       waves &= stage->lanes[0] <= options1.WaveLaneCountMax && stage->lanes[1] >= options1.WaveLaneCountMin;
@@ -167,8 +180,7 @@ main(int argc, char **argv) {
         }
     }
     step("a pipeline of %s", names.c_str());
-    auto rs = root_signature(device.Get(), {(UINT)parameters.size(), parameters.data(), 0, nullptr,
-                                            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT});
+    auto rs = root_signature(device.Get(), {(UINT)parameters.size(), parameters.data(), 0, nullptr, flags});
     if (!expect(rs, "no root signature of the ranges of %s", names.c_str()))
       return;
     ComPtr<ID3D12PipelineState> pso;

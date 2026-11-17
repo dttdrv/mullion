@@ -62,7 +62,46 @@ ReflectionKey(const Sha1Digest &shader) {
   h.update(shader);
   return h.final();
 }
+
+constexpr char kArchivedMagic[] = "ARCHIVED";
+
+Sha1Digest
+ArchivedKey(const Sha1Digest &pipeline) {
+  Sha1HashState h;
+  h.update(kArchivedMagic, sizeof(kArchivedMagic));
+  h.update(pipeline);
+  return h.final();
+}
 } // namespace
+
+bool
+ShaderCache::isArchived(const Sha1Digest &pipeline) {
+  if (!scache_reader_)
+    return false;
+  {
+    std::shared_lock lock(archived_mutex_);
+    if (archived_.contains(pipeline))
+      return true;
+  }
+  if (!getReader().get(ArchivedKey(pipeline)))
+    return false;
+  std::unique_lock lock(archived_mutex_);
+  archived_.insert(pipeline);
+  return true;
+}
+
+void
+ShaderCache::setArchived(const Sha1Digest &pipeline) {
+  if (!scache_writer_)
+    return;
+  {
+    std::unique_lock lock(archived_mutex_);
+    if (!archived_.insert(pipeline).second)
+      return;
+  }
+  char held = 1;
+  getWriter().set(ArchivedKey(pipeline), WMT::MakeDispatchData(&held, sizeof(held)));
+}
 
 bool
 ShaderCache::getReflection(const Sha1Digest &shader, ShaderReflection &reflection) {

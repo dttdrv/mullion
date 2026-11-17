@@ -538,6 +538,12 @@ struct InputViewportArrayIndex {};
 struct InputRenderTargetArrayIndex {};
 
 struct InputPrimitiveID {};
+// a post-tessellation vertex function's patch, and its point's place in the patch's domain: uv for a quad, uvw for
+// a triangle
+struct InputPatchID {};
+struct InputPositionInPatch {
+  uint32_t components;
+};
 struct InputFrontFacing {};
 struct InputInputCoverage {};
 struct InputSampleIndex {};
@@ -636,7 +642,7 @@ using FunctionInput = template_concat_t<
     /* vertex */
     InputVertexID, InputInstanceID,     //
     InputBaseVertex, InputBaseInstance, //
-    InputVertexStageIn,
+    InputVertexStageIn, InputPatchID, InputPositionInPatch,
     /* fragment */
     InputPrimitiveID, InputViewportArrayIndex, InputRenderTargetArrayIndex,
     InputFrontFacing, InputPosition, InputSampleIndex, //
@@ -684,6 +690,8 @@ public:
   void CenterCentroids();
   void UseMaxWorkgroupSize(uint32_t size) { max_work_group_size = size; }
   void UseMaxMeshWorkgroupSize(uint32_t size) { max_mesh_work_group_size = size; }
+  // a post-tessellation vertex function of patches of a domain ("triangle" or "quad")
+  void UsePatch(std::string domain) { patch = domain; }
 
   auto CreateFunction(
     std::string name, llvm::LLVMContext &context, llvm::Module &module,
@@ -698,6 +706,7 @@ private:
   bool early_fragment_tests = false;
   uint32_t max_work_group_size = 0;
   uint32_t max_mesh_work_group_size = 0;
+  std::string patch;
 };
 
 inline TextureKind to_air_resource_type(

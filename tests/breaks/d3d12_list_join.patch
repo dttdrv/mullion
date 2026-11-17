@@ -1,0 +1,14 @@
+# the resolvers of a pass that goes on in another's encoder do not run
+# family native
+# family 7-metal3
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -2046,8 +2046,6 @@
+       // its work before it, and that of the passes that go on in it
+       auto befores = [&](auto &&each) {
+         each(data);
+-        for (auto pass : joined)
+-          each(static_cast<RenderEncoderData *>(pass));
+       };
+       bool before_any = false, omitted_any = false;
+       befores([&](auto pass) { before_any |= !!pass->before_head.next.get(), omitted_any |= !!pass->omitted; });

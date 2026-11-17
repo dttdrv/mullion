@@ -1,0 +1,2 @@
+ICB=false guarded=false: 0 wrong results
+ICB=true guarded=true: 0 wrong results

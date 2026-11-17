@@ -1,0 +1,12 @@
+# a texture store keeps only the low 16 bits of each coordinate, so one past 65535 lands inside
+--- a/src/airconv/nt/air_builder.cpp
++++ b/src/airconv/nt/air_builder.cpp
+@@ -798,7 +798,7 @@
+   Ops.push_back(Handle);
+ 
+   Tys.push_back(getTextureRWPositionType(Texture));
+-  Ops.push_back(Pos);
++  Ops.push_back(builder.CreateAnd(Pos, ConstantInt::get(Pos->getType(), 0xffff)));
+ 
+   if (TexInfo.is_cube) {
+     Tys.push_back(getIntTy());

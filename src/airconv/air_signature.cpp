@@ -861,6 +861,22 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("mtl_vertex_id");
           return msl_uint.get_llvm_type(context);
         },
+        [&](const InputPatchID &) {
+          metadata_field.string("air.patch_id")
+            ->string("air.arg_type_name")
+            ->string("uint")
+            ->string("air.arg_name")
+            ->string("mtl_patch_id");
+          return msl_uint.get_llvm_type(context);
+        },
+        [&](const InputPositionInPatch &position) -> llvm::Type * {
+          metadata_field.string("air.position_in_patch")
+            ->string("air.arg_type_name")
+            ->string(position.components == 3 ? "float3" : "float2")
+            ->string("air.arg_name")
+            ->string("mtl_position_in_patch");
+          return llvm::FixedVectorType::get(Type::getFloatTy(context), position.components);
+        },
         [&](const InputBaseVertex &) {
           metadata_field.string("air.base_vertex")
             ->string("air.arg_type_name")
@@ -1115,6 +1131,8 @@ auto FunctionSignatureBuilder::CreateFunction(
            )
     );
   }
+  if (!patch.empty())
+    function_def_tuple.push_back(MDTuple::get(context, {MDString::get(context, "air.patch"), MDString::get(context, patch)}));
   if (max_mesh_work_group_size > 0) {
     auto tuple = MDTuple::get(
       context, {MDString::get(context, "air.max_mesh_work_groups"),

@@ -34,7 +34,7 @@ public:
           depth_stencil_format == WMTPixelFormatInvalid,
           unorm_output_reg_mask, pDesc->PipelineStatistics, pDesc->BlendState->IsAlphaToCoverage(),
           pDesc->CenteredSamples, pDesc->SingleRasterSample, pDesc->PairedSamples, pDesc->ClipDistances},
-          {rtv_formats, num_rtvs}, pDesc->BlendState);
+          {rtv_formats, num_rtvs}, pDesc->BlendState, pDesc->PixelMinMaxFiltering);
       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
     } else {
       PixelShader = nullptr;

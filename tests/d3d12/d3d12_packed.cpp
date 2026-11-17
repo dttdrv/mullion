@@ -2,7 +2,8 @@
 // "[-128, 127]"; unpack is sign extended or non-sign extended (DirectX-Specs, Pack/Unpack Math Intrinsics,
 // https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Pack_Unpack_Intrinsics.html).
 // DXIL.rst calls dot4add a "dot product of 4 x i8 vectors packed into i32, with accumulate to i32".
-// each 16-bit pattern and each byte in every position is enumerated, with 32-bit clamp and carry boundaries.
+// each 16-bit pattern and each byte in every position is enumerated, with 32-bit clamp and carry boundaries, and
+// dot4add meets every pair of byte values in every lane.
 // the CPU extracts, extends, clamps and packs independently. all eight stages write their result bytes.
 #include "d3d12_test.hpp"
 #include <algorithm>
@@ -105,6 +106,14 @@ main(int argc, char **argv) {
       v[c] = lo | hi << (sizeof(uint16_t) * CHAR_BIT);
     }
     input.push_back(v);
+  }
+  // dot4add's operands, words 0 and 1 and words 2 and 3: every pair of byte values meets in every lane
+  for (UINT i = 0; i < short_values; i++) {
+    UINT x = i & UINT8_MAX, y = i >> CHAR_BIT, nx = UINT8_MAX - x, ny = UINT8_MAX - y;
+    auto word = [](UINT b0, UINT b1, UINT b2, UINT b3) {
+      return b0 | b1 << CHAR_BIT | b2 << 2 * CHAR_BIT | b3 << 3 * CHAR_BIT;
+    };
+    input.push_back({word(x, y, nx, ny), word(y, x, y, x), word(ny, x, y, nx), word(x, ny, nx, y)});
   }
   std::vector<int32_t> edges = {
       INT32_MIN,
