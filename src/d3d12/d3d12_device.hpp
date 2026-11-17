@@ -731,11 +731,14 @@ public:
     mullion::shared_mutex mutex;
     std::unordered_map<MTLD3D12SamplerKey, MTLD3D12CachedSampler, MTLD3D12SamplerKeyHash> made;
   } samplers;
-  // the bytecode lean pipelines keep, once per shader however many pipelines share it
+  // the bytecode pipelines keep to make variants of their shaders later, once per shader however many pipelines
+  // share it (KeepShader)
   struct {
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const std::string>> bytes;
-  } lean_shaders;
+  } kept_shaders;
+  // a copy of `code` that outlives the application's, the one other pipelines of the shader hold while they live
+  std::shared_ptr<const std::string> KeepShader(D3D12_SHADER_BYTECODE code);
   // the Metal functions pipelines are made of, with what they were loaded from, by their conversion's key
   // (CompileFunction): made once while any pipeline holds them
   struct SharedFunction {
