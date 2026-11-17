@@ -1,7 +1,7 @@
 # Metal 4: the profile writes counter heap ticks as nanoseconds
 --- a/src/d3d12/d3d12_command_queue.cpp
 +++ b/src/d3d12/d3d12_command_queue.cpp
-@@ -453,7 +453,7 @@
+@@ -967,7 +967,7 @@ private:
            // the profile's clock is nanoseconds, the queries' the queue's frequency
            for (uint32_t i = 0; i < pass.count; i++) {
              auto time = pass.first == ~0u ? ~uint64_t(0) : clock[i + 1 == pass.count ? pass.last : pass.first + i];
@@ -9,4 +9,4 @@
 +            line += str::format('\t', time);
            }
            lines += line + '\n';
-         }
+           if (!pass.event.empty())

@@ -98,24 +98,27 @@ main(int argc, char **argv) {
     expect(!error, "temporary logs removed: %s", error.message().c_str());
     return status == 77 && !trace::wrong ? 77 : verdict();
   }
-  D3D12_ROOT_PARAMETER parameter{D3D12_ROOT_PARAMETER_TYPE_UAV};
-  auto root = root_signature(device.Get(), {1, &parameter});
-  auto output = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, sizeof(UINT), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-  auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, sizeof(UINT), D3D12_RESOURCE_STATE_COPY_DEST);
-  if (!expect(root && output && readback, "resources created"))
-    return verdict();
-  ComPtr<ID3D12CommandQueue> queue;
-  ComPtr<ID3D12CommandAllocator> allocator;
-  ComPtr<ID3D12GraphicsCommandList> list;
-  D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
-  CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
-  CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
-  CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
-  CHECK(list->Close());
+  // the override is read once per device, as a setting of the program's launch
   for (UINT i = 0; i < std::size(inputs); i++) {
     step("MULLION_SHADER_FLAGS='%s'", inputs[i].text);
     SetEnvironmentVariableA("MULLION_SHADER_FLAGS", inputs[i].text);
+    device.Reset();
+    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    D3D12_ROOT_PARAMETER parameter{D3D12_ROOT_PARAMETER_TYPE_UAV};
+    auto root = root_signature(device.Get(), {1, &parameter});
+    auto output = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, sizeof(UINT), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    auto readback = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, sizeof(UINT), D3D12_RESOURCE_STATE_COPY_DEST);
+    if (!expect(root && output && readback, "resources created"))
+      return verdict();
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+    CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
+    CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
+    CHECK(list->Close());
     D3D12_COMPUTE_PIPELINE_STATE_DESC desc{root.Get(), bytecode(shaders[i])};
     ComPtr<ID3D12PipelineState> pipeline;
     CHECK(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline)));

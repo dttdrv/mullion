@@ -6,6 +6,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cmath>
 #include <format>
 
 namespace llvm::air {
@@ -661,6 +662,14 @@ AIRBuilder::CreateRead(
   assert(Texture.kind <= Texture::last_resource_kind);
   auto &TexInfo = TextureInfo[Texture.kind];
 
+  // D3D's sample 2i and 2i + 1 are the texture's i
+  if (Texture.Paired) {
+    auto Own = Texture;
+    Own.Paired = nullptr;
+    auto Index = builder.CreateSelect(Texture.Paired, builder.CreateLShr(SampleIndexOrCubeFace, 1), SampleIndexOrCubeFace);
+    return CreateRead(Own, Handle, Pos, ArrayIndex, Index, Level, DeviceCoherent);
+  }
+
   if (Texture.SingleSample) {
     auto Head = builder.GetInsertBlock();
     auto Fn = Head->getParent();
@@ -1000,6 +1009,14 @@ AIRBuilder::CreateTextureQuery(const Texture &Texture, Value *Handle, Texture::Q
   assert(Texture.kind <= Texture::last_resource_kind);
   auto &TexInfo = TextureInfo[Texture.kind];
 
+  if (Texture.Paired) {
+    auto Own = Texture;
+    Own.Paired = nullptr;
+    auto Value = CreateTextureQuery(Own, Handle, Query, Level);
+    return Query == Texture::num_samples ? builder.CreateShl(Value, builder.CreateZExt(Texture.Paired, getIntTy()))
+                                         : Value;
+  }
+
   if (Texture.SingleSample) {
     auto Head = builder.GetInsertBlock();
     auto Fn = Head->getParent();
@@ -1206,6 +1223,42 @@ AIRBuilder::CreateSamplePos(Value *SampleCount, Value *Index) {
 Value *
 AIRBuilder::CreateRasterizerSamplePos(Value *Index) {
   return CreateSamplePos(CenteredSamples ? getInt(0) : CreateGetNumSamples(), Index);
+}
+
+// D3D's sample 2i and 2i + 1 are Metal's i
+Value *
+AIRBuilder::CreateD3DSampleCount() {
+  return PairedSamples ? builder.CreateShl(CreateGetNumSamples(), 1) : CreateGetNumSamples();
+}
+
+Value *
+AIRBuilder::D3DSampleIndex(Value *Index) {
+  return PairedSamples ? builder.CreateShl(Index, 1) : Index;
+}
+
+Value *
+AIRBuilder::MetalSampleIndex(Value *Index) {
+  return PairedSamples ? builder.CreateLShr(Index, 1) : Index;
+}
+
+// each of Metal's covered samples covers both of D3D's: bit i to bits 2i and 2i + 1, of at most 4 samples
+Value *
+AIRBuilder::D3DCoverage(Value *Mask) {
+  if (!PairedSamples)
+    return Mask;
+  auto Spread = builder.CreateAnd(builder.CreateOr(Mask, builder.CreateShl(Mask, 2)), 0x33);
+  Spread = builder.CreateAnd(builder.CreateOr(Spread, builder.CreateShl(Spread, 1)), 0x55);
+  return builder.CreateOr(Spread, builder.CreateShl(Spread, 1));
+}
+
+// a Metal sample is written where either of its D3D samples is
+Value *
+AIRBuilder::MetalCoverage(Value *Mask) {
+  if (!PairedSamples)
+    return Mask;
+  auto Folded = builder.CreateAnd(builder.CreateOr(Mask, builder.CreateLShr(Mask, 1)), 0x55);
+  Folded = builder.CreateAnd(builder.CreateOr(Folded, builder.CreateLShr(Folded, 1)), 0x33);
+  return builder.CreateAnd(builder.CreateOr(Folded, builder.CreateLShr(Folded, 2)), 0x0f);
 }
 
 Value *
@@ -1445,7 +1498,7 @@ AIRBuilder::CreateConvertToHalf(Value *Val, Signedness SrcSign) {
 }
 
 Value *
-AIRBuilder::CreateConvertToSigned(Value *Val) {
+AIRBuilder::CreateConvertToInteger(Value *Val, Signedness Sign, uint32_t Bits) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
@@ -1454,36 +1507,30 @@ AIRBuilder::CreateConvertToSigned(Value *Val) {
   );
 
   Type *TySrc = Val->getType();
-  Type *TyDst = isa<FixedVectorType>(TySrc) ? getIntTy(cast<FixedVectorType>(TySrc)->getNumElements()) : getIntTy();
+  Type *TyDst = IntegerType::get(Context, Bits);
+  if (auto TyVec = dyn_cast<FixedVectorType>(TySrc))
+    TyDst = FixedVectorType::get(TyDst, TyVec->getNumElements());
 
   std::string FnName = "air.convert";
-  FnName += getTypeOverloadSuffix(TyDst, Signedness::Signed);
-  FnName += getTypeOverloadSuffix(TySrc, Signedness::Signed);
+  FnName += getTypeOverloadSuffix(TyDst, Sign);
+  FnName += getTypeOverloadSuffix(TySrc, Sign);
 
   auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(TyDst, {TySrc}, false), Attrs);
 
-  return builder.CreateCall(Fn, {Val});
-}
-
-Value *
-AIRBuilder::CreateConvertToUnsigned(Value *Val) {
-  auto &Context = getContext();
-  auto Attrs = AttributeList::get(
-      Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
-  );
-
-  Type *TySrc = Val->getType();
-  Type *TyDst = isa<FixedVectorType>(TySrc) ? getIntTy(cast<FixedVectorType>(TySrc)->getNumElements()) : getIntTy();
-
-  std::string FnName = "air.convert";
-  FnName += getTypeOverloadSuffix(TyDst, Signedness::Unsigned);
-  FnName += getTypeOverloadSuffix(TySrc, Signedness::Unsigned);
-
-  auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(TyDst, {TySrc}, false), Attrs);
-
-  return builder.CreateCall(Fn, {Val});
+  Value *Converted = builder.CreateCall(Fn, {Val});
+  if (Bits <= 32)
+    return Converted;
+  // Metal's conversion clamps to an integer of up to 32 bits and gives 0 for a NaN. to 64 bits it does neither
+  // for a signed integer (an infinity gives 0, and a value past the range the low bits of a wider integer), so
+  // the range's ends and the NaN are chosen here: the first values past each end, which a float holds exactly
+  bool Signed = Sign == Signedness::Signed;
+  auto Above = ConstantFP::get(TySrc, std::ldexp(1.0, Signed ? Bits - 1 : Bits));
+  auto Below = ConstantFP::get(TySrc, Signed ? -std::ldexp(1.0, Bits - 1) : 0.0);
+  auto Most = ConstantInt::get(TyDst, Signed ? APInt::getSignedMaxValue(Bits) : APInt::getMaxValue(Bits));
+  auto Least = ConstantInt::get(TyDst, Signed ? APInt::getSignedMinValue(Bits) : APInt::getMinValue(Bits));
+  Converted = builder.CreateSelect(builder.CreateFCmpOGE(Val, Above), Most, Converted);
+  Converted = builder.CreateSelect(builder.CreateFCmpOLE(Val, Below), Least, Converted);
+  return builder.CreateSelect(builder.CreateFCmpUNO(Val, Val), Constant::getNullValue(TyDst), Converted);
 }
 
 CallInst *
@@ -1929,17 +1976,32 @@ AIRBuilder::CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant) {
 }
 
 Value *
-AIRBuilder::CreateIsNaN(Value *Operand) {
+AIRBuilder::CreateIsFPClass(FPClass Class, Value *Operand) {
   auto OperandType = Operand->getType();
-  llvm::Value *BitsL31 = getInt(0x7fffffffu);
-  llvm::Value *BitsInf = getInt(0x7f800000u);
-  llvm::Type *TyCast = getIntTy();
-  if (auto TyVec = dyn_cast<llvm::FixedVectorType>(OperandType)) {
-    BitsL31 = builder.CreateVectorSplat(TyVec->getNumElements(), BitsL31);
-    BitsInf = builder.CreateVectorSplat(TyVec->getNumElements(), BitsInf);
-    TyCast = getIntTy(TyVec->getNumElements());
+  auto Width = OperandType->getScalarSizeInBits();
+  llvm::Type *TyBits = llvm::IntegerType::get(getContext(), Width);
+  if (auto TyVec = dyn_cast<llvm::FixedVectorType>(OperandType))
+    TyBits = FixedVectorType::get(TyBits, TyVec->getNumElements());
+  // an infinity's bits are the exponent field, all ones, over a fraction of zero (IEEE 754, 3.4)
+  auto BitsInf =
+      ConstantInt::get(TyBits, llvm::APFloat::getInf(OperandType->getScalarType()->getFltSemantics()).bitcastToAPInt());
+  auto Bits = builder.CreateBitCast(Operand, TyBits);
+  auto Magnitude = builder.CreateAnd(Bits, ConstantInt::get(TyBits, llvm::APInt::getSignedMaxValue(Width)));
+  switch (Class) {
+  case FPClass::nan:
+    return builder.CreateICmpUGT(Magnitude, BitsInf);
+  case FPClass::infinite:
+    return builder.CreateICmpEQ(Magnitude, BitsInf);
+  case FPClass::finite:
+    return builder.CreateICmpULT(Magnitude, BitsInf);
+  case FPClass::normal: {
+    auto Exponent = builder.CreateAnd(Bits, BitsInf);
+    return builder.CreateAnd(
+        builder.CreateICmpNE(Exponent, Constant::getNullValue(TyBits)), builder.CreateICmpNE(Exponent, BitsInf)
+    );
   }
-  return builder.CreateICmpUGT(builder.CreateAnd(builder.CreateBitCast(Operand, TyCast), BitsL31), BitsInf);
+  }
+  llvm_unreachable("unknown floating-point class");
 }
 
 Value *

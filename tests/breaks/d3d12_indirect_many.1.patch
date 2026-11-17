@@ -1,16 +1,16 @@
 # execute the entire indirect command buffer, including reset commands past the count
 --- a/src/d3d12/d3d12_command_signature.cpp
 +++ b/src/d3d12/d3d12_command_signature.cpp
-@@ -281,7 +281,7 @@
+@@ -396,7 +396,7 @@ public:
                "command_data.max_count_buffer[0] : command_data.max_count;\n";
-     if (!rays) {
+     if (!rays && !indexed) {
        source << "if (i == 0) command_data.execution_range = uint2(0, "
 -                "min(count, uint(command_data.max_count))";
 +                "uint(command_data.max_count)";
-       if (indexed)
-         source << " * (command_data.zeros ? 2u : 1u)";
        source << ");\n";
-@@ -294,9 +294,6 @@
+     }
+     source << "if (i >= command_data.max_count) return;\n";
+@@ -407,9 +407,6 @@ public:
                  "command_data.statistics[i] = {};\n"
                  "if (!i) *command_data.pixel_statistics = {};\n"
                  "}\n";

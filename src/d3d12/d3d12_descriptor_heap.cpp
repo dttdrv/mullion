@@ -23,8 +23,28 @@
 #include "airconv_public.h"
 #include "mullion_sampler.hpp"
 #include "log/log.hpp"
+#include "log/trace.hpp"
+#include <bit>
+#include <set>
 
 namespace mullion {
+
+// MULLION_TRACE_SHADER: each distinct sampler that makes pipelines take a slower path (a custom border color or a
+// minimum or maximum filter, which remake them, or an anisotropic filter with a bias, whose samples take gradients)
+static void
+TraceSampler(const D3D12_SAMPLER_DESC &d, bool custom) {
+  static mullion::mutex lock;
+  static std::set<std::string> seen;
+  auto line = str::format(
+      "sampler: filter ", uint32_t(d.Filter), ", address ", uint32_t(d.AddressU), " ", uint32_t(d.AddressV), " ",
+      uint32_t(d.AddressW), ", bias ", d.MipLODBias, ", anisotropy ", d.MaxAnisotropy, ", comparison ",
+      uint32_t(d.ComparisonFunc), ", border ", custom ? "custom " : "", d.BorderColor[0], " ", d.BorderColor[1], " ",
+      d.BorderColor[2], " ", d.BorderColor[3], ", lod ", d.MinLOD, " to ", d.MaxLOD
+  );
+  std::lock_guard<mullion::mutex> guard(lock);
+  if (seen.insert(line).second)
+    TRACE_IN(Shader, line);
+}
 
 struct SRVTextureGPUStorage {
   uint64_t resource_id;
@@ -33,6 +53,23 @@ struct SRVTextureGPUStorage {
 };
 
 static_assert(D3D12_REQ_MIP_LEVELS <= (1u << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS));
+
+// the bits of a view's place that say how to read a writable sparse texture's residency: none where the GPU reads it
+// by texel, as it says itself when first asked (MTLDevice_sparseResidencyInTiles). an M3 Max read it by tile with
+// macOS 26.6 and reads it by texel with 27.2
+static uint64_t
+ResidencyTile(WMT::Device device, Texture *texture) {
+  static const bool tiles = device.sparseResidencyInTiles();
+  if (!tiles)
+    return 0;
+  auto tile = device.sparseTileSize(texture->textureType(), texture->pixelFormat(), texture->sampleCount(), WMTSparsePageSize16);
+  uint64_t depth = std::countr_zero(tile.depth);
+  return uint64_t(std::countr_zero(tile.width)) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH |
+         uint64_t(std::countr_zero(tile.height)) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT |
+         (depth & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0 |
+         (depth >> 1 & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1 |
+         (depth >> 2 & 1) << SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2;
+}
 
 using UAVTextureGPUStorage = SRVTextureGPUStorage;
 
@@ -104,11 +141,13 @@ TextureType(D3D12_SRV_DIMENSION dimension) {
   }
 }
 
-class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHeap> {
+class MTLD3D12DescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12DescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
-  std::vector<ShaderVisibleDescriptorCPUStorage> descriptors_;
+  // zero bytes are a null descriptor, so the system's zeroed pages hold them: a page becomes memory once one of its
+  // descriptors is written, which in a large heap of few used ones is a small part
+  std::span<ShaderVisibleDescriptorCPUStorage> descriptors_;
   Rc<Buffer> buffer_;
   ShaderVisibleDescriptorGPUStorage *mapped_argument_buffer_ = nullptr;
   uint64_t argument_buffer_gpu_address_ = 0;
@@ -128,7 +167,13 @@ public:
     default:
       return FAIL(E_INVALIDARG);
     }
-    descriptors_.resize(pDesc->NumDescriptors);
+    static_assert(ShaderVisibleDescriptorType::Null == ShaderVisibleDescriptorType{});
+    if (UINT count = pDesc->NumDescriptors) {
+      auto storage = VirtualAlloc(nullptr, count * sizeof(descriptors_[0]), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+      if (!storage)
+        return FAIL(E_OUTOFMEMORY);
+      descriptors_ = {(ShaderVisibleDescriptorCPUStorage *)storage, count};
+    }
 
     if (pDesc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) {
       buffer_ = new Buffer(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), device_->GetMTLDevice());
@@ -142,20 +187,33 @@ public:
           reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(buffer_->current()->mappedMemory(0));
       argument_buffer_gpu_address_ = buffer_->current()->gpuAddress();
       device_->RegisterResidencyAndVA(buffer_->current());
-    } else {
-      mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(
-          malloc(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage))
-      );
+    } else if (!descriptors_.empty()) {
+      // what CopyDescriptors takes to a heap shaders read: zeroed like that heap's own memory, so a descriptor nothing
+      // has written is copied as the null descriptor it is there
+      mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(VirtualAlloc(
+          nullptr, descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage), MEM_RESERVE | MEM_COMMIT,
+          PAGE_READWRITE
+      ));
+      if (!mapped_argument_buffer_)
+        return FAIL(E_OUTOFMEMORY);
     }
 
     return S_OK;
   };
 
   ~MTLD3D12DescriptorHeapImpl() {
+    if (!descriptors_.empty())
+      VirtualFree(descriptors_.data(), 0, MEM_RELEASE);
     if (buffer_) {
-      device_->UnregisterResidencyAndVA(buffer_->current());
-    } else {
-      free(mapped_argument_buffer_);
+      // shaders read the heap by its address, which no pass binds: its buffer stays for the work in flight, as a
+      // buffer released in flight does (~MTLD3D12Buffer)
+      device_->UnregisterVA(buffer_->current());
+      EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(buffer_)] {
+        if (!buffer->current()->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(buffer->current()->buffer());
+      });
+    } else if (mapped_argument_buffer_) {
+      VirtualFree(mapped_argument_buffer_, 0, MEM_RELEASE);
     }
   }
 
@@ -218,14 +276,15 @@ public:
         gpu_storage.SRVTexture.metadata =
             TextureMetadata(Texture->arrayLength(View), 0) |
             (Texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
-            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+            (Texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0) |
+            (Texture->paired ? SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED : 0);
       gpu_storage.SRVTexture.padding[0] = std::bit_cast<uint64_t>(BorderRange);
       // the view's place in its resource, which sampler feedback is recorded for: the first mip and how many mips the
       // resource has, a byte each, then 16 bits each for the first slice and the resource's width and height
       gpu_storage.SRVTexture.padding[1] = View.mip_start | Texture->miplevelCount() << 8 | View.array_start << 16 |
                                           (uint64_t)Texture->width() << 32 | (uint64_t)Texture->height() << 48;
       if (Texture->isSparse() && (Texture->usage() & WMTTextureUsageShaderWrite))
-        gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE;
+        gpu_storage.SRVTexture.padding[1] |= SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE | ResidencyTile(device_->GetMTLDevice(), Texture);
     }
     return S_OK;
   }
@@ -446,17 +505,36 @@ public:
     return descriptors_[Index];
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12DescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    for (unsigned i = 0; i < CopyCount; i++) {
-      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->descriptors_[DescriptorTo + i] = descriptors_[From + i];
-      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->mapped_argument_buffer_[DescriptorTo + i] =
-          mapped_argument_buffer_[From + i];
-    }
+  static std::tuple<MTLD3D12DescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetShaderVisibleDescriptorHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12DescriptorHeapImpl *>(heap), index};
+  }
+
+  // a run of descriptors is its bytes: what shaders read, and what ClearUnorderedAccessView reads of a view
+  void
+  CopyTo(UINT From, MTLD3D12DescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    static_assert(
+        std::is_trivially_copyable_v<ShaderVisibleDescriptorCPUStorage> &&
+        std::is_trivially_copyable_v<ShaderVisibleDescriptorGPUStorage>
+    );
+    if (!Holds(From, CopyCount) || !pHeapTo->Holds(DescriptorTo, CopyCount))
+      return;
+    memcpy(&pHeapTo->descriptors_[DescriptorTo], &descriptors_[From], CopyCount * sizeof(descriptors_[0]));
+    memcpy(
+        &pHeapTo->mapped_argument_buffer_[DescriptorTo], &mapped_argument_buffer_[From],
+        CopyCount * sizeof(mapped_argument_buffer_[0])
+    );
+  }
+
+  // whether the heap has `Count` descriptors from `First`, and any: a run Direct3D defines
+  bool
+  Holds(UINT First, UINT Count) {
+    return Count && uint64_t(First) + Count <= descriptors_.size();
   }
 };
 
-class MTLD3D12RenderTargetDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12RenderTargetDescriptorHeap> {
+class MTLD3D12RenderTargetDescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12RenderTargetDescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
@@ -540,12 +618,18 @@ public:
     return render_targets_[Index];
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12RenderTargetDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    for (unsigned i = 0; i < CopyCount; i++) {
-      static_cast<MTLD3D12RenderTargetDescriptorHeapImpl *>(pHeapTo)->render_targets_[DescriptorTo + i] =
-          render_targets_[From + i];
-    }
+  static std::tuple<MTLD3D12RenderTargetDescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetRenderTargetHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12RenderTargetDescriptorHeapImpl *>(heap), index};
+  }
+
+  void
+  CopyTo(UINT From, MTLD3D12RenderTargetDescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    if (uint64_t(From) + CopyCount > render_targets_.size() ||
+        uint64_t(DescriptorTo) + CopyCount > pHeapTo->render_targets_.size())
+      return;
+    std::copy_n(render_targets_.begin() + From, CopyCount, pHeapTo->render_targets_.begin() + DescriptorTo);
   }
 };
 
@@ -558,7 +642,7 @@ struct SamplerGPUStorage {
 
 static_assert(sizeof(SamplerGPUStorage) == sizeof(SM50_SAMPLER_BORDER));
 
-class MTLD3D12SamplerDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12SamplerDescriptorHeap> {
+class MTLD3D12SamplerDescriptorHeapImpl final : public MTLD3D12Pageable<MTLD3D12SamplerDescriptorHeap> {
 
   D3D12_DESCRIPTOR_HEAP_DESC desc_;
 
@@ -570,13 +654,18 @@ class MTLD3D12SamplerDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12Sample
   // the descriptors' borders follow them in the same memory
   SM50_SAMPLER_BORDER *borders_ = nullptr;
 
+  // where shaders find a descriptor's border, when it has one and the heap is one they read
+  uint64_t
+  BorderAddress(UINT Index) {
+    return borders_[Index].white_sampler && argument_buffer_gpu_address_
+               ? argument_buffer_gpu_address_ + (uintptr_t)&borders_[Index] - (uintptr_t)mapped_argument_buffer_
+               : 0;
+  }
+
   void
   SetBorder(UINT Index, const SM50_SAMPLER_BORDER &Border) {
     borders_[Index] = Border;
-    mapped_argument_buffer_[Index].border =
-        Border.white_sampler && argument_buffer_gpu_address_
-            ? argument_buffer_gpu_address_ + (uintptr_t)&borders_[Index] - (uintptr_t)mapped_argument_buffer_
-            : 0;
+    mapped_argument_buffer_[Index].border = BorderAddress(Index);
   }
 
 public:
@@ -611,16 +700,46 @@ public:
       device_->RegisterResidencyAndVA(buffer_->current());
     } else {
       mapped_argument_buffer_ =
-          reinterpret_cast<SamplerGPUStorage *>(malloc(samplers_.size() * 2 * sizeof(SamplerGPUStorage)));
+          reinterpret_cast<SamplerGPUStorage *>(calloc(samplers_.size(), 2 * sizeof(SamplerGPUStorage)));
+      if (!mapped_argument_buffer_)
+        return FAIL(E_OUTOFMEMORY);
     }
     borders_ = reinterpret_cast<SM50_SAMPLER_BORDER *>(mapped_argument_buffer_ + samplers_.size());
+
+    // Direct3D leaves a descriptor nothing has written undefined. a sampler of no Metal sampler state is not one a
+    // shader can sample through, so every descriptor starts as the sampler Direct3D 11 has by default
+    // (D3D11_SAMPLER_DESC): linear filters, clamped addresses, no comparison and every LOD
+    if (!samplers_.empty()) {
+      const D3D12_SAMPLER_DESC unwritten{
+          D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          0.0f,
+          1,
+          D3D12_COMPARISON_FUNC_NEVER,
+          {1.0f, 1.0f, 1.0f, 1.0f},
+          -D3D12_FLOAT32_MAX,
+          D3D12_FLOAT32_MAX
+      };
+      HRESULT hr = AddSampler(0, &unwritten);
+      if (FAILED(hr))
+        return hr;
+      std::fill(samplers_.begin() + 1, samplers_.end(), samplers_[0]);
+      std::fill_n(mapped_argument_buffer_ + 1, samplers_.size() - 1, mapped_argument_buffer_[0]);
+    }
 
     return S_OK;
   };
 
   ~MTLD3D12SamplerDescriptorHeapImpl() {
-     if (buffer_) {
-      device_->UnregisterResidencyAndVA(buffer_->current());
+    if (buffer_) {
+      // as the descriptor heap's (~MTLD3D12DescriptorHeapImpl)
+      device_->UnregisterVA(buffer_->current());
+      EndAfterWorkInFlight(device_, [device = device_, buffer = std::move(buffer_)] {
+        if (!buffer->current()->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+          device->UnregisterResidency(buffer->current()->buffer());
+      });
     } else {
       free(mapped_argument_buffer_);
     }
@@ -672,18 +791,18 @@ public:
       return FAIL(E_INVALIDARG);
     if (Index >= samplers_.size())
       return FAIL(E_INVALIDARG);
-  
-    WMTSamplerInfo info;
-    bool custom = PopulateWMTSamplerInfo(device_->GetMTLDevice(), info, *pDesc);
-    if (custom)
-      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
-    auto sampler = Sampler::createSampler(
-        device_->GetMTLDevice(), info, pDesc->MipLODBias, custom ? pDesc->BorderColor : nullptr,
-        SamplerReduction(pDesc->Filter)
-    );
 
-    if (sampler->metadata >> SM50_SAMPLER_METADATA_REDUCTION & ((1 << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
-      device_->sampler_emulations |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+    MTLD3D12CachedSampler cached;
+    HRESULT hr = GetSampler(device_, *pDesc, cached);
+    // Metal made no sampler state: the descriptor keeps the sampler it had
+    if (FAILED(hr))
+      return hr;
+    auto &sampler = cached.sampler;
+    if (cached.emulations & ~device_->sampler_emulations)
+      device_->sampler_emulations |= cached.emulations;
+    if (trace::On(trace::Shader) &&
+        (cached.emulations || (D3D12_DECODE_IS_ANISOTROPIC_FILTER(pDesc->Filter) && pDesc->MipLODBias != 0)))
+      TraceSampler(*pDesc, cached.emulations & SM50_SHADER_FLAG_NO_CUSTOM_BORDER);
     samplers_[Index] = sampler;
     if (mapped_argument_buffer_) {
       auto &gpu_storage = mapped_argument_buffer_[Index];
@@ -698,16 +817,84 @@ public:
     return S_OK;
   }
 
-  virtual void
-  CopyDescriptors(UINT From, MTLD3D12SamplerDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
-    auto to = static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(pHeapTo);
-    for (unsigned i = 0; i < CopyCount; i++) {
-      to->samplers_[DescriptorTo + i] = samplers_[From + i];
-      to->mapped_argument_buffer_[DescriptorTo + i] = mapped_argument_buffer_[From + i];
-      to->SetBorder(DescriptorTo + i, borders_[From + i]);
-    }
+  static std::tuple<MTLD3D12SamplerDescriptorHeapImpl *, UINT>
+  Find(MTLD3D12Device *pDevice, D3D12_CPU_DESCRIPTOR_HANDLE Handle) {
+    auto [heap, index] = GetSamplerDescriptorHeap(pDevice, Handle);
+    return {static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(heap), index};
+  }
+
+  // a run of samplers is its bytes and its borders', but for each border's address, which is of the heap it is in
+  void
+  CopyTo(UINT From, MTLD3D12SamplerDescriptorHeapImpl *pHeapTo, UINT DescriptorTo, UINT CopyCount) {
+    if (uint64_t(From) + CopyCount > samplers_.size() || uint64_t(DescriptorTo) + CopyCount > pHeapTo->samplers_.size())
+      return;
+    std::copy_n(samplers_.begin() + From, CopyCount, pHeapTo->samplers_.begin() + DescriptorTo);
+    std::copy_n(mapped_argument_buffer_ + From, CopyCount, pHeapTo->mapped_argument_buffer_ + DescriptorTo);
+    std::copy_n(borders_ + From, CopyCount, pHeapTo->borders_ + DescriptorTo);
+    for (UINT i = DescriptorTo; i < DescriptorTo + CopyCount; i++)
+      pHeapTo->mapped_argument_buffer_[i].border = pHeapTo->BorderAddress(i);
   }
 };
+
+// CopyDescriptors between two heaps of a type: each run that lies in one source range and one destination range
+template <typename Heap>
+static void
+CopyRuns(
+    MTLD3D12Device *pDevice, UINT DstRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *DstRangeStarts,
+    const UINT *DstRangeSizes, UINT SrcRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *SrcRangeStarts,
+    const UINT *SrcRangeSizes
+) {
+  UINT dst_range = 0, dst_done = 0, src_range = 0, src_done = 0;
+  while (dst_range < DstRangeCount && src_range < SrcRangeCount) {
+    UINT dst_size = DstRangeSizes ? DstRangeSizes[dst_range] : 1;
+    UINT src_size = SrcRangeSizes ? SrcRangeSizes[src_range] : 1;
+    UINT count = std::min(dst_size - dst_done, src_size - src_done);
+
+    auto [dst_heap, dst_first] = Heap::Find(pDevice, DstRangeStarts[dst_range]);
+    auto [src_heap, src_first] = Heap::Find(pDevice, SrcRangeStarts[src_range]);
+    src_heap->CopyTo(src_first + src_done, dst_heap, dst_first + dst_done, count);
+
+    dst_done += count;
+    src_done += count;
+    if (dst_done >= dst_size) {
+      ++dst_range;
+      dst_done = 0;
+    }
+    if (src_done >= src_size) {
+      ++src_range;
+      src_done = 0;
+    }
+  }
+}
+
+void
+CopyDescriptors(
+    MTLD3D12Device *pDevice, UINT DstDescriptorRangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE *DstDescriptorRangeOffsets,
+    const UINT *DstDescriptorRangeSizes, UINT SrcDescriptorRangeCount,
+    const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
+    D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
+) {
+  switch (DescriptorHeapType) {
+  case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
+    return CopyRuns<MTLD3D12DescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
+    return CopyRuns<MTLD3D12SamplerDescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
+  case D3D12_DESCRIPTOR_HEAP_TYPE_DSV:
+    return CopyRuns<MTLD3D12RenderTargetDescriptorHeapImpl>(
+        pDevice, DstDescriptorRangeCount, DstDescriptorRangeOffsets, DstDescriptorRangeSizes, SrcDescriptorRangeCount,
+        SrcDescriptorRangeOffsets, SrcDescriptorRangeSizes
+    );
+  default:
+    return;
+  }
+}
 
 HRESULT
 CreateDescriptorHeap(

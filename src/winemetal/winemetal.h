@@ -635,12 +635,14 @@ WINEMETAL_API obj_handle_t NSObject_description(obj_handle_t nserror);
 struct WMTComputePipelineInfo {
   obj_handle_t compute_function;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  obj_handle_t binary_archive_for_serialization;
-  uint8_t num_binary_archives_for_lookup;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
   bool tgsize_is_multiple_of_sgwidth;
   uint32_t immutable_buffers;
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t MTLDevice_newComputePipelineState(
@@ -856,12 +858,15 @@ struct WMTRenderPipelineInfo {
   uint8_t max_tessellation_factor;
   enum WMTWinding tessellation_output_winding_order;
   enum WMTTessellationFactorStepFunction tessellation_factor_step;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  // every target's format, write mask and blending left to MTLDevice_newSpecializedRenderPipelineState
+  bool unspecialized_colors;
+  uint8_t padding[3];
 };
 
 struct WMTMeshRenderPipelineInfo {
@@ -882,12 +887,13 @@ struct WMTMeshRenderPipelineInfo {
   uint16_t payload_memory_length;
   bool mesh_tgsize_is_multiple_of_sgwidth;
   bool object_tgsize_is_multiple_of_sgwidth;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  uint8_t num_binary_archives_for_lookup;
+  uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
-  uint8_t padding[5];
+  uint8_t padding[4];
 };
 
 WINEMETAL_API obj_handle_t
@@ -895,6 +901,11 @@ MTLDevice_newRenderPipelineState(obj_handle_t device, const struct WMTRenderPipe
 
 WINEMETAL_API obj_handle_t MTLDevice_newMeshRenderPipelineState(
     obj_handle_t device, const struct WMTMeshRenderPipelineInfo *info, obj_handle_t *err_out
+);
+
+/* a pipeline of `colors` made from one of unspecialized_colors, by the device's MTL4Compiler (macOS 26) */
+WINEMETAL_API obj_handle_t MTLDevice_newSpecializedRenderPipelineState(
+    obj_handle_t device, obj_handle_t pipeline, const struct WMTColorAttachmentBlendInfo colors[8], obj_handle_t *err_out
 );
 
 struct WMTSize {
@@ -1794,6 +1805,9 @@ WINEMETAL_API bool MTLDevice_supports32BitMSAA(obj_handle_t device);
 WINEMETAL_API bool MTLDevice_supportsShaderBarycentricCoordinates(obj_handle_t device);
 
 WINEMETAL_API uint64_t MTLDevice_maxArgumentBufferSamplerCount(obj_handle_t device);
+// whether the GPU, on this system, takes the coordinates of a sparse read of a writable placement sparse texture as
+// a tile's where it answers for residency: it asks the GPU, with one tile of a small texture mapped
+WINEMETAL_API bool MTLDevice_sparseResidencyInTiles(obj_handle_t device);
 
 // whether a sampler's reductionMode reaches what it samples: measured once per device, as no property says so
 WINEMETAL_API bool MTLDevice_supportsSamplerReduction(obj_handle_t device);
@@ -1833,6 +1847,10 @@ struct WMTFXTemporalScalerInfo {
   bool auto_exposure;
   bool input_content_properties_enabled;
   bool requires_synchronous_initialization;
+  // the motion vectors hold the jitter of the frames they are between, which MetalFX takes out with the jitter
+  // offsets of each frame (MTLFXTemporalScalerDescriptor.jitteredMotionVectorsEnabled, macOS 27): no scaler is made
+  // where MetalFX lacks it
+  bool jittered_motion_vectors;
 };
 
 struct WMTFXSpatialScalerInfo {
@@ -2239,7 +2257,15 @@ enum WMTMetalVersion : uint32_t {
 
 WINEMETAL_API obj_handle_t MTLDevice_newBinaryArchive(obj_handle_t device, const char *url, obj_handle_t *err_out);
 
-WINEMETAL_API void MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out);
+// false when the call did not run to its end: a fault in Metal while it wrote the archive, which Wine returns as the
+// call's status. the archive's queue is then held for good, and no call on the archive returns
+WINEMETAL_API bool MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out);
+
+// adds a pipeline made with keep_for_binary_archive to the archive, once: what was kept goes with the add. one add
+// to an archive at a time, and none while it is written: adds of the same function from two threads leave the
+// archive with an entry Metal faults on, then or when it writes the archive (macOS 27.3,
+// -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+WINEMETAL_API void MTLBinaryArchive_add(obj_handle_t archive, obj_handle_t pipeline);
 
 WINEMETAL_API obj_handle_t DispatchData_alloc_init(uint64_t native_ptr, uint64_t length);
 
@@ -2339,6 +2365,15 @@ WINEMETAL_API obj_handle_t MTLDevice_newPlacementSparseBuffer(
 
 /* the first mip in the texture's tail, and the tail's size */
 WINEMETAL_API void MTLTexture_sparseTail(obj_handle_t texture, uint64_t *first_mip, uint64_t *bytes);
+// whether Metal keeps what is copied into each mip of the tail of a placement sparse texture described by `info`, in
+// its first slice: a test on the GPU, on a heap and queues of its own, which the call waits for. `block_*` are the
+// format's texel block, in texels and bytes. it also gives the tail: its first mip, and its bytes. Metal (macOS 27.2,
+// tier 2) keeps nothing in some tail mips of some block compressed textures whose height is not a power of two, such
+// as mips 6 and 7 of a 2048x1080 BC6H or BC7 texture, however the tail is mapped
+WINEMETAL_API bool MTLDevice_sparseTailHolds(
+    obj_handle_t device, const struct WMTTextureInfo *info, uint32_t block_width, uint32_t block_height,
+    uint32_t block_bytes, uint64_t *first_mip, uint64_t *bytes
+);
 
 WINEMETAL_API obj_handle_t MTLDevice_newMTL4CommandQueue(obj_handle_t device);
 
@@ -2392,7 +2427,8 @@ struct WMTTileRenderPipelineInfo {
   uint32_t immutable_tile_buffers;
   uint8_t raster_sample_count;
   bool tgsize_matches_tile_size;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   uint8_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
@@ -2498,7 +2534,8 @@ WINEMETAL_API void MTLTexture_getBytes(
     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
 );
 
-/* acceleration structures. matrices are row-major 3x4 (MTLMatrixLayoutRowMajor), as Direct3D's are */
+/* acceleration structures. instances' matrices are column-major 3x4, Metal's default; a geometry's transform is
+   row-major (MTLMatrixLayoutRowMajor, as Direct3D's are) unless transform_column_major */
 enum WMTAccelerationStructureUsage : uint32_t {
   WMTAccelerationStructureUsageRefit = 1 << 0,
   WMTAccelerationStructureUsagePreferFastBuild = 1 << 1,
@@ -2519,7 +2556,8 @@ struct WMTAccelerationStructureGeometry {
   enum WMTIndexType index_type;
   bool opaque;
   bool no_duplicate_any_hit;
-  uint8_t padding[5];
+  bool transform_column_major;
+  uint8_t padding[4];
 };
 
 STATIC_ASSERT(sizeof(WMTAccelerationStructureGeometry) == 72);
@@ -2642,7 +2680,9 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixDeviceNewTemporalScaler4, WMTUnixMetal4TemporalScale, WMTUnixDeviceNewDenoisedScaler,
        WMTUnixCommandBufferDenoisedScale, WMTUnixDeviceSupportsFXDenoisedScaler,
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
-       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceNewFrameInterpolator, WMTUnixCommandBufferFrameInterpolate, WMTUnixCallCount };
+       WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
+       WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
+       WMTUnixDeviceNewFrameInterpolator, WMTUnixCommandBufferFrameInterpolate, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
@@ -2665,6 +2705,9 @@ WINEMETAL_API int64_t WMTDiagSemaphoreCount(void *semaphore);
 // the statistics the device's driver keeps in its IORegistry entry (PerformanceStatistics), as tab-separated
 // name=value pairs: their length, written to buffer when it holds them
 WINEMETAL_API uint64_t WMTGPUStatistics(obj_handle_t device, char *buffer, uint64_t size);
+// what the bridge answers of the device (as the family of MULLION_GPU_FAMILY, when one is set), `name=value` lines.
+// their length, written to buffer when it holds them
+WINEMETAL_API uint64_t WMTDeviceReport(obj_handle_t device, char *buffer, uint64_t size);
 WINEMETAL_API void MTLCommandBuffer_pushDebugGroup(obj_handle_t cmdbuf, obj_handle_t name);
 WINEMETAL_API void MTLCommandBuffer_popDebugGroup(obj_handle_t cmdbuf);
 WINEMETAL_API uint64_t DispatchData_getBytes(obj_handle_t data, void *buffer, uint64_t size);

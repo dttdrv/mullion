@@ -1,0 +1,12 @@
+# a direct zip's triangles are numbered from the frame's first slot, not after the primitives before it
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -886,7 +886,7 @@
+     int base_inner = base[frame], base_outer = base[frame + 1];
+     if (zip.direct()) {
+       for (int t = lane; t < inner + outer; t += 32)
+-        put_triangle(mesh, behind, primitives + t, zip.triangle(t, base_inner, base_outer), ccw_xor);
++        put_triangle(mesh, behind, t, zip.triangle(t, base_inner, base_outer), ccw_xor);
+       primitives += inner + outer;
+       continue;
+     }

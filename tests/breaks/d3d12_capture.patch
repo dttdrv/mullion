@@ -2,12 +2,16 @@
 diff --git a/src/mullion/mullion_capture.cpp b/src/mullion/mullion_capture.cpp
 --- a/src/mullion/mullion_capture.cpp
 +++ b/src/mullion/mullion_capture.cpp
-@@ -56,7 +56,7 @@
+@@ -163,11 +163,7 @@
    }
    case NextAction::StopCapture:
      // Metal's stop waits for the device's work, which can wait for what the calling thread submits next
--    stopping_ = mullion::thread([] { WMT::CaptureManager::sharedCaptureManager().stopCapture(); });
+-    capture.stopped_ = false;
+-    capture.stopping_ = mullion::thread([&capture] {
+-      WMT::CaptureManager::sharedCaptureManager().stopCapture();
+-      capture.stopped_ = true;
+-    });
 +    (void)0;
      break;
    case NextAction::Nothing:
-     if (shouldCaptureNextFrame())
+     if (capture.shouldCaptureNextFrame())

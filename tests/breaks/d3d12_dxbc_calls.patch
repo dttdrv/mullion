@@ -1,12 +1,12 @@
 # reverses the taken and untaken branches of conditional subroutine calls.
 --- a/src/airconv/dxbc_converter_cfg.cpp
 +++ b/src/airconv/dxbc_converter_cfg.cpp
-@@ -324,7 +324,7 @@
+@@ -329,7 +329,7 @@ read_control_flow(
      case D3D10_SB_OPCODE_CALLC: {
        auto if_true = fresh_bb("if_true");
        auto after_callc = fresh_bb("after_callc");
 -      bb_current->target = BasicBlockConditionalBranch{readCondition(Inst, 0, phase), if_true, after_callc};
 +      bb_current->target = BasicBlockConditionalBranch{readCondition(Inst, 0, phase), after_callc, if_true};
-       call_targets.push_back({bb_current, &std::get<BasicBlockCall>(bb_current->target)});
        auto func_id = Inst.m_Operands[1].m_Index[0].m_RegIndex;
        if_true->target = BasicBlockCall{func_id, after_callc};
+       if (func_entries.empty())

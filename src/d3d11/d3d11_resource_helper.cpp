@@ -402,9 +402,17 @@ CreateMTLTextureDescriptorInternal(
       MTLGetDXGIFormatCapability(metal_format, pDevice->GetMTLPixelFormatCapability(pDescOut->pixel_format));
   if ((BindFlags & D3D11_BIND_RENDER_TARGET) && !any_bit_set(capability & FormatCapability::Color))
     return E_INVALIDARG;
+  // an sRGB format is asked as the format it encodes: Windows makes an sRGB texture with the flag (Wine's
+  // test_create_unordered_access_view), though each view of it for unordered access is refused, "any format that
+  // supports being bound at the RenderTarget except for SRGB formats" (D3D11.3 5.3.9.2)
+  auto encoded = Forget_sRGB(pDescOut->pixel_format);
+  bool srgb = encoded != pDescOut->pixel_format;
   if ((BindFlags & D3D11_BIND_UNORDERED_ACCESS) &&
       ((BindFlags & D3D11_BIND_DEPTH_STENCIL) ||
-       !TypedUnorderedAccess(capability, pDevice->GetMTLPixelFormatCapability(metal_format.BufferPixelFormat))))
+       !TypedUnorderedAccess(
+           MTLGetDXGIFormatCapability(metal_format, pDevice->GetMTLPixelFormatCapability(encoded)),
+           pDevice->GetMTLPixelFormatCapability(srgb ? encoded : metal_format.BufferPixelFormat)
+       )))
     return E_INVALIDARG;
   // a plane's format is the one a shader reads the depth stencil texture in
   if ((BindFlags & D3D11_BIND_SHADER_RESOURCE) && any_bit_set(capability & FormatCapability::DepthStencil) &&
@@ -423,7 +431,8 @@ CreateMTLTextureDescriptorInternal(
   } else {
     if (BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL))
       metal_usage |= WMTTextureUsageRenderTarget;
-    if (BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
+    // no shader writes an sRGB texture: it has no view for unordered access
+    if ((BindFlags & D3D11_BIND_UNORDERED_ACCESS) && !srgb) {
       // a uint clear writes through a uint view; a written texture is not compressed anyway
       metal_usage |= WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite | WMTTextureUsagePixelFormatView;
       // NOTE: R32/RG32_TYPELESS format should be mapped to uint pixel format
@@ -503,7 +512,8 @@ CreateMTLTextureDescriptorInternal(
     break;
   case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
     if (SampleCount > 1) {
-      if (!pDevice->GetMTLDevice().supportsTextureSampleCount(SampleCount)) {
+      pDescOut->sample_count = RasterSampleCount(pDevice->GetMTLDevice(), SampleCount);
+      if (!pDescOut->sample_count) {
         ERR("CreateMTLTextureDescriptorInternal: sample count ", SampleCount,
             " is not supported.");
         return E_INVALIDARG;
@@ -514,7 +524,6 @@ CreateMTLTextureDescriptorInternal(
       } else {
         pDescOut->type = WMTTextureType2DMultisample;
       }
-      pDescOut->sample_count = SampleCount;
     } else {
       if (ArraySize > 1) {
         pDescOut->type = WMTTextureType2DArray;

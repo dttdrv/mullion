@@ -85,6 +85,8 @@ public:
   enum SampleType sample_type;
   enum MemoryAccess memory_access;
   Value *SingleSample = nullptr;
+  // true where each of a multisample texture's samples stands for two of D3D's (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED)
+  Value *Paired = nullptr;
   // true where the texture stands for an unbound one (SM50_TEXTURE_METADATA_UNBOUND): what it answers is dropped
   Value *Unbound = nullptr;
 };
@@ -270,6 +272,14 @@ public:
   Value *CreateSamplePos(Value *SampleCount, Value *Index);
   Value *CreateRasterizerSamplePos(Value *Index);
 
+  // the raster samples as D3D numbers them where each stands for two (PairedSamples): its count, a sample index or
+  // coverage mask of Metal's as D3D's, and D3D's as Metal's
+  Value *CreateD3DSampleCount();
+  Value *D3DSampleIndex(Value *Index);
+  Value *MetalSampleIndex(Value *Index);
+  Value *D3DCoverage(Value *Mask);
+  Value *MetalCoverage(Value *Mask);
+
   Value *CreateDerivative(Value *Val, bool YAxis);
 
   CallInst *CreateDiscard();
@@ -292,8 +302,17 @@ public:
 
   Value *CreateConvertToFloat(Value *Val, Signedness SrcSign = Signedness::Signed);
   Value *CreateConvertToHalf(Value *Val, Signedness SrcSign = Signedness::Signed);
-  Value *CreateConvertToSigned(Value *Val);
-  Value *CreateConvertToUnsigned(Value *Val);
+  // a float or half as an integer of `Bits` bits by Direct3D's rule: rounded toward zero, clamped to the integer's
+  // range, and 0 for a NaN (D3D11.3 22.13.3 ftoi, 22.13.4 ftou, which define it for 32 bits)
+  Value *CreateConvertToInteger(Value *Val, Signedness Sign, uint32_t Bits = 32);
+  Value *
+  CreateConvertToSigned(Value *Val) {
+    return CreateConvertToInteger(Val, Signedness::Signed);
+  }
+  Value *
+  CreateConvertToUnsigned(Value *Val) {
+    return CreateConvertToInteger(Val, Signedness::Unsigned);
+  }
 
   CallInst *CreateDeviceCoherentLoad(Type *Ty, Value *Ptr);
   CallInst *CreateDeviceCoherentStore(Value *Val, Value *Ptr);
@@ -304,6 +323,8 @@ public:
   Value *Live = nullptr;
   // a pixel shader's render target samples all lie at the pixel center (D3D11.3 19.2.4.1)
   bool CenteredSamples = false;
+  // each of a pixel shader's raster samples stands for two of D3D's (SM50_SHADER_PSO_PIXEL_SHADER_DATA paired_samples)
+  bool PairedSamples = false;
   // a pixel shader's covered samples and the state's sample mask, where D3D takes a centroid among the covered samples
   // in the mask (D3D11.3 3.5.5) and Metal among all covered: null where they agree
   Value *CentroidCoverage = nullptr, *CentroidMask = nullptr;
@@ -389,7 +410,15 @@ public:
 
   Value *CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant = true);
 
-  Value *CreateIsNaN(Value *Operand);
+  // the classes of IEEE 754 that DXIL's IsNaN, IsInf, IsFinite and IsNormal ask for (DXIL.rst, "Unary operations").
+  // each is read from the value's bits, of any width, which no floating-point setting of a compiler can fold as it
+  // can a comparison with an infinity
+  enum class FPClass { nan, infinite, finite, normal };
+  Value *CreateIsFPClass(FPClass Class, Value *Operand);
+  Value *
+  CreateIsNaN(Value *Operand) {
+    return CreateIsFPClass(FPClass::nan, Operand);
+  }
 
   enum FPBinOp {
     fmax,

@@ -1,8 +1,8 @@
 # the viewport's width and height are swapped.
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -1311,7 +1311,7 @@
-       auto index = builder.CreateAdd(builder.CreateShl(viewport, 1), builder.getInt32(1 + i));
+@@ -1955,7 +1955,7 @@ convert_pass_through_geometry_shader(
+       auto index = builder.CreateAdd(builder.CreateShl(chosen_viewport, 1), builder.getInt32(1 + i));
        return builder.CreateLoad(types._float, builder.CreateGEP(types._float, function->getArg(raster_scale), index));
      };
 -    auto w = size(0), h = size(1);

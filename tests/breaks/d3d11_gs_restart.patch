@@ -1,10 +1,9 @@
 # a geometry shader's cut leaves the rasterized strip going on
 diff --git a/src/airconv/dxbc_converter_gs.cpp b/src/airconv/dxbc_converter_gs.cpp
-index ff8e70c6..346375b4 100644
 --- a/src/airconv/dxbc_converter_gs.cpp
 +++ b/src/airconv/dxbc_converter_gs.cpp
-@@ -597,8 +597,6 @@ convert_dxbc_geometry_shader(
-   resource_map.call_cut = [&](uint32_t stream) -> IREffect {
+@@ -1232,8 +1232,6 @@ convert_dxbc_geometry_shader(
+       builder.CreateStore(zero_const, strip_length[stream]);
      if (so && stream < 4 && so_strip[stream])
        builder.CreateStore(zero_const, so_strip[stream]);
 -    if (stream == rasterized_stream)

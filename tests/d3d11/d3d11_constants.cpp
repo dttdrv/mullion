@@ -8,6 +8,11 @@
 //   shows all of it.
 // - a buffer "larger than 4096 elements in size" bound without a range "appears to the shader as if it is only 4096
 //   elements in size" (5.3.4.3.2).
+// - "Each offset must be a multiple of 16 constants", "Each number of constants must be a multiple of 16 constants,
+//   in the range [0..4096]", and "If either pFirstConstant or pNumConstants is NULL, the other parameter must also be
+//   NULL" (Microsoft Learn, VSSetConstantBuffers1). "The runtime drops the call" whose number is larger, and Windows
+//   drops the others too (Wine's d3d11 tests, test_constant_buffer_offset): the slot keeps the range it had, for the
+//   shader and for *GetConstantBuffers1.
 // the buffer's rows are numbered, and a compute shader copies some rows out, each by a computed index and one more by
 // a literal one.
 #include "d3d11_test.hpp"
@@ -101,6 +106,31 @@ main() {
   for (UINT i = 0; i < std::size(first); i++) {
     context1->CSSetConstantBuffers1(0, 1, whole.GetAddressOf(), &first[i], &count[i]);
     reads(i ? "a range that falls off the buffer" : "a range of the buffer", rows, first[i], count[i]);
+  }
+  // calls that are dropped: the slot keeps a range set before them
+  context1->CSSetConstantBuffers1(0, 1, whole.GetAddressOf(), &first[0], &count[0]);
+  const UINT none_first = 0, odd = 1, seventeen = range + 1, beyond = most + range;
+  const struct {
+    const char *what;
+    const UINT *first, *count;
+  } dropped[] = {
+      {"an offset that is not a multiple of 16", &odd, &range},
+      {"a count that is not a multiple of 16", &none_first, &seventeen},
+      {"a count of more than a shader is shown", &none_first, &beyond},
+      {"offsets without counts", &none_first, nullptr},
+      {"counts without offsets", nullptr, &range},
+  };
+  for (const auto &call : dropped) {
+    context1->CSSetConstantBuffers1(0, 1, whole.GetAddressOf(), call.first, call.count);
+    reads(call.what, rows, first[0], count[0]);
+    ComPtr<ID3D11Buffer> bound;
+    UINT bound_first = ~0u, bound_count = ~0u;
+    context1->CSGetConstantBuffers1(0, 1, &bound, &bound_first, &bound_count);
+    if (bound != whole || bound_first != first[0] || bound_count != count[0]) {
+      printf("%s: the slot has constants %u, %u of them, want %u, %u\n", call.what, bound_first, bound_count,
+             first[0], count[0]);
+      wrong++;
+    }
   }
   context->CSSetConstantBuffers(0, 1, whole.GetAddressOf());
   reads("the buffer after a range of it", rows, 0, rows);

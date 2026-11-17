@@ -1,12 +1,12 @@
 # pixel shaders never learn that their render targets use the center pattern
 --- a/src/d3d11/d3d11_shader.cpp
 +++ b/src/d3d11/d3d11_shader.cpp
-@@ -196,7 +196,7 @@
+@@ -199,7 +199,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
      std::copy(variant.pixel_formats.begin(), variant.pixel_formats.end(), data.pixel_formats);
      data.pipeline_statistics = variant.pipeline_statistics;
      data.alpha_to_coverage = variant.alpha_to_coverage;
 -    data.centered_samples = variant.centered_samples;
 +    data.centered_samples = false;
      data.single_raster_sample = variant.single_raster_sample;
+     data.paired_samples = variant.paired_samples;
      data.clip_distances = variant.clip_distances;
- 

@@ -530,6 +530,10 @@ main(int argc, char **argv) {
             desc.PrimitiveTopologyType = topology == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP
                                              ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
                                              : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            // the geometry shader of the pipelines before takes triangles, which a pipeline of lines does not make:
+            // Direct3D 12 refuses the two together
+            if (topology == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP)
+              desc.GS = {};
             desc.IBStripCutValue = !enabled                         ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED
                                    : format == DXGI_FORMAT_R16_UINT ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF
                                                                     : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;

@@ -1,0 +1,13 @@
+# a shader that outputs depth keeps it for a draw without a depth stencil view, which Metal refuses
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -2065,8 +2065,7 @@
+           bool depth = any_format && (DSVPlanar & 1) && ref_ps.PixelShader.DepthOutput;
+           // a pipeline of a depth format drawn without a depth stencil view: the depth its shader outputs goes
+           // nowhere, as with no depth buffer bound in Direct3D
+-          bool bare = !(DSVPlanar & 1) && info.depth_pixel_format != WMTPixelFormatInvalid &&
+-                      ref_ps.PixelShader.DepthOutput;
++          bool bare = false;
+           if (auto blends = blend_mask_ & Mask;
+               pixel_shader && (Statistics || late || Coarse || blends != blend_mask_ || depth || bare)) {
+             auto &ps = pixel_shaders_[blends | Statistics << 8 | late << 9 | Coarse << 10 | depth << 11 | bare << 12];

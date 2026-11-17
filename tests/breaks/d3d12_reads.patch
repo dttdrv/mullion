@@ -1,7 +1,7 @@
 # SampleBias samples without its bias
 --- a/src/airconv/dxil_converter.cpp
 +++ b/src/airconv/dxil_converter.cpp
-@@ -2592,7 +2592,7 @@
+@@ -3176,7 +3176,7 @@ convert_dxil(
          }
          case SampleBias: {
            auto options = std::pair{
@@ -9,4 +9,4 @@
 +              llvm::air::sample_bias{bias}, llvm::air::sample_min_lod_clamp{min_lod(tex, a(11))}
            };
            residency_bias = options.first.bias, residency_clamp = options.second.lod;
-           read = [&, options](Value *s, Value *) {
+           footprint = {.Bias = options.first.bias, .MinLOD = options.second.lod};

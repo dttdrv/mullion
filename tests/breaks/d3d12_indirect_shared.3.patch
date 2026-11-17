@@ -1,0 +1,12 @@
+# only the first command of a signature that changes a vertex buffer starts from the list's vertex buffers
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -451,7 +451,7 @@ public:
+                 "rootsig_qwords[word] = command_data.rootsig_base[word];\n";
+     if (!is_compute && UpdateVertexBuffers)
+       source
+-          << "if (command_data.vertex_base)\n"
++          << "if (command_data.vertex_base && i == 0)\n"
+              "for (uint slot = 0; slot < command_data.vertex_argbuf_stride / sizeof(mullion_vertex_buffer); slot++)\n"
+              "vertex_buffer[slot] = command_data.vertex_base[slot];\n";
+     // the caller binds what an IndirectMeshDraw's stages read; a command of the indirect command buffer binds its own

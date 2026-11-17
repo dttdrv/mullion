@@ -14,6 +14,11 @@
 // a target's format chooses "writing raw integer values vs. writing normalized float values" (D3D11.3 7.6): one
 // float output drawn to a float and to an integer target stores the same bits in each, so the integer one is converted
 // again while another float format is not.
+// what a pipeline reads of a shader before it converts it is stored with the conversions, so a process that finds
+// both must not parse the shader's bytecode at all, and one that finds a stored reflection damaged must read it
+// from the shader again, with the same pixels and bytes. so must one that finds a whole reflection of another layout:
+// a stage's part of the reflection shares the bytes of the other stages' parts, so a build in which it has another
+// size stores reflections of the same length.
 #include "d3d12_test.hpp"
 #include <array>
 #include <fstream>
@@ -23,6 +28,7 @@
 #include <cmath>
 #include <thread>
 #include "../../src/airconv/airconv_public.h"
+#include "../../src/util/sha1/sha1_util.hpp"
 
 static const char hlsl[] = R"hlsl(
 cbuffer constants : register(b0) { uint number; };
@@ -160,6 +166,9 @@ template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, typename T> struct alignas(v
 
 // the existing converter imports are counted on both the uncached and cached library.
 alignas(sizeof(LONG64)) static volatile LONG64 conversions;
+// and the shaders whose bytecode was parsed
+alignas(sizeof(LONG64)) static volatile LONG64 initializations;
+static decltype(&SM50Initialize) original_initialize;
 static decltype(&SM50Compile) original_compile;
 static std::array<decltype(&SM50CompileGeometryPipelineVertex), 4> original_pair;
 
@@ -182,6 +191,14 @@ count_pair(
   return original_pair[I](first, second, args, name, bitcode, error);
 }
 
+static int
+count_initialize(
+    const void *bytecode, size_t size, sm50_shader_t *shader, MTL_SHADER_REFLECTION *reflection, sm50_error_t *error
+) {
+  InterlockedIncrement64(&initializations);
+  return original_initialize(bytecode, size, shader, reflection, error);
+}
+
 static bool
 count_imports() {
   auto module = (BYTE *)GetModuleHandleA("d3d12core.dll");
@@ -194,11 +211,11 @@ count_imports() {
                                   nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
   const char *names[] = {
       "SM50Compile", "SM50CompileGeometryPipelineVertex", "SM50CompileGeometryPipelineGeometry",
-      "SM50CompileTessellationPipelineHull", "SM50CompileTessellationPipelineDomain"
+      "SM50CompileTessellationPipelineHull", "SM50CompileTessellationPipelineDomain", "SM50Initialize"
   };
   const uintptr_t hooks[] = {
       uintptr_t(count_compile), uintptr_t(count_pair<0>), uintptr_t(count_pair<1>), uintptr_t(count_pair<2>),
-      uintptr_t(count_pair<3>)
+      uintptr_t(count_pair<3>), uintptr_t(count_initialize)
   };
   UINT found = 0;
   for (; imports->Name; imports++) {
@@ -217,7 +234,9 @@ count_imports() {
                 "cannot count %s", names[i]
             ))
           return false;
-        if (i)
+        if (i > original_pair.size())
+          original_initialize = reinterpret_cast<decltype(original_initialize)>(functions->u1.Function);
+        else if (i)
           original_pair[i - 1] = reinterpret_cast<decltype(original_pair)::value_type>(functions->u1.Function);
         else
           original_compile = reinterpret_cast<decltype(original_compile)>(functions->u1.Function);
@@ -312,7 +331,7 @@ main(int argc, char **argv) {
     return processes(argc, argv);
   if (!count_imports())
     return verdict();
-  const auto before = conversions;
+  const auto before = conversions, initialized_before = initializations;
   const bool disabled = !strcmp(argv[2], "disabled");
   WIN32_FIND_DATAA stored_file;
   const auto store_files = std::string(argv[3]).substr(0, std::string(argv[3]).rfind('\\') + 1) + "shaders_*.db";
@@ -939,9 +958,12 @@ main(int argc, char **argv) {
         }
       pixels->Unmap(0, nullptr);
     }
-  UINT64 converted = conversions - before;
+  UINT64 converted = conversions - before, parsed = initializations - initialized_before;
   const bool warm = !strcmp(argv[2], "warm");
-  expect(warm ? converted == 0 : converted > 0, "%llu conversions in %s", converted, argv[2]);
+  // a process that finds a reflection damaged parses that shader; what else it finds stored it need not convert
+  if (strcmp(argv[2], "reflect"))
+    expect(warm ? converted == 0 : converted > 0, "%llu conversions in %s", converted, argv[2]);
+  expect(warm ? parsed == 0 : parsed > 0, "%llu shaders parsed in %s", parsed, argv[2]);
   std::ofstream file(argv[3], std::ios::binary);
   file.write(reinterpret_cast<const char *>(results.data()), results.size() * sizeof(results[0]));
   expect(bool(file), "readback results were not written");
@@ -1031,6 +1053,69 @@ processes(int argc, char **argv) {
       }
     }
     run("repair", false);
+    run("warm", false);
+    // every stored reflection, in the store and in what of it is not yet written back: the byte after a record's
+    // header, which is of the reflection itself
+    static const char record[] = "SM50REFL";
+    // its sizes: the reflection's, the four stages' parts', an argument's; then the count of arguments
+    const size_t sizes = 6, header = std::size(record) - 1 + (sizes + 1) * sizeof(UINT);
+    UINT damaged_records = 0;
+    auto stores = FindFirstFileA((std::string(directory) + "\\shaders_*").c_str(), &found);
+    if (stores != INVALID_HANDLE_VALUE) {
+      do {
+        std::string name = std::string(directory) + "\\" + found.cFileName;
+        std::ifstream file(name, std::ios::binary);
+        std::string bytes{std::istreambuf_iterator<char>(file), {}};
+        file.close();
+        std::fstream damaged(name, std::ios::in | std::ios::out | std::ios::binary);
+        for (auto at = bytes.find(record); at != std::string::npos && at + header < bytes.size();
+             at = bytes.find(record, at + 1)) {
+          damaged.seekp(at + header);
+          damaged.put(bytes[at + header] ^ 1);
+          damaged_records++;
+        }
+      } while (FindNextFileA(stores, &found));
+      FindClose(stores);
+    }
+    expect(damaged_records > 0, "no stored reflection");
+    run("reflect", false);
+    run("warm", false);
+    // every whole one again, as a build with a larger tessellator part would have stored it: that size raised and
+    // the record's digest made anew
+    UINT other_layouts = 0;
+    stores = FindFirstFileA((std::string(directory) + "\\shaders_*").c_str(), &found);
+    if (stores != INVALID_HANDLE_VALUE) {
+      do {
+        std::string name = std::string(directory) + "\\" + found.cFileName;
+        std::ifstream file(name, std::ios::binary);
+        std::string bytes{std::istreambuf_iterator<char>(file), {}};
+        file.close();
+        std::fstream other(name, std::ios::in | std::ios::out | std::ios::binary);
+        for (auto at = bytes.find(record); at != std::string::npos && at + header < bytes.size();
+             at = bytes.find(record, at + 1)) {
+          UINT arguments, part;
+          memcpy(&arguments, &bytes[at + header - sizeof(UINT)], sizeof(arguments));
+          size_t body = header + sizeof(MTL_SHADER_REFLECTION) + size_t(arguments) * sizeof(MTL_SM50_SHADER_ARGUMENT);
+          if (arguments > 4096 || at + body + sizeof(mullion::Sha1Digest) > bytes.size())
+            continue;
+          auto digest = mullion::Sha1HashState::compute(&bytes[at], body);
+          if (memcmp(digest.data, &bytes[at + body], sizeof(digest)))
+            continue;
+          auto tessellator = at + std::size(record) - 1 + sizeof(UINT);
+          memcpy(&part, &bytes[tessellator], sizeof(part));
+          part += sizeof(UINT);
+          memcpy(&bytes[tessellator], &part, sizeof(part));
+          digest = mullion::Sha1HashState::compute(&bytes[at], body);
+          memcpy(&bytes[at + body], digest.data, sizeof(digest));
+          other.seekp(at);
+          other.write(&bytes[at], body + sizeof(digest));
+          other_layouts++;
+        }
+      } while (FindNextFileA(stores, &found));
+      FindClose(stores);
+    }
+    expect(other_layouts > 0, "no whole stored reflection");
+    run("reflect", false);
     run("warm", false);
     run("disabled", true);
     run("disabled", true);

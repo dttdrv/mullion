@@ -1,12 +1,12 @@
 # centroid inputs stay Metal's own interpolation.
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -440,7 +440,7 @@
+@@ -638,7 +638,7 @@ llvm::Error convert_dxbc_pixel_shader(
      // a shader's depth is ignored once the tests ran before it (D3D11.3 16.12.1)
-     sig_ctx.disable_depth_output = pso_disable_depth_output || func_signature.EarlyFragmentTests();
+     sig_ctx.disable_depth_output = pso_disable_depth_output || early_tests;
      sig_ctx.pull_mode_reg_mask = shader_info->pull_mode_reg_mask;
 -    sig_ctx.pull_centroids = pso_sample_mask != 0xffffffff;
 +    sig_ctx.pull_centroids = false;
+     sig_ctx.barycentric_rows = pso_data && (pso_data->quad_lines || pso_data->conservative);
      sig_ctx.unorm_output_reg_mask = pso_unorm_output_reg_mask;
      if (pso_pixel_formats)
-       memcpy(sig_ctx.pixel_formats, pso_pixel_formats, sizeof(sig_ctx.pixel_formats));

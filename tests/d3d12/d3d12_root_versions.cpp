@@ -10,7 +10,12 @@
 // container (CreateRootSignature: "E_INVALIDARG if the blob that pBlobWithRootSignature points to is invalid").
 // device creation stays within the queried version support: "the highest version, up to the input version
 // specified, actually available" (Microsoft Learn, D3D12_FEATURE_DATA_ROOT_SIGNATURE).
+// a library's root signature subobject is also a root signature by its name
+// (ID3D12Device14::CreateRootSignatureFromSubobjectInLibrary, d3d12.idl of microsoft/DirectX-Headers): the one made
+// of the global subobject serves the pipeline the library's own global root signature serves, and a name the library
+// lacks makes none.
 #include "d3d12_test.hpp"
+#include "d3d12_device14.hpp"
 #include <array>
 #include <random>
 
@@ -191,7 +196,9 @@ main(int argc, char **argv) {
             s.desc = {D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
                       D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP};
             s.desc.ShaderRegister = i;
-            s.desc.RegisterSpace = random() % D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT;
+            // not space 0, where the tables' sampler range has s0: two bindings a stage sees cannot name one
+            // register (DirectXShaderCompiler, DxilRootSignatureValidator.cpp, AddRegisterRange)
+            s.desc.RegisterSpace = 1 + random() % (D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT - 1);
             s.desc.MipLODBias = float(random() % D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT);
             s.desc.MaxAnisotropy = 1;
             s.desc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
@@ -364,6 +371,23 @@ main(int argc, char **argv) {
       expect(hr == (i == 2 ? E_INVALIDARG : S_OK), "library signature pipeline: %08lx", hr);
     }
     for (auto name : {L"grs", L"lrs", L"missing"}) {
+      ComPtr<ID3D12Device14> device14;
+      ComPtr<ID3D12RootSignature> named;
+      if (expect(SUCCEEDED(device.As(&device14)), "no ID3D12Device14")) {
+        hr = device14->CreateRootSignatureFromSubobjectInLibrary(
+            0, libraries[i].data(), libraries[i].size(), name, IID_PPV_ARGS(&named)
+        );
+        if (!wcscmp(name, L"missing"))
+          expect(FAILED(hr) && !named, "a root signature of a missing subobject: %08lx", hr);
+        else if (
+            expect(hr == S_OK && named, "no root signature of a named subobject: %08lx", hr) && !wcscmp(name, L"grs")
+        ) {
+          D3D12_COMPUTE_PIPELINE_STATE_DESC desc{named.Get(), bytecode(cs)};
+          ComPtr<ID3D12PipelineState> pipeline;
+          hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline));
+          expect(hr == (i == 2 ? E_INVALIDARG : S_OK), "named global signature pipeline: %08lx", hr);
+        }
+      }
       ComPtr<ID3D12VersionedRootSignatureDeserializer> reader;
       hr = config->CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary(
           libraries[i].data(), libraries[i].size(), name, IID_PPV_ARGS(&reader));

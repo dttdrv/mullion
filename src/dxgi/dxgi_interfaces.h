@@ -27,6 +27,9 @@ DEFINE_COM_INTERFACE("6c030003-460a-4b19-909b-38f97d203e45",
       IDXGIFactory1 * pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
       IDXGISwapChain1 **ppSwapChain) = 0;
+  // what the device still holds of swap chains the application has let go is let go, as far as that waits for no one
+  // else: a window that had such a chain is free for its next one then
+  virtual void STDMETHODCALLTYPE ReleasedSwapChains() {}
 };
 
 // Direct3D 11 on 12 shares resources between modules that each have their own objects: only Metal ones cross, with

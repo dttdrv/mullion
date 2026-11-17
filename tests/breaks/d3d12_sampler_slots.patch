@@ -2,11 +2,11 @@
 # family 7
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
-@@ -1553,8 +1553,6 @@
+@@ -1839,8 +1839,6 @@
    params->ret = [(id<MTLDevice>)params->handle maxArgumentBufferSamplerCount];
    // an emulated Apple7 or Apple8 holds what they do: 1024 samplers a stage reaches from an argument buffer (Metal
    // feature set tables), which an M1 Pro reports here too
--  if (emulated_family() && emulated_family() < MTLGPUFamilyApple9 - MTLGPUFamilyApple1 + 1)
+-  if (!family_has(9))
 -    params->ret = MIN(params->ret, 1024);
    return STATUS_SUCCESS;
  }

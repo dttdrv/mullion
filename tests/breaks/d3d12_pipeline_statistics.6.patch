@@ -1,12 +1,12 @@
 # every run of an MSAA pixel counts, as many as its covered samples
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -476,7 +476,7 @@
-     // D3D11.3 20.4.7 counts executions even when an output depth fails the test.
-     auto counter = function->getArg(*statistics);
+@@ -1077,7 +1077,7 @@ llvm::Error convert_dxbc_pixel_shader(
+   // whether this run is the one of the first of these covered samples, and of one of them
+   auto first = [&](llvm::Value *samples) {
      llvm::Value *counts = builder.getTrue();
 -    if (coverage != ~0u) {
 +    if (false && coverage != ~0u) {
        auto before = builder.CreateSub(builder.CreateShl(builder.getInt32(1), function->getArg(sample)), builder.getInt32(1));
-       counts = builder.CreateICmpEQ(builder.CreateAnd(function->getArg(coverage), before), builder.getInt32(0));
+       counts = builder.CreateICmpEQ(builder.CreateAnd(samples ? samples : function->getArg(coverage), before), builder.getInt32(0));
      }

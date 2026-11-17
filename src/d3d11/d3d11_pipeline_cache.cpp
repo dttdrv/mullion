@@ -74,36 +74,26 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   class CachedSM50Shader final : public Shader {
     PipelineCache *cache;
+    // its conversion state (SM50Initialize), made of `bytecode_` when a variant is first converted and the bytecode
+    // kept until then: a shader whose reflection and variants are stored is never parsed
     sm50_shader_t shader = nullptr;
+    std::string bytecode_;
+    mullion::mutex shader_mutex;
     Sha1Digest sha1_;
-    MTL_SHADER_REFLECTION reflection_;
-    MTL_SM50_SHADER_ARGUMENT *arguments_info_buffer;
+    ShaderReflection info_;
     std::unordered_map<ShaderVariant, std::unique_ptr<CompiledShader>> variants;
     // a pipeline asks for variants where it is made, and again where it is built
     mullion::mutex variants_mutex;
 
   public:
-    CachedSM50Shader(PipelineCache *cache, sm50_shader_t shader_transferred,
-                     const Sha1Digest &hash, MTL_SHADER_REFLECTION &reflection)
-        : cache(cache), shader(shader_transferred), sha1_(hash),
-          reflection_(reflection) {
-      if (reflection_.NumConstantBuffers + reflection_.NumArguments) {
-        arguments_info_buffer = (MTL_SM50_SHADER_ARGUMENT *)malloc(
-            sizeof(MTL_SM50_SHADER_ARGUMENT) *
-            (reflection_.NumConstantBuffers + reflection_.NumArguments));
-        SM50GetArgumentsInfo(shader, arguments_info_buffer,
-                             arguments_info_buffer +
-                                 reflection_.NumConstantBuffers);
-      } else {
-        arguments_info_buffer = nullptr;
-      }
-    }
+    // `shader_transferred`: its state, or null with the `bytecode` it is made of when first needed
+    CachedSM50Shader(PipelineCache *cache, sm50_shader_t shader_transferred, std::string_view bytecode,
+                     const Sha1Digest &hash, ShaderReflection &&info)
+        : cache(cache), shader(shader_transferred), bytecode_(bytecode), sha1_(hash), info_(std::move(info)) {}
 
     ~CachedSM50Shader() {
       if (shader) {
         SM50Destroy(shader);
-        if (arguments_info_buffer)
-          free(arguments_info_buffer);
         shader = nullptr;
       }
     };
@@ -111,13 +101,26 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     CachedSM50Shader(CachedSM50Shader &&moved) = delete;
     CachedSM50Shader(const CachedSM50Shader &copy) = delete;
 
-    virtual sm50_shader_t handle() { return shader; };
-    virtual MTL_SHADER_REFLECTION &reflection() { return reflection_; }
+    virtual sm50_shader_t handle() {
+      std::lock_guard<mullion::mutex> lock(shader_mutex);
+      if (!shader && !bytecode_.empty()) {
+        sm50_error_t err = nullptr;
+        MTL_SHADER_REFLECTION reflection;
+        if (SM50Initialize(bytecode_.data(), bytecode_.size(), &shader, &reflection, &err)) {
+          ERR("Failed to initialize shader ", sha1_.string(), ": ", SM50GetErrorMessageString(err));
+          SM50FreeError(err);
+          shader = nullptr;
+        }
+        std::string().swap(bytecode_);
+      }
+      return shader;
+    };
+    virtual MTL_SHADER_REFLECTION &reflection() { return info_.reflection; }
     virtual MTL_SM50_SHADER_ARGUMENT *constant_buffers_info() {
-      return arguments_info_buffer;
+      return info_.arguments.data();
     };
     virtual MTL_SM50_SHADER_ARGUMENT *arguments_info() {
-      return arguments_info_buffer + reflection_.NumConstantBuffers;
+      return info_.arguments.data() + info_.reflection.NumConstantBuffers;
     };
     virtual CompiledShader *get_shader(ShaderVariant variant) {
       std::lock_guard<mullion::mutex> lock(variants_mutex);
@@ -155,13 +158,13 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     virtual WMT::Reference<WMT::DispatchData> find_cached_variant(Sha1Digest &variant_digest) final {
       auto reader = cache->scache_.getReader();
       if (reader)
-        return reader->get(std::make_pair(sha1_, variant_digest));
+        return reader.get(std::make_pair(sha1_, variant_digest));
       return {};
     };
     virtual void update_cached_variant(Sha1Digest &variant_digest, WMT::DispatchData data) final {
       auto writer = cache->scache_.getWriter();
       if (writer)
-        writer->set(std::make_pair(sha1_, variant_digest), data);
+        writer.set(std::make_pair(sha1_, variant_digest), data);
     }
   };
 
@@ -235,15 +238,25 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
         return shaders_.at(sha1).get();
       }
     }
-    sm50_error_t err;
-    sm50_shader_t sm50;
-    MTL_SHADER_REFLECTION reflection;
-    if (SM50Initialize(pBytecode, BytecodeLength, &sm50, &reflection, &err)) {
-      ERR("Failed to initialize shader: ", SM50GetErrorMessageString(err));
-      SM50FreeError(err);
-      return nullptr;
+    // the reflection of a shader seen in an earlier process leaves its bytecode unparsed, until a variant of it has to
+    // be converted
+    ShaderReflection info;
+    sm50_shader_t sm50 = nullptr;
+    if (!scache_.getReflection(sha1, info)) {
+      sm50_error_t err;
+      MTL_SHADER_REFLECTION reflection;
+      if (SM50Initialize(pBytecode, BytecodeLength, &sm50, &reflection, &err)) {
+        ERR("Failed to initialize shader: ", SM50GetErrorMessageString(err));
+        SM50FreeError(err);
+        return nullptr;
+      }
+      info = ReadShaderReflection(sm50, reflection);
+      scache_.setReflection(sha1, info);
     }
-    auto shader = std::make_unique<CachedSM50Shader>(this, sm50, sha1, reflection);
+    auto shader = std::make_unique<CachedSM50Shader>(
+        this, sm50, sm50 ? std::string_view() : std::string_view((const char *)pBytecode, BytecodeLength), sha1,
+        std::move(info)
+    );
     {
       std::unique_lock<std::shared_mutex> lock(mutex_shares);
       auto result = shaders_.find(sha1);

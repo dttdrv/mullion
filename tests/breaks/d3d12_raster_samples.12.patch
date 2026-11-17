@@ -1,9 +1,9 @@
 # Metal clips the distances of a pipeline whose pixel shader writes memory
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -1129,7 +1129,7 @@
-     // tessellation still clips in Metal
+@@ -1478,7 +1478,7 @@ public:
      uint32_t clips = pDesc->PS.pShaderBytecode && !mesh_shader && !(tessellation && pDesc->GS.pShaderBytecode) &&
+                              !conservative &&
                               (ref_ps.UAVSlotMask || ref_ps.PixelShader.HasCoverageInput)
 -                         ? (pDesc->GS.pShaderBytecode ? ref_gs : tessellation ? ref_ds : ref_vs).ClipDistances
 +                         ? 0

@@ -2,13 +2,13 @@
 # family 8
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -811,8 +811,7 @@
-     info.raster_sample_count = std::max(pDesc->SampleDesc.Count, 1u);
+@@ -1141,8 +1141,7 @@ public:
+     }
      // Metal refuses a mesh pipeline that asks for indirect command buffers on GPUs before Apple9, where mesh draws
      // never go in them (d3d12_command_allocator.cpp)
 -    info.support_indirect_command_buffers = std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo> ||
 -                                            device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
 +    info.support_indirect_command_buffers = true;
  
-     info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput;
- 
+     // Metal takes no alpha-to-coverage with an integer target 0, and takes it from the color the fragment function
+     // returns, which a target 0 the pixel shader blends itself (ShaderBlend) has blended: the pixel shader makes the

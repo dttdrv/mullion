@@ -1,0 +1,13 @@
+# minimum and maximum filters are left to samplers of a GPU that does not reduce
+# family 9
+--- a/src/mullion/mullion_sampler.cpp
++++ b/src/mullion/mullion_sampler.cpp
+@@ -67,7 +67,7 @@
+ // bridge measures each device once, when its first sampler that reduces is made
+ static bool
+ NativeReduction(WMT::Device device) {
+-  bool honoured = device.supportsSamplerReduction();
++  bool honoured = true;
+   static std::atomic<bool> said = false;
+   if (!said.exchange(true))
+     Logger::info(str::format("Sampler: Metal's reductionMode ", honoured ? "is" : "is not",

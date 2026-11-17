@@ -152,8 +152,20 @@ std::string getUnixPath(const std::string &path) {
                                        path.data(), path.size());
 
     widePath[length] = L'\0';
-    return std::string(wine_get_unix_file_name(widePath.data()));
+    if (LPSTR unixPath = wine_get_unix_file_name(widePath.data()))
+      return std::string(unixPath);
   }
+  // without wine_get_unix_file_name (an ARM64X module through FEX finds none in kernel32): Wine's drive Z: is the
+  // root of the Unix file system, and a Unix path is one already
+  if (path.size() >= 2 && (path[0] == 'Z' || path[0] == 'z') && path[1] == ':') {
+    std::string unixPath = path.substr(2);
+    for (auto &c : unixPath)
+      if (c == '\\')
+        c = '/';
+    return unixPath.empty() ? "/" : unixPath;
+  }
+  if (!path.empty() && path[0] == '/')
+    return path;
   return "";
 #else
   return path;

@@ -4,8 +4,8 @@
 // point light shadows and light probes):
 // - SV_RenderTargetArrayIndex "specifies which render target array slice the primitive goes to" (D3D11.3 4.4.6,
 //   and 10.4.x for the geometry shader that writes it); a vertex shader may write it where the device reports
-//   VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation, otherwise that half is named as not
-//   run. instance i of a triangle that covers the target goes to layer i, and its pixels hold the layer and their
+//   VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation, and so may a domain shader with no
+//   geometry shader after it; otherwise those halves are named as not run. instance i of a triangle that covers the target goes to layer i, and its pixels hold the layer and their
 //   own place; half of every layer is then cleared by rectangle;
 // - the target is a 2D array, the six faces of a cube (a 2D array of six, D3D12_RESOURCE_DESC), or a 3D texture,
 //   whose render target view takes its depth slices as layers (D3D12_TEX3D_RTV: FirstWSlice, WSize);
@@ -36,6 +36,17 @@ P vs_passes(uint id : SV_VertexID, uint instance : SV_InstanceID) {
     v.pos = p[i].pos, v.named = p[i].named, v.layer = p[i].named;
     stream.Append(v);
   }
+}
+// a patch that is its triangle: the domain shader names the layer, with no geometry shader after it
+struct F { float edges[3] : SV_TessFactor; float inside : SV_InsideTessFactor; };
+F hs_factors() { F f; f.edges[0] = f.edges[1] = f.edges[2] = f.inside = 1; return f; }
+[domain("tri")] [partitioning("integer")] [outputtopology("triangle_cw")] [outputcontrolpoints(3)]
+[patchconstantfunc("hs_factors")] P hs_passes(InputPatch<P, 3> patch, uint i : SV_OutputControlPointID) { return patch[i]; }
+[domain("tri")] V ds_names(F f, float3 at : SV_DomainLocation, const OutputPatch<P, 3> patch) {
+  V v;
+  v.pos = patch[0].pos * at.x + patch[1].pos * at.y + patch[2].pos * at.z;
+  v.named = patch[0].named, v.layer = patch[0].named;
+  return v;
 }
 // the layer the pixel is in, and its place
 uint4 ps_places(V v) : SV_Target { return uint4(v.named + 1, v.pos.x, v.pos.y, v.layer + 1); }
@@ -84,7 +95,9 @@ main(int argc, char **argv) {
   const bool from_vertex = options.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation;
   // a compiler may refuse a vertex shader that names a layer for a device that has none
   auto vs_names = from_vertex ? compiler.compile(hlsl, "vs_names", "vs", defines) : std::string();
-  if (from_vertex && vs_names.empty()) {
+  auto hs_passes = from_vertex ? compiler.compile(hlsl, "hs_passes", "hs", defines) : std::string(),
+       ds_names = from_vertex ? compiler.compile(hlsl, "ds_names", "ds", defines) : std::string();
+  if (from_vertex && (vs_names.empty() || hs_passes.empty() || ds_names.empty())) {
     printf("failed: HLSL did not compile\n");
     return 1;
   }
@@ -140,16 +153,21 @@ main(int argc, char **argv) {
       desc.Texture2DArray = {0, 0, count, 0};
     device->CreateRenderTargetView(texture, &desc, rtv);
   };
-  auto pipeline = [&](bool vertex_names, const std::string &ps, DXGI_FORMAT format) {
+  // the shader that names the layer
+  enum Namer : UINT { Geometry, Vertex, Domain };
+  auto pipeline = [&](UINT namer, const std::string &ps, DXGI_FORMAT format) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = rs.Get();
-    desc.VS = bytecode(vertex_names ? vs_names : vs_passes), desc.PS = bytecode(ps);
-    if (!vertex_names)
+    desc.VS = bytecode(namer == Vertex ? vs_names : vs_passes), desc.PS = bytecode(ps);
+    if (namer == Geometry)
       desc.GS = bytecode(gs_names);
+    if (namer == Domain)
+      desc.HS = bytecode(hs_passes), desc.DS = bytecode(ds_names);
     desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     desc.SampleMask = ~0u;
     desc.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE};
-    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.PrimitiveTopologyType =
+        namer == Domain ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     desc.NumRenderTargets = 1, desc.RTVFormats[0] = format;
     desc.SampleDesc = {1, 0};
     ComPtr<ID3D12PipelineState> pso;
@@ -158,7 +176,7 @@ main(int argc, char **argv) {
     return pso;
   };
   // a triangle over the whole target for each layer, each to its own
-  auto draws = [&](ID3D12PipelineState *pso, UINT count) {
+  auto draws = [&](ID3D12PipelineState *pso, UINT count, bool patches = false) {
     const float clear[4] = {};
     D3D12_VIEWPORT viewport{0, 0, (float)side, (float)side, 0, 1};
     D3D12_RECT scissor{0, 0, (LONG)side, (LONG)side};
@@ -168,7 +186,9 @@ main(int argc, char **argv) {
     list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetPrimitiveTopology(
+        patches ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+    );
     list->DrawInstanced(3, count, 0, 0);
   };
   // every layer of a texture, one after another in a buffer: a 2D array's are its subresources, a 3D texture's are
@@ -210,20 +230,21 @@ main(int argc, char **argv) {
   const Kind kinds[] = {{"a 2D array", false, layers}, {"a cube's six faces", false, faces}, {"a 3D texture", true, layers}};
   bool vertex_ran = false;
   for (auto &kind : kinds)
-    for (bool vertex_names : {false, true}) {
-      if (vertex_names && !from_vertex)
+    for (UINT namer : {Geometry, Vertex, Domain}) {
+      if (namer != Geometry && !from_vertex)
         continue;
-      vertex_ran |= vertex_names;
-      step("%s, each layer named by the %s shader", kind.name, vertex_names ? "vertex" : "geometry");
+      vertex_ran |= namer != Geometry;
+      const char *const namers[] = {"geometry", "vertex", "domain"};
+      step("%s, each layer named by the %s shader", kind.name, namers[namer]);
       const DXGI_FORMAT format = DXGI_FORMAT_R32G32B32A32_UINT;
       auto texture = target(kind.deep, kind.count, format, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET);
-      auto pso = pipeline(vertex_names, ps_places, format);
+      auto pso = pipeline(namer, ps_places, format);
       if (!texture || !pso)
         continue;
       renders_to(texture.Get(), kind.deep, kind.count, format);
       CHECK(allocator->Reset());
       CHECK(list->Reset(allocator.Get(), nullptr));
-      draws(pso.Get(), kind.count);
+      draws(pso.Get(), kind.count, namer == Domain);
       // then the left half of every layer is cleared: a clear of a view clears what the view has, and a clear of
       // a rectangle is a pass of its own (ID3D12GraphicsCommandList::ClearRenderTargetView, pRects)
       const float erased[4] = {5, 6, 7, 8};
@@ -239,7 +260,7 @@ main(int argc, char **argv) {
       expect(wrong <= 3, "and %u more pixels", wrong - 3);
     }
   if (!vertex_ran)
-    printf("not run, the device has no layers named by the vertex shader\n");
+    printf("not run, the device has no layers named by the vertex or the domain shader\n");
 
   step("a cube sampled along its axes and a volume sampled between its slices, after a draw into each");
   const DXGI_FORMAT shade = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -247,7 +268,7 @@ main(int argc, char **argv) {
        volume = target(true, layers, shade, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET),
        written = target(true, layers, DXGI_FORMAT_R32G32B32A32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-  auto shades = pipeline(false, ps_shades, shade);
+  auto shades = pipeline(Geometry, ps_shades, shade);
   ComPtr<ID3D12PipelineState> samples, writes;
   D3D12_COMPUTE_PIPELINE_STATE_DESC samples_desc{rs.Get(), bytecode(cs_samples)}, writes_desc{rs.Get(), bytecode(cs_writes)};
   CHECK(device->CreateComputePipelineState(&samples_desc, IID_PPV_ARGS(&samples)));

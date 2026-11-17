@@ -121,6 +121,7 @@ struct ShaderVariantPixel {
   bool alpha_to_coverage = false;
   bool centered_samples = false;
   bool single_raster_sample = false;
+  bool paired_samples = false;
   uint32_t clip_distances = 0;
   std::array<uint32_t, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats)> pixel_formats{};
   std::array<SM50_SHADER_BLEND, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.blend)> blend{};
@@ -135,7 +136,7 @@ struct ShaderVariantTessellationVertexHull {
   uint32_t max_potential_tess_factor;
   uint32_t mesh_vertex_size;
   // the geometry shader that runs after the domain shader, in its mesh stage (null for none), and the most
-  // threadgroups a mesh grid may have (0 while not known)
+  // threadgroups a mesh grid may have (0 when the device tells none)
   ManagedShader geometry_shader_handle;
   uint32_t max_mesh_threadgroups;
   bool operator==(const this_type &rhs) const = default;

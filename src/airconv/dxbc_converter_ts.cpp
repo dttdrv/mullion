@@ -4,6 +4,7 @@
 #include "nt/air_builder.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "tessellation_limits.hpp"
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -384,7 +385,7 @@ convert_dxbc_vertex_hull_shader(
   auto [workload_primitives, geometry_instances] = mesh_threadgroups_per_workload(pHullStage, pArgs, factor_int);
   SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
   args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess);
-  // the most a grid has (tessellation_grids). left out while the pipeline is to tell what the device lets one have
+  // the most a grid has (tessellation_grids). left out when the device tells no limit, for Metal to apply its own
   uint32_t grid_limit = pso_tess ? pso_tess->max_mesh_threadgroups : 0;
   if (!pso_tess || grid_limit) {
     auto grids = tessellation_grids(max_workload_count * patch_per_group, workload_primitives, geometry_instances, grid_limit);
@@ -1050,7 +1051,7 @@ convert_dxbc_tesselator_domain_shader(
 
   // TESS TODO: 17e30e0855effcaa4da9a05c018a3ba7189d7653 changes
 
-  auto &ds_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto ds_output_handlers = pShaderInternal->mesh_handlers(func_signature);
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D11_SB_DOMAIN_SHADER, rootsig->bytecode,
@@ -1279,6 +1280,8 @@ convert_dxbc_tesselator_domain_shader(
     }
     air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   }
+  // where each of the group's workloads' points start, one a lane
+  auto layout = group_limit ? dxbc.DomainGetGroupLayout(workload_index, group_end, thread_index, data) : nullptr;
   auto preheader = builder.GetInsertBlock();
   builder.CreateBr(vertex_start);
 
@@ -1294,8 +1297,9 @@ convert_dxbc_tesselator_domain_shader(
                               workload_index, first_primitive, actual_thread_index, pieces.primitives,
                               get_output_primitive(pHullStage), data
                           )
-                        : group_limit ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, data)
-                                      : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
+                        : group_limit
+                            ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, layout, data)
+                            : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
 
   resource_map.domain = domain_location(location, builder, air);
 

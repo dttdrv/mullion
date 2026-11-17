@@ -1,9 +1,9 @@
 # resolves from array slice zero regardless of the requested source subresource.
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -1068,7 +1068,7 @@
-       src_desc.format = format;
-       src_desc.type = src->textureType();
+@@ -1107,7 +1107,7 @@ public:
+       // the draw reads a texture2d_ms, which an array's own type reads as zeros
+       src_desc.type = native ? src->textureType() : WMTTextureType2DMultisample;
        src_desc.arraySize = 1;
 -      src_desc.firstArraySlice = SrcSubresource; // src must be a MS(Array) texture which has exactly 1 mipmap level
 +      src_desc.firstArraySlice = 0; // src must be a MS(Array) texture which has exactly 1 mipmap level

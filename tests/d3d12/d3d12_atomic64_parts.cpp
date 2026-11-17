@@ -159,29 +159,6 @@ main(int argc, char **argv) {
   const bool native_minmax = supports(at(devices, 0), WMTGPUFamilyApple8);
   release(devices);
 
-  D3D12_ROOT_PARAMETER parameters[] = {{D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}};
-  parameters[1].Constants = {0, 0, 3};
-  auto root = root_signature(device.Get(), {UINT(std::size(parameters)), parameters});
-  D3D12_INDIRECT_ARGUMENT_DESC arguments[] = {{D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT},
-                                             {D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH}};
-  arguments[0].Constant = {1, 0, 3};
-  struct Command {
-    UINT grid[3];
-    D3D12_DISPATCH_ARGUMENTS dispatch;
-  };
-  D3D12_COMMAND_SIGNATURE_DESC signature_desc{sizeof(Command), UINT(std::size(arguments)), arguments};
-  ComPtr<ID3D12CommandSignature> signature, plain_signature;
-  CHECK(device->CreateCommandSignature(&signature_desc, root.Get(), IID_PPV_ARGS(&signature)));
-  D3D12_COMMAND_SIGNATURE_DESC plain_desc{sizeof(D3D12_DISPATCH_ARGUMENTS), 1, &arguments[1]};
-  CHECK(device->CreateCommandSignature(&plain_desc, nullptr, IID_PPV_ARGS(&plain_signature)));
-  ComPtr<ID3D12CommandQueue> queue;
-  ComPtr<ID3D12CommandAllocator> allocator;
-  ComPtr<ID3D12GraphicsCommandList> list;
-  D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
-  CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
-  CHECK(device->CreateCommandAllocator(queue_desc.Type, IID_PPV_ARGS(&allocator)));
-  CHECK(device->CreateCommandList(0, queue_desc.Type, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
-  CHECK(list->Close());
   enum {
     Direct, EqualSkip, EqualRun, NotEqualRun, NotEqualSkip, Indirect, Counted, CountZero, CountPastMaximum,
     IndirectEqualSkip, IndirectEqualRun, IndirectNotEqualSkip, IndirectNotEqualRun, NoCommands, TwoCommands, ModeCount
@@ -191,6 +168,32 @@ main(int argc, char **argv) {
       continue;
     SetEnvironmentVariableA("MULLION_SHADER_FLAGS",
                             std::to_string(emulated ? SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64 : 0).c_str());
+    // the flags are read once per device
+    device.Reset();
+    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    D3D12_ROOT_PARAMETER parameters[] = {{D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}};
+    parameters[1].Constants = {0, 0, 3};
+    auto root = root_signature(device.Get(), {UINT(std::size(parameters)), parameters});
+    D3D12_INDIRECT_ARGUMENT_DESC arguments[] = {{D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT},
+                                               {D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH}};
+    arguments[0].Constant = {1, 0, 3};
+    struct Command {
+      UINT grid[3];
+      D3D12_DISPATCH_ARGUMENTS dispatch;
+    };
+    D3D12_COMMAND_SIGNATURE_DESC signature_desc{sizeof(Command), UINT(std::size(arguments)), arguments};
+    ComPtr<ID3D12CommandSignature> signature, plain_signature;
+    CHECK(device->CreateCommandSignature(&signature_desc, root.Get(), IID_PPV_ARGS(&signature)));
+    D3D12_COMMAND_SIGNATURE_DESC plain_desc{sizeof(D3D12_DISPATCH_ARGUMENTS), 1, &arguments[1]};
+    CHECK(device->CreateCommandSignature(&plain_desc, nullptr, IID_PPV_ARGS(&plain_signature)));
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
+    CHECK(device->CreateCommandAllocator(queue_desc.Type, IID_PPV_ARGS(&allocator)));
+    CHECK(device->CreateCommandList(0, queue_desc.Type, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
+    CHECK(list->Close());
     for (UINT shape = 0; shape < std::size(threads); shape++)
       for (UINT atomic = 0; atomic < atomics; atomic++) {
         const bool locks = atomic == add64 || (atomic == max64 && emulated);

@@ -1,12 +1,12 @@
 # drops the stream-output statistics destination during a draw.
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1147,7 +1147,7 @@
+@@ -1746,7 +1746,7 @@ public:
        targets.address[b] = so_views_[b].BufferLocation;
        targets.size[b] = so_views_[b].SizeInBytes;
        targets.filled[b] = so_views_[b].BufferFilledSizeLocation;
 -      targets.statistics[b] = so_statistics_[b];
 +      targets.statistics[b] = 0;
      }
-     uint64_t groups = uint64_t(warps) * Args.InstanceCount;
-     uint64_t scratch_bytes = SM50StreamOutputScratch(groups, vertex_per_warp * pso_graphics_->gs_instances);
+     return targets;
+   }

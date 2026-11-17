@@ -43,6 +43,7 @@ struct mullion_compute_command_data {
   device ulong *statistics;
   packed_uint2 execution_range;
   device packed_uint3 * dispatches;
+  device ulong * rootsig_base;
 };
 
 struct d3d12_draw_arguments {
@@ -131,6 +132,8 @@ struct mullion_render_command_data {
   uint statistics_first, statistics_step, statistics_cut, statistics_cuts;
   packed_uint2 execution_range;
   uint extras_claimed, extras_done;
+  device ulong * rootsig_base;
+  device mullion_vertex_buffer * vertex_base;
 };
 
 )";
@@ -440,26 +443,38 @@ public:
                 "reinterpret_cast<device mullion_vertex_buffer *>(command_data.vertex_buffer + "
                 "(i * command_data.vertex_argbuf_stride));\n";
 
+    // a command that runs starts from the list's root arguments and vertex buffers, where it has its own to change:
+    // the commands past the count get none, and are not run
+    if (UpdateRootArguments)
+      source << "if (command_data.rootsig_base)\n"
+                "for (uint word = 0; word < command_data.rootsig_qwords_stride; word++)\n"
+                "rootsig_qwords[word] = command_data.rootsig_base[word];\n";
+    if (!is_compute && UpdateVertexBuffers)
+      source
+          << "if (command_data.vertex_base)\n"
+             "for (uint slot = 0; slot < command_data.vertex_argbuf_stride / sizeof(mullion_vertex_buffer); slot++)\n"
+             "vertex_buffer[slot] = command_data.vertex_base[slot];\n";
     // the caller binds what an IndirectMeshDraw's stages read; a command of the indirect command buffer binds its own
     if (!is_compute)
       source << "if (!command_data.draws) {\n";
+    auto set = [&](const char *command, const char *stage, uint32_t &count, const char *buffer, uint32_t index) {
+      source << command << ".set_" << stage << "_buffer(" << buffer << "," << index << ");\n";
+      count = std::max(count, index + 1);
+    };
     // a command of the indirect command buffer binds what the command's arguments change; with none, it inherits them
     auto bind = [&](const char *command) {
       if (UpdateRootArguments || UpdateVertexBuffers || UpdateIndexBuffer) {
-          source << command << ".set_vertex_buffer(vertex_buffer," << SM50_BINDING_INDEX_VERTEX_BUFFER << ");\n";
-          source << command << ".set_vertex_buffer(rootsig_qwords," << SM50_BINDING_INDEX_ROOT_ARGUMENTS << ");\n";
-          source << command << ".set_vertex_buffer(command_data.static_samplers," << SM50_BINDING_INDEX_STATIC_SAMPLERS
-                 << ");\n";
-          source << command << ".set_fragment_buffer(rootsig_qwords," << SM50_BINDING_INDEX_ROOT_ARGUMENTS << ");\n";
-          source << command << ".set_fragment_buffer(command_data.static_samplers,"
-                 << SM50_BINDING_INDEX_STATIC_SAMPLERS << ");\n";
-          source << "if (command_data.pixel_statistics) " << command
-                 << ".set_fragment_buffer(command_data.pixel_statistics," << SM50_BINDING_INDEX_PIPELINE_STATISTICS
-                 << ");\n";
-          source << command << ".set_fragment_buffer(command_data.depth_ranges," << SM50_BINDING_INDEX_DEPTH_RANGES
-                 << ");\n";
-          source << command << ".set_vertex_buffer(command_data.raster_scale," << SM50_BINDING_INDEX_RASTER_SCALE
-                 << ");\n";
+          set(command, "vertex", VertexBufferBindCount, "vertex_buffer", SM50_BINDING_INDEX_VERTEX_BUFFER);
+          set(command, "vertex", VertexBufferBindCount, "rootsig_qwords", SM50_BINDING_INDEX_ROOT_ARGUMENTS);
+          set(command, "vertex", VertexBufferBindCount, "command_data.static_samplers", SM50_BINDING_INDEX_STATIC_SAMPLERS);
+          set(command, "fragment", FragmentBufferBindCount, "rootsig_qwords", SM50_BINDING_INDEX_ROOT_ARGUMENTS);
+          set(command, "fragment", FragmentBufferBindCount, "command_data.static_samplers",
+              SM50_BINDING_INDEX_STATIC_SAMPLERS);
+          source << "if (command_data.pixel_statistics) ";
+          set(command, "fragment", FragmentBufferBindCount, "command_data.pixel_statistics",
+              SM50_BINDING_INDEX_PIPELINE_STATISTICS);
+          set(command, "fragment", FragmentBufferBindCount, "command_data.depth_ranges", SM50_BINDING_INDEX_DEPTH_RANGES);
+          set(command, "vertex", VertexBufferBindCount, "command_data.raster_scale", SM50_BINDING_INDEX_RASTER_SCALE);
       }
     };
     if (!is_compute)
@@ -567,8 +582,8 @@ public:
                   "else {\n"
                   "compute_command cmd(command_data.cmd_buf, i);\n";
         if (UpdateRootArguments) {
-          source << "cmd.set_kernel_buffer(rootsig_qwords, " << SM50_BINDING_INDEX_ROOT_ARGUMENTS << ");\n";
-          source << "cmd.set_kernel_buffer(command_data.static_samplers," << SM50_BINDING_INDEX_STATIC_SAMPLERS << ");\n";
+          set("cmd", "kernel", KernelBufferBindCount, "rootsig_qwords", SM50_BINDING_INDEX_ROOT_ARGUMENTS);
+          set("cmd", "kernel", KernelBufferBindCount, "command_data.static_samplers", SM50_BINDING_INDEX_STATIC_SAMPLERS);
         }
         source << "cmd.concurrent_dispatch_threadgroups(arg.dispatch, command_data.tgsize);\n";
         source << "}\n";

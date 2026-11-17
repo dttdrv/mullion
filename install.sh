@@ -8,14 +8,18 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "$1" = --crossover ]; then
-  conf="$HOME/Library/Application Support/CrossOver/Bottles/$2/cxbottle.conf"
+  bottles="$HOME/Library/Application Support/CrossOver/Bottles"
+  conf="$bottles/$2/cxbottle.conf"
   app=$3
   [ -n "$app" ] || for app in /Applications/CrossOver.app "$HOME/Applications/CrossOver.app"; do
     [ ! -d "$app" ] || break
   done
   cx="$app/Contents/SharedSupport/CrossOver"
-  [ -n "$2" ] && [ -f "$conf" ] && [ -d "$cx/lib/dxmt" ] ||
-    { echo "usage: $0 --crossover <bottle> [CrossOver.app]" >&2; exit 1; }
+  [ -n "$2" ] || { echo "usage: $0 --crossover <bottle> [CrossOver.app]" >&2; exit 1; }
+  # a name with a space that was not quoted arrives as its first word: the list of bottles shows which was meant
+  [ -f "$conf" ] || { echo "no bottle named \"$2\"; the bottles are:" >&2; ls "$bottles" >&2; exit 1; }
+  [ -d "$cx/lib/dxmt" ] ||
+    { echo "no CrossOver with DXMT${3:+ at $3}: name CrossOver.app after the bottle" >&2; exit 1; }
   root="$HOME/Library/Mullion/Bottles/$2"
   rm -rf "$root"
   mkdir -p "$root/lib/dxmt"
@@ -51,8 +55,11 @@ for kind in "$here"/*-windows "$here"/*-unix; do
   esac
 done
 [ -n "$native" ] || { echo "$wine has neither an x86_64 nor an arm64 Wine in lib/wine" >&2; exit 1; }
-# a prefix's system32 has the DLLs of Wine's own architecture
+# a prefix's system32 has the DLLs of Wine's own architecture, and its syswow64 the 32-bit ones a Wine that runs
+# 32-bit programs took above
 for prefix; do
   cp "$here/$native"/*.dll "$prefix/drive_c/windows/system32/"
+  [ ! -d "$here/i386-windows" ] || [ ! -d "$wine/lib/wine/i386-windows" ] ||
+    [ ! -d "$prefix/drive_c/windows/syswow64" ] || cp "$here"/i386-windows/*.dll "$prefix/drive_c/windows/syswow64/"
 done
 echo "Mullion is installed in $wine"

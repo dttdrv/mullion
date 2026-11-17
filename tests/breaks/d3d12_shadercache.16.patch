@@ -1,8 +1,8 @@
 # stream output slots are left out of the key
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -435,7 +435,7 @@
-       hash(count, strides, rasterized, counting);
+@@ -526,7 +526,7 @@ CompileFunction(
+       hash(count, strides, rasterized, counting, single_pass);
        // offsets count preceding elements of each slot, including gaps (D3D11.3 14.3)
        for (uint32_t i = 0; i < count; i++)
 -        hash(elements[i].reg_id, elements[i].component, elements[i].stream, elements[i].output_slot);

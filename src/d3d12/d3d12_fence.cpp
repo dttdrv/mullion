@@ -258,7 +258,7 @@ public:
     {
       // the value may be lower than a queue's signal gave: the GPU no longer says when it is there
       std::lock_guard<mullion::mutex> lock(following_mutex);
-      following = {};
+      following.clear();
     }
     Signaled(Value);
     return S_OK;

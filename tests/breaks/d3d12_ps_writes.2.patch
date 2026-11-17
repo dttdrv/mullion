@@ -1,12 +1,12 @@
 # every run of a pixel's covered samples writes, not the first alone
 --- a/src/airconv/dxbc_converter.cpp
 +++ b/src/airconv/dxbc_converter.cpp
-@@ -545,7 +545,7 @@
-   }
+@@ -1089,7 +1089,7 @@ llvm::Error convert_dxbc_pixel_shader(
+   llvm::Value *counts = first(kept);
    if (writes) {
      air.Live = builder.CreateAlloca(builder.getInt1Ty());
 -    builder.CreateStore(counts, air.Live);
 +    builder.CreateStore(builder.getTrue(), air.Live);
    }
-   if (statistics) {
-     // D3D11.3 20.4.7 counts executions even when an output depth fails the test.
+   // and the statistics leave out a run the tests before it discarded (DepthBoundsTest)
+   if (bounded && early_tests) {

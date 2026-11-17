@@ -1185,9 +1185,15 @@ public:
 
 class BinaryArchive : public Object {
 public:
-  void
+  // false when Metal faulted writing it: the archive is then not to be used or released (MTLBinaryArchive_serialize)
+  bool
   serialize(const char *url, Reference<Error> &error) {
-    MTLBinaryArchive_serialize(handle, url, error.out());
+    return MTLBinaryArchive_serialize(handle, url, error.out());
+  }
+
+  void
+  add(Object pipeline) {
+    MTLBinaryArchive_add(handle, pipeline.handle);
   }
 };
 
@@ -1245,6 +1251,15 @@ public:
   uint64_t
   sparseTileSizeInBytes(WMTSparsePageSize page_size) const {
     return MTLDevice_sparseTileSizeInBytes(handle, page_size);
+  }
+
+  // whether Metal keeps a placement sparse texture's tail (MTLDevice_sparseTailHolds), and the tail: first mip, bytes
+  bool
+  sparseTailHolds(
+      const WMTTextureInfo &info, uint32_t block_width, uint32_t block_height, uint32_t block_bytes,
+      std::pair<uint64_t, uint64_t> &tail
+  ) const {
+    return MTLDevice_sparseTailHolds(handle, &info, block_width, block_height, block_bytes, &tail.first, &tail.second);
   }
 
   WMTSize
@@ -1329,7 +1344,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = false;
     info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+    info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
@@ -1345,7 +1360,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
     info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+    info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
@@ -1371,6 +1386,14 @@ public:
   Reference<RenderPipelineState>
   newRenderPipelineState(const WMTMeshRenderPipelineInfo &info, Reference<Error> &error) {
     return Reference<RenderPipelineState>(MTLDevice_newMeshRenderPipelineState(handle, &info, error.out()));
+  }
+
+  Reference<RenderPipelineState>
+  newSpecializedRenderPipelineState(RenderPipelineState pipeline, const WMTRenderPipelineInfo &info,
+                                    Reference<Error> &error) {
+    return Reference<RenderPipelineState>(
+        MTLDevice_newSpecializedRenderPipelineState(handle, pipeline.handle, info.colors, error.out())
+    );
   }
 
   Reference<RenderPipelineState>
@@ -1456,6 +1479,11 @@ public:
   uint64_t
   maxArgumentBufferSamplerCount() {
     return MTLDevice_maxArgumentBufferSamplerCount(handle);
+  }
+
+  bool
+  sparseResidencyInTiles() {
+    return MTLDevice_sparseResidencyInTiles(handle);
   }
 
   bool
@@ -1709,17 +1737,18 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
   info.fragment_function = NULL_OBJECT_HANDLE;
   info.immutable_vertex_buffers = 0;
   info.immutable_fragment_buffers = 0;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
   info.support_indirect_command_buffers = false;
+  info.unspecialized_colors = false;
 }
 
 inline void
 InitializeComputePipelineInfo(WMTComputePipelineInfo &info) {
   info.compute_function = NULL_OBJECT_HANDLE;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
@@ -1758,7 +1787,7 @@ InitializeMeshRenderPipelineInfo(WMTMeshRenderPipelineInfo &info) {
   info.payload_memory_length = 0;
   info.mesh_tgsize_is_multiple_of_sgwidth = 0;
   info.object_tgsize_is_multiple_of_sgwidth = 0;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
@@ -1775,7 +1804,7 @@ InitializeTileRenderPipelineInfo(WMTTileRenderPipelineInfo &info) {
   info.raster_sample_count = 1;
   info.tgsize_matches_tile_size = 0;
 
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;

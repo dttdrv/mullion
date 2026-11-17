@@ -1,10 +1,11 @@
 #pragma once
 #include "Metal.hpp"
-#include "thread.hpp"
 #include <cstdint>
 
 namespace mullion {
 
+// a queue's hold on the process's GPU capture: Metal takes one capture at a time (MTLCaptureManager), so the process
+// has one, which the frames of whichever queue reach it first start and stop
 class CaptureState {
 public:
   // a queue calls it before it commits the work of a frame: a capture of the device holds the frame
@@ -12,29 +13,8 @@ public:
   void frame(WMT::Device device, uint64_t frame);
 
   CaptureState();
-  // waits for a stop: the queue it belongs to submits nothing more by then
+  // the last hold stops a capture still under way and waits for the stop: no queue submits anything more by then
   ~CaptureState();
-
-private:
-  enum class NextAction {
-    StartCapture,
-    StopCapture,
-    Nothing,
-  };
-  NextAction getNextAction(uint64_t frame);
-  void scheduleNextFrameCapture(uint64_t next = 0);
-  bool shouldCaptureNextFrame();
-
-  enum class State {
-    Freezed,
-    Idle,
-    WillCapture,
-    Capturing,
-  };
-  State state = State::Freezed;
-  uint64_t next_capture_frame = 0;
-  bool capture_key_pressed_ = false;
-  mullion::thread stopping_;
 };
 
 } // namespace mullion

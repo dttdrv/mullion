@@ -41,11 +41,11 @@ public:
     this->incRef();
   }
 
-  Rc(Rc &&other) : m_object(other.m_object) {
+  Rc(Rc &&other) noexcept : m_object(other.m_object) {
     other.m_object = nullptr;
   }
 
-  template <std::derived_from<T> Tx> Rc(Rc<Tx> &&other) : m_object(other.m_object) {
+  template <std::derived_from<T> Tx> Rc(Rc<Tx> &&other) noexcept : m_object(other.m_object) {
     other.m_object = nullptr;
   }
 
@@ -69,17 +69,21 @@ public:
     return *this;
   }
 
-  Rc &operator=(Rc &&other) {
-    this->decRef();
-    this->m_object = other.m_object;
-    other.m_object = nullptr;
+  Rc &operator=(Rc &&other) noexcept {
+    if (this != &other) {
+      this->decRef();
+      this->m_object = other.m_object;
+      other.m_object = nullptr;
+    }
     return *this;
   }
 
-  template <std::derived_from<T> Tx> Rc &operator=(Rc<Tx> &&other) {
-    this->decRef();
-    this->m_object = other.m_object;
-    other.m_object = nullptr;
+  template <std::derived_from<T> Tx> Rc &operator=(Rc<Tx> &&other) noexcept {
+    if (static_cast<const void *>(this) != static_cast<const void *>(&other)) {
+      this->decRef();
+      this->m_object = other.m_object;
+      other.m_object = nullptr;
+    }
     return *this;
   }
 

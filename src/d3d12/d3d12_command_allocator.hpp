@@ -55,6 +55,9 @@ struct IndirectComputeCommandData {
   uint64_t statistics;
   WMTIndirectCommandBufferExecutionRange execution_range;
   uint64_t dispatches;
+  // the list's root arguments, where the signature changes some: the resolver copies them to each command it runs
+  // (rootsig_qwords) before the command's own, zero otherwise
+  uint64_t rootsig_base;
 };
 
 // what a command signature's resolver makes of an indirect DispatchRays command: the arguments of the pipeline's
@@ -138,9 +141,23 @@ struct IndirectRenderCommandData {
   // the extra commands indexed draws have claimed so far, past the draws: indices past the view or after the address
   // wraps; and the resolver's threads that have finished
   uint32_t extras_claimed, extras_done;
+  // the list's root arguments and its vertex buffer table, where the signature changes some of either: the resolver
+  // copies them to each command it runs (rootsig_qwords, vertex_buffer) before the command's own, zero otherwise
+  uint64_t rootsig_base, vertex_base;
 };
+// where the resolver's own declarations of the two have these (mullion_compute_command_data and
+// mullion_render_command_data, d3d12_command_signature.cpp), which Metal lays out as its compiler does
+static_assert(offsetof(IndirectComputeCommandData, rootsig_base) == 104 && sizeof(IndirectComputeCommandData) == 112);
+static_assert(
+    offsetof(IndirectRenderCommandData, rootsig_base) == 280 &&
+    offsetof(IndirectRenderCommandData, vertex_base) == 288 && sizeof(IndirectRenderCommandData) == 296
+);
 
 constexpr unsigned kIndexedCommands = 4;
+
+// the most commands of an ExecuteIndirect that the list draws one by one where their arguments are: more of them go
+// into an indirect command buffer, which Metal runs with one call
+constexpr unsigned kIndirectDrawsInPlace = 24;
 
 // the words of IndirectRenderCommandData::most: five numbers of the commands and how many commands there were
 constexpr unsigned kMostWords = 6;
@@ -163,11 +180,25 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   D3D12_COMMAND_LIST_TYPE type_;
   GPURecording *records_ = nullptr;
 
-  // where in an arena the lists record next, in the last of the runs the allocator holds of it
+  // where in an arena the lists record next, in the runs the allocator holds of it: the first `taken` are those the
+  // lists recorded into since the last Reset, the last of them the one they record in, and the rest are kept from
+  // earlier recordings for the lists to go on in. `used` is the Reset a run was last recorded into before
   struct Cursor {
-    size_t offset = 0, end = 0;
-    std::vector<RecordingArena::Run> runs;
+    size_t offset = 0, end = 0, taken = 0;
+    struct Kept {
+      RecordingArena::Run run;
+      uint64_t used;
+    };
+    std::vector<Kept> runs;
   };
+  // an allocator records about as much after each Reset, so it keeps its runs across one: taking each from the
+  // device's arena again is a search under the lock every recording thread shares. a new run is as large as all
+  // the allocator holds, up to kMostRun, so a long list takes few while an allocator of short lists holds a block
+  // (a title with a list per thread, pass and frame has hundreds of allocators in one arena). a run no list
+  // recorded into for kIdleResets Resets goes back to the device, for its other allocators
+  static constexpr size_t kMostRun = size_t(4) << 20;
+  static constexpr uint64_t kIdleResets = 50;
+  uint64_t resets_ = 0;
   // the device's arenas (RecordingArena): commands, and what the GPU reads
   void *cpu_heap_ = nullptr;
   Cursor cpu_cursor_;
@@ -178,7 +209,29 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   WMT::Reference<WMT::Buffer> gpu_heap_buffer_;
   void *gpu_heap_ = nullptr;
   Cursor gpu_cursor_;
-  uint64_t gpu_heap_buffer_address_;
+  uint64_t gpu_heap_buffer_address_, gpu_heap_buffer_length_ = 0;
+  // what the GPU reads of the arguments arena at first: a buffer of it this long, twice as long each time it fills
+  static constexpr size_t kFirstArguments = size_t(16) << 20;
+  // the buffers over the arguments (MTLD3D12Device::recording), each covering those before it: as many as there can
+  // be, and where each is. a barrier makes what the GPU wrote through one visible through that one, not through the
+  // others ("Flushes caches to ensure that aliased virtual addresses are memory consistent" is
+  // MTL4VisibilityOptions' resourceAlias, which the passes' barriers do not ask for)
+  static constexpr unsigned kArgumentsViews = std::bit_width(RecordingArena::kSize / kFirstArguments);
+  struct ArgumentsView {
+    uint64_t address, length;
+  };
+  unsigned ArgumentsViews(ArgumentsView (&views)[kArgumentsViews]);
+  // the buffer over the arguments an address was made in, and where in it. the list records into the device's last,
+  // which a longer one follows in the middle of a command (GrowArguments): an address made before that stays the
+  // earlier buffer's, and is bound and read through that one
+  std::pair<obj_handle_t, uint64_t> ArgumentsAt(uint64_t Address);
+  // a Metal buffer over the arguments arena's first `Length` bytes, the device's last (under its recording lock)
+  bool NewArgumentsBuffer(size_t Length);
+  // hands out twice what the arguments arena did when it had `Seen` bytes, with a buffer over it: false where it
+  // hands out all of it
+  bool GrowArguments(size_t Seen);
+  // records into the device's last buffer over the arguments arena, which covers all that is handed out of it
+  void TakeLastArgumentsBuffer();
   // the scratch area the recording list's indirect stream output commands share, one after another, at an offset in
   // the GPU heap; no size until the first
   uint64_t so_scratch_offset_ = 0, so_scratch_size_ = 0;
@@ -219,8 +272,14 @@ private:
   TranscodeFeedback<MTLD3D12CommandAllocatorImpl> transcode_feedback_;
   ClearRTV<MTLD3D12CommandAllocatorImpl> clear_rtv_;
 
-  RingBumpState<GpuPrivateBufferBlockAllocator> copy_temp_allocator_;
-  uint64_t copy_temp_version_;
+  // the buffers of copies that go through bytes, the lists' in the last, after `temp_offset_`; and how much the lists
+  // took of them since the allocator's Reset (Initialize)
+  struct TempBuffer {
+    WMT::Reference<WMT::Buffer> buffer;
+    uint64_t length;
+  };
+  std::vector<TempBuffer> temp_buffers_;
+  uint64_t temp_offset_ = 0, temp_used_ = 0;
 
 public:
   bool
@@ -275,9 +334,13 @@ public:
 
   ~MTLD3D12CommandAllocatorImpl();
 
-  // gives what the lists recorded into back to the device
-  void ReleaseRuns();
+  // ends what the lists recorded, and gives the runs no list recorded into for `Idle` Resets back to the device
+  void ReleaseRuns(uint64_t Idle);
   void Discard(EncoderData *Root);
+  // what the lists recorded and what their passes use, taken out of the allocator for the queues to keep while
+  // lists they were given are still to complete (Reset)
+  struct Retired;
+  void Retire();
 
   HRESULT
   Initialize();
@@ -309,6 +372,9 @@ public:
     if (encoder_last)
       return FAIL(E_INVALIDARG);
     *pStartEncoder = encoder_last = &encoder_lists_.emplace_back(EncoderType::Null, nullptr);
+    // a list's start orders nothing: the lists of one ExecuteCommandLists may overlap, each call's work follows all of
+    // the call before (MTLD3D12CommandQueue's Commit), and a list ends with what orders the next where it must (Close)
+    encoder_last->overlap = PassOverlap::Independent;
     so_scratch_size_ = 0;
     event = nullptr;
     return S_OK;
@@ -326,26 +392,47 @@ public:
     return exhausted_ ? FAIL(E_OUTOFMEMORY) : S_OK;
   }
 
-  // where in an arena `Length` bytes are: after the cursor, or in a new run of the arena's when the cursor's has no
-  // room. an arena without room ends the list (EndRecord, and Close cuts what it recorded off): what it records from
-  // then on goes to memory of the allocator's own, which no list holds, written over again and again
+  // where in an arena `Length` bytes are: after the cursor, or in the next run with room for them when the cursor's
+  // has none: one the allocator kept, else a new one of the arena's. an arena without room ends the list (EndRecord,
+  // and Close cuts what it recorded off): what it records from then on goes to memory of the allocator's own, which
+  // no list holds, each allocation its own until Reset: a pass's commands are linked into the pass as they come, so
+  // one in the pass's memory would overwrite it
   std::optional<size_t>
   Allocate(RecordingArena &arena, Cursor &cursor, size_t Length, size_t Alignment) {
     auto aligned = cursor.offset + align_forward_adjustment((void *)cursor.offset, Alignment);
     if (unlikely(Length > cursor.end - std::min(aligned, cursor.end))) {
-      // a run starts at a block, which is aligned for anything recorded
-      auto run = arena.Acquire(Length);
-      if (!run) {
-        if (!std::exchange(exhausted_, true))
-          ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
-        if (spill_.empty() || spill_.back().size() < Length + Alignment)
+      auto kept = std::find_if(cursor.runs.begin() + cursor.taken, cursor.runs.end(), [&](auto &unused) {
+        return unused.run.length >= Length;
+      });
+      if (kept == cursor.runs.end()) {
+        size_t held = 0;
+        for (auto &has : cursor.runs)
+          held += has.run.length;
+        // a run starts at a block, which is aligned for anything recorded
+        auto run = arena.Acquire(std::max(Length, std::min(held, kMostRun)));
+        // an arena without that much in one piece may still have what is asked for
+        if (!run && held > Length)
+          run = arena.Acquire(Length);
+        // what the GPU reads grows, and a list goes on in a buffer that covers its new run (GrowArguments)
+        if (&arena == &device_->recording.arguments) {
+          for (size_t seen = arena.Usable(); !run && GrowArguments(seen); seen = arena.Usable())
+            run = arena.Acquire(Length);
+          if (run && run->offset + run->length > gpu_heap_buffer_length_)
+            TakeLastArgumentsBuffer();
+        }
+        if (!run) {
+          if (!std::exchange(exhausted_, true))
+            ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
           spill_.emplace_back(Length + Alignment);
-        auto at = (size_t)spill_.back().data();
-        return at + align_forward_adjustment((void *)at, Alignment) - (size_t)arena.base;
+          auto at = (size_t)spill_.back().data();
+          return at + align_forward_adjustment((void *)at, Alignment) - (size_t)arena.base;
+        }
+        kept = cursor.runs.insert(cursor.runs.end(), {*run, resets_});
       }
-      cursor.runs.push_back(*run);
-      aligned = run->offset;
-      cursor.end = run->offset + run->length;
+      std::iter_swap(kept, cursor.runs.begin() + cursor.taken);
+      auto &run = cursor.runs[cursor.taken++].run;
+      aligned = run.offset;
+      cursor.end = run.offset + run.length;
     }
     cursor.offset = aligned + Length;
     return aligned;
@@ -385,6 +472,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -397,6 +485,7 @@ public:
     encoder->before_tail->next.set(storage);
     encoder->before_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -409,6 +498,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -421,6 +511,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->commands++;
     return *storage;
   }
 
@@ -464,7 +555,15 @@ public:
   // its offset in the window. without a window the list fails when it is closed
   static constexpr size_t kVisibilitySegments = 4096;
   static constexpr size_t kVisibilityWindow = (1 + kVisibilitySegments) * sizeof(uint64_t);
-  std::vector<WMT::Reference<WMT::Buffer>> visibility_;
+  struct VisibilityWindow : WMT::Reference<WMT::Buffer> {
+    uint64_t address = 0;
+    void *counts = nullptr;
+  };
+  std::vector<VisibilityWindow> visibility_;
+  // the windows the lists before the last Reset counted in, which the next lists count in again: a title with
+  // occlusion queries would otherwise have Metal make a buffer for each window of each allocator in every frame. no
+  // more than the last lists took are kept
+  std::vector<VisibilityWindow> visibility_kept_;
   // the depth bounds test of a GPU without one: buffers of the samples in the bounds, a byte for each pixel
   // (SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES), the last at least as large as asked for, which the lists' passes use one
   // after another
@@ -486,13 +585,20 @@ public:
   std::tuple<WMT::Buffer, uint64_t, size_t>
   VisibilitySlot() {
     if (visibility_used_ == kVisibilityWindow) {
-      WMTBufferInfo info;
-      info.memory.set(nullptr);
-      info.length = kVisibilityWindow;
-      info.options = WMTResourceHazardTrackingModeUntracked;
-      visibility_.push_back(device_->GetMTLDevice().newBuffer(info));
+      if (!visibility_kept_.empty()) {
+        visibility_.push_back(std::move(visibility_kept_.back()));
+        visibility_kept_.pop_back();
+        // as a new buffer is: a pass that does not run (predication) stores no counts, and its queries count nothing
+        memset(visibility_.back().counts, 0, kVisibilityWindow);
+      } else {
+        WMTBufferInfo info;
+        info.memory.set(nullptr);
+        info.length = kVisibilityWindow;
+        info.options = WMTResourceHazardTrackingModeUntracked;
+        visibility_.push_back({device_->GetMTLDevice().newBuffer(info), info.gpu_address, info.memory.get()});
+      }
       exhausted_ |= !visibility_.back();
-      visibility_address_ = info.gpu_address;
+      visibility_address_ = visibility_.back().address;
       // offset 0 is the one counting is turned off at, and a pass takes an offset once
       visibility_used_ = sizeof(uint64_t);
     }
@@ -500,11 +606,26 @@ public:
     return {visibility_.back(), visibility_address_ + used, used};
   }
 
+  // a buffer without room is followed by one twice as large, or as large as asked: few for many copies
   std::tuple<WMT::Buffer, uint64_t>
   AllocateTempBuffer(size_t Size, size_t Alignment) {
-    assert(copy_temp_version_);
-    auto [block, offset] = copy_temp_allocator_.allocate(copy_temp_version_, copy_temp_version_ - 1, Size, Alignment);
-    return {block.buffer, offset};
+    uint64_t at = align(temp_offset_, Alignment);
+    if (temp_buffers_.empty() || at + Size > temp_buffers_.back().length) {
+      WMTBufferInfo info;
+      info.memory.set(nullptr);
+      info.length = std::max<uint64_t>(Size, temp_buffers_.empty() ? 0 : 2 * temp_buffers_.back().length);
+      info.options = WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate;
+      auto buffer = device_->GetMTLDevice().newBuffer(info);
+      if (!buffer) {
+        exhausted_ = true;
+        return {};
+      }
+      temp_buffers_.push_back({std::move(buffer), info.length});
+      at = 0;
+    }
+    temp_offset_ = at + Size;
+    temp_used_ += Size;
+    return {temp_buffers_.back().buffer, at};
   }
 
   IndirectComputeCommandData *EncodeComputeResolver(MTLD3D12CommandSignature *pCmdSig, size_t MaxCount);
@@ -513,7 +634,7 @@ public:
   // `Pipeline` is the variant of pPSO that the commands draw with
   IndirectRenderCommandData *EncodeIndirectRenderCommand(
       MTLD3D12CommandSignature *pCmdSig, MTLD3D12GraphicsPipelineState *pPSO, WMT::RenderPipelineState Pipeline,
-      size_t MaxCount, bool tessellation, bool statistics_cuts
+      size_t MaxCount, bool tessellation, bool statistics_cuts, bool runs_max_count
   );
 };
 

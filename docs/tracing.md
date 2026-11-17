@@ -14,7 +14,7 @@ MULLION_TRACE_GPU=1 MULLION_TRACE_RESOURCE=1 wine game.exe
 | `MULLION_TRACE_SYNC` | hangs and deadlocks | a queue `Wait` that holds the queue's work back | every `Signal`, `Wait`, `ExecuteCommandLists` and fence completion |
 | `MULLION_TRACE_RESOURCE` | resources made wrong, tiled resources | reserved resources, failed resource creation, `UpdateTileMappings` and `CopyTileMappings` with their regions and ranges, and what each queue has on the GPU when a tile mapping is made | every committed and placed resource; every range of a tile mapping |
 | `MULLION_TRACE_MEMORY` | out of memory, paging | heaps, and every 5 s the process's memory footprint and the system's swap and paging | every `QueryVideoMemoryInfo` |
-| `MULLION_TRACE_SHADER` | stutter, shaders that fail | pipelines that take 20 ms or more to make, or are made after the first present | every pipeline and its time; the shaders, written to `shaders/` |
+| `MULLION_TRACE_SHADER` | stutter, shaders that fail | pipelines that take 20 ms or more to make, or are made after the first present, and each distinct sampler that makes shaders take a slower path (a custom border color, a minimum or maximum filter, or an anisotropic filter with a bias) | every pipeline and its time; the shaders, written to `shaders/` |
 | `MULLION_TRACE_PRESENT` | frame pacing | a present 50 ms or more after the one before | every present |
 | `MULLION_TRACE_PASS` | wrong render passes | | every Metal pass with its pipelines; D3D11 render passes with their size and draws (`MULLION_TRACE_ENCODERS`) |
 | `MULLION_TRACE_API` | the call that fails | Mullion's info and debug lines | its trace lines |

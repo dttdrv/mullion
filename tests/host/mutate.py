@@ -29,13 +29,15 @@ spec.loader.exec_module(tool)
 
 class Mutations(unittest.TestCase):
     def setUp(self):
-        # the runner keeps the peaks of this machine's tests, which these tests' commands are not
+        # the runner keeps the peaks of this machine's tests, which these tests' commands are not, and starts no test
+        # while this machine is short of memory, which these tests do not ask about
         import run
         peaks = tempfile.TemporaryDirectory()
         self.addCleanup(peaks.cleanup)
-        patcher = patch.object(run, "PEAKS", Path(peaks.name) / "peaks.json")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in [("PEAKS", Path(peaks.name) / "peaks.json"), ("pressure", lambda: 1)]:
+            patcher = patch.object(run, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def make(self, source, active=None):
         return tool.mutations(source, "src/example.cpp", active)[1]
@@ -224,7 +226,7 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
     def test_sample_arguments(self):
         funcs, made = tool.mutations("int f() { return true; }", "src/test.cpp")
         with tempfile.TemporaryDirectory() as tmp:
-            argv = ["mutate.py", "list", "--lanes", tmp, "--coverage", str(Path(tmp) / "coverage.json"),
+            argv = ["mutate.py", "list", "--build-root", tmp, "--coverage", str(Path(tmp) / "coverage.json"),
                     "--sample", "1", "17"]
             out = StringIO()
             with patch.object(sys, "argv", argv), patch.object(tool, "inventory", return_value=(funcs, made, [])), \
@@ -496,8 +498,14 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
         from argparse import Namespace
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # a and b each end once the other has started, so they overlap whenever the runner starts them beside
+            # each other, however late a loaded machine starts the second; one that never sees the other ends alone
             script = ("import sys, time; name, at = sys.argv[1], sys.argv[2]; log = open(at + '/runs', 'a', buffering=1)\n"
-                      "log.write(f'start {name} {time.time()}\\n'); time.sleep(0.5)\n"
+                      "log.write(f'start {name} {time.time()}\\n'); other = {'a': 'b', 'b': 'a'}.get(name)\n"
+                      "late = time.time() + 20\n"
+                      "while other and f'start {other} ' not in open(at + '/runs').read() and time.time() < late:\n"
+                      "    time.sleep(0.01)\n"
+                      "other or time.sleep(0.5)\n"
                       "first = name != 'flaky' or not __import__('os').path.exists(at + '/flaky')\n"
                       "name == 'flaky' and open(at + '/flaky', 'a'); log.write(f'end {name} {time.time()}\\n')\n"
                       "ok = name != 'serial' and (name != 'flaky' or not first)\n"
@@ -548,7 +556,7 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
             with redirect_stdout(StringIO()) as out:
                 counted = run.own(args, tests, [root], None, dict(os.environ))
             lines = out.getvalue().splitlines()
-            self.assertEqual(sorted(re.findall(r"^(?:new|passes, still listed as known): native\([^)]*\) (\S+)",
+            self.assertEqual(sorted(re.findall(r"^(?:new|passes, still listed as known): native\(.*?\) (\S+)",
                                                out.getvalue(), re.M)), ["fixed", "fresh", "other", "skip"], out.getvalue())
             self.assertEqual(counted, 4)
             self.assertIn(f"new: native({chip}) other {three} (known: {two})", lines)
@@ -559,6 +567,9 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
                     run.known()
             run.KNOWN.write_text("9 skip skipped: no 16x -- the cause\n")
             self.assertEqual(run.known(), {("9", "skip"): "skipped: no 16x"})
+            # a chip's name may have brackets of its own, as a virtual machine's has
+            run.KNOWN.write_text("native(Apple M1 (Virtual)) skip skipped: no 16x -- the cause\n")
+            self.assertEqual(run.known(), {("native(Apple M1 (Virtual))", "skip"): "skipped: no 16x"})
             # a list to compare with that is not there is a mistake, not an empty list
             with self.assertRaises(SystemExit), redirect_stdout(StringIO()):
                 run.own(Namespace(late=None, family="native", benchmark=False, repeat=1, jobs=1, known=root / "none.txt"),
@@ -595,12 +606,12 @@ void i() { if (use([](int x) { return x + 1; })) { restore(); } }
             args = Namespace(late=None, family="native", benchmark=False, repeat=2, jobs=1, record=root / "record.txt")
             with redirect_stdout(StringIO()) as out:
                 counted = run.own(args, tests, [root], None, dict(os.environ))
-            self.assertEqual(sorted(re.findall(r"^new: native\([^)]*\) (\S+)", out.getvalue(), re.M)), ["flip", "twin"],
+            self.assertEqual(sorted(re.findall(r"^new: native\(.*?\) (\S+)", out.getvalue(), re.M)), ["flip", "twin"],
                              out.getvalue())
             # what a run records is what a later run compares with: every failure, the unstable one included, which
             # cannot be compared with
             recorded = args.record.read_text().splitlines()
-            self.assertEqual(sorted(re.match(r"native\([^)]*\) (\S+)", line)[1] for line in recorded), ["flip", "same", "twin"])
+            self.assertEqual(sorted(re.match(r"native\(.*?\) (\S+)", line)[1] for line in recorded), ["flip", "same", "twin"])
             with self.assertRaises(SystemExit):
                 run.known(args.record)
             args.record.write_text("".join(line + "\n" for line in recorded if " flip " not in line))

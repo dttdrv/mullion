@@ -47,10 +47,6 @@ namespace mullion {
     { R"(\\OMORI\.exe$)", {{
       { "dxgi.forceSDR",   "True" },
     }} },
-    /** Outcast: A New Beginning */
-    { R"(\\O2-Win64-Shipping\.exe$)", {{
-      { "d3d11.sampleNaNToZero",   "True" },
-    }} },
     /** Shadow of the Tomb Raider */
     { R"(\\SotTR\.exe$)", {{
       { "d3d11.defuseFma",   "True" },

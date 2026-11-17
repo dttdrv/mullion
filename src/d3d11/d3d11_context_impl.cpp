@@ -718,8 +718,20 @@ public:
     UseWrappedView(pUAV, true);
     D3D11_UNORDERED_ACCESS_VIEW_DESC desc;
     pUAV->GetDesc(&desc);
-    if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER)
-      EmitOP([=, buffer = pUAV->buffer(), viewId = pUAV->viewId(), slice = pUAV->bufferSlice(),
+    if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER) {
+      // a typed view takes the value's low bits as they are (D3D11.3 5.2.3.2), which a write through the format's
+      // unsigned integer view stores: through a signed one Metal clamps them
+      auto viewId = pUAV->viewId();
+      WMTPixelFormat typed = WMTPixelFormatInvalid;
+      if (desc.Format != DXGI_FORMAT_UNKNOWN && !(desc.Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW)) {
+        typed = pUAV->buffer()->pixelFormat(viewId);
+        // RG11B10Float's three channels are the bits of one R32Uint, as for a texture below
+        auto unsigned_format =
+            typed == WMTPixelFormatRG11B10Float ? WMTPixelFormatR32Uint : MTLGetUnsignedIntegerFormat(typed);
+        if (unsigned_format != WMTPixelFormatInvalid && unsigned_format != typed)
+          viewId = pUAV->buffer()->createView({.format = unsigned_format, .write = true});
+      }
+      EmitOP([=, buffer = pUAV->buffer(), slice = pUAV->bufferSlice(),
             value = std::array<uint32_t, 4>({Values[0], Values[1], Values[2], Values[3]}),
             is_raw = desc.Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW,
             format = desc.Format](ArgumentEncodingContext &enc) {
@@ -733,13 +745,12 @@ public:
           } else {
             auto [view, first] = enc.accessView(buffer, viewId, ResourceAccess::Write, slice.firstElement);
             enc.emulated_cmd.ClearTextureBufferUint(
-                view.texture, first, slice.elementCount,
-                ClearUAV<ArgumentEncodingContext>::clearColor(value, buffer->pixelFormat(viewId))
+                view.texture, first, slice.elementCount, ClearUAV<ArgumentEncodingContext>::clearColor(value, typed)
             );
           }
         }
       });
-    else
+    } else
       EmitOP([=, texture = pUAV->texture(), viewId = pUAV->viewId(),
             value = std::array<uint32_t, 4>({Values[0], Values[1], Values[2], Values[3]})](
                  ArgumentEncodingContext &enc
@@ -1104,7 +1115,8 @@ public:
             )](ArgumentEncodingContext &enc) mutable {
       TextureViewDescriptor src_desc;
       src_desc.format = format;
-      src_desc.type = src->textureType();
+      // the draw reads a texture2d_ms, which an array's own type reads as zeros
+      src_desc.type = native ? src->textureType() : WMTTextureType2DMultisample;
       src_desc.arraySize = 1;
       src_desc.firstArraySlice = SrcSubresource; // src must be a MS(Array) texture which has exactly 1 mipmap level
       src_desc.miplevelCount = 1;
@@ -4036,6 +4048,15 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) {
+    // a range is a multiple of 16 constants from a multiple of 16, no more than a shader is shown, and comes with
+    // both arrays or neither (Microsoft Learn, VSSetConstantBuffers1). Windows drops a call with another, whole
+    // (Wine's test_constant_buffer_offset)
+    if (!pFirstConstant != !pNumConstants)
+      return;
+    for (unsigned i = 0; pFirstConstant && i < NumBuffers; i++)
+      if ((pFirstConstant[i] | pNumConstants[i]) % 16 || pNumConstants[i] > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT)
+        return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     auto &ShaderStage = state_.ShaderStages[Stage];
@@ -5326,7 +5347,7 @@ public:
         auto &viewport = state_.Rasterizer.viewports[0];
         render_target_width = so_only ? 1 : viewport.Width;
         render_target_height = so_only ? 1 : viewport.Height;
-        sample_count = std::max(1u, rs->ForcedSampleCount());
+        sample_count = std::max(1u, RasterSampleCount(device->GetMTLDevice(), rs->ForcedSampleCount()));
         if (!(render_target_width && render_target_height)) {
           ERR("uav only rendering is enabled but viewport is empty");
           return false;
@@ -5576,6 +5597,20 @@ public:
     auto centered = [](auto &view) { return view && view->texture_->centered; };
     Desc.CenteredSamples = Desc.SingleRasterSample || centered(state_.OutputMerger.DSV) ||
                            std::any_of(state_.OutputMerger.RTVs, state_.OutputMerger.RTVs + Desc.NumColorAttachments, centered);
+    // the targets' samples, or the forced count's of a pass without targets, are pairs of D3D's (RasterSampleCount)
+    auto paired = [](auto &view) { return view && view->texture_->paired; };
+    uint32_t forced = rs->ForcedSampleCount();
+    Desc.PairedSamples = attached ? paired(state_.OutputMerger.DSV) ||
+                                        std::any_of(state_.OutputMerger.RTVs,
+                                                    state_.OutputMerger.RTVs + Desc.NumColorAttachments, paired)
+                                  : forced > 1 && RasterSampleCount(device->GetMTLDevice(), forced) < forced;
+    // a sample is kept where either of its two is
+    if (Desc.PairedSamples && Desc.SampleMask != ~0u) {
+      uint32_t kept = 0;
+      for (uint32_t i = 0; i < 16; i++)
+        kept |= (Desc.SampleMask >> 2 * i & 3 ? 1u : 0u) << i;
+      Desc.SampleMask = kept;
+    }
     Desc.GSPassthrough = GS && !Desc.SOLayout ? GS->reflection().GeometryShader.GSPassThrough : ~0u;
     // a pixel shader whose runs are seen tests the last pre-raster stage's clip distances itself (D3D11.3 15.4.1),
     // where Metal would cut the primitive and run a pixel on the cut once for each piece. a geometry shader after
@@ -5607,7 +5642,8 @@ public:
     }
     Desc.IndexBufferFormat = IndexFormat<IndexedDraw>();
     // a pass with no targets rasterizes the forced count, and its pipeline with it
-    Desc.SampleCount = attached ? state_.OutputMerger.SampleCount : std::max(1u, rs->ForcedSampleCount());
+    Desc.SampleCount = attached ? state_.OutputMerger.SampleCount
+                                : std::max(1u, RasterSampleCount(device->GetMTLDevice(), rs->ForcedSampleCount()));
   }
 
   // how a draw's vertices are numbered: by the bound index buffer's format, or not at all. the object stage of a
@@ -5747,6 +5783,10 @@ public:
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeCurrentRenderPipeline() {
+    // "The vertex shader stage must always be active for the pipeline to execute" (Graphics pipeline, Microsoft
+    // Learn): a draw without one runs nothing, as when an application binds the shader it failed to create
+    if (!state_.ShaderStages[PipelineStage::Vertex].Shader)
+      return DrawCallStatus::Invalid;
     if (state_.ShaderStages[PipelineStage::Hull].Shader) {
       return FinalizeTessellationRenderPipeline<IndexedDraw>();
     }
@@ -6201,6 +6241,7 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
     WMTPixelFormat depth_pixel_format;
     WMTPixelFormat motion_vector_pixel_format;
     bool auto_exposure;
+    bool jittered;
     uint32_t input_width;
     uint32_t input_height;
     uint32_t output_width;
@@ -6268,6 +6309,7 @@ public:
 
     for(CachedTemporalScaler& entry: scaler_cache_) {
       if(pDesc->AutoExposure != entry.auto_exposure) continue;
+      if(bool(pDesc->MotionVectorJittered) != entry.jittered) continue;
       if(input->width() != entry.input_width) continue;
       if(input->height() != entry.input_height) continue;
       if(output->width() != entry.output_width) continue;
@@ -6288,12 +6330,14 @@ public:
       scaler_entry.output_pixel_format = output->pixelFormat();
       scaler_entry.depth_pixel_format = depth->pixelFormat();
       scaler_entry.motion_vector_pixel_format = motion_vector_format;
-      WMTFXTemporalScalerInfo info;
+      WMTFXTemporalScalerInfo info{};
       info.color_format = scaler_entry.color_pixel_format;
       info.output_format = scaler_entry.output_pixel_format;
       info.depth_format = scaler_entry.depth_pixel_format;
       info.motion_format = motion_vector_format;
       scaler_entry.auto_exposure = pDesc->AutoExposure;
+      scaler_entry.jittered = pDesc->MotionVectorJittered;
+      info.jittered_motion_vectors = scaler_entry.jittered;
       scaler_entry.input_width = input->width();
       scaler_entry.input_height = input->height();
       scaler_entry.output_width = output->width();
@@ -6306,7 +6350,9 @@ public:
       info.input_content_properties_enabled = true;
       info.input_content_min_scale = 1.0f;
       info.input_content_max_scale =  3.0f;
-      info.requires_synchronous_initialization = true;
+      // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
+      // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
+      info.requires_synchronous_initialization = false;
       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
       if (pDesc->MotionVectorInDisplayRes) {
         WMTTextureInfo tex_info{};

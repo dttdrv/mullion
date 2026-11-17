@@ -11,9 +11,13 @@ static const char hlsl[] = R"(
 RWStructuredBuffer<uint> result : register(u0);
 cbuffer Constants : register(b0) { uint low, high; };
 [numthreads(1, 1, 1)] void cs() {
-#ifdef DOUBLES
+#if DOUBLES == 1
   double value = asdouble(low, high);
   result[0] = uint(value * 3.0);
+#elif DOUBLES == 2
+  // doubles no operation makes from integers' bits: the arithmetic alone is in them
+  double value = low;
+  result[0] = uint(value * 2.5 + high);
 #else
   result[0] = low * 3;
 #endif
@@ -40,16 +44,19 @@ main(int argc, char **argv) {
   auto root = root_signature(device.Get(), {2, params});
   CHECK(root ? S_OK : E_FAIL);
 
-  step("a shader with doubles");
-  auto doubles = compiler.compile(hlsl, "cs", "cs", {"DOUBLES=1"});
-  if (!expect(!doubles.empty(), "the shader with doubles does not compile"))
-    return verdict();
-  D3D12_COMPUTE_PIPELINE_STATE_DESC desc{root.Get(), bytecode(doubles)};
-  ID3D12PipelineState *refused = (ID3D12PipelineState *)(uintptr_t)1;
-  HRESULT hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&refused));
-  expect(hr == E_INVALIDARG && !refused, "a pipeline with doubles gives %08lx and %p", hr, refused);
-  if (SUCCEEDED(hr) && refused)
-    refused->Release();
+  D3D12_COMPUTE_PIPELINE_STATE_DESC desc{root.Get()};
+  for (const char *form : {"DOUBLES=1", "DOUBLES=2"}) {
+    step("a shader with doubles, %s", form);
+    auto doubles = compiler.compile(hlsl, "cs", "cs", {form});
+    if (!expect(!doubles.empty(), "the shader with doubles does not compile"))
+      return verdict();
+    desc.CS = bytecode(doubles);
+    ID3D12PipelineState *refused = (ID3D12PipelineState *)(uintptr_t)1;
+    HRESULT hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&refused));
+    expect(hr == E_INVALIDARG && !refused, "a pipeline with doubles gives %08lx and %p", hr, refused);
+    if (SUCCEEDED(hr) && refused)
+      refused->Release();
+  }
 
   step("the shader without doubles");
   auto plain = compiler.compile(hlsl, "cs", "cs");

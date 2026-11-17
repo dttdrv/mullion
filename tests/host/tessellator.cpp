@@ -10,8 +10,9 @@
 // threadgroup may instead take a group of a patch's workloads (tess_output): the 32 threads of its SIMD group make
 // together the primitives each workload's own threadgroup makes, in the same order and culled alike, from the group's
 // vertices, which are each workload's but for the points of an edge it shares with the one before; a group has no
-// more vertices and primitives than its limits, and the groups' primitives are the reference's. the d3d11 and d3d12
-// tessellator tests check the same source as the GPU runs it, by its points and what it covers.
+// more vertices and primitives than its limits, fewer workloads than the SIMD group has lanes, and the groups'
+// primitives are the reference's. the d3d11 and d3d12 tessellator tests check the same source as the GPU runs it, by
+// its points and what it covers.
 // listing work is the zip's attempted slots, including ones that make no triangle. D3D11.3 11.7.5 defines an epoch
 // as "a power of 2 number of vertices on one half of the domain (excluding corners)"; 11.7.6.2 omits "one segment
 // on each end of the inside". for H points on the larger half-edge, the smallest containing epoch E has E < 2H:
@@ -211,10 +212,13 @@ main() {
                 break;
               }
               expect_first = end;
+              // a group's workloads are one a lane of a SIMD group, with one lane past them (get_group_layout)
+              if (end - first >= 32)
+                fail("workloads in a group", f, end - first, 31);
               // the group's vertices, each a location once
               std::vector<Corner> at;
               while (true) {
-                auto location = get_group_location(first, end, at.size(), data);
+                auto location = get_group_location(first, end, at.size(), int4(0, 0, 0, 0), data);
                 if (!location.active)
                   break;
                 at.push_back(corner(location.uv.x, location.uv.y));

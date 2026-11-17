@@ -1,12 +1,12 @@
 # depth-bias clamp is dropped.
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
-@@ -919,7 +919,7 @@
+@@ -1251,7 +1251,7 @@ public:
      depth_clip_mode = pDesc->RasterizerState.DepthClipEnable ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
      depth_bias = pDesc->RasterizerState.DepthBias;
      scole_scale = pDesc->RasterizerState.SlopeScaledDepthBias;
 -    depth_bias_clamp = pDesc->RasterizerState.DepthBiasClamp;
 +    depth_bias_clamp = 0;
+     unbiased = !pDesc->GS.BytecodeLength && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT ||
+                                              pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
      winding = pDesc->RasterizerState.FrontCounterClockwise ? WMTWindingCounterClockwise : WMTWindingClockwise;
-     forced_sample_count = pDesc->RasterizerState.ForcedSampleCount;
-   }

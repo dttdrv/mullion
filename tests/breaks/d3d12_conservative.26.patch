@@ -1,12 +1,12 @@
 # Metal clips the grown triangle's depth
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -865,7 +865,7 @@
+@@ -1260,7 +1260,7 @@ public:
        cmd_setrs.type = WMTRenderCommandSetRasterizerState;
        cmd_setrs.cull_mode = pso_graphics_->cull_mode;
        // a conservative rasterizer clips depth itself, and its grown triangles' depth goes past the polygon's
 -      cmd_setrs.depth_clip_mode = pso_graphics_->conservative ? WMTDepthClipModeClamp : pso_graphics_->depth_clip_mode;
 +      cmd_setrs.depth_clip_mode = pso_graphics_->depth_clip_mode;
        cmd_setrs.fill_mode = pso_graphics_->fill_mode;
-       cmd_setrs.depth_bias = pso_graphics_->depth_bias;
-       cmd_setrs.depth_bias_clamp = pso_graphics_->depth_bias_clamp;
+       // one by one: libstdc++ assigns no std::array to a std::tuple of references
+       auto [depth_bias, depth_bias_clamp, scole_scale] =

@@ -1,7 +1,8 @@
 // contract: ClearUnorderedAccessViewUint "copies the lower ni bits from each array element i to the corresponding
 // channel, where ni is the number of bits in the ith channel of the resource format", with no conversion (Microsoft
 // Learn, ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint). the values carry a half and a float NaN with a
-// payload, denormals, a negative zero and snorm's -128, which a clear that converted values would change.
+// payload, denormals, a negative zero and snorm's -128, and for R11G11B10 a second set with a NaN with a payload and
+// both infinities (11 and 10 bits), which a clear that converted values would change.
 // https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-clearunorderedaccessviewuint
 #include "d3d12_test.hpp"
 
@@ -25,21 +26,24 @@ main() {
   heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
   CHECK(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&cpu)));
 
-  const UINT values[4] = {0x7f807c01, 0x00000001, 0x80008000, 0xfffffe80};
+  const UINT sets[][4] = {{0x7f807c01, 0x00000001, 0x80008000, 0xfffffe80}, {0x000007c1, 0x000007c0, 0x000003e0, 0}};
   // each format's channel widths from its lowest bits, in the order DXGI names them
   const struct {
     DXGI_FORMAT format;
     std::vector<UINT> widths;
+    UINT set = 0;
   } formats[] = {
       {DXGI_FORMAT_R8G8B8A8_UNORM, {8, 8, 8, 8}},          {DXGI_FORMAT_R8_UNORM, {8}},
       {DXGI_FORMAT_R16G16B16A16_UNORM, {16, 16, 16, 16}},  {DXGI_FORMAT_R10G10B10A2_UNORM, {10, 10, 10, 2}},
       {DXGI_FORMAT_R16G16B16A16_FLOAT, {16, 16, 16, 16}},  {DXGI_FORMAT_R16_FLOAT, {16}},
       {DXGI_FORMAT_R32_FLOAT, {32}},                       {DXGI_FORMAT_R32G32B32A32_FLOAT, {32, 32, 32, 32}},
       {DXGI_FORMAT_R11G11B10_FLOAT, {11, 11, 10}},         {DXGI_FORMAT_R8G8B8A8_SNORM, {8, 8, 8, 8}},
+      {DXGI_FORMAT_R11G11B10_FLOAT, {11, 11, 10}, 1},
   };
   constexpr UINT width = 3, height = 2;
   UINT exercised = 0, failed = 0;
-  for (auto &[format, widths] : formats) {
+  for (auto &[format, widths, set] : formats) {
+    auto &values = sets[set];
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format};
     if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
         !(support.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW))
@@ -100,7 +104,7 @@ main() {
       for (UINT x = 0; x < width; x++) {
         auto texel = got + y * footprint.Footprint.RowPitch + x * want.size();
         if (memcmp(texel, want.data(), want.size()) && !wrong++) {
-          printf("format %u texel %u,%u:", format, x, y);
+          printf("format %u set %u texel %u,%u:", format, set, x, y);
           for (size_t i = 0; i < want.size(); i++)
             printf(" %02x/%02x", texel[i], want[i]);
           printf(" (got/want)\n");
@@ -109,7 +113,7 @@ main() {
     readback->Unmap(0, nullptr);
     failed += wrong != 0;
   }
-  printf("%s: %u of %u formats store other bits than the clear's\n", failed || !exercised ? "failed" : "passed", failed,
+  printf("%s: %u of %u clears store other bits than the clear's\n", failed || !exercised ? "failed" : "passed", failed,
          exercised);
   return failed || !exercised;
 }

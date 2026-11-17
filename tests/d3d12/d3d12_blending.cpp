@@ -166,7 +166,9 @@ main(int argc, char **argv) {
               D3D12_LOGIC_OP_NOOP,
               r.RenderTargetWriteMask
           };
-          p.RTVFormats[slot] = format.value;
+          // dual source blending has one render target
+          if (!k.dual || !slot)
+            p.RTVFormats[slot] = format.value;
         }
         p.SampleMask = ~0u;
         p.SampleDesc = {1, 0};

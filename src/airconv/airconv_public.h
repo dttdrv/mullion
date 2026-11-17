@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 99
+#define AIRCONV_VERSION 114
 
 #ifdef __cplusplus
 #include <string>
@@ -361,11 +361,13 @@ enum SM50_RAY_SHADER_KIND {
   SM50_RAY_SHADER_CALLABLE = 12,
 };
 
-/* what a ray tracing shader, or a function it calls, may call: TraceRay, CallShader. a call of a function the library
-   does not define may call either */
+/* what a ray tracing shader, or a function it calls, may call: TraceRay, CallShader, a function its library does not
+   define, which may call either. only a shader that calls such a function is converted with the functions of the
+   libraries it is given (SM50_SHADER_LIBRARIES) */
 enum SM50_RAY_SHADER_CALLS {
   SM50_RAY_SHADER_CALLS_TRACE = 1,
   SM50_RAY_SHADER_CALLS_CALLABLE = 2,
+  SM50_RAY_SHADER_CALLS_LIBRARY = 4,
 };
 
 struct SM50_RAY_SHADER_INFO {
@@ -373,6 +375,24 @@ struct SM50_RAY_SHADER_INFO {
   uint32_t payload_size;   /* of its payload, or a callable shader's parameter */
   uint32_t attribute_size; /* of a hit's attributes */
   uint32_t calls;          /* SM50_RAY_SHADER_CALLS */
+};
+
+/* the functions of a ray tracing pipeline's runtime that call its shaders (mullion_command.metal, MullionRayRole):
+   one for ray generation shaders, closest hit and miss shaders, any hit shaders, intersection shaders and callable
+   shaders */
+enum SM50_RAY_DISPATCHER {
+  SM50_RAY_DISPATCHER_GENERATION,
+  SM50_RAY_DISPATCHER_CLOSEST,
+  SM50_RAY_DISPATCHER_ANY_HIT,
+  SM50_RAY_DISPATCHER_INTERSECTION,
+  SM50_RAY_DISPATCHER_CALLABLE,
+  SM50_RAY_DISPATCHER_COUNT,
+};
+
+/* a shader a dispatcher calls directly: its slot in the pipeline's function table and its Metal function */
+struct SM50_RAY_DISPATCHED_SHADER {
+  uint32_t slot;
+  char name[60];
 };
 
 struct SM50_SHADER_STREAM_OUTPUT_DATA {
@@ -475,14 +495,23 @@ enum SM50_SAMPLER_METADATA {
 enum SM50_TEXTURE_VIEW_METADATA : uint64_t {
   SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS = 7,
   SM50_TEXTURE_VIEW_METADATA_SPARSE_WRITE = 1ull << SM50_TEXTURE_VIEW_METADATA_FIRST_MIP_BITS,
+  /* the spare bits above the other fields: log2 of the 16 KB page's tile width, height and depth, where Metal takes a
+     writable sparse texture's residency coordinates in such tiles. a width of 0 is no such GPU */
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_WIDTH = 12,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_HEIGHT = 28,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH0 = 15,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH1 = 31,
+  SM50_TEXTURE_VIEW_METADATA_RESIDENCY_DEPTH2 = 47,
 };
 
 /* the low word of a multisample texture's metadata: a one-sample view, which reads a regular texture since Metal's
-   MS textures need more than one sample (D3D11.3 22.4.7), and the center pattern, whose samples all lie at the pixel
-   center (19.2.4.1) */
+   MS textures need more than one sample (D3D11.3 22.4.7), the center pattern, whose samples all lie at the pixel
+   center (19.2.4.1), and paired samples, each of the texture's standing for two of the resource's: a count every
+   device has (8 at feature level 11_0) where the GPU has half of it */
 enum SM50_TEXTURE_MULTISAMPLE_METADATA : uint64_t {
   SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE = 1 << 0,
   SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED = 1 << 1,
+  SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED = 1 << 2,
 };
 
 /* a minimum or maximum filter (D3D12_FILTER_REDUCTION_TYPE_MINIMUM, _MAXIMUM): the texels the filter would weight
@@ -579,6 +608,9 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   bool centered_samples;
   /** one sample rasterizes for render targets of more (ForcedSampleCount 1, D3D11.3 3.5.6.2) */
   bool single_raster_sample;
+  /** each raster sample stands for two of the pipeline's (SM50_TEXTURE_MULTISAMPLE_METADATA_PAIRED): the sample
+      indices, coverage and sample count the shader sees are the pipeline's */
+  bool paired_samples;
   /* how many clip distances reach the shader as varyings, to test at each sample (D3D11.3 15.4.1) */
   uint32_t clip_distances;
   /* how many cull distances reach the shader as SM50_CULL_VARYING's: it discards every pixel of a primitive they cull,
@@ -803,7 +835,7 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA {
   /* a geometry shader after the domain shader, or 0: the mesh stage then runs both, in a mesh threadgroup for each
      primitive a workload may have and each geometry instance. an object threadgroup starts at most
      `max_mesh_threadgroups` of them, which lowers the factor (MTLRenderPipelineState's
-     maxTotalThreadgroupsPerMeshGrid); 0 while not known, when the pipeline is built to tell it */
+     maxTotalThreadgroupsPerMeshGrid); 0 when the device tells none, and one grid has them all */
   uint32_t max_mesh_threadgroups;
   sm50_shader_t geometry;
   /* conservative rasterization of the triangles the tessellator outputs, as SM50_SHADER_PSO_GEOMETRY_SHADER_DATA's:
@@ -880,6 +912,14 @@ AIRCONV_API void SM50GetArgumentsInfo(
    0 past the last one */
 AIRCONV_API int SM50GetRayShader(
   sm50_shader_t pShader, uint32_t Index, char *pName, size_t NameSize, struct SM50_RAY_SHADER_INFO *pInfo
+);
+
+/* a dispatcher of a ray tracing pipeline, as the Metal function its runtime calls by name: a switch of direct calls
+   of its shaders, by their slots. with `Table`, another slot is called through the pipeline's function table, and is
+   nothing otherwise */
+AIRCONV_API int SM50CompileRayDispatcher(
+  enum SM50_RAY_DISPATCHER Dispatcher, const struct SM50_RAY_DISPATCHED_SHADER *pShaders, uint32_t ShaderCount,
+  uint32_t Table, enum SM50_SHADER_METAL_VERSION MetalVersion, sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
 );
 
 #ifdef __cplusplus
