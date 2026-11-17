@@ -1929,13 +1929,13 @@ static double first_use(ID3D12PipelineState *pso)
 
 static std::vector<Scene> sm6_scenes()
 {
-    static ID3D12PipelineState *fill6, *sample6, *mesh_pso, *rq_pso, *fb_pso, *fbbase_pso, *bindless6, *wave_pso, *atom_pso[3],
+    static ID3D12PipelineState *fill6, *sample6, *mesh_pso, *rq_pso, *fb_pso, *fbbase_pso, *bindless6, *wave_pso, *dot4_pso[2], *atom_pso[3],
         *math16, *math32;
     static ID3D12RootSignature *mesh_rs, *rt_rs, *fb_rs, *bindless6_rs;
     static std::vector<D3D12_SHADER_BYTECODE> cold_vs, cold_ps;
     static std::vector<std::vector<char>> cold_code;
     static RtGeometry rt;
-    static ID3D12Resource *rt_out, *table, *fb_tex, *fb_map, *wave_buf, *atom_buf;
+    static ID3D12Resource *rt_out, *table, *fb_tex, *fb_map, *wave_buf, *dot4_buf, *atom_buf;
     static ID3D12StateObject *rt_so;
     static std::string math_src16, math_src32;
     enum { SRV_FB = 11010, UAV_FB = 11011 };
@@ -2039,6 +2039,21 @@ RWByteAddressBuffer o : register(u0);
     if (WaveIsFirstLane()) o.Store(((t >> 5) & 0xfffff) * 4, total + mx);
 }
 )";
+    // DOT(a, b, acc), four independent chains a thread, operands changed by an add and an xor each round
+    static const char *dot4_hlsl = R"(
+RWByteAddressBuffer o : register(u0);
+[numthreads(256, 1, 1)] void main(uint t : SV_DispatchThreadID)
+{
+    uint a = t * 0x9e3779b9u, b = t ^ 0x7f4a7c15u;
+    int s0 = 0, s1 = 1, s2 = 2, s3 = 3;
+    [loop] for (uint k = 0; k < 256; k++)
+    {
+        s0 = DOT(a, b, s0); s1 = DOT(a ^ 0x11111111u, b, s1); s2 = DOT(a, b ^ 0x22222222u, s2); s3 = DOT(b, a, s3);
+        a += 0x01030507u; b ^= a;
+    }
+    o.Store((t & 0xfffff) * 4, uint(s0 ^ s1 ^ s2 ^ s3));
+}
+)";
     static const char *atom_hlsl = R"(
 RWStructuredBuffer<uint64_t> o : register(u0);
 RWStructuredBuffer<uint> o32 : register(u0);
@@ -2073,6 +2088,19 @@ float4 ps_math(V i) : SV_Target
     return float4(c, 1);
 }
 )";
+    };
+
+    auto dot4 = [](const char *name, const char *desc, UINT k, const char *dot) {
+        return Scene{ name, desc, [k, dot] {
+            rt_rs = srv_uav_root_signature();
+            dot4_pso[k] = compute_pso_from(rt_rs, shader_code(std::string("#define DOT(x, y, s) ") + dot + "\n" + dot4_hlsl, "main", "cs_6_4"));
+            dot4_buf = create_buffer(4 << 20, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }, [k](UINT) {
+            p.list->SetComputeRootSignature(rt_rs);
+            p.list->SetPipelineState(dot4_pso[k]);
+            p.list->SetComputeRootUnorderedAccessView(1, dot4_buf->GetGPUVirtualAddress());
+            p.list->Dispatch((1 << 20) / 256, 1, 1);
+        }, false, 0, true };
     };
 
     std::vector<Scene> v = {
@@ -2392,6 +2420,9 @@ float4 ps_math(V i) : SV_Target
             p.list->SetComputeRootUnorderedAccessView(1, wave_buf->GetGPUVirtualAddress());
             p.list->Dispatch((8 << 20) / 256, 1, 1);
         }, false, 0, true },
+        dot4("dot4add_i8", "2^30 dot4add_i8packed per frame in compute, four chains a thread (XeSS's integer kernels)", 0,
+             "dot4add_i8packed(x, y, s)"),
+        dot4("dot4add_u8", "the same with dot4add_u8packed", 1, "int(dot4add_u8packed(x, y, uint(s)))"),
         { "fp16_math", "the heavy-math pixel shader with native 16-bit floats (-enable-16bit-types), 20 full-screen quads", [math] {
             math_src16 = math("half", "half3");
             PsoDesc d; d.hlsl = math_src16.c_str(); d.ps = "ps_math"; d.vs_target = "vs_6_2"; d.ps_target = "ps_6_2"; d.dxc_arg = L"-enable-16bit-types";
