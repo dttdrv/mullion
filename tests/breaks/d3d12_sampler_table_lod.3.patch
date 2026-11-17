@@ -1,12 +1,12 @@
 # a descriptor's anisotropic sampler takes Metal's implicit sample and bias too
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -2368,7 +2368,7 @@ Converter::SampleImplicit(
-                                    {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                                    {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}})
-   );
--  auto Whole = ir.CreateCall(QuadAll, {Isotropic});
-+  auto Whole = ir.CreateCall(QuadAll, {ir.getTrue()});
-   Whole->addFnAttr(Attribute::ReadNone);
-   auto Head = ir.GetInsertBlock();
-   auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+@@ -2500,7 +2500,7 @@
+   // takes are its quad's and a lane's sampler need not be its quad's others' (NonUniformResourceIndex), and what
+   // `Other` reads where not; the branch, with the sample's value and residency joined after it, is at the insert point
+   auto Choose = [&](llvm::Value *Fits, auto &&Other, bool Mergeable) {
+-    auto Whole = ir.CreateCall(QuadAll, {Fits});
++    auto Whole = ir.CreateCall(QuadAll, {ir.getTrue()});
+     Whole->addFnAttr(Attribute::ReadNone);
+     auto Head = ir.GetInsertBlock();
+     auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())

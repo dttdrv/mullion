@@ -1,0 +1,17 @@
+# the limit a footprint is held to is the sampler's anisotropy, not scaled by a negative bias
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2559,12 +2559,7 @@
+         ir.CreateFAdd(ir.CreateFMul(YU, YU), ir.CreateFMul(YV, YV))
+     );
+     auto Area = air.CreateFPUnOp(AIRBuilder::fabs, ir.CreateFSub(ir.CreateFMul(XU, YV), ir.CreateFMul(XV, YU)));
+-    auto Limit = ir.CreateFMul(
+-        ir.CreateUIToFP(Anisotropy, Float),
+-        air.CreateFPUnOp(
+-            AIRBuilder::exp2, air.CreateFPBinOp(AIRBuilder::fmin, Bias, llvm::ConstantFP::get(Float, 0.0))
+-        )
+-    );
++    auto Limit = ir.CreateUIToFP(Anisotropy, Float);
+     auto Within = ir.CreateAnd(
+         ir.CreateFCmpOGE(Limit, llvm::ConstantFP::get(Float, 1.0)),
+         ir.CreateFCmpOLE(
