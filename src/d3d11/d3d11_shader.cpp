@@ -188,13 +188,18 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.paired_samples);
   h.update(variant.clip_distances);
   h.update(variant.blend);
+  h.update(variant.no_minmax_filter);
   auto variant_digest = h.final();
   std::string func_name = "ps_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
 
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
     SM50_SHADER_PSO_PIXEL_SHADER_DATA data{};
     data.type = SM50_SHADER_PSO_PIXEL_SHADER;
-    data.next = common;
+    // A draw without a sampler that needs reduction does not carry its fallback code.
+    auto specialized_common = *common;
+    if (variant.no_minmax_filter)
+      specialized_common.flags |= SM50_SHADER_FLAG_NO_MINMAX_FILTER;
+    data.next = &specialized_common;
     data.sample_mask = variant.sample_mask;
     data.dual_source_blending = variant.dual_source_blending;
     data.disable_depth_output = variant.disable_depth_output;
