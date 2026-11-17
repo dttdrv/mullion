@@ -38,11 +38,17 @@ ReadShaderReflection(sm50_shader_t shader, const MTL_SHADER_REFLECTION &reflecti
 }
 
 namespace {
+// the reflection's size, then those of the stages' parts of it: they share its bytes, so one of them can grow and
+// leave the whole's size as it was
+constexpr uint32_t kReflectionLayout[] = {
+    sizeof(MTL_SHADER_REFLECTION),           sizeof(MTL_TESSELLATOR_REFLECTION), sizeof(MTL_GEOMETRY_SHADER_REFLECTION),
+    sizeof(MTL_POST_TESSELLATOR_REFLECTION), sizeof(MTL_PIXEL_SHADER_REFLECTION)
+};
 // a stored reflection: this, the reflection, its arguments, and the SHA-1 of all three. the sizes tell a record of
 // another layout from this one, and the digest a damaged one
 struct ReflectionRecord {
   char magic[8];
-  uint32_t reflection_size;
+  uint32_t layout[std::size(kReflectionLayout)];
   uint32_t argument_size;
   uint32_t arguments;
 };
@@ -82,7 +88,7 @@ ShaderCache::getReflection(const Sha1Digest &shader, ShaderReflection &reflectio
   memcpy(&record, bytes.data(), sizeof(record));
   size_t body = bytes.size() - sizeof(Sha1Digest);
   if (memcmp(record.magic, kReflectionMagic, sizeof(record.magic)) ||
-      record.reflection_size != sizeof(MTL_SHADER_REFLECTION) ||
+      memcmp(record.layout, kReflectionLayout, sizeof(record.layout)) ||
       record.argument_size != sizeof(MTL_SM50_SHADER_ARGUMENT) ||
       body != sizeof(record) + sizeof(MTL_SHADER_REFLECTION) +
                   uint64_t(record.arguments) * sizeof(MTL_SM50_SHADER_ARGUMENT) ||
@@ -111,9 +117,9 @@ ShaderCache::setReflection(const Sha1Digest &shader, const ShaderReflection &ref
     if (!reflections_.emplace(shader, reflection).second)
       return;
   }
-  ReflectionRecord record{{}, sizeof(MTL_SHADER_REFLECTION), sizeof(MTL_SM50_SHADER_ARGUMENT),
-                          uint32_t(reflection.arguments.size())};
+  ReflectionRecord record{{}, {}, sizeof(MTL_SM50_SHADER_ARGUMENT), uint32_t(reflection.arguments.size())};
   memcpy(record.magic, kReflectionMagic, sizeof(record.magic));
+  memcpy(record.layout, kReflectionLayout, sizeof(record.layout));
   std::string bytes(reinterpret_cast<const char *>(&record), sizeof(record));
   bytes.append(reinterpret_cast<const char *>(&reflection.reflection), sizeof(reflection.reflection));
   bytes.append(reinterpret_cast<const char *>(reflection.arguments.data()),

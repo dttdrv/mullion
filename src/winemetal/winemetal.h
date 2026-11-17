@@ -635,7 +635,8 @@ WINEMETAL_API obj_handle_t NSObject_description(obj_handle_t nserror);
 struct WMTComputePipelineInfo {
   obj_handle_t compute_function;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
   bool support_indirect_command_buffers;
@@ -857,7 +858,8 @@ struct WMTRenderPipelineInfo {
   uint8_t max_tessellation_factor;
   enum WMTWinding tessellation_output_winding_order;
   enum WMTTessellationFactorStepFunction tessellation_factor_step;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
@@ -885,7 +887,8 @@ struct WMTMeshRenderPipelineInfo {
   uint16_t payload_memory_length;
   bool mesh_tgsize_is_multiple_of_sgwidth;
   bool object_tgsize_is_multiple_of_sgwidth;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   uint16_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
@@ -2258,6 +2261,12 @@ WINEMETAL_API obj_handle_t MTLDevice_newBinaryArchive(obj_handle_t device, const
 // call's status. the archive's queue is then held for good, and no call on the archive returns
 WINEMETAL_API bool MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *err_out);
 
+// adds a pipeline made with keep_for_binary_archive to the archive, once: what was kept goes with the add. one add
+// to an archive at a time, and none while it is written: adds of the same function from two threads leave the
+// archive with an entry Metal faults on, then or when it writes the archive (macOS 27.3,
+// -[MTLBinaryEntry internalInitWithData:reflectionBlock:binaryPosition:])
+WINEMETAL_API void MTLBinaryArchive_add(obj_handle_t archive, obj_handle_t pipeline);
+
 WINEMETAL_API obj_handle_t DispatchData_alloc_init(uint64_t native_ptr, uint64_t length);
 
 WINEMETAL_API obj_handle_t CacheReader_alloc_init(const char *path, uint64_t version);
@@ -2418,7 +2427,8 @@ struct WMTTileRenderPipelineInfo {
   uint32_t immutable_tile_buffers;
   uint8_t raster_sample_count;
   bool tgsize_matches_tile_size;
-  obj_handle_t binary_archive_for_serialization;
+  // keeps what the pipeline is made of with it, for MTLBinaryArchive_add to add it to an archive later
+  bool keep_for_binary_archive;
   struct WMTConstMemoryPointer binary_archives_for_lookup;
   uint8_t num_binary_archives_for_lookup;
   bool fail_on_binary_archive_miss;
@@ -2672,7 +2682,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline,
-       WMTUnixDeviceNewFrameInterpolator, WMTUnixCommandBufferFrameInterpolate, WMTUnixCallCount };
+       WMTUnixDeviceNewFrameInterpolator, WMTUnixCommandBufferFrameInterpolate, WMTUnixBinaryArchiveAdd, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

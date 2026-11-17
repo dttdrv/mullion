@@ -1384,6 +1384,14 @@ MTLBinaryArchive_serialize(obj_handle_t archive, const char *url, obj_handle_t *
   return !status;
 }
 
+WINEMETAL_API void
+MTLBinaryArchive_add(obj_handle_t archive, obj_handle_t pipeline) {
+  struct unixcall_generic_obj_obj_noret params;
+  params.handle = archive;
+  params.arg = pipeline;
+  UNIX_CALL(WMTUnixBinaryArchiveAdd, &params);
+}
+
 WINEMETAL_API obj_handle_t
 DispatchData_alloc_init(uint64_t native_ptr, uint64_t length) {
   struct unixcall_generic_obj_uint64_obj_ret params;

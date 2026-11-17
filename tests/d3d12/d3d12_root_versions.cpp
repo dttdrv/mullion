@@ -196,7 +196,9 @@ main(int argc, char **argv) {
             s.desc = {D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
                       D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP};
             s.desc.ShaderRegister = i;
-            s.desc.RegisterSpace = random() % D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT;
+            // not space 0, where the tables' sampler range has s0: two bindings a stage sees cannot name one
+            // register (DirectXShaderCompiler, DxilRootSignatureValidator.cpp, AddRegisterRange)
+            s.desc.RegisterSpace = 1 + random() % (D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT - 1);
             s.desc.MipLODBias = float(random() % D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT);
             s.desc.MaxAnisotropy = 1;
             s.desc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;

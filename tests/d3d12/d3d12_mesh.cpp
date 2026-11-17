@@ -175,6 +175,21 @@ main(int argc, char **argv) {
   stream.depth.data = {TRUE, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_COMPARISON_FUNC_EQUAL};
   CHECK(device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&tested_pso)));
 
+  // "must not have any other shader types attached (VS, GS, HS, DS)" (DirectX-Specs, Mesh Shader, CreatePipelineState)
+  step("a mesh pipeline with a vertex shader is refused");
+  struct {
+    decltype(stream.rs) rs;
+    decltype(stream.ms) ms;
+    Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, D3D12_SHADER_BYTECODE> vs;
+    decltype(stream.targets) targets;
+  } mixed{stream.rs, stream.ms};
+  mixed.vs.data = bytecode(vs);
+  mixed.targets = stream.targets;
+  D3D12_PIPELINE_STATE_STREAM_DESC mixed_desc{sizeof(mixed), &mixed};
+  ComPtr<ID3D12PipelineState> mixed_pso;
+  HRESULT mixed_hr = device->CreatePipelineState(&mixed_desc, IID_PPV_ARGS(&mixed_pso));
+  expect(mixed_hr == E_INVALIDARG && !mixed_pso, "a mesh pipeline with a vertex shader returned %08lx", mixed_hr);
+
   step("create ordinary pipeline for indirect drawing");
   D3D12_GRAPHICS_PIPELINE_STATE_DESC plain_desc{};
   plain_desc.pRootSignature = rs.Get();

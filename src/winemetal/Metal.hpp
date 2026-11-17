@@ -1190,6 +1190,11 @@ public:
   serialize(const char *url, Reference<Error> &error) {
     return MTLBinaryArchive_serialize(handle, url, error.out());
   }
+
+  void
+  add(Object pipeline) {
+    MTLBinaryArchive_add(handle, pipeline.handle);
+  }
 };
 
 class IndirectCommandBuffer : public Resource {
@@ -1339,7 +1344,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = false;
     info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+    info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
@@ -1355,7 +1360,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
     info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+    info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
@@ -1732,7 +1737,7 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
   info.fragment_function = NULL_OBJECT_HANDLE;
   info.immutable_vertex_buffers = 0;
   info.immutable_fragment_buffers = 0;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
@@ -1743,7 +1748,7 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
 inline void
 InitializeComputePipelineInfo(WMTComputePipelineInfo &info) {
   info.compute_function = NULL_OBJECT_HANDLE;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
@@ -1782,7 +1787,7 @@ InitializeMeshRenderPipelineInfo(WMTMeshRenderPipelineInfo &info) {
   info.payload_memory_length = 0;
   info.mesh_tgsize_is_multiple_of_sgwidth = 0;
   info.object_tgsize_is_multiple_of_sgwidth = 0;
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
@@ -1799,7 +1804,7 @@ InitializeTileRenderPipelineInfo(WMTTileRenderPipelineInfo &info) {
   info.raster_sample_count = 1;
   info.tgsize_matches_tile_size = 0;
 
-  info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
+  info.keep_for_binary_archive = false;
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;

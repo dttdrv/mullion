@@ -607,6 +607,59 @@ public:
       }
     }
 
+    // two bindings that one stage sees (the same visibility, or one of them every stage's) cannot name one register
+    // of one space: Direct3D 12 refuses the root signature (Microsoft's verifier, DirectXShaderCompiler's
+    // DxilRootSignatureValidator.cpp, AddRegisterRange; vkd3d-proton's test_create_root_signature on Windows).
+    // a root constant buffer or constants take a `b` register, a static sampler an `s` one
+    struct Bound {
+      UINT kind, space;
+      uint64_t first, last;
+      D3D12_SHADER_VISIBILITY stages;
+    };
+    std::vector<Bound> bound;
+    auto bind = [&](UINT kind, UINT space, UINT first, UINT count, D3D12_SHADER_VISIBILITY stages) {
+      // an unbounded range's count is UINT_MAX: it takes every register from its first
+      Bound next{kind, space, first, uint64_t(first) + count - 1, stages};
+      for (auto &b : bound)
+        if (b.kind == kind && b.space == space && b.first <= next.last && next.first <= b.last &&
+            (b.stages == stages || b.stages == D3D12_SHADER_VISIBILITY_ALL || stages == D3D12_SHADER_VISIBILITY_ALL))
+          return false;
+      bound.push_back(next);
+      return true;
+    };
+    for (unsigned i = 0; i < desc.NumParameters; i++) {
+      auto &parameter = desc.pParameters[i];
+      bool free = true;
+      switch (parameter.ParameterType) {
+      case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
+        for (unsigned j = 0; free && j < parameter.DescriptorTable.NumDescriptorRanges; j++) {
+          auto &range = parameter.DescriptorTable.pDescriptorRanges[j];
+          free = !range.NumDescriptors || bind(range.RangeType, range.RegisterSpace, range.BaseShaderRegister,
+                                               range.NumDescriptors, parameter.ShaderVisibility);
+        }
+        break;
+      case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
+        free = bind(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, parameter.Constants.RegisterSpace,
+                    parameter.Constants.ShaderRegister, 1, parameter.ShaderVisibility);
+        break;
+      case D3D12_ROOT_PARAMETER_TYPE_CBV:
+      case D3D12_ROOT_PARAMETER_TYPE_SRV:
+      case D3D12_ROOT_PARAMETER_TYPE_UAV:
+        free = bind(parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV   ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
+                    : parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_SRV ? D3D12_DESCRIPTOR_RANGE_TYPE_SRV
+                                                                               : D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+                    parameter.Descriptor.RegisterSpace, parameter.Descriptor.ShaderRegister, 1,
+                    parameter.ShaderVisibility);
+        break;
+      }
+      if (!free)
+        return FAIL(E_INVALIDARG);
+    }
+    for (unsigned i = 0; i < desc.NumStaticSamplers; i++)
+      if (!desc.pStaticSamplers ||
+          !bind(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, desc.pStaticSamplers[i].RegisterSpace,
+                desc.pStaticSamplers[i].ShaderRegister, 1, desc.pStaticSamplers[i].ShaderVisibility))
+        return FAIL(E_INVALIDARG);
     // the parameters MULLION_D3D12_UPLOAD_CHECK walks: an unbounded range is taken as its first 64 descriptors
     if (upload_check::Enabled()) {
       for (unsigned i = 0; i < desc.NumParameters; i++) {

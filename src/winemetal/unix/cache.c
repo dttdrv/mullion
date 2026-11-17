@@ -80,6 +80,26 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
   return path;
 }
 
+// what one converter version stored is a file of its own beside the name asked for: "shaders.db" at version 7 is
+// "shaders.v7.db"
+static NSString *
+versioned(NSString *path, uint64_t version) {
+  return [[[path stringByDeletingPathExtension] stringByAppendingFormat:@".v%llu", version]
+      stringByAppendingPathExtension:path.pathExtension];
+}
+
+// no version reads what another stored, so a store that kept each grew by a whole version's conversions at every new
+// one: the files of the others go, those of the name itself among them (a store from before a version had its own).
+// a process that still has one open keeps it until it ends
+static void
+remove_other_versions(NSString *path, NSString *kept) {
+  NSString *directory = [path stringByDeletingLastPathComponent];
+  NSString *stem = [[[path lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"."];
+  for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil])
+    if ([name hasPrefix:stem] && ![name hasPrefix:[kept lastPathComponent]])
+      unlink([[directory stringByAppendingPathComponent:name] fileSystemRepresentation]);
+}
+
 @implementation CacheReader
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
@@ -91,7 +111,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
       [self release];
       return nil;
     }
-    _dbPath = [dbPath copy];
+    _dbPath = [versioned(dbPath, version) copy];
     _sqlGet = [[NSString alloc] initWithFormat:@"SELECT value FROM cache_%llu WHERE key = ?;", version];
     // the first connection tells whether the store can be read at all
     if (!reader_open(_dbPath, _sqlGet, &_idle[0])) {
@@ -189,6 +209,8 @@ writes(void) {
       return nil;
     }
 
+    remove_other_versions(dbPath, versioned(dbPath, version));
+    dbPath = versioned(dbPath, version);
     NSString *lockPath = [dbPath stringByAppendingString:@"-lock"];
     _lock_fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
     if (_lock_fd < 0) {
@@ -353,6 +375,31 @@ _CacheWriter_set(void *obj) {
 extern void MTLSetShaderCachePath(NSString* path);
 extern NSString* MTLGetShaderCachePath();
 
+// Metal keeps a working folder ("gpuarchiver-" and six digits) in its cache folder for every binary archive that is
+// added to, and leaves it there when the archive and its process are gone (macOS 27.3, 1.6 MB each). every process
+// holds the cache folder's lock shared for as long as it lives, so one that takes it alone finds only folders of
+// processes that ended: those are removed, off this thread. the lock is this process's alone: one it starts (Wine's
+// explorer) does not keep it
+static void
+remove_archive_folders(NSString *cache) {
+  int lock = open([cache stringByAppendingPathComponent:@"mullion.lock"].fileSystemRepresentation,
+                  O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+  if (lock < 0)
+    return;
+  NSMutableArray<NSString *> *ended = [NSMutableArray array];
+  if (!flock(lock, LOCK_EX | LOCK_NB))
+    for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:cache error:nil])
+      if ([name hasPrefix:@"gpuarchiver-"])
+        [ended addObject:[cache stringByAppendingPathComponent:name]];
+  while (flock(lock, LOCK_SH) && errno == EINTR)
+    ;
+  if (ended.count)
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      for (NSString *folder in ended)
+        [[NSFileManager defaultManager] removeItemAtPath:folder error:nil];
+    });
+}
+
 int
 _WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
@@ -360,6 +407,8 @@ _WMTSetMetalShaderCachePath(void *obj) {
   NSString *resolved_path = resolve_cache_dir(path, false);
   MTLSetShaderCachePath(resolved_path);
   params->ret_success = [MTLGetShaderCachePath() isEqualToString:resolved_path];
+  if (params->ret_success)
+    remove_archive_folders(resolved_path);
   [path release];
   return 0;
 };
