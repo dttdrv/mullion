@@ -26,12 +26,9 @@ uint slow() {
   return value + (v & mask);
 }
 uint ps() : SV_Target { return slow(); }
-// a quad over half the target, the left one for vertices 0 to 5 and the right one for 6 to 11
-float4 sides(uint id : SV_VertexID) : SV_Position {
-  uint c = id % 6;
-  float x = c == 1 || c == 2 || c == 4, y = c == 2 || c == 4 || c == 5;
-  return float4(x - 1 + id / 6, 1 - 2 * y, depth, 1);
-}
+// a quad over half the target, which the draw's StartVertexLocation picks from the vertex buffer: SV_VertexID does not
+// count it (D3D11.3 8.16)
+float4 sides(float2 position : POSITION) : SV_Position { return float4(position, depth, 1); }
 struct Two { uint a : SV_Target0; uint b : SV_Target1; };
 Two both() { Two two = {slow(), value + 1}; return two; }
 )hlsl";
@@ -68,9 +65,12 @@ run(int argc, char **argv) {
   // one target; one and depth, which a draw nearer than what is there writes; two targets; one target's halves
   ComPtr<ID3D12PipelineState> one, deep, two, half;
   CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&one)));
+  D3D12_INPUT_ELEMENT_DESC position{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT};
   desc.VS = bytecode(halves);
+  desc.InputLayout = {&position, 1};
   CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&half)));
   desc.VS = bytecode(vs);
+  desc.InputLayout = {};
   desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   desc.DepthStencilState.DepthEnable = TRUE;
   desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -171,6 +171,20 @@ run(int argc, char **argv) {
   auto commands = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, lists * sizeof(D3D12_DRAW_ARGUMENTS),
                          D3D12_RESOURCE_STATE_GENERIC_READ);
   CHECK(commands ? S_OK : E_FAIL);
+  // the left half's quad, then the right half's
+  float corners[12][2];
+  for (UINT id = 0; id < 12; id++) {
+    UINT c = id % 6;
+    corners[id][0] = float(c == 1 || c == 2 || c == 4) - 1 + id / 6;
+    corners[id][1] = 1 - 2 * float(c == 2 || c == 4 || c == 5);
+  }
+  auto vertices = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(corners), D3D12_RESOURCE_STATE_GENERIC_READ);
+  CHECK(vertices ? S_OK : E_FAIL);
+  void *mapped_corners;
+  CHECK(vertices->Map(0, nullptr, &mapped_corners));
+  memcpy(mapped_corners, corners, sizeof(corners));
+  vertices->Unmap(0, nullptr);
+  const D3D12_VERTEX_BUFFER_VIEW vertex_view{vertices->GetGPUVirtualAddress(), sizeof(corners), sizeof(corners[0])};
   auto draw_indirect = [&](UINT i, UINT value, UINT side_drawn) {
     D3D12_DRAW_ARGUMENTS *mapped;
     HRESULT hr;
@@ -183,6 +197,7 @@ run(int argc, char **argv) {
       return hr;
     list->SetGraphicsRootSignature(roots.Get());
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &vertex_view);
     list->OMSetRenderTargets(1, rtvs, TRUE, nullptr);
     D3D12_VIEWPORT viewport{0, 0, float(side), float(side), 0, 1};
     D3D12_RECT scissor{0, 0, LONG(side), LONG(side)};
