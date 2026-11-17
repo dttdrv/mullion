@@ -2233,6 +2233,10 @@ WINEMETAL_API void CacheWriter_set(obj_handle_t writer, const void *key, uint64_
 
 WINEMETAL_API bool WMTSetMetalShaderCachePath(const char *path);
 
+// removes the files in `stem`'s folder whose names start with its last part and not with `kept`'s: what other
+// versions of a store wrote. both are paths as CacheWriter_alloc_init takes them, in one folder
+WINEMETAL_API void WMTRemoveOtherVersions(const char *stem, const char *kept);
+
 WINEMETAL_API obj_handle_t MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info);
 
 // registers `mach_port`, the port of `object` (an MTLSharedEvent or MTLTexture), under `name` for other processes to
@@ -2636,7 +2640,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
-       WMTUnixCallCount };
+       WMTUnixRemoveOtherVersions, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);
