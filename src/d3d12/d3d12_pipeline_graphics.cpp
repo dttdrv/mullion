@@ -2171,7 +2171,7 @@ public:
         WMT::Reference<WMT::Error> failed;
         auto kernel = self->device_->Archived(hull_info, failed, [&](auto &info, auto &error) {
           return self->device_->GetMTLDevice().newComputePipelineState(info, error);
-        });
+        }, self->library_key);
         auto patches = kernel ? self->CreatePipeline(info, failed) : WMT::Reference<WMT::RenderPipelineState>();
         if (!patches) {
           ERR("Failed to create the tessellator of shaders ", self->name, ": ", failed.description().getUTF8String());
