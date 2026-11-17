@@ -35,3 +35,8 @@ test('d3d11_swapchain_formats', executable('d3d11_swapchain_formats', ['d3d11_sw
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
 test('d3d11_swapchain', executable('d3d11_swapchain', ['d3d11_swapchain.cpp'], dependencies : d3d11_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'window', timeout : 300)
+
+# Replay sampler switches through a deferred context as well as the immediate path.
+test('d3d11_minmax_filters_deferred',
+     executable('d3d11_minmax_filters_deferred', 'd3d11_minmax_filters.cpp', dependencies: d3d11_test_deps),
+     args: ['deferred'], env: ['MULLION_SHADER_CACHE=0'], timeout: 600)
