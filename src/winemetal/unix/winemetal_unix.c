@@ -3831,46 +3831,52 @@ CREATES(_MTLDevice_newBinaryArchive)(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// the archive's calls run on its own thread, which has no pool: what they autorelease is drained here, or it lives as
+// long as the thread (the descriptor its getter returns, with the pipeline's functions and compiled variants)
 static NTSTATUS
 _MTLBinaryArchive_serialize(void *obj) {
   struct unixcall_mtlbinaryarchive_serialize *params = obj;
-  NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
-  NSString *path = resolve_cache_dir(path_str, true), *written = [path stringByAppendingString:@".new"];
-  NSURL *url = [[NSURL alloc] initFileURLWithPath:written];
-  NSError *err = NULL;
-  // a file that is replaced whole, never one half written (Apple: an archive updated at runtime needs corruption
-  // resiliency, MTLBinaryArchive.h)
-  if ([(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err] &&
-      rename(written.fileSystemRepresentation, path.fileSystemRepresentation))
-    err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
-  params->ret_error = (obj_handle_t)[err retain];
-  [url release];
-  [path_str release];
+  @autoreleasepool {
+    NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
+    NSString *path = resolve_cache_dir(path_str, true), *written = [path stringByAppendingString:@".new"];
+    NSURL *url = [[NSURL alloc] initFileURLWithPath:written];
+    NSError *err = NULL;
+    // a file that is replaced whole, never one half written (Apple: an archive updated at runtime needs corruption
+    // resiliency, MTLBinaryArchive.h)
+    if ([(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err] &&
+        rename(written.fileSystemRepresentation, path.fileSystemRepresentation))
+      err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
+    params->ret_error = (obj_handle_t)[err retain];
+    [url release];
+    [path_str release];
+  }
   return STATUS_SUCCESS;
 }
 
 static NTSTATUS
 _MTLBinaryArchive_add(void *obj) {
   struct unixcall_generic_obj_obj_noret *params = obj;
-  id<MTLBinaryArchive> archive = (id<MTLBinaryArchive>)params->handle;
-  id pipeline = (id)params->arg, descriptor = objc_getAssociatedObject(pipeline, &archive_descriptor);
-  NSError *err = nil;
-  // the archives the pipeline was looked up in are not asked again: one of them may have been lost to a fault in
-  // Metal since, and holds whoever asks it
-  [descriptor setBinaryArchives:nil];
-  if ([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class])
-    [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-  else if ([descriptor isKindOfClass:MTLComputePipelineDescriptor.class])
-    [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
+  @autoreleasepool {
+    id<MTLBinaryArchive> archive = (id<MTLBinaryArchive>)params->handle;
+    id pipeline = (id)params->arg, descriptor = objc_getAssociatedObject(pipeline, &archive_descriptor);
+    NSError *err = nil;
+    // the archives the pipeline was looked up in are not asked again: one of them may have been lost to a fault in
+    // Metal since, and holds whoever asks it
+    [descriptor setBinaryArchives:nil];
+    if ([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class])
+      [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    else if ([descriptor isKindOfClass:MTLComputePipelineDescriptor.class])
+      [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-  else if (@available(macOS 15, *)) {
-    if ([descriptor isKindOfClass:MTLMeshRenderPipelineDescriptor.class])
-      [archive addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-    else if ([descriptor isKindOfClass:MTLTileRenderPipelineDescriptor.class])
-      [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-  }
+    else if (@available(macOS 15, *)) {
+      if ([descriptor isKindOfClass:MTLMeshRenderPipelineDescriptor.class])
+        [archive addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      else if ([descriptor isKindOfClass:MTLTileRenderPipelineDescriptor.class])
+        [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
 #endif
-  objc_setAssociatedObject(pipeline, &archive_descriptor, nil, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(pipeline, &archive_descriptor, nil, OBJC_ASSOCIATION_RETAIN);
+  }
   return STATUS_SUCCESS;
 }
 
@@ -5698,7 +5704,9 @@ API_AVAILABLE(macos(26.0)) metal4_pool(id<MTL4CommandQueue> queue, const void *k
     NSMutableArray *pool = objc_getAssociatedObject(queue, key);
     if (!pool) {
       pool = [NSMutableArray array];
-      objc_setAssociatedObject(queue, key, pool, OBJC_ASSOCIATION_RETAIN);
+      // nonatomic: it is read under the queue's lock, and its getter then autoreleases nothing, which a command
+      // buffer's release on a thread with no pool would keep
+      objc_setAssociatedObject(queue, key, pool, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return pool;
   }
@@ -5910,7 +5918,7 @@ API_AVAILABLE(macos(26.0)) metal4_texture(
 }
 
 static NTSTATUS
-_MTL4CommandBuffer_new(void *obj) {
+CREATES(_MTL4CommandBuffer_new)(void *obj) {
   struct unixcall_metal4_new *p = obj;
   if (@available(macOS 26.0, *)) {
     MullionMetal4Buffer *state = [[MullionMetal4Buffer alloc] init];
