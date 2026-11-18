@@ -196,7 +196,7 @@ public:
     }
   }
   ~VisibilityResultReadback() {
-    for (auto query : queries)
+    for (const auto &query : queries)
       query->issue(seq_id, visibility_result_heap_info, visibility_result_offsets);
 #ifdef __i386__
     for (auto &info : visibility_result_heap_info)
