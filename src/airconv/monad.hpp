@@ -3,6 +3,7 @@
 #include <coroutine>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <type_traits>
 #include <utility>
@@ -89,7 +90,7 @@ public:
       i++;
       if (i == ops.size()) {
         destroy();
-        return ret.get();
+        return ret;
       }
     }
     __builtin_unreachable();
@@ -97,7 +98,7 @@ public:
 
   struct promise_type {
     Env *to_be_filled = nullptr;
-    llvm::Expected<V> *return_value_ = nullptr;
+    std::optional<llvm::Expected<V>> return_value_;
     ReaderIO<Env, V> get_return_object() {
       using Handle = std::coroutine_handle<promise_type>;
       auto destroy_frame = [](promise_type *p) { Handle::from_promise(*p).destroy(); };
@@ -114,8 +115,6 @@ public:
           (h.done() == bool(r)) &&
           "unexpected suspension of coroutine"
         );
-        delete promise.return_value_;
-        promise.return_value_ = nullptr;
         return r;
       });
     };
@@ -128,11 +127,10 @@ public:
       llvm::Expected<ResumeVal> val;
       bool await_ready() noexcept { return bool(val); }
       void await_suspend(const std::coroutine_handle<promise_type> &h) {
-        h.promise().return_value_ = new llvm::Expected<V>(val.takeError());
+        h.promise().return_value_.emplace(val.takeError());
       }
-      constexpr ResumeVal await_resume() const noexcept {
-        return val.get(); // this function will be not called again?
-        // thus val is not used anymore
+      ResumeVal await_resume() {
+        return std::forward<ResumeVal>(val.get());
       }
     };
     template <std::move_constructible S>
@@ -149,7 +147,7 @@ public:
     };
 
     void return_value(V value) {
-      return_value_ = new llvm::Expected<V>(value);
+      return_value_.emplace(std::forward<V>(value));
     };
   };
 
