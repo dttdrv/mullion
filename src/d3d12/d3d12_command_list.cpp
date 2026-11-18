@@ -1655,10 +1655,12 @@ public:
 
   // a tessellated draw runs each group of patches in one object threadgroup of 32 threads (airconv's layout), which
   // reads the draw's D3D12 arguments (their layout is the one it expects) and its TessellationInputs; the view of a
-  // draw without indices is empty
+  // draw without indices is empty. a `Fallback` draw follows a native one on the compute tessellator, whose scan writes
+  // the word it counts patches from
   template <typename Arguments>
   uint32_t
-  EncodeTessellationDraw(const Arguments &Args, uint32_t Count, uint32_t ControlPoints, const D3D12_INDEX_BUFFER_VIEW &View) {
+  EncodeTessellationDraw(const Arguments &Args, uint32_t Count, uint32_t ControlPoints, const D3D12_INDEX_BUFFER_VIEW &View,
+                         bool Fallback = false) {
     auto patches = ControlPoints ? Count / ControlPoints : 0, per_group = 32 / pso_graphics_->threads_per_patch;
     if (!patches || !Args.InstanceCount)
       return 0;
@@ -1666,7 +1668,7 @@ public:
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(inputs) + sizeof(Args), 16);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(Mapped, sizeof(inputs) + sizeof(Args), "tessellation inputs", sizeof(inputs),
-                                predication_region_ ? sizeof(uint32_t) : 0);
+                                predication_region_ || Fallback ? sizeof(uint32_t) : 0);
     memcpy(Mapped, &inputs, sizeof(inputs));
     memcpy(reinterpret_cast<char *>(Mapped) + sizeof(inputs), &Args, sizeof(Args));
     // the object stage counts patches from the arguments' first word, so a skipped draw has none
@@ -2093,7 +2095,7 @@ public:
       D3D12_DRAW_ARGUMENTS args{VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
       // where the pass's compute tessellator may have no room, its mesh draw follows
       if (EncodeNativeTessellationDraw(args, VertexCountPerInstance, cp_count, {}) && FallbackPreDraw()) {
-        auto fallback = EncodeTessellationDraw(args, VertexCountPerInstance, cp_count, {});
+        auto fallback = EncodeTessellationDraw(args, VertexCountPerInstance, cp_count, {}, true);
         if (tessellation_draw_)
           tessellation_draw_->record.fallback = fallback;
       }
@@ -2158,7 +2160,7 @@ public:
       };
       if (EncodeNativeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_)) &&
           FallbackPreDraw()) {
-        auto fallback = EncodeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_));
+        auto fallback = EncodeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_), true);
         if (tessellation_draw_)
           tessellation_draw_->record.fallback = fallback;
       }
