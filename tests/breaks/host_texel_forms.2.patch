@@ -1,0 +1,12 @@
+# no read or texture atomic takes an offset
+--- a/src/airconv/nt/air_builder.cpp
++++ b/src/airconv/nt/air_builder.cpp
+@@ -130,7 +130,7 @@
+ void
+ AIRBuilder::PushTexelOffset(const Texture &Texture, SmallVectorImpl<Type *> &Tys, SmallVectorImpl<Value *> &Ops) {
+   auto &Info = TextureInfo[Texture.kind];
+-  if (Info.coord_dimension < 2 || Info.is_cube || Info.is_ms || !IsAIR28())
++  if (Info.coord_dimension < 2 || Info.is_cube || Info.is_ms || true)
+     return;
+   Tys.push_back(getTextureRWPositionType(Texture));
+   Ops.push_back(Constant::getNullValue(Tys.back()));

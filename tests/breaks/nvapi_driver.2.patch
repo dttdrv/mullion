@@ -1,0 +1,13 @@
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index 9a75d9da..e018ce7a 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -56,7 +56,7 @@ DriverVersion() {
+             L"DriverVersion", RRF_RT_REG_SZ, nullptr, text, &size
+         ) == ERROR_SUCCESS &&
+         swscanf(text, L"%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+-      NvU32 nvidia = (c * 10000 + d) % 100000;
++      NvU32 nvidia = (c * 10000 + d) % 10000;
+       if (nvidia >= 30000)
+         return nvidia;
+     }

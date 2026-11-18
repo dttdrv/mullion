@@ -1224,6 +1224,9 @@ enum WMTBarrierScope : uint8_t {
   WMTBarrierScopeBuffers = 1,
   WMTBarrierScopeTextures = 2,
   WMTBarrierScopeRenderTargets = 4,
+  // Metal 4, a compute barrier: also what was written through another buffer over the same memory
+  // (MTL4VisibilityOptionResourceAlias). not a scope of Metal 3's, which is not given it
+  WMTBarrierScopeAliases = 8,
 };
 
 struct wmtcmd_compute_memory_barrier {
@@ -1314,6 +1317,9 @@ enum WMTRenderCommandType : uint16_t {
   WMTRenderCommandExecuteCommandsInBufferIndirect,
   WMTRenderCommandSetVertexBytes,
   WMTRenderCommandSetMeshBytes,
+  /* a draw of patches through Metal's tessellator (wmtcmd_render_draw_patches), on Metal 3 encoders only: Metal 4's
+     have no tessellator */
+  WMTRenderCommandDrawPatches,
 };
 
 struct wmtcmd_render_nop {
@@ -1446,6 +1452,18 @@ struct wmtcmd_render_draw {
   uint64_t vertex_count;
   uint32_t instance_count;
   uint32_t base_instance;
+};
+
+struct wmtcmd_render_draw_patches {
+  enum WMTRenderCommandType type;
+  uint16_t reserved[3];
+  struct WMTMemoryPointer next;
+  obj_handle_t factor_buffer;
+  uint64_t factor_buffer_offset;
+  uint32_t factor_instance_stride;
+  uint32_t control_points;
+  uint32_t patch_count;
+  uint32_t instance_count;
 };
 
 struct wmtcmd_render_draw_indirect {
@@ -2233,6 +2251,10 @@ WINEMETAL_API void CacheWriter_set(obj_handle_t writer, const void *key, uint64_
 
 WINEMETAL_API bool WMTSetMetalShaderCachePath(const char *path);
 
+// removes the files in `stem`'s folder whose names start with its last part and not with `kept`'s: what other
+// versions of a store wrote. both are paths as CacheWriter_alloc_init takes them, in one folder
+WINEMETAL_API void WMTRemoveOtherVersions(const char *stem, const char *kept);
+
 WINEMETAL_API obj_handle_t MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info);
 
 // registers `mach_port`, the port of `object` (an MTLSharedEvent or MTLTexture), under `name` for other processes to
@@ -2636,7 +2658,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
-       WMTUnixCallCount };
+       WMTUnixRemoveOtherVersions, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

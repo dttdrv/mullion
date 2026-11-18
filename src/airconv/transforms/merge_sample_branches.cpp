@@ -1,8 +1,10 @@
 #include "merge_sample_branches.hpp"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Function.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <optional>
 
@@ -10,11 +12,32 @@ namespace llvm::air {
 
 namespace {
 
-// a sample's branch: Head branches to Own (the implicit sample) or Scaled (the gradients), which both go to Join
+// a sample's branch: Head branches to Own (the implicit sample) or Scaled (the gradients), which both go to Join. an
+// arm is one block, or a block that branches to two that meet in its last (the footprint's check before the gradients)
+struct Arm {
+  BasicBlock *First, *Last;
+};
 struct Diamond {
   BranchInst *Branch;
-  BasicBlock *Own, *Scaled, *Join;
+  Arm Own, Scaled;
+  BasicBlock *Join;
 };
+
+std::optional<Arm>
+Reach(BasicBlock *First, BasicBlock *Head, BasicBlock *Join) {
+  if (First->getSinglePredecessor() != Head)
+    return {};
+  if (First->getSingleSuccessor() == Join)
+    return Arm{First, First};
+  auto Branch = dyn_cast_or_null<BranchInst>(First->getTerminator());
+  if (!Branch || !Branch->isConditional())
+    return {};
+  auto A = Branch->getSuccessor(0), B = Branch->getSuccessor(1), Last = A->getSingleSuccessor();
+  if (A == B || !Last || B->getSingleSuccessor() != Last || A->getSinglePredecessor() != First ||
+      B->getSinglePredecessor() != First || !Last->hasNPredecessors(2) || Last->getSingleSuccessor() != Join)
+    return {};
+  return Arm{First, Last};
+}
 
 std::optional<Diamond>
 Match(BasicBlock *Head, unsigned Kind) {
@@ -23,10 +46,39 @@ Match(BasicBlock *Head, unsigned Kind) {
     return {};
   auto Own = Branch->getSuccessor(0), Scaled = Branch->getSuccessor(1);
   auto Join = Own->getSingleSuccessor();
-  if (Own == Scaled || !Join || Scaled->getSingleSuccessor() != Join || Own->getSinglePredecessor() != Head ||
-      Scaled->getSinglePredecessor() != Head || !Join->hasNPredecessors(2))
+  auto Check = Join && Own != Scaled && Own->getSinglePredecessor() == Head ? Reach(Scaled, Head, Join) : std::nullopt;
+  if (!Check || !Join->hasNPredecessors(2))
     return {};
-  return Diamond{Branch, Own, Scaled, Join};
+  return Diamond{Branch, {Own, Own}, *Check, Join};
+}
+
+// the blocks of an arm
+SmallVector<BasicBlock *, 4>
+Blocks(const Arm &A) {
+  SmallVector<BasicBlock *, 4> Blocks{A.First};
+  if (A.Last != A.First) {
+    append_range(Blocks, successors(A.First));
+    Blocks.push_back(A.Last);
+  }
+  return Blocks;
+}
+
+// the early SimplifyCFG folds the footprint check's join, which holds only phis, into the sample's: the check's arms
+// then go to the sample's join themselves. it is split off again, so the gradients arm ends in one block
+void
+Unfold(BasicBlock *Head) {
+  auto Branch = cast<BranchInst>(Head->getTerminator());
+  if (!Branch->isConditional())
+    return;
+  auto Join = Branch->getSuccessor(0)->getSingleSuccessor();
+  auto Scaled = Branch->getSuccessor(1);
+  auto Check = dyn_cast<BranchInst>(Scaled->getTerminator());
+  if (!Join || !Check || !Check->isConditional())
+    return;
+  auto A = Check->getSuccessor(0), B = Check->getSuccessor(1);
+  if (A != B && A->getSinglePredecessor() == Scaled && B->getSinglePredecessor() == Scaled &&
+      A->getSingleSuccessor() == Join && B->getSingleSuccessor() == Join)
+    SplitBlockPredecessors(Join, {A, B}, ".footprint");
 }
 
 // a derivative has no memory effects, though its declaration does not say so (AIRBuilder::CreateDerivative)
@@ -95,10 +147,11 @@ Join(Diamond &First, const Diamond &Second) {
   }
   // the second sample does not read the first. its branch's condition is the first's value (Equal), which nothing
   // after the first sample computes
-  for (auto Block : {Second.Own, Second.Scaled})
-    for (auto &I : *Block)
-      if (Feeds(I))
-        return false;
+  for (auto &Arm : {Second.Own, Second.Scaled})
+    for (auto Block : Blocks(Arm))
+      for (auto &I : *Block)
+        if (Feeds(I))
+          return false;
   for (auto &Phi : Second.Join->phis())
     if (Feeds(Phi))
       return false;
@@ -107,20 +160,27 @@ Join(Diamond &First, const Diamond &Second) {
     I->moveBefore(First.Branch);
   // in their order, ahead of what followed the second sample
   auto At = Second.Join->getFirstNonPHI();
+  SmallVector<PHINode *, 4> Moved;
   for (auto &Phi : make_early_inc_range(Between->phis()))
-    Phi.moveBefore(At);
+    Phi.moveBefore(At), Moved.push_back(&Phi);
   for (auto I : Later)
     I->moveBefore(At);
-  for (auto [From, To] : {std::pair{Second.Own, First.Own}, std::pair{Second.Scaled, First.Scaled}}) {
-    To->getTerminator()->eraseFromParent();
-    To->getInstList().splice(To->end(), From->getInstList());
-    Second.Join->replacePhiUsesWith(From, To);
+  // each of the second's arms goes on at the end of the first's, which then ends where the second's did
+  for (auto [From, To] : {std::pair{Second.Own, &First.Own}, std::pair{Second.Scaled, &First.Scaled}}) {
+    auto Into = To->Last;
+    Into->getTerminator()->eraseFromParent();
+    Into->getInstList().splice(Into->end(), From.First->getInstList());
+    for (auto Next : successors(Into))
+      Next->replacePhiUsesWith(From.First, Into);
+    To->Last = From.Last == From.First ? Into : From.Last;
+    for (auto Phi : Moved)
+      Phi->replaceIncomingBlockWith(Into, To->Last);
   }
   auto Condition = Second.Branch->getCondition();
   Second.Branch->eraseFromParent();
   Between->eraseFromParent();
-  Second.Own->eraseFromParent();
-  Second.Scaled->eraseFromParent();
+  Second.Own.First->eraseFromParent();
+  Second.Scaled.First->eraseFromParent();
   RecursivelyDeleteTriviallyDeadInstructions(Condition);
   First.Join = Second.Join;
   return true;
@@ -137,6 +197,8 @@ MergeSampleBranchesPass::run(Function &F, FunctionAnalysisManager &AM) {
       Heads.push_back(&BB);
   bool Changed = false;
   if (Merge) {
+    for (auto Head : Heads)
+      Unfold(Head);
     SmallPtrSet<BasicBlock *, 16> Gone;
     for (auto Head : Heads) {
       if (Gone.count(Head))

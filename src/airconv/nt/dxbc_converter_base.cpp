@@ -2484,23 +2484,11 @@ Converter::SampleImplicit(
   if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)
     Isotropic =
         ir.CreateOr(Isotropic, ir.CreateICmpEQ(ir.CreateTrunc(SamplerMetadata, ir.getInt16Ty()), ir.getInt16(0)));
-  auto Gradients = [&] {
-    auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
-    return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
-                                BiasGradient(DDY, Bias), MinLOD, Offset, Reference);
-  };
   // MULLION_AIRCONV_SKIP=table-sampler-implicit: a sampler not known here always takes the gradients
   static const bool Selects = [] {
     auto Skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
     return !Skip || !strstr(Skip, "table-sampler-implicit");
   }();
-  if (!Selects || isa<Constant>(Isotropic))
-    return Gradients();
-  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic,
-  // or is unbiased as above, reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29
-  // ms on an M1 Max). the whole quad takes one side, as the derivatives an implicit sample takes are its quad's and a
-  // lane's sampler need not be its quad's others' (NonUniformResourceIndex). MergeSampleBranchesPass joins the
-  // branches of a sampler's samples that follow each other
   auto &Context = air.getContext();
   auto QuadAll = air.getModule()->getOrInsertFunction(
       "air.quad_all", FunctionType::get(ir.getInt1Ty(), {ir.getInt1Ty()}, false),
@@ -2508,31 +2496,90 @@ Converter::SampleImplicit(
                                    {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
                                    {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}})
   );
-  auto Whole = ir.CreateCall(QuadAll, {Isotropic});
-  Whole->addFnAttr(Attribute::ReadNone);
-  auto Head = ir.GetInsertBlock();
-  auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
-                                                 : SplitBlock(Head, &*ir.GetInsertPoint());
-  if (auto Branch = Head->getTerminator())
-    Branch->eraseFromParent();
-  auto Own = llvm::BasicBlock::Create(ctx.llvm, "sample_implicit", Head->getParent(), Tail);
-  auto Scaled = llvm::BasicBlock::Create(ctx.llvm, "sample_gradients", Head->getParent(), Tail);
-  ir.SetInsertPoint(Head);
-  ir.CreateCondBr(Whole, Own, Scaled)->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
-  ir.SetInsertPoint(Own);
-  auto Implicit = Biased();
-  ir.CreateBr(Tail);
-  ir.SetInsertPoint(Scaled);
-  auto Gradient = Gradients();
-  ir.CreateBr(Tail);
-  ir.SetInsertPoint(Tail, Tail->begin());
-  auto Value = ir.CreatePHI(Implicit.first->getType(), 2);
-  auto Residency = ir.CreatePHI(Implicit.second->getType(), 2);
-  for (auto [Block, Read] : {std::pair{Own, Implicit}, std::pair{Scaled, Gradient}}) {
-    Value->addIncoming(Read.first, Block);
-    Residency->addIncoming(Read.second, Block);
-  }
-  return {Value, Residency};
+  // the whole quad reads Metal's own LOD where `Fits` holds for all its lanes, as the derivatives an implicit sample
+  // takes are its quad's and a lane's sampler need not be its quad's others' (NonUniformResourceIndex), and what
+  // `Other` reads where not; the branch, with the sample's value and residency joined after it, is at the insert point
+  auto Choose = [&](llvm::Value *Fits, auto &&Other, bool Mergeable) {
+    auto Whole = ir.CreateCall(QuadAll, {Fits});
+    Whole->addFnAttr(Attribute::ReadNone);
+    auto Head = ir.GetInsertBlock();
+    auto Tail = ir.GetInsertPoint() == Head->end() ? llvm::BasicBlock::Create(ctx.llvm, "", Head->getParent())
+                                                   : SplitBlock(Head, &*ir.GetInsertPoint());
+    if (auto Branch = Head->getTerminator())
+      Branch->eraseFromParent();
+    auto Own = llvm::BasicBlock::Create(ctx.llvm, "sample_implicit", Head->getParent(), Tail);
+    auto Scaled = llvm::BasicBlock::Create(ctx.llvm, "sample_gradients", Head->getParent(), Tail);
+    ir.SetInsertPoint(Head);
+    auto Branch = ir.CreateCondBr(Whole, Own, Scaled);
+    if (Mergeable)
+      Branch->setMetadata(llvm::air::SampleBranchMetadata, MDNode::get(Context, {}));
+    ir.SetInsertPoint(Own);
+    auto Implicit = Biased();
+    ir.CreateBr(Tail);
+    ir.SetInsertPoint(Scaled);
+    auto Read = Other();
+    auto End = ir.GetInsertBlock();
+    ir.CreateBr(Tail);
+    ir.SetInsertPoint(Tail, Tail->begin());
+    auto Value = ir.CreatePHI(Implicit.first->getType(), 2);
+    auto Residency = ir.CreatePHI(Implicit.second->getType(), 2);
+    for (auto [Block, Sampled] : {std::pair{Own, Implicit}, std::pair{End, Read}}) {
+      Value->addIncoming(Sampled.first, Block);
+      Residency->addIncoming(Sampled.second, Block);
+    }
+    return std::pair<llvm::Value *, llvm::Value *>{Value, Residency};
+  };
+  // Metal adds a bias to the LOD of the footprint's minor axis and holds the result to the anisotropy's limit:
+  // max(log2(minor) + bias, log2(major / limit)), a sampler's own bias and a sample's alike (an M5 Pro, macOS 27.3),
+  // where Direct3D adds the bias to the limited LOD: max(log2(minor), log2(major / limit)) + bias (7.18.11). they are
+  // the same while the footprint's ratio is within the limit, scaled by the bias where that is below zero, and there
+  // the sample reads Metal's own LOD as well: only a longer footprint takes the gradients. the ratio r of the
+  // footprint's axes, in texels, has r + 1 / r = (|dx|^2 + |dy|^2) / |dx x dy|, which is taken against the limit's
+  // without a root: r is at least one, and so is the limit that is asked. a quad the check above sends to Metal's
+  // LOD does not pay for this one
+  auto Footprint = [&] {
+    auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
+    auto Gradients = [&] {
+      return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
+                                  BiasGradient(DDY, Bias), MinLOD, Offset, Reference);
+    };
+    if (!Selects)
+      return Gradients();
+    auto Float = air.getFloatTy();
+    auto Size = [&](Texture::Query Axis) {
+      return ir.CreateUIToFP(air.CreateTextureQuery(Tex.Texture, Tex.Handle, Axis, ir.getInt32(0)), Float);
+    };
+    auto Width = Size(Texture::width), Height = Size(Texture::height);
+    auto XU = ir.CreateFMul(ir.CreateExtractElement(DDX, uint64_t(0)), Width),
+         XV = ir.CreateFMul(ir.CreateExtractElement(DDX, uint64_t(1)), Height),
+         YU = ir.CreateFMul(ir.CreateExtractElement(DDY, uint64_t(0)), Width),
+         YV = ir.CreateFMul(ir.CreateExtractElement(DDY, uint64_t(1)), Height);
+    auto Squares = ir.CreateFAdd(
+        ir.CreateFAdd(ir.CreateFMul(XU, XU), ir.CreateFMul(XV, XV)),
+        ir.CreateFAdd(ir.CreateFMul(YU, YU), ir.CreateFMul(YV, YV))
+    );
+    auto Area = air.CreateFPUnOp(AIRBuilder::fabs, ir.CreateFSub(ir.CreateFMul(XU, YV), ir.CreateFMul(XV, YU)));
+    auto Limit = ir.CreateFMul(
+        ir.CreateUIToFP(Anisotropy, Float),
+        air.CreateFPUnOp(
+            AIRBuilder::exp2, air.CreateFPBinOp(AIRBuilder::fmin, Bias, llvm::ConstantFP::get(Float, 0.0))
+        )
+    );
+    auto Within = ir.CreateAnd(
+        ir.CreateFCmpOGE(Limit, llvm::ConstantFP::get(Float, 1.0)),
+        ir.CreateFCmpOLE(
+            Squares,
+            ir.CreateFMul(ir.CreateFAdd(Limit, ir.CreateFDiv(llvm::ConstantFP::get(Float, 1.0), Limit)), Area)
+        )
+    );
+    return Choose(ir.CreateOr(Isotropic, Within), Gradients, false);
+  };
+  if (!Selects || isa<Constant>(Isotropic))
+    return Footprint();
+  // what a descriptor's sampler is is known only when the shader runs, from its metadata: one that is not anisotropic,
+  // or is unbiased as above, reads Metal's own LOD too, at several times the gradients' speed (#32: 2.23 against 8.29
+  // ms on an M1 Max). MergeSampleBranchesPass joins the branches of a sampler's samples that follow each other
+  return Choose(Isotropic, Footprint, true);
 }
 
 std::pair<llvm::Value *, llvm::Value *>

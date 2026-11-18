@@ -81,7 +81,7 @@ struct Case {
 };
 
 int
-main() {
+main(int argc, char **argv) {
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
@@ -156,7 +156,9 @@ main() {
     std::copy_n(extra.data(), 4, c.extra);
     cases.push_back(c);
   };
-  for (UINT sampler : {0, 1, 2, 3, 4})
+  // the ordinary sampler first: the draws share a pass, whose first pipeline then has no reduction in its pixel
+  // shader, and the minimum one after it must take another
+  for (UINT sampler : {4, 0, 1, 2, 3})
     for (float u : {0.5f, 0.25f, 0.75f, 0.4f, 0.6f})
       add(0, 0, sampler, {u, 0.5f});
   for (UINT sampler = first_address; sampler < specs.size(); sampler++)
@@ -181,6 +183,9 @@ main() {
     }
   for (float u : {0.5f, 0.25f})
     add(4, 3, compare, {u, 0.5f}, {}, {}, {0, 0, 0.5f});
+  // Switch both ways without changing shaders: ordinary -> minimum -> ordinary -> maximum -> ordinary.
+  for (UINT sampler : {4, 0, 4, 1, 4})
+    add(0, 0, sampler, {0.5f, 0.5f});
   const UINT count = UINT(cases.size());
 
   step("make the textures");
@@ -235,6 +240,12 @@ main() {
   CHECK(device->CreateTexture2D(&target_desc, nullptr, &staging));
   ComPtr<ID3D11RenderTargetView> rtv;
   CHECK(device->CreateRenderTargetView(target.Get(), nullptr, &rtv));
+  auto immediate = context;
+  const bool deferred = argc > 1 && !strcmp(argv[1], "deferred");
+  if (deferred) {
+    context.Reset();
+    CHECK(device->CreateDeferredContext(0, &context));
+  }
   // what no case reads: NaN
   const float nan[4] = {NAN, NAN, NAN, NAN};
   context->ClearRenderTargetView(rtv.Get(), nan);
@@ -259,7 +270,7 @@ main() {
     constants[18] = constants[19] = 0;
     context->UpdateSubresource(cb.Get(), 0, nullptr, constants, 0, 0);
     ID3D11SamplerState *bound[] = {c.op == 4 ? nullptr : samplers[c.sampler].Get(), samplers[compare].Get(),
-                                   samplers[c.op >= 6 ? UINT(c.extra[2]) : 0].Get()};
+                                   samplers[c.op >= 6 ? UINT(c.extra[2]) : 4].Get()};
     context->PSSetSamplers(0, 3, bound);
     D3D11_VIEWPORT viewport{float(2 * i), 0, 2, 2, 0, 1};
     context->RSSetViewports(1, &viewport);
@@ -267,6 +278,12 @@ main() {
   }
   context->CopyResource(staging.Get(), target.Get());
 
+  if (deferred) {
+    ComPtr<ID3D11CommandList> commands;
+    CHECK(context->FinishCommandList(FALSE, &commands));
+    immediate->ExecuteCommandList(commands.Get(), TRUE);
+    context = immediate;
+  }
   D3D11_MAPPED_SUBRESOURCE mapped;
   CHECK(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
   const char *ops[] = {"SampleLevel",        "SampleGrad", "Sample",          "SampleBias",

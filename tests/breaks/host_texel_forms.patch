@@ -1,0 +1,12 @@
+# Metal 4's reads take no read sampler
+--- a/src/airconv/nt/air_builder.cpp
++++ b/src/airconv/nt/air_builder.cpp
+@@ -751,7 +751,7 @@
+   Ops.push_back(Handle);
+ 
+   // AIR 2.8's reads take the read sampler after the texture, as Apple's compiler writes them
+-  if (IsAIR28()) {
++  if (false) {
+     auto ReadSampler = getModule()->getOrInsertFunction(
+         "air.get_read_sampler", FunctionType::get(getSamplerHandleType(), false),
+         AttributeList::get(

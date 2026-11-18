@@ -49,6 +49,10 @@ if test_d3d12
 endif
 subdir('d3d11')
 subdir('d3d10')
+# as the library builds NVAPI (src/meson.build)
+if get_option('enable_nvapi')
+  subdir('nvapi')
+endif
 # the host's own tests build against the macOS LLVM, which a 32-bit build does not make
 if is_variable('llvm_include_path_darwin')
   subdir('host')

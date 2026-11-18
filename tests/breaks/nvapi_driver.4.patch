@@ -1,0 +1,13 @@
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index 9a75d9da..06e3303d 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -1006,7 +1006,7 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+   auto vendor = mullion::Config::getInstance().getOption<std::string>("dxgi.customVendorId");
+   std::transform(vendor.begin(), vendor.end(), vendor.begin(), [](unsigned char c) { return std::tolower(c); });
+   bool requested = env == "1" || env == "0" ? env == "1" : vendor == "10de" || vendor == "0x10de";
+-  if (!requested)
++  if (false)
+     return FALSE;
+   DisableThreadLibraryCalls(instance);
+   return TRUE;

@@ -2,12 +2,12 @@
 # family native
 --- a/src/airconv/nt/dxbc_converter_base.cpp
 +++ b/src/airconv/nt/dxbc_converter_base.cpp
-@@ -2340,7 +2340,7 @@
-   }
+@@ -2478,7 +2478,7 @@
    auto Anisotropy = ir.CreateAnd(ir.CreateLShr(SamplerMetadata, SM50_SAMPLER_METADATA_ANISOTROPY),
                                   (1 << SM50_SAMPLER_METADATA_ANISOTROPY_BITS) - 1);
--  if (auto Known = dyn_cast<ConstantInt>(ir.CreateICmpUGT(Anisotropy, ir.getInt64(1))); Known && Known->isZero())
+   auto Isotropic = ir.CreateICmpULE(Anisotropy, ir.getInt64(1));
+-  if (auto Known = dyn_cast<ConstantInt>(Isotropic); Known && Known->isOne())
 +  if (true)
      return Biased();
-   auto DDX = air.CreateDerivative(Coord, false), DDY = air.CreateDerivative(Coord, true);
-   return air.CreateSampleGrad(Tex.Texture, Tex.Handle, Sampler, Coord, ArrayIndex, BiasGradient(DDX, Bias),
+   // as for a static sampler, a sample whose only bias is the sampler's own and that is none reads Metal's own LOD
+   if (auto Own = SamplerBiases.find(Bias); Own != SamplerBiases.end() && Own->second == SamplerMetadata)

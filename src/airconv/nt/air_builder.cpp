@@ -111,6 +111,31 @@ AIRBuilder::CreateTextureCall(const Texture &Texture, FunctionCallee Fn, ArrayRe
   return Answer;
 }
 
+// from the module's air.version, which setup_metal_version gives it before any code is made in it. Apple's verifier
+// refuses a module of 2.8 whose reads and texture atomics have the earlier arguments, and Metal's shader validation
+// crashes compiling one such read in a function that takes the texture
+bool
+AIRBuilder::IsAIR28() {
+  auto Version = getModule()->getNamedMetadata("air.version");
+  if (!Version || !Version->getNumOperands())
+    return false;
+  auto Part = [&](unsigned i) {
+    return mdconst::extract<ConstantInt>(Version->getOperand(0)->getOperand(i))->getZExtValue();
+  };
+  return std::pair(Part(0), Part(1)) >= std::pair<uint64_t, uint64_t>(2, 8);
+}
+
+// AIR 2.8 takes an offset (Metal 4's texel offset) where a sample takes one: 2D and 3D kinds, not cubes or
+// multisampled kinds
+void
+AIRBuilder::PushTexelOffset(const Texture &Texture, SmallVectorImpl<Type *> &Tys, SmallVectorImpl<Value *> &Ops) {
+  auto &Info = TextureInfo[Texture.kind];
+  if (Info.coord_dimension < 2 || Info.is_cube || Info.is_ms || !IsAIR28())
+    return;
+  Tys.push_back(getTextureRWPositionType(Texture));
+  Ops.push_back(Constant::getNullValue(Tys.back()));
+}
+
 Value *
 AIRBuilder::CreateAtomicRMW(
     const Texture &Texture, Value *Handle, AtomicRMWInst::BinOp Op, Value *Pos, Value *ValVec4, Value *ArrayIndex
@@ -156,6 +181,7 @@ AIRBuilder::CreateAtomicRMW(
     Tys.push_back(getIntTy());
     Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
+  PushTexelOffset(Texture, Tys, Ops);
 
   Tys.push_back(getTexelType(Texture));
   Ops.push_back(ValVec4);
@@ -264,6 +290,7 @@ AIRBuilder::CreateAtomicCmpXchg(
     Tys.push_back(getIntTy());
     Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
+  PushTexelOffset(Texture, Tys, Ops);
 
   AllocaInst *Alloca = builder.CreateAlloca(TyTexel, 0u);
   Value *Ptr = builder.CreateConstGEP1_64(TyTexel, Alloca, 0u);
@@ -723,6 +750,21 @@ AIRBuilder::CreateRead(
   Tys.push_back(getTextureHandleType(Texture));
   Ops.push_back(Handle);
 
+  // AIR 2.8's reads take the read sampler after the texture, as Apple's compiler writes them
+  if (IsAIR28()) {
+    auto ReadSampler = getModule()->getOrInsertFunction(
+        "air.get_read_sampler", FunctionType::get(getSamplerHandleType(), false),
+        AttributeList::get(
+            Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::InaccessibleMemOnly)},
+                      {~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                      {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
+                      {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
+        )
+    );
+    Tys.push_back(getSamplerHandleType());
+    Ops.push_back(builder.CreateCall(ReadSampler));
+  }
+
   if (TexInfo.is_depth) {
     Tys.push_back(getIntTy());
     Ops.push_back(getInt(1));
@@ -740,6 +782,7 @@ AIRBuilder::CreateRead(
     Tys.push_back(getIntTy());
     Ops.push_back(ArrayIndex ? ArrayIndex : getInt(0));
   }
+  PushTexelOffset(Texture, Tys, Ops);
 
   if (TexInfo.is_ms) {
     Tys.push_back(getIntTy());
