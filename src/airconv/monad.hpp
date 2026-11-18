@@ -109,11 +109,11 @@ public:
         auto h = Handle::from_promise(promise);
         h.resume();
         assert(promise.return_value_ && "no returnvalue");
+        auto r = std::move(*promise.return_value_);
         assert(
-          (h.done() == bool(*promise.return_value_)) &&
+          (h.done() == bool(r)) &&
           "unexpected suspension of coroutine"
         );
-        auto r = std::move(*promise.return_value_);
         delete promise.return_value_;
         promise.return_value_ = nullptr;
         return r;
