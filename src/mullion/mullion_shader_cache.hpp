@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mullion {
@@ -82,6 +83,12 @@ public:
   bool getReflection(const Sha1Digest &shader, ShaderReflection &reflection);
   void setReflection(const Sha1Digest &shader, const ShaderReflection &reflection);
 
+  // whether the program's pipeline archive holds a pipeline of this key, as a device recorded once the archive's file
+  // that holds it was written, in this process or an earlier one. kept in the cache's table, as the functions the
+  // pipeline is made of are
+  bool isArchived(const Sha1Digest &pipeline);
+  void setArchived(const Sha1Digest &pipeline);
+
   ShaderCache(WMTMetalVersion metal_version);
   ShaderCache(const ShaderCache &copy) = delete;
 
@@ -89,6 +96,8 @@ private:
   // those read or stored in this process
   std::shared_mutex reflections_mutex_;
   std::unordered_map<Sha1Digest, ShaderReflection> reflections_;
+  std::shared_mutex archived_mutex_;
+  std::unordered_set<Sha1Digest> archived_;
 
   WMT::Reference<WMT::CacheWriter> scache_writer_;
   WMT::Reference<WMT::CacheReader> scache_reader_;

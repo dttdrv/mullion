@@ -4,9 +4,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <vector>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 template <typename T, typename G>
 concept MoveAndInvocable =
@@ -45,7 +45,7 @@ template <typename Env, typename V> class ReaderIO {
 
 public:
   template <std::invocable<Env> T> ReaderIO(T &&ff) {
-    ops.push_back(new ErasureFunction<T>(std::forward<T>(ff)));
+    ops.push_back(std::make_unique<ErasureFunction<T>>(std::forward<T>(ff)));
   }
   ~ReaderIO() {
     destroy();
@@ -53,7 +53,6 @@ public:
 
   void destroy() {
     while (!ops.empty()) {
-      delete ops.back();
       ops.pop_back();
     }
   }
@@ -63,18 +62,11 @@ public:
       struct environment_cast<Env, Env2> cast;
       return castable.build(cast.cast(e));
     };
-    ops.push_back(new ErasureFunction<decltype(f)>(std::move(f)));
+    ops.push_back(std::make_unique<ErasureFunction<decltype(f)>>(std::move(f)));
   }
 
-  ReaderIO(ReaderIO &&other) {
-    ops = std::move(other.ops);
-    other.ops = {};
-  };
-  ReaderIO &operator=(ReaderIO &&move_assign) {
-    ops = std::move(move_assign.ops);
-    move_assign.ops = {};
-    return *this;
-  };
+  ReaderIO(ReaderIO &&other) = default;
+  ReaderIO &operator=(ReaderIO &&move_assign) = default;
   ReaderIO(const ReaderIO &copy) = delete;
   ReaderIO &operator=(const ReaderIO &copy_assign) = delete;
 
@@ -152,15 +144,15 @@ public:
   };
 
   ReaderIO &concat(ReaderIO&& b) {
-    for(auto f :b.ops) {
-      ops.push_back(f);
+    for(auto &f : b.ops) {
+      ops.push_back(std::move(f));
     }
-    b.ops = {};
+    b.ops.clear();
     return *this;
   };
 
 private:
-  std::vector<BaseFunction *> ops;
+  std::vector<std::unique_ptr<BaseFunction>> ops;
 };
 
 /* bind */

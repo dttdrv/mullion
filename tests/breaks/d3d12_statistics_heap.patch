@@ -1,7 +1,9 @@
-# the query count is multiplied at 32-bit width before the allocation length is widened
+# the query count is multiplied at 32-bit width before the allocation length is widened: the heap is shorter than
+# asked, and on the GPU a query past its end reads back what was written there, so only Metal's validation sees it
+# validate
 --- a/src/d3d12/d3d12_query_heap.cpp
 +++ b/src/d3d12/d3d12_query_heap.cpp
-@@ -57,8 +57,8 @@
+@@ -67,8 +67,8 @@ public:
        result_size = pDesc->Type == D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS ? sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS)
                                                                               : sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS1);
        if (pDesc->Count > std::numeric_limits<size_t>::max() / result_size)
@@ -10,5 +12,5 @@
 +        return E_OUTOFMEMORY;
 +      WMTBufferInfo info{pDesc->Count * result_size, WMTResourceStorageModeShared};
        results = metal.newBuffer(info);
-       if (!results)
-         return FAIL(E_OUTOFMEMORY);
+       return results ? S_OK : FAIL(E_OUTOFMEMORY);
+     }

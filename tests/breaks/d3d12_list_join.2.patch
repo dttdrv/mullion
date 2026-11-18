@@ -1,0 +1,12 @@
+# a pass that opens on an encoding thread runs none of the resolvers of the passes that go on in it
+# family native
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -2345,7 +2345,6 @@
+         chain.clear();
+         for (auto q = i + 1; kept[i] && !render.encoder.handle && q < bounds[k + 1]; q++)
+           if (passes[q].first->type != EncoderType::Null) {
+-            chain.push_back(passes[q].first);
+             if (!kept[q])
+               break;
+           }

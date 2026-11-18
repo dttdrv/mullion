@@ -42,49 +42,30 @@ namespace mullion::air {
 
 class StreamMDHelper {
 public:
-  auto string(std::string str) {
-    factories.push_back([=](llvm::LLVMContext &context) {
-      return MDString::get(context, str);
-    });
-    return this;
-  };
-  auto string(const char *c_str) {
-    factories.push_back([=](llvm::LLVMContext &context) {
-      return MDString::get(context, c_str);
-    });
-    return this;
-  };
-  auto integer(uint64_t value, bool is_signed = false) {
-    factories.push_back([=](llvm::LLVMContext &context) {
-      return ConstantAsMetadata::get(
-        ConstantInt::get(context, APInt{32, value, is_signed})
-      );
-    });
-    return this;
-  };
-  template <typename enumeration>
-  auto integer(enumeration value, bool is_signed = false) {
-    factories.push_back([=](llvm::LLVMContext &context) {
-      return ConstantAsMetadata::get(
-        ConstantInt::get(context, APInt{32, (uint32_t)value, is_signed})
-      );
-    });
-    return this;
-  };
-  auto metadata(llvm::Metadata *metadata) {
-    factories.push_back([=](llvm::LLVMContext &context) { return metadata; });
-    return this;
-  };
+  explicit StreamMDHelper(LLVMContext &context) : context(context) {}
 
-  auto BuildTuple(llvm::LLVMContext &context) {
-    auto mds = factories | [&](auto factory) -> llvm::Metadata * {
-      return factory(context);
-    };
-    return MDTuple::get(context, mds);
-  };
+  auto metadata(Metadata *value) {
+    operands.push_back(value);
+    return this;
+  }
+
+  auto string(StringRef value) {
+    return metadata(MDString::get(context, value));
+  }
+
+  template <typename T>
+  auto integer(T value, bool is_signed = false) {
+    return metadata(ConstantAsMetadata::get(
+      ConstantInt::get(context, APInt{32, static_cast<uint32_t>(value), is_signed})));
+  }
+
+  auto BuildTuple() const {
+    return MDTuple::get(context, operands);
+  }
 
 private:
-  std::vector<std::function<llvm::Metadata *(llvm::LLVMContext &)>> factories;
+  LLVMContext &context;
+  std::vector<Metadata *> operands;
 };
 
 uint32_t ArgumentBufferBuilder::DefineBuffer(
@@ -365,7 +346,7 @@ auto ArgumentBufferBuilder::Build(
   std::vector<llvm::Metadata *> indirect_argument;
   uint32_t offset = 0;
   for (auto argument : fieldsType) {
-    StreamMDHelper metadata_field;
+    StreamMDHelper metadata_field(context);
     metadata_field.integer(offset);
     auto field_type = std::visit(
       patterns{
@@ -404,7 +385,7 @@ auto ArgumentBufferBuilder::Build(
       argument
     );
     fields.push_back(field_type);
-    indirect_argument.push_back(metadata_field.BuildTuple(context));
+    indirect_argument.push_back(metadata_field.BuildTuple());
     offset++;
   };
 
@@ -414,7 +395,7 @@ auto ArgumentBufferBuilder::Build(
   // struct_type.
   auto struct_layout = layout.getStructLayout(struct_type);
   auto member_offsets = struct_layout->getMemberOffsets();
-  StreamMDHelper struct_metadata;
+  StreamMDHelper struct_metadata(context);
   for (auto [field_type, member_offset, indirect_argument_metadata] :
        zip(fields, member_offsets, indirect_argument)) {
     struct_metadata.integer(member_offset)
@@ -437,7 +418,7 @@ auto ArgumentBufferBuilder::Build(
       ->string("air.indirect_argument")
       ->metadata(indirect_argument_metadata);
   }
-  return std::make_pair(struct_type, struct_metadata.BuildTuple(context));
+  return std::make_pair(struct_type, struct_metadata.BuildTuple());
 };
 
 void
@@ -579,7 +560,7 @@ auto FunctionSignatureBuilder::CreateFunction(
 
   for (auto &item : enumerate(mesh_vertex_outputs)) {
     auto output = item.value();
-    StreamMDHelper md;
+    StreamMDHelper md(context);
     std::visit(
         patterns{
             [&](const OutputMeshData &vertex_out) {
@@ -618,12 +599,12 @@ auto FunctionSignatureBuilder::CreateFunction(
         },
         output
     );
-    metadata_mesh_vertex_output.push_back(md.BuildTuple(context));
+    metadata_mesh_vertex_output.push_back(md.BuildTuple());
   }
 
   for (auto &item : enumerate(mesh_primitive_outputs)) {
     auto output = item.value();
-    StreamMDHelper md;
+    StreamMDHelper md(context);
     std::visit(
         patterns{
             [&](const OutputMeshData &primitive_out) {
@@ -666,13 +647,13 @@ auto FunctionSignatureBuilder::CreateFunction(
         },
         output
     );
-    metadata_mesh_primitive_output.push_back(md.BuildTuple(context));
+    metadata_mesh_primitive_output.push_back(md.BuildTuple());
   }
 
   for (auto &item : enumerate(inputs)) {
     auto i = item.index();
     auto input = item.value();
-    StreamMDHelper metadata_field;
+    StreamMDHelper metadata_field(context);
     metadata_field.integer(i);
     llvm::Type *field_type = std::visit(
       patterns{
@@ -861,6 +842,22 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("mtl_vertex_id");
           return msl_uint.get_llvm_type(context);
         },
+        [&](const InputPatchID &) {
+          metadata_field.string("air.patch_id")
+            ->string("air.arg_type_name")
+            ->string("uint")
+            ->string("air.arg_name")
+            ->string("mtl_patch_id");
+          return msl_uint.get_llvm_type(context);
+        },
+        [&](const InputPositionInPatch &position) -> llvm::Type * {
+          metadata_field.string("air.position_in_patch")
+            ->string("air.arg_type_name")
+            ->string(position.components == 3 ? "float3" : "float2")
+            ->string("air.arg_name")
+            ->string("mtl_position_in_patch");
+          return llvm::FixedVectorType::get(Type::getFloatTy(context), position.components);
+        },
         [&](const InputBaseVertex &) {
           metadata_field.string("air.base_vertex")
             ->string("air.arg_type_name")
@@ -935,7 +932,7 @@ auto FunctionSignatureBuilder::CreateFunction(
           );
         },
         [&](const InputMesh &mesh) -> llvm::Type * {
-          StreamMDHelper mesh_info;
+          StreamMDHelper mesh_info(context);
           mesh_info.string("air.mesh_type_info")
             ->metadata(MDTuple::get(context, metadata_mesh_vertex_output))
             ->metadata(MDTuple::get(context, metadata_mesh_primitive_output))
@@ -954,7 +951,7 @@ auto FunctionSignatureBuilder::CreateFunction(
           }
 
           metadata_field.string("air.mesh")
-            ->metadata(mesh_info.BuildTuple(context))
+            ->metadata(mesh_info.BuildTuple())
             ->string("air.arg_type_name")
             ->string("mesh<>") // HARDCODED
             ->string("air.arg_name")
@@ -969,14 +966,14 @@ auto FunctionSignatureBuilder::CreateFunction(
       input
     );
 
-    metadata_input.push_back(metadata_field.BuildTuple(context));
+    metadata_input.push_back(metadata_field.BuildTuple());
     type_input.push_back(field_type);
   };
   for (auto &item : enumerate(outputs)) {
     if (skip_output)
       continue;
     auto output = item.value();
-    StreamMDHelper md;
+    StreamMDHelper md(context);
     llvm::Type *field_type = std::visit(
       patterns{
         [&](const OutputVertex &vertex_out) {
@@ -1081,7 +1078,7 @@ auto FunctionSignatureBuilder::CreateFunction(
       },
       output
     );
-    metadata_output.push_back(md.BuildTuple(context));
+    metadata_output.push_back(md.BuildTuple());
     type_output.push_back(field_type);
   };
   auto output_struct_type = (type_output.size() > 0 && !skip_output)
@@ -1115,6 +1112,8 @@ auto FunctionSignatureBuilder::CreateFunction(
            )
     );
   }
+  if (!patch.empty())
+    function_def_tuple.push_back(MDTuple::get(context, {MDString::get(context, "air.patch"), MDString::get(context, patch)}));
   if (max_mesh_work_group_size > 0) {
     auto tuple = MDTuple::get(
       context, {MDString::get(context, "air.max_mesh_work_groups"),

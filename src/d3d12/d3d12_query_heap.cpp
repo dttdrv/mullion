@@ -59,8 +59,9 @@ public:
     case D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP:
       timestamps.resize(pDesc->Count);
       return S_OK;
-    // command lists sum ended pipeline statistics into the heap (sum_pipeline_statistics);
-    // a query never ended reads the zeros written here
+    // command lists sum ended pipeline statistics into the heap (sum_pipeline_statistics). a query never ended reads
+    // zeros: Metal makes a new buffer "with zero values" (newBufferWithLength), and writing them again here would make
+    // every page of it resident before the GPU uses any
     case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS:
     case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS1: {
       result_size = pDesc->Type == D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS ? sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS)
@@ -69,10 +70,7 @@ public:
         return FAIL(E_OUTOFMEMORY);
       WMTBufferInfo info{uint64_t(pDesc->Count) * result_size, WMTResourceStorageModeShared};
       results = metal.newBuffer(info);
-      if (!results)
-        return FAIL(E_OUTOFMEMORY);
-      memset(info.memory.ptr, 0, info.length);
-      return S_OK;
+      return results ? S_OK : FAIL(E_OUTOFMEMORY);
     }
     default:
       ERR("CreateQueryHeap: query heap type ", pDesc->Type, " is not implemented");

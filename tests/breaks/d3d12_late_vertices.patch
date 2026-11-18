@@ -1,0 +1,14 @@
+# a late pass's vertices wait for nothing of the group before the last
+# family native-metal3
+# family 7-metal3
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -217,7 +217,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+     for (unsigned i = 0; i < previous_count_; i++)
+       (late ? sync.pixels[sync.pixel_count++] : sync.waits[sync.wait_count++]) =
+           group_fences_[(group_half_ ^ 1) * kGroupPasses + i];
+-    for (unsigned i = 0; late && i < older_count_; i++)
++    for (unsigned i = 0; false && i < older_count_; i++)
+       sync.waits[sync.wait_count++] = group_fences_[group_half_ * kGroupPasses + i];
+     if (overlap == PassOverlap::Shared)
+       for (unsigned i = 0; i < group_count_; i++)

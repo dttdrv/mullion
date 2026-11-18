@@ -40,8 +40,9 @@ NvAPI_Unload() {
 };
 
 // the driver reported: the display adapter's in Windows' device list (DriverVersion, which a Wine can be set
-// to report; NVIDIA's 617.14 is x.x.16.1714, the last five digits), so NVAPI and the device list agree,
-// else the one this NVAPI's headers come from (NVAPI_SDK_VERSION, 57218 = 572.18). The branch is r617_00. Games and
+// to report; NVIDIA's 617.14 is x.x.16.1714, the last five digits), so NVAPI and the device list agree, else the
+// largest those digits hold, 999.99, as dxvk-nvapi reports for a driver that is not NVIDIA's: games ask for a minimum,
+// and one below it stops at a dialog (Dying Light: The Beast's is 581.08). The branch is r617_00 or r999_00. Games and
 // NVIDIA's libraries check both, and copy the branch as a string, so it ends with its NUL
 static NvU32
 DriverVersion() {
@@ -59,7 +60,7 @@ DriverVersion() {
       if (nvidia >= 30000)
         return nvidia;
     }
-    return NvU32(NVAPI_SDK_VERSION);
+    return NvU32(99999);
   }();
   return version;
 }

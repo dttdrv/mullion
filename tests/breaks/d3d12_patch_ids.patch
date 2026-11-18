@@ -1,0 +1,13 @@
+# after the compute tessellator, a pixel shader's SV_PrimitiveID counts the patches over the instances
+# family native
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -1315,7 +1315,7 @@
+     setup_domain_patch(
+         pShaderInternal, pHullStage, group_type,
+         native_patches(builder, patches, group_type, builder.CreateUDiv(patch, builder.getInt32(patch_per_group))),
+-        builder.CreateURem(patch, builder.getInt32(patch_per_group)), builder.CreateURem(patch, per_instance), ctx
++        builder.CreateURem(patch, builder.getInt32(patch_per_group)), patch, ctx
+     );
+     llvm::Value *location = llvm::UndefValue::get(air.getFloatTy(2));
+     location = builder.CreateInsertElement(location, coordinate(1), 0ull);

@@ -112,13 +112,13 @@ public:
           auto device = self->device_;
           if (!(self->pso = device->Archived(info, error, [&](auto &info, auto &error) {
                   return device->GetMTLDevice().newComputePipelineState(info, error);
-                })))
+                }, self->library_key)))
             ERR("Failed to create compute PSO of shader ", self->name, ": ", error.description().getUTF8String());
         });
-        DeferredPipeline::Queue(deferred);
+        device_->Defer(deferred, library_key);
       } else if (!(pso = device_->Archived(info, err, [&](auto &info, auto &error) {
                      return metal.newComputePipelineState(info, error);
-                   }))) {
+                   }, library_key))) {
         ERR("Failed to create compute PSO of shader ", name, ": ", err.description().getUTF8String());
         DumpShaders({pDesc->CS});
         return E_FAIL;

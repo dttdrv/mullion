@@ -2138,15 +2138,17 @@ convert_dxil(
     );
     return ir.CreateGEP(ty, file.ptr_int4, index);
   };
-  auto sample = [&](CallInst *call, Handle &tex, Handle &smp, unsigned coord_first) {
+  // `slots`: the call's coordinate operands from `coord_first`, four for samples, gathers and feedback writes, three for
+  // CalculateLOD, whose next operand is its clamped flag (DXIL.rst); an array index follows the logical coordinates
+  auto sample = [&](CallInst *call, Handle &tex, Handle &smp, unsigned coord_first, unsigned slots = 4) {
     auto &info = llvm::air::AIRBuilder::getTextureInfo(tex.texture->Logical);
     auto logical = count(air.getTextureSampleCoordType(Texture{.kind = tex.texture->Logical}));
     auto ty = air.getTextureSampleCoordType(tex.texture->Texture);
-    auto array = arg(call, coord_first + logical);
+    auto array = logical < slots ? arg(call, coord_first + logical) : nullptr;
     return std::tuple{
         tex.texture->Texture,
         vec(call, coord_first, logical, ty),
-        defined(array) ? dxbc.ClampArrayIndex(array, tex.texture->Metadata) : nullptr,
+        array && defined(array) ? dxbc.ClampArrayIndex(array, tex.texture->Metadata) : nullptr,
         info.is_cube ? smp.sampler->CubeSamplerHandle : smp.sampler->SamplerHandle,
         dxbc.DecodeSamplerBias(smp.sampler->Metadata),
         logical,
@@ -2291,12 +2293,17 @@ convert_dxil(
       types.push_back(a->getType());
     return ir.CreateCall(ctx.module.getOrInsertFunction(fn, FunctionType::get(ret, types, false), convergent), args);
   };
+  // the lanes whose condition holds; a ballot's name has no sign, as Apple's compiler writes it, and Apple's verifier
+  // refuses air.simd_ballot.u.i64
+  auto lanes_where = [&](Value *condition) {
+    return simd("simd_ballot", ir.getInt64Ty(), {condition}, ir.getInt64Ty(), Signedness::DontCare);
+  };
   // "The bits corresponding to inactive or helper lanes will be zero" (DXC Wave Intrinsics); not every GPU's ballot
   // leaves helpers out
   auto ballot = [&](Value *condition) {
     if (ctx.shader_type == D3D10_SB_PIXEL_SHADER)
       condition = ir.CreateAnd(condition, ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {})));
-    return simd("simd_ballot", ir.getInt64Ty(), {condition}, ir.getInt64Ty());
+    return lanes_where(condition);
   };
   auto i16 = [&](Value *v) { return ir.CreateTrunc(v, ir.getInt16Ty()); };
   // a function that moves `v` between lanes (shuffle, broadcast): bools travel as 32 bits, 64-bit values as halves
@@ -2880,8 +2887,8 @@ convert_dxil(
             "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
         );
         auto helper = simd("simd_is_helper_thread", ir.getInt1Ty(), {});
-        auto real = simd("simd_ballot", ir.getInt64Ty(), {ir.CreateNot(helper)}, ir.getInt64Ty());
-        auto active = simd("simd_ballot", ir.getInt64Ty(), {ir.getTrue()}, ir.getInt64Ty());
+        auto real = lanes_where(ir.CreateNot(helper));
+        auto active = lanes_where(ir.getTrue());
         auto lanes = ir.CreateSelect(ir.CreateICmpNE(real, ir.getInt64(0)), real, active);
         ret = move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {lanes, ir.getFalse()}))});
       } else
@@ -3507,7 +3514,7 @@ convert_dxil(
     }
     case CalculateLOD: {
       auto &tex = handles[a(1)];
-      auto [texture, coord, array, sampler, bias, logical, coord_ty] = sample(call, tex, handles[a(2)], 3);
+      auto [texture, coord, array, sampler, bias, logical, coord_ty] = sample(call, tex, handles[a(2)], 3, 3);
       auto is_cube = llvm::air::AIRBuilder::getTextureInfo(tex.texture->Logical).is_cube;
       auto [clamped, unclamped] = dxbc.CalculateLOD(
           *tex.texture, sampler, handles[a(2)].sampler->Metadata, coord,
@@ -3710,7 +3717,7 @@ convert_dxil(
         ir.SetInsertPoint(loop);
         auto pending = ir.CreatePHI(ir.getInt1Ty(), 2);
         pending->addIncoming(first, head);
-        auto lanes = simd("simd_ballot", ir.getInt64Ty(), {pending}, ir.getInt64Ty());
+        auto lanes = lanes_where(pending);
         ir.CreateCondBr(ir.CreateICmpNE(lanes, ir.getInt64(0)), turn, rest);
         ir.SetInsertPoint(turn);
         auto leader = ir.CreateTrunc(ir.CreateCall(ctz, {lanes, ir.getFalse()}), ir.getInt32Ty());
@@ -4243,16 +4250,27 @@ convert_dxil(
     }
     case Dot4AddI8Packed:
     case Dot4AddU8Packed: {
-      auto bytes = [&](Value *v) {
-        auto b = ir.CreateBitCast(v, FixedVectorType::get(ir.getInt8Ty(), 4));
-        auto wide = FixedVectorType::get(ir.getInt32Ty(), 4);
-        return op == Dot4AddI8Packed ? ir.CreateSExt(b, wide) : ir.CreateZExt(b, wide);
+      // bytes 0 and 2, then 1 and 3, as the halves of one word of two 16-bit values: Apple GPUs multiply those at
+      // about twice the rate of bytes widened to 32 bits one by one. a signed byte is (u ^ 0x80) - 0x80 in its half
+      bool is_signed = op == Dot4AddI8Packed;
+      auto halves = [&](Value *v, unsigned shift) {
+        Value *w = ir.CreateAnd(ir.CreateLShr(v, shift), 0x00ff00ff);
+        auto h = ir.CreateBitCast(is_signed ? ir.CreateXor(w, 0x00800080) : w, FixedVectorType::get(ir.getInt16Ty(), 2));
+        return is_signed ? ir.CreateSub(h, ConstantInt::get(h->getType(), 0x80)) : h;
       };
-      // summed lane by lane: Metal's compiler service crashes on llvm.vector.reduce.add
-      auto products = ir.CreateMul(bytes(a(2)), bytes(a(3)));
+      // summed lane by lane: Metal's compiler service crashes on llvm.vector.reduce.add. the sum wraps; a product of
+      // two bytes fits 16 bits
       ret = a(1);
-      for (unsigned i = 0; i < 4; i++)
-        ret = ir.CreateAdd(ret, ir.CreateExtractElement(products, i));
+      for (unsigned shift : {0u, 8u}) {
+        auto x = halves(a(2), shift), y = halves(a(3), shift);
+        for (unsigned i = 0; i < 2; i++) {
+          auto wide = [&](Value *h) {
+            auto e = ir.CreateExtractElement(h, i);
+            return is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
+          };
+          ret = ir.CreateAdd(ret, ir.CreateMul(wide(x), wide(y), "", !is_signed, true));
+        }
+      }
       break;
     }
     case Pack4x8: {
@@ -4892,7 +4910,6 @@ convert_dxil_mesh_stage(
         conservative ? triangles : pShaderInternal->mesh_max_primitives,
         pShaderInternal->mesh_lines ? air::MeshOutputTopology::Line : air::MeshOutputTopology::Triangle
     });
-    func_signature.UseMaxMeshWorkgroupSize(threads[0] * threads[1] * threads[2]);
     uint32_t clip_distances = 0, cull_distances = 0;
     bool culled = false;
     for (bool primitive : {false, true}) {
@@ -4968,10 +4985,11 @@ convert_dxil_mesh_stage(
       cm.at = cm.registers[0].size();
       define_conservative_varyings(func_signature, cm.at, cm.barycentrics);
     }
-  } else {
+  } else
     func_signature.DefineInput(air::InputMeshGridProperties{});
-    func_signature.UseMaxWorkgroupSize(threads[0] * threads[1] * threads[2]);
-  }
+  // the threads of a threadgroup, which a draw dispatches (mesh_threads, object_threads); air.max_mesh_work_groups is
+  // an object function's grid limit, and Apple's verifier calls a mesh function with it corrupt
+  func_signature.UseMaxWorkgroupSize(threads[0] * threads[1] * threads[2]);
 
   uint32_t viewports_idx = 0;
   if (conservative)
@@ -4998,7 +5016,7 @@ convert_dxil_mesh_stage(
   // a mesh shader without an amplification shader runs DispatchMesh's grid itself, which Metal has smaller than D3D12:
   // a grid past it runs in parts, and the raster scale's buffer tells each part's first group
   bool origin = mesh && link && !link->amplified && !conservative;
-  auto raster_scale = DefineRasterScale(func_signature, origin ? SM50_RASTER_SCALE_WORDS : 1);
+  auto raster_scale = DefineRasterScale(func_signature);
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, true);
 
   auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);

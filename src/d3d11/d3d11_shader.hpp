@@ -125,6 +125,7 @@ struct ShaderVariantPixel {
   uint32_t clip_distances = 0;
   std::array<uint32_t, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.pixel_formats)> pixel_formats{};
   std::array<SM50_SHADER_BLEND, std::size(SM50_SHADER_PSO_PIXEL_SHADER_DATA{}.blend)> blend{};
+  bool no_minmax_filter = false;
   bool operator==(const this_type &rhs) const = default;
 };
 
@@ -227,7 +228,9 @@ public:
   virtual MTL_SM50_SHADER_ARGUMENT *arguments_info() = 0;
   virtual CompiledShader *get_shader(ShaderVariant variant) = 0;
   CompiledShader *
-  get_pixel_shader(ShaderVariantPixel variant, std::span<const WMTPixelFormat> formats, IMTLD3D11BlendState *blend) {
+  get_pixel_shader(ShaderVariantPixel variant, std::span<const WMTPixelFormat> formats, IMTLD3D11BlendState *blend,
+                   bool minmax_filtering) {
+    variant.no_minmax_filter = !minmax_filtering;
     variant.pixel_formats = PixelShaderOutputFormats(reflection().PixelShader, formats, variant.dual_source_blending);
     WMTRenderPipelineBlendInfo targets{};
     for (unsigned i = 0; i < formats.size(); i++)

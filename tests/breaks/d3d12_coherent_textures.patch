@@ -1,0 +1,12 @@
+# a device-coherent texture write writes nothing
+--- a/src/airconv/nt/air_builder.cpp
++++ b/src/airconv/nt/air_builder.cpp
+@@ -777,7 +777,7 @@
+   assert(Texture.kind <= Texture::last_resource_kind);
+   auto &TexInfo = TextureInfo[Texture.kind];
+ 
+-  if (DiscardWrites)
++  if (DiscardWrites || DeviceCoherent)
+     return nullptr;
+ 
+   auto &Context = getContext();

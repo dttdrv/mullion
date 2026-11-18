@@ -208,7 +208,7 @@ main() {
         for (UINT i = 0; i < desc.BufferCount; i++)
           if (!present({}))
             return verdict();
-        for (auto rects :
+        for (const auto &rects :
              {std::vector<RECT>{{0, 0, 1, 1}}, std::vector<RECT>{{LONG(width - 1), LONG(height - 1), width, height}},
               std::vector<RECT>{{0, 0, LONG(width / 2), height}, {LONG(width / 2), 0, width, height}},
               std::vector<RECT>{

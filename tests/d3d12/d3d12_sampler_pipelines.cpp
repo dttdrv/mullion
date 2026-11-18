@@ -2,9 +2,10 @@
 // before that sampler: a pipeline state is fixed when it is made (ID3D12Device::CreateGraphicsPipelineState), and
 // nothing in D3D12 orders it after the samplers it will read. a custom border color (D3D11.3 7.18.9.1) comes first, a
 // minimum filter (D3D12_FILTER, D3D11.3 5.9.4.5.6: "Texels that are weighted 0 during filtering aren't counted") after
-// the pipelines have drawn with it, each read by a draw and a dispatch. the minimum's footprint is the shared edge of
-// a 2x1 {0, 1} texture, which averages to 0.5 and reduces to 0; its mip filter is a point, which Metal's own reduction
-// never takes, so Mullion emulates it on every GPU
+// the pipelines have drawn with it, each read by a draw, a tessellated draw and a dispatch. the minimum's footprint is
+// the shared edge of a 2x1 {0, 1} texture, which averages to 0.5 and reduces to 0; its mip filter is a point, which
+// Metal's own reduction never takes, so Mullion emulates it on every GPU. a tessellated draw takes Metal's tessellator
+// by the pipeline it draws with, which is the one that emulates the sampler
 #include "d3d12_test.hpp"
 
 static const char hlsl[] = R"hlsl(
@@ -14,6 +15,14 @@ SamplerState reduce : register(s1);
 RWStructuredBuffer<float4> o : register(u0);
 float4 read() { return float4(t.SampleLevel(border, float2(-1, 0.5), 0), t.SampleLevel(reduce, float2(0.5, 0.5), 0), 0, 1); }
 float4 vs(float2 p : POSITION) : SV_Position { return float4(p, 0, 1); }
+struct Point { float4 p : SV_Position; };
+struct Factors { float edges[3] : SV_TessFactor; float inside : SV_InsideTessFactor; };
+Factors factors() { Factors f; f.edges[0] = f.edges[1] = f.edges[2] = f.inside = 1; return f; }
+[domain("tri")] [partitioning("integer")] [outputtopology("triangle_cw")] [outputcontrolpoints(3)]
+[patchconstantfunc("factors")] Point hs(InputPatch<Point, 3> patch, uint i : SV_OutputControlPointID) { return patch[i]; }
+[domain("tri")] float4 ds(Factors f, float3 at : SV_DomainLocation, const OutputPatch<Point, 3> patch) : SV_Position {
+  return at.x * patch[0].p + at.y * patch[1].p + at.z * patch[2].p;
+}
 float4 ps() : SV_Target { return read(); }
 [numthreads(1, 1, 1)] void cs() { o[0] = read(); }
 )hlsl";
@@ -26,8 +35,9 @@ main(int argc, char **argv) {
     return 77;
   }
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"),
-       cs = compiler.compile(hlsl, "cs", "cs");
-  if (vs.empty() || ps.empty() || cs.empty()) {
+       cs = compiler.compile(hlsl, "cs", "cs"), hs = compiler.compile(hlsl, "hs", "hs"),
+       ds = compiler.compile(hlsl, "ds", "ds");
+  if (vs.empty() || ps.empty() || cs.empty() || hs.empty() || ds.empty()) {
     printf("failed: HLSL did not compile\n");
     return 1;
   }
@@ -64,8 +74,12 @@ main(int argc, char **argv) {
   desc.NumRenderTargets = 1;
   desc.RTVFormats[0] = target_format;
   desc.SampleDesc = {1, 0};
-  ComPtr<ID3D12PipelineState> graphics, compute;
+  ComPtr<ID3D12PipelineState> graphics, tessellated, compute;
   CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&graphics)));
+  desc.HS = bytecode(hs);
+  desc.DS = bytecode(ds);
+  desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+  CHECK(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&tessellated)));
   D3D12_COMPUTE_PIPELINE_STATE_DESC compute_desc{rs.Get(), bytecode(cs)};
   CHECK(device->CreateComputePipelineState(&compute_desc, IID_PPV_ARGS(&compute)));
 
@@ -150,11 +164,15 @@ main(int argc, char **argv) {
   transition(list.Get(), texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
   CHECK(submit(device.Get(), queue.Get(), list.Get()));
 
-  // the draw and the dispatch through both samplers, read back: the target's texel, then the dispatch's
-  auto run = [&](float reduced) -> unsigned {
+  // the draw and the dispatch through both samplers, read back: the target's texel, then the dispatch's. the target
+  // is cleared first, so a draw left out reads the clear
+  const float seed[4] = {-1, -1, -1, -1};
+  auto run = [&](ID3D12PipelineState *pipeline, D3D_PRIMITIVE_TOPOLOGY topology, const char *drawn,
+                 float reduced) -> unsigned {
     CHECK(forget(readback.Get()));
     CHECK(allocator->Reset());
-    CHECK(list->Reset(allocator.Get(), graphics.Get()));
+    CHECK(list->Reset(allocator.Get(), pipeline));
+    list->ClearRenderTargetView(rtv, seed, 0, nullptr);
     ID3D12DescriptorHeap *heaps[] = {views.Get(), samplers.Get()};
     list->SetDescriptorHeaps(2, heaps);
     list->SetGraphicsRootSignature(rs.Get());
@@ -162,7 +180,7 @@ main(int argc, char **argv) {
     list->SetGraphicsRootDescriptorTable(1, samplers->GetGPUDescriptorHandleForHeapStart());
     D3D12_VERTEX_BUFFER_VIEW vbv{vertices->GetGPUVirtualAddress(), sizeof(triangle), 2 * sizeof(float)};
     list->IASetVertexBuffers(0, 1, &vbv);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetPrimitiveTopology(topology);
     D3D12_VIEWPORT viewport{0, 0, 1, 1, 0, 1};
     D3D12_RECT scissor{0, 0, 1, 1};
     list->RSSetViewports(1, &viewport);
@@ -189,7 +207,7 @@ main(int argc, char **argv) {
     BYTE *got;
     CHECK(readback->Map(0, nullptr, (void **)&got));
     unsigned failures = 0;
-    const char *names[] = {"draw", "dispatch"};
+    const char *names[] = {drawn, "dispatch"};
     for (UINT r = 0; r < 2; r++) {
       auto value = (const float *)(got + r * footprint.Footprint.RowPitch);
       if ((value[0] != color[0] || value[1] != reduced) && ++failures)
@@ -199,11 +217,15 @@ main(int argc, char **argv) {
     return failures;
   };
 
-  unsigned failures = run(0.5f);
+  auto both = [&](float reduced) {
+    return run(graphics.Get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, "draw", reduced) +
+           run(tessellated.Get(), D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST, "tessellated draw", reduced);
+  };
+  unsigned failures = both(0.5f);
   reduce.Filter = D3D12_FILTER_MINIMUM_MIN_MAG_LINEAR_MIP_POINT;
   device->CreateSampler(&reduce, slot(1));
-  failures += run(0.0f);
-  printf("%s: %u of 4 reads through pipelines made before their samplers are wrong\n", failures ? "failed" : "passed",
+  failures += both(0.0f);
+  printf("%s: %u of 8 reads through pipelines made before their samplers are wrong\n", failures ? "failed" : "passed",
          failures);
   return failures != 0;
 }

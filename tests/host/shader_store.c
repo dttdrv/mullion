@@ -3,7 +3,9 @@
 // are queued and take effect in the order they were asked for, a removal among them; and a process that ends in
 // order has stored everything it queued, so the next process finds it. what one version of the converter stored is
 // a file of its own, and a process that opens the store at one version removes the files of the others, with those
-// of a store from before versions had their own, and nothing else.
+// of a store from before versions had their own, and nothing else. the pipeline archive's files (d3d12_device.cpp,
+// WMTRemoveOtherVersions) go the same way: those of other converter versions, and those named before versions, go,
+// and this version's, another Metal version's and the store's stay.
 // the keys and sizes differ per entry and every byte of a value follows from its key, so a lookup that returns
 // another entry's bytes, or part of its own, is told from a right one.
 #import <Foundation/Foundation.h>
@@ -18,6 +20,7 @@ int _CacheReader_alloc_init(void *obj);
 int _CacheReader_get(void *obj);
 int _CacheWriter_alloc_init(void *obj);
 int _CacheWriter_set(void *obj);
+int _WMTRemoveOtherVersions(void *obj);
 extern char **environ;
 
 enum { kThreads = 12, kEach = 200, kQueued = 1000 };
@@ -201,6 +204,26 @@ main(int argc, char **argv) {
   for (NSString *name in unrelated)
     if (![now containsObject:name]) {
       printf("wrong: %s, which is not the store's, was removed\n", name.UTF8String);
+      wrong++;
+    }
+  // the archive's files of Metal version 400 at converter version 2, beside those it removes: another version's, one
+  // whose number starts as 2 does, a shard written halfway, and shards from before versions
+  NSArray<NSString *> *archived = @[@"pipelines_400_v2_0.metallib", @"pipelines_400_v2_1.metallib",
+                                    @"pipelines_400_v2_2.metallib.new", @"pipelines_320_v1_0.metallib"],
+                      *stale = @[@"pipelines_400_v1_0.metallib", @"pipelines_400_v21_0.metallib",
+                                 @"pipelines_400_v1_1.metallib.new", @"pipelines_400_0.metallib",
+                                 @"pipelines_400_7.metallib"];
+  for (NSString *name in [archived arrayByAddingObjectsFromArray:stale])
+    [files createFileAtPath:[folder stringByAppendingPathComponent:name] contents:[NSData data] attributes:nil];
+  NSArray<NSString *> *before = [files contentsOfDirectoryAtPath:folder error:nil];
+  struct unixcall_remove_other_versions removal = {
+      {[folder stringByAppendingPathComponent:@"pipelines_400_"].UTF8String},
+      {[folder stringByAppendingPathComponent:@"pipelines_400_v2_"].UTF8String}};
+  _WMTRemoveOtherVersions(&removal);
+  now = [files contentsOfDirectoryAtPath:folder error:nil];
+  for (NSString *name in before)
+    if ([now containsObject:name] == [stale containsObject:name]) {
+      printf("wrong: %s was %s\n", name.UTF8String, [stale containsObject:name] ? "kept" : "removed");
       wrong++;
     }
   [files removeItemAtPath:folder error:nil];

@@ -558,8 +558,10 @@ main(int argc, char **argv) {
             conversions - made_before == 1,
             "pixel linkage converts the mesh shader and reuses amplification"
         );
+      // the mesh pipeline's two, and the two of the tessellator its patches take: a hull function is converted for
+      // its domain shader's outputs wherever it runs
       if (!strcmp(argv[2], "cold") && store_exists() && kind == 2 && variant == 22)
-        expect(conversions - made_before == 2, "domain output size must also distinguish the hull conversion");
+        expect(conversions - made_before == 4, "domain output size must also distinguish the hull conversions");
       if (disabled)
         expect(
             conversions - made_before >= (kind == 1 || tessellation || kind == 4 ? 3u : 2u),
