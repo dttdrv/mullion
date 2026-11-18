@@ -43,19 +43,19 @@ namespace mullion::air {
 class StreamMDHelper {
 public:
   auto string(std::string str) {
-    factories.push_back([=](llvm::LLVMContext &context) {
+    factories.emplace_back([str = std::move(str)](llvm::LLVMContext &context) {
       return MDString::get(context, str);
     });
     return this;
   };
   auto string(const char *c_str) {
-    factories.push_back([=](llvm::LLVMContext &context) {
+    factories.emplace_back([=](llvm::LLVMContext &context) {
       return MDString::get(context, c_str);
     });
     return this;
   };
   auto integer(uint64_t value, bool is_signed = false) {
-    factories.push_back([=](llvm::LLVMContext &context) {
+    factories.emplace_back([=](llvm::LLVMContext &context) {
       return ConstantAsMetadata::get(
         ConstantInt::get(context, APInt{32, value, is_signed})
       );
@@ -64,7 +64,7 @@ public:
   };
   template <typename enumeration>
   auto integer(enumeration value, bool is_signed = false) {
-    factories.push_back([=](llvm::LLVMContext &context) {
+    factories.emplace_back([=](llvm::LLVMContext &context) {
       return ConstantAsMetadata::get(
         ConstantInt::get(context, APInt{32, (uint32_t)value, is_signed})
       );
@@ -72,7 +72,7 @@ public:
     return this;
   };
   auto metadata(llvm::Metadata *metadata) {
-    factories.push_back([=](llvm::LLVMContext &context) { return metadata; });
+    factories.emplace_back([=](llvm::LLVMContext &context) { return metadata; });
     return this;
   };
 
