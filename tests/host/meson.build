@@ -61,3 +61,5 @@ test('host_admission', find_program('python3', native : true),
      args : files('admission.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_frames', find_program('python3', native : true),
      args : files('frames.py') + [meson.project_source_root() / 'tools/frames.py'], suite : 'host')
+test('host_metal_target', find_program('python3', native : true), args : [files('metal_target.py'), d3d11_dll, macos_min],
+     suite : 'host')
