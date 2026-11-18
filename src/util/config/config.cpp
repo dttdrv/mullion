@@ -51,6 +51,12 @@ namespace mullion {
     { R"(\\SotTR\.exe$)", {{
       { "d3d11.defuseFma",   "True" },
     }} },
+    /** BONELAB: a depth prepass, then opaques drawn with an equal depth test (Unity URP);
+     *  a fused mad in one pass's vertex shader moves the position off the prepass's,
+     *  and the surfaces fail the test in whole tiles and stay black */
+    { R"(\\BONELAB_Steam_Windows64\.exe$)", {{
+      { "d3d11.defuseFma",   "True" },
+    }} },
     /** Helldivers 2 */
     { R"(\\helldivers2\.exe$)", {{
       { "d3d11.maxFeatureLevel",   "12_1" },
