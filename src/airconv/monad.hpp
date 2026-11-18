@@ -2,6 +2,8 @@
 #include "llvm/Support/Error.h"
 #include <coroutine>
 #include <functional>
+#include <memory>
+#include <vector>
 #include <type_traits>
 #include <utility>
 
@@ -97,20 +99,23 @@ public:
     Env *to_be_filled = nullptr;
     llvm::Expected<V> *return_value_ = nullptr;
     ReaderIO<Env, V> get_return_object() {
-      return ReaderIO<Env, V>([this](Env ctx) -> llvm::Expected<V> {
-        this->to_be_filled =
-          &ctx; // I'm sure to_be_filled is only accessed within the scope?
-        auto h = std::coroutine_handle<promise_type>::from_promise(*this);
+      using Handle = std::coroutine_handle<promise_type>;
+      auto destroy_frame = [](promise_type *p) { Handle::from_promise(*p).destroy(); };
+      std::unique_ptr<promise_type, decltype(destroy_frame)> frame(this);
+      return ReaderIO<Env, V>([frame = std::move(frame)](Env ctx) mutable -> llvm::Expected<V> {
+        auto owner = std::move(frame);
+        auto &promise = *owner;
+        promise.to_be_filled = &ctx;
+        auto h = Handle::from_promise(promise);
         h.resume();
-        assert(return_value_ && "no returnvalue");
+        assert(promise.return_value_ && "no returnvalue");
         assert(
-          (h.done() == bool(*return_value_)) &&
+          (h.done() == bool(*promise.return_value_)) &&
           "unexpected suspension of coroutine"
         );
-        auto r = std::move(*return_value_);
-        delete return_value_;
-        return_value_ = nullptr;
-        h.destroy(); // should I destroy?
+        auto r = std::move(*promise.return_value_);
+        delete promise.return_value_;
+        promise.return_value_ = nullptr;
         return r;
       });
     };

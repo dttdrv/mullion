@@ -15,6 +15,9 @@ test('host_tessellator',
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 300)
 # the converter's own functions, built for the host as the bridge links them
+test('host_readerio_frame', executable('host_readerio_frame', 'readerio_frame.cpp',
+     include_directories : llvm_include_path_darwin, dependencies : airconv_dep_darwin,
+     native : true), suite : 'host')
 test('host_ray_dispatchers',
      executable('host_ray_dispatchers', 'ray_dispatchers.cpp', dependencies : airconv_dep_darwin,
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
