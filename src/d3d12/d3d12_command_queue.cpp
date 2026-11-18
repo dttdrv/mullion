@@ -1088,10 +1088,11 @@ private:
       inflight = &queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize];
       pool = WMT::MakeAutoreleasePool();
       if constexpr (Metal4) {
+        const bool needs_alias_ordering = !encoded && queue->order_aliases_;
         inflight->cmdbuf = encoded ? std::move(encoded) : queue->NewCommandBuffer(seq);
         if (!inflight->cmdbuf)
           queue->device_->LoseDevice();
-        else if (!encoded && queue->order_aliases_)
+        else if (needs_alias_ordering)
           inflight->cmdbuf.orderAliases();
       } else {
         inflight->cmdbuf = encoded ? std::move(encoded) : queue->queue_.commandBuffer();
