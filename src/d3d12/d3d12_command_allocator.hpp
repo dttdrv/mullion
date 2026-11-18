@@ -336,6 +336,10 @@ public:
 
   // ends what the lists recorded, and gives the runs no list recorded into for `Idle` Resets back to the device
   void ReleaseRuns(uint64_t Idle);
+  // a render pass's compute tessellation, once its draws are all recorded: counted, summed and made before the pass
+  void FinishTessellation(RenderEncoderData *Render);
+  // what the passes' arenas needed, read once the GPU is done with them, which sizes the next ones
+  std::vector<const TessellationPass *> tessellation_passes_;
   void Discard(EncoderData *Root);
   // what the lists recorded and what their passes use, taken out of the allocator for the queues to keep while
   // lists they were given are still to complete (Reset)
@@ -360,6 +364,8 @@ public:
   InvalidateCurrentPass() {
     if (!encoder_current)
       return;
+    if (encoder_current->type == EncoderType::Render && static_cast<RenderEncoderData *>(encoder_current)->tessellation)
+      FinishTessellation(static_cast<RenderEncoderData *>(encoder_current));
     encoder_last->next = encoder_current;
     encoder_last = encoder_current;
 
@@ -396,9 +402,9 @@ public:
   // has none: one the allocator kept, else a new one of the arena's. an arena without room ends the list (EndRecord,
   // and Close cuts what it recorded off): what it records from then on goes to memory of the allocator's own, which
   // no list holds, each allocation its own until Reset: a pass's commands are linked into the pass as they come, so
-  // one in the pass's memory would overwrite it
+  // one in the pass's memory would overwrite it. `Spill` false: none, where the caller has another way
   std::optional<size_t>
-  Allocate(RecordingArena &arena, Cursor &cursor, size_t Length, size_t Alignment) {
+  Allocate(RecordingArena &arena, Cursor &cursor, size_t Length, size_t Alignment, bool Spill = true) {
     auto aligned = cursor.offset + align_forward_adjustment((void *)cursor.offset, Alignment);
     if (unlikely(Length > cursor.end - std::min(aligned, cursor.end))) {
       auto kept = std::find_if(cursor.runs.begin() + cursor.taken, cursor.runs.end(), [&](auto &unused) {
@@ -421,6 +427,8 @@ public:
             TakeLastArgumentsBuffer();
         }
         if (!run) {
+          if (!Spill)
+            return std::nullopt;
           if (!std::exchange(exhausted_, true))
             ERR("CommandAllocator: the recording arena has no room for ", Length, " bytes more; the list is cut off");
           spill_.emplace_back(Length + Alignment);
@@ -543,8 +551,8 @@ public:
   const GPUListRecords *GPURecordsFor(EncoderData *Root);
 
   std::tuple<void *, size_t>
-  AllocateGPUHeap(size_t Length, size_t Alignment) {
-    auto at = Length ? Allocate(device_->recording.arguments, gpu_cursor_, Length, Alignment) : std::nullopt;
+  AllocateGPUHeap(size_t Length, size_t Alignment, bool Spill = true) {
+    auto at = Length ? Allocate(device_->recording.arguments, gpu_cursor_, Length, Alignment, Spill) : std::nullopt;
     return {at ? ptr_add(gpu_heap_, *at) : nullptr, at.value_or(0)};
   }
 

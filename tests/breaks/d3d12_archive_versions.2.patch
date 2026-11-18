@@ -1,0 +1,12 @@
+# the archive's files name no converter version
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -554,7 +554,7 @@
+       // a converter version finds none of the pipelines another one archived, and every shard is read and held at
+       // start: the shards of the others go before any is read, as the shader store's do (CacheWriter_alloc_init)
+       auto pipelines = str::format(directory, "pipelines_", uint32_t(metal_version_), "_");
+-      archive_path_ = str::format(pipelines, "v", kMullionShaderCacheVersion, "_");
++      archive_path_ = pipelines;
+       WMTRemoveOtherVersions(pipelines.c_str(), archive_path_.c_str());
+       // shards are read in order up to the first one Metal cannot read (none yet, or a damaged one), where this
+       // launch's shards start

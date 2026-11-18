@@ -4244,6 +4244,9 @@ public:
   SetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) {
     std::lock_guard<mutex_t> lock(mutex);
 
+    bool was_minmax = false;
+    if constexpr (Stage == PipelineStage::Pixel)
+      was_minmax = PixelMinMaxFiltering();
     auto &ShaderStage = state_.ShaderStages[Stage];
     for (unsigned Slot = StartSlot; Slot < StartSlot + NumSamplers; Slot++) {
       auto pSampler = static_cast<D3D11SamplerState *>(ppSamplers[Slot - StartSlot]);
@@ -4265,6 +4268,9 @@ public:
         }
       }
     }
+    if constexpr (Stage == PipelineStage::Pixel)
+      if (was_minmax != PixelMinMaxFiltering())
+        InvalidateRenderPipeline();
   }
 
   template <PipelineStage Stage>
@@ -5548,6 +5554,21 @@ public:
     return ptr ? ptr->GetManagedShader() : nullptr;
   };
 
+  bool
+  PixelMinMaxFiltering() {
+    auto shader = GetManagedShader<PipelineStage::Pixel>();
+    if (!shader)
+      return false;
+    for (const auto &[slot, entry] : state_.ShaderStages[PipelineStage::Pixel].Samplers) {
+      if (!(shader->reflection().SamplerSlotMask & (1u << slot)))
+        continue;
+      auto metadata = entry.Sampler->sampler()->metadata;
+      if ((metadata >> SM50_SAMPLER_METADATA_REDUCTION) & ((1u << SM50_SAMPLER_METADATA_REDUCTION_BITS) - 1))
+        return true;
+    }
+    return false;
+  }
+
   template <bool IndexedDraw>
   void
   InitializeGraphicsPipelineDesc(MTL_GRAPHICS_PIPELINE_DESC &Desc) {
@@ -5556,6 +5577,7 @@ public:
     auto GS = GetManagedShader<PipelineStage::Geometry>();
     Desc.VertexShader = GetManagedShader<PipelineStage::Vertex>();
     Desc.PixelShader = PS;
+    Desc.PixelMinMaxFiltering = PixelMinMaxFiltering();
     // FIXME: ensure valid state: hull and domain shader none or both are bound
     Desc.HullShader = GetManagedShader<PipelineStage::Hull>();
     Desc.DomainShader = GetManagedShader<PipelineStage::Domain>();

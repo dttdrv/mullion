@@ -1450,6 +1450,14 @@ WMTSetMetalShaderCachePath(const char *path) {
   return params.ret_success;
 }
 
+WINEMETAL_API void
+WMTRemoveOtherVersions(const char *stem, const char *kept) {
+  struct unixcall_remove_other_versions params;
+  WMT_MEMPTR_SET(params.stem, stem);
+  WMT_MEMPTR_SET(params.kept, kept);
+  UNIX_CALL(WMTUnixRemoveOtherVersions, &params);
+}
+
 WINEMETAL_API obj_handle_t
 MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info) {
   struct unixcall_mtldevice_newtexture params;

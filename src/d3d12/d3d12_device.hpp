@@ -610,6 +610,18 @@ public:
   uint32_t threads_per_patch = 0;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tessellation_parts = 1;
+  // with Metal's tessellator, `hull` runs its vertex and hull shaders before the pass, writing each group of patches'
+  // control points and constants (patch_group_size bytes) and each patch's factors (patch_factor_size bytes, Metal's
+  // MTL*TessellationFactorsHalf) for `pso_patches`, its domain and pixel shaders; `pso` stays the mesh pipeline, for the
+  // draws Metal's tessellator does not take
+  WMT::Reference<WMT::ComputePipelineState> hull;
+  WMT::Reference<WMT::RenderPipelineState> pso_patches;
+  uint32_t patch_group_size = 0, patch_factor_size = 0;
+  // with Metal 4, the tessellator is in compute (TessellationDraw), and `pso_patches` is a plain vertex pipeline
+  bool compute_tessellation = false;
+  uint32_t tessellation_kind = 0;
+  // the largest whole factor its hull shader's patches can have (MaxTessFactor)
+  uint32_t tessellation_factor = D3D12_TESSELLATOR_MAX_TESSELLATION_FACTOR;
   // a geometry-shader pipeline runs its vertex shader in the object stage and its geometry shader in the mesh stage,
   // in `pso` for list topologies and in a variant of its own for strips (GeometryPipeline; none for points)
   bool geometry_shader = false;
@@ -759,11 +771,14 @@ public:
     mullion::shared_mutex mutex;
     std::unordered_map<MTLD3D12SamplerKey, MTLD3D12CachedSampler, MTLD3D12SamplerKeyHash> made;
   } samplers;
-  // the bytecode lean pipelines keep, once per shader however many pipelines share it
+  // the bytecode pipelines keep to make variants of their shaders later, once per shader however many pipelines
+  // share it (KeepShader)
   struct {
     mullion::mutex mutex;
     std::unordered_map<Sha1Digest, std::weak_ptr<const std::string>> bytes;
-  } lean_shaders;
+  } kept_shaders;
+  // a copy of `code` that outlives the application's, the one other pipelines of the shader hold while they live
+  std::shared_ptr<const std::string> KeepShader(D3D12_SHADER_BYTECODE code);
   // the Metal functions pipelines are made of, with what they were loaded from, by their conversion's key
   // (CompileFunction): made once while any pipeline holds them
   struct SharedFunction {
@@ -787,7 +802,7 @@ public:
   // one at a time
   template <typename Info, typename Make>
   auto
-  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make) {
+  Archived(Info info, WMT::Reference<WMT::Error> &error, Make make, const Sha1Digest &pipeline) {
     std::shared_lock lock(archive_lock);
     auto archives = PipelineArchives();
     if (archives.empty())
@@ -802,14 +817,26 @@ public:
     error = {};
     auto made = make(info, error);
     if (made)
-      ArchivePipeline(made);
+      ArchivePipeline(made, pipeline);
     return made;
   }
   // the device's archive in shards, the last one added to, opened when the first pipeline is made; none without a
   // shader cache (ShaderCacheDirectory)
   virtual std::span<const obj_handle_t> PipelineArchives() = 0;
-  // a pipeline made with keep_for_binary_archive, for the archive's thread to add
-  virtual void ArchivePipeline(WMT::Object pipeline) = 0;
+  // a pipeline made with keep_for_binary_archive, for the archive's thread to add, and the key of the D3D12 pipeline
+  // it is made for (PipelineKey), recorded once its file is written (InArchive)
+  virtual void ArchivePipeline(WMT::Object pipeline, const Sha1Digest &key) = 0;
+  // whether the archive holds a Metal pipeline made for a D3D12 pipeline of this key
+  virtual bool InArchive(const Sha1Digest &key) = 0;
+  // Metal's compile of a D3D12 pipeline of this key ahead of its first draw, on the compile threads, unless the
+  // archive holds it: then its first draw makes it from there, which is a lookup, and one the application never draws
+  // is never made. a Metal pipeline costs the process its memory from when it is made to the process's end, released
+  // or not (macOS 27.3)
+  void
+  Defer(std::shared_ptr<DeferredPipeline> pipeline, const Sha1Digest &key) {
+    if (!InArchive(key))
+      DeferredPipeline::Queue(std::move(pipeline));
+  }
   // pipelines are looked up under it shared, and the archive is written under it whole
   mullion::shared_mutex archive_lock;
   // Metal 4's flexible pipelines (MULLION_D3D12_FLEXIBLE=1 turns them on): one pipeline of each state but its targets'
@@ -888,6 +915,14 @@ public:
   }
   std::once_flag mesh_grid_asked_;
   uint32_t max_mesh_threadgroups_ = 0;
+  // the most points and indices a patch slot of a render pass's compute tessellator has made, and a pass, which size
+  // the arenas of the passes after them by their slots and no larger than a pass has needed: none until a pass has
+  // made some, more as passes make more (MTLD3D12CommandAllocatorImpl::Reset). what a pass makes past its arena its
+  // mesh draws draw
+  std::atomic<uint32_t> tessellation_slot_points{0}, tessellation_slot_indices{0};
+  std::atomic<uint32_t> tessellation_pass_points{0}, tessellation_pass_indices{0};
+  // the most a pass takes: 12 MB of points and of indices
+  static constexpr uint32_t kTessellationMostPoints = 1u << 20, kTessellationMostIndices = 3u << 20;
   // the mesh memory a draw's mesh threadgroups share (MeshBytesPerDraw)
   uint64_t mesh_bytes_per_draw = -1ull;
   // what the device's command allocators record into: commands, and what the GPU reads of them. Metal reads

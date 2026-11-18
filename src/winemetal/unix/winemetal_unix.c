@@ -1132,7 +1132,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTComputeCommandMemoryBarrier: {
       struct wmtcmd_compute_memory_barrier *body = (struct wmtcmd_compute_memory_barrier *)next;
-      [encoder memoryBarrierWithScope:(MTLBarrierScope)body->scope];
+      [encoder memoryBarrierWithScope:(MTLBarrierScope)(body->scope & ~WMTBarrierScopeAliases)];
       break;
     }    
     case WMTComputeCommandExecuteCommandsInBuffer: {
@@ -1366,6 +1366,20 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                   vertexCount:body->vertex_count
                 instanceCount:body->instance_count
                  baseInstance:body->base_instance];
+      break;
+    }
+    case WMTRenderCommandDrawPatches: {
+      struct wmtcmd_render_draw_patches *body = (struct wmtcmd_render_draw_patches *)next;
+      [encoder setTessellationFactorBuffer:(id<MTLBuffer>)body->factor_buffer
+                                    offset:body->factor_buffer_offset
+                            instanceStride:body->factor_instance_stride];
+      [encoder drawPatches:body->control_points
+                patchStart:0
+                patchCount:body->patch_count
+          patchIndexBuffer:nil
+    patchIndexBufferOffset:0
+             instanceCount:body->instance_count
+              baseInstance:0];
       break;
     }
     case WMTRenderCommandDrawIndexed: {
@@ -1886,7 +1900,7 @@ _MTLDevice_supportsSamplerReduction(void *obj) {
   id<MTLDevice> device = (id<MTLDevice>)params->handle;
   uint64_t registry = device.registryID;
   // "Sampler minimum and maximum reduction", Apple10
-  if (!family_has(10)) {
+  if (!family_has(10) || ![device supportsFamily:MTLGPUFamilyApple10]) {
     params->ret = false;
     return STATUS_SUCCESS;
   }
@@ -2848,6 +2862,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   uint32_t shading_rate_varying;
   bool quad_lines;
   bool conservative_hull;
+  bool patch_varying;
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2905,6 +2920,8 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
   uint32_t flat_inputs;
   uint32_t noperspective_inputs;
   bool barycentrics;
+  bool native;
+  bool compute;
 };
 
 struct SM50_SHADER_ROOT_SIGNATURE_DATA32 {
@@ -2966,6 +2983,7 @@ sm50_compilation_argument32_convert(
       data->shading_rate_varying = src->shading_rate_varying;
       data->quad_lines = src->quad_lines;
       data->conservative_hull = src->conservative_hull;
+      data->patch_varying = src->patch_varying;
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -3071,6 +3089,8 @@ sm50_compilation_argument32_convert(
       data->flat_inputs = src->flat_inputs;
       data->noperspective_inputs = src->noperspective_inputs;
       data->barycentrics = src->barycentrics;
+      data->native = src->native;
+      data->compute = src->compute;
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:
@@ -3856,46 +3876,52 @@ CREATES(_MTLDevice_newBinaryArchive)(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// the archive's calls run on its own thread, which has no pool: what they autorelease is drained here, or it lives as
+// long as the thread (the descriptor its getter returns, with the pipeline's functions and compiled variants)
 static NTSTATUS
 _MTLBinaryArchive_serialize(void *obj) {
   struct unixcall_mtlbinaryarchive_serialize *params = obj;
-  NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
-  NSString *path = resolve_cache_dir(path_str, true);
-  NSURL *url = [[NSURL alloc] initFileURLWithPath:path];
-  NSError *err = NULL;
-  // straight to the archive's file, which Metal replaces whole (a new file in its place) when the archive gained
-  // pipelines, and leaves as it is when it gained none. a serialize with nothing new copies the file Metal wrote last:
-  // writing to a file of our own and renaming it over the archive's took that one away, and the copy failed
-  // (NSCocoaErrorDomain 4)
-  [(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err];
-  params->ret_error = (obj_handle_t)[err retain];
-  [url release];
-  [path_str release];
+  @autoreleasepool {
+    NSString *path_str = [[NSString alloc] initWithCString:params->url.ptr encoding:NSUTF8StringEncoding];
+    NSString *path = resolve_cache_dir(path_str, true);
+    NSURL *url = [[NSURL alloc] initFileURLWithPath:path];
+    NSError *err = NULL;
+    // straight to the archive's file, which Metal replaces whole (a new file in its place) when the archive gained
+    // pipelines, and leaves as it is when it gained none. a serialize with nothing new copies the file Metal wrote last:
+    // writing to a file of our own and renaming it over the archive's took that one away, and the copy failed
+    // (NSCocoaErrorDomain 4)
+    [(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err];
+    params->ret_error = (obj_handle_t)[err retain];
+    [url release];
+    [path_str release];
+  }
   return STATUS_SUCCESS;
 }
 
 static NTSTATUS
 _MTLBinaryArchive_add(void *obj) {
   struct unixcall_generic_obj_obj_noret *params = obj;
-  id<MTLBinaryArchive> archive = (id<MTLBinaryArchive>)params->handle;
-  id pipeline = (id)params->arg, descriptor = objc_getAssociatedObject(pipeline, &archive_descriptor);
-  NSError *err = nil;
-  // the archives the pipeline was looked up in are not asked again: one of them may have been lost to a fault in
-  // Metal since, and holds whoever asks it
-  [descriptor setBinaryArchives:nil];
-  if ([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class])
-    [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-  else if ([descriptor isKindOfClass:MTLComputePipelineDescriptor.class])
-    [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
+  @autoreleasepool {
+    id<MTLBinaryArchive> archive = (id<MTLBinaryArchive>)params->handle;
+    id pipeline = (id)params->arg, descriptor = objc_getAssociatedObject(pipeline, &archive_descriptor);
+    NSError *err = nil;
+    // the archives the pipeline was looked up in are not asked again: one of them may have been lost to a fault in
+    // Metal since, and holds whoever asks it
+    [descriptor setBinaryArchives:nil];
+    if ([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class])
+      [archive addRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    else if ([descriptor isKindOfClass:MTLComputePipelineDescriptor.class])
+      [archive addComputePipelineFunctionsWithDescriptor:descriptor error:&err];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-  else if (@available(macOS 15, *)) {
-    if ([descriptor isKindOfClass:MTLMeshRenderPipelineDescriptor.class])
-      [archive addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-    else if ([descriptor isKindOfClass:MTLTileRenderPipelineDescriptor.class])
-      [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
-  }
+    else if (@available(macOS 15, *)) {
+      if ([descriptor isKindOfClass:MTLMeshRenderPipelineDescriptor.class])
+        [archive addMeshRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+      else if ([descriptor isKindOfClass:MTLTileRenderPipelineDescriptor.class])
+        [archive addTileRenderPipelineFunctionsWithDescriptor:descriptor error:&err];
+    }
 #endif
-  objc_setAssociatedObject(pipeline, &archive_descriptor, nil, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(pipeline, &archive_descriptor, nil, OBJC_ASSOCIATION_RETAIN);
+  }
   return STATUS_SUCCESS;
 }
 
@@ -4947,6 +4973,7 @@ NTSTATUS _CacheReader_get(void *obj);
 NTSTATUS _CacheWriter_alloc_init(void *obj);
 NTSTATUS _CacheWriter_set(void *obj);
 NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
+NTSTATUS _WMTRemoveOtherVersions(void *obj);
 
 // the Metal descriptor of a WMTAccelerationStructureInfo, autoreleased
 static MTLAccelerationStructureDescriptor *
@@ -5738,7 +5765,9 @@ API_AVAILABLE(macos(26.0)) metal4_pool(id<MTL4CommandQueue> queue, const void *k
     NSMutableArray *pool = objc_getAssociatedObject(queue, key);
     if (!pool) {
       pool = [NSMutableArray array];
-      objc_setAssociatedObject(queue, key, pool, OBJC_ASSOCIATION_RETAIN);
+      // nonatomic: it is read under the queue's lock, and its getter then autoreleases nothing, which a command
+      // buffer's release on a thread with no pool would keep
+      objc_setAssociatedObject(queue, key, pool, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return pool;
   }
@@ -5950,7 +5979,7 @@ API_AVAILABLE(macos(26.0)) metal4_texture(
 }
 
 static NTSTATUS
-_MTL4CommandBuffer_new(void *obj) {
+CREATES(_MTL4CommandBuffer_new)(void *obj) {
   struct unixcall_metal4_new *p = obj;
   if (@available(macOS 26.0, *)) {
     MullionMetal4Buffer *state = [[MullionMetal4Buffer alloc] init];
@@ -7112,9 +7141,12 @@ API_AVAILABLE(macos(26.0)) metal4_compute(MullionMetal4Encoder *state, const str
       break;
     }
     case WMTComputeCommandMemoryBarrier: {
+      struct wmtcmd_compute_memory_barrier *body = (struct wmtcmd_compute_memory_barrier *)next;
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
-                       visibilityOptions:MTL4VisibilityOptionDevice];
+                       visibilityOptions:body->scope & WMTBarrierScopeAliases
+                                             ? MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias
+                                             : MTL4VisibilityOptionDevice];
       break;
     }
     case WMTComputeCommandExecuteCommandsInBuffer: {
@@ -7644,6 +7676,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newFrameInterpolator,
     &_MTLCommandBuffer_encodeFrameInterpolation,
     &_MTLBinaryArchive_add,
+    &_WMTRemoveOtherVersions,
 };
 
 #ifndef MULLION_NATIVE
@@ -7864,6 +7897,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newFrameInterpolator,
     &_MTLCommandBuffer_encodeFrameInterpolation,
     &_MTLBinaryArchive_add,
+    &_WMTRemoveOtherVersions,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

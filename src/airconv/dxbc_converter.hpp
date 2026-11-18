@@ -457,6 +457,8 @@ struct SignatureContext {
   bool pull_centroids;
   // barycentrics come in SM50_BARYCENTRIC_ROWS
   bool barycentric_rows = false;
+  // SV_PrimitiveID comes in SM50_PATCH_VARYING
+  bool patch_varying = false;
   uint32_t unorm_output_reg_mask;
   // it is considered optional (as a hint)
   air::MTLPixelFormat pixel_formats[8];
@@ -482,13 +484,13 @@ struct SignatureContext {
 
 RegisterComponentType component_type_from_pixel_format(air::MTLPixelFormat format);
 
-// the input a stage that writes rasterized positions scales them with (llvm::air::AIRBuilder::RasterScale)
-// (all SM50_RASTER_SCALE_WORDS for a stage that reads the mesh group origin)
+// the input a stage that writes rasterized positions scales them with (llvm::air::AIRBuilder::RasterScale), one
+// buffer whatever words of it the stage reads: a buffer argument's array size is the buffer slots it takes
 inline uint32_t
-DefineRasterScale(air::FunctionSignatureBuilder &signature, uint32_t words = 1) {
+DefineRasterScale(air::FunctionSignatureBuilder &signature) {
   return signature.DefineInput(air::ArgumentBindingBuffer{
       .location_index = SM50_BINDING_INDEX_RASTER_SCALE,
-      .array_size = words,
+      .array_size = 1,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
       .type = air::msl_float,
@@ -645,6 +647,7 @@ public:
   uint32_t ps_flat_input_mask = 0, ps_noperspective_input_mask = 0;
   // a pixel shader that runs per pixel or sample at any shading rate (MTL_PIXEL_SHADER_REFLECTION's FineShading)
   bool ps_fine_shading = false;
+  bool ps_primitive_id = false;
   // a pixel shader that outputs depth (MTL_PIXEL_SHADER_REFLECTION's DepthOutput)
   bool ps_depth_output = false;
   std::string dxil; // bitcode of a DXIL shader, empty for DXBC
@@ -763,6 +766,8 @@ uint32_t next_pow2(uint32_t x);
 // the payload a hull shader's object threadgroup leaves: with `groups`, with the groups of workloads too
 size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group, bool groups = false);
 
+uint32_t native_patch_group_size(SM50ShaderInternal *pHullStage, uint32_t patch_per_group);
+
 
 // the tessellation factor a pipeline's stages are built for, and the most segments it cuts an edge into
 std::pair<float, uint32_t>
@@ -784,7 +789,7 @@ uint32_t tessellation_group_limit(
 
 llvm::StructType *tessellation_payload_type(
     SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context,
-    uint32_t group_limit = 0
+    uint32_t group_limit = 0, bool native = false
 );
 
 llvm::Value *setup_domain_stage(

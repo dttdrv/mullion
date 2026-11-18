@@ -408,14 +408,15 @@ points_of(Domain domain, Partitioning partitioning, const std::vector<Factors> &
 }
 
 // the patches drawn alone as triangles or lines: factors of one kind and mixed, small and the largest, whole and
-// between, one that culls, and first the `fullest` whose insides make the most workloads and the most vertices in one
+// between, whole and closer above it than a half float holds, one that culls, and first the `fullest` whose insides
+// make the most workloads and the most vertices in one
 const uint32_t fullest = 2;
 const Factors alone[] = {
     {64, 64, 64, 64, 64, 33}, {64, 64, 64, 64, 64, 63},
     {1, 1, 1, 1, 1, 1},       {2, 2, 2, 2, 2, 2},         {3, 3, 3, 3, 3, 3},       {4, 4, 4, 4, 4, 4},
     {64, 64, 64, 64, 64, 64}, {63, 63, 63, 63, 63, 63},   {1, 1, 1, 1, 5, 9},       {7, 2, 13, 4, 1, 1},
     {5.5f, 2.25f, 9.75f, 3, 6.5f, 4.125f},                {1, 64, 3, 17, 64, 2},    {3, 3, 3, 3, 64, 5},
-    {2, 16.5f, 2, 2, 12, 33}, {4, 4, 0, 4, 4, 4},
+    {2, 16.5f, 2, 2, 12, 33}, {4, 4, 0, 4, 4, 4},         {4.001f, 2.0005f, 7.001f, 3.001f, 5.001f, 6.001f},
 };
 
 // what a pixel of a patch drawn alone as triangles must hold of the 1 each triangle adds: a quad covers the target, a

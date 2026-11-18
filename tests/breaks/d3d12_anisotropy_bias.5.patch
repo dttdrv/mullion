@@ -1,0 +1,12 @@
+# a footprint longer than the anisotropy's limit reads Metal's own LOD, which adds the bias before the limit
+--- a/src/airconv/nt/dxbc_converter_base.cpp
++++ b/src/airconv/nt/dxbc_converter_base.cpp
+@@ -2572,7 +2572,7 @@
+             ir.CreateFMul(ir.CreateFAdd(Limit, ir.CreateFDiv(llvm::ConstantFP::get(Float, 1.0), Limit)), Area)
+         )
+     );
+-    return Choose(ir.CreateOr(Isotropic, Within), Gradients, false);
++    return Choose(ir.getTrue(), Gradients, false);
+   };
+   if (!Selects || isa<Constant>(Isotropic))
+     return Footprint();
