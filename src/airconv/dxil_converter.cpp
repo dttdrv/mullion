@@ -2444,17 +2444,14 @@ convert_dxil(
     auto i64 = ir.getInt64Ty();
     Value *key = ir.CreateLShr(ir.CreatePtrToInt(ptr, i64), 3);
     if (ptr->getType()->getPointerAddressSpace() != (unsigned)air::AddressSpace::threadgroup) {
-      // by its halves, whose loads and stores are atomic and so never stale (CreateDeviceCoherentLoad): a stale read
-      // under the lock would lose another thread's step
+      // Read and write each half atomically: a stale read under the lock would lose another thread's step.
       auto i32 = ir.getInt32Ty();
       auto half = [=, &ir](unsigned i) {
         return ir.CreateConstGEP1_32(i32, ir.CreateBitCast(ptr, i32->getPointerTo(ptr->getType()->getPointerAddressSpace())), i);
       };
-      // without 64-bit atomics (Apple7), the GPU's compiler fails on a word built from two atomic loads, and reads
-      // each half with an atomic OR of 0 instead
+      // Apple7/8 compilers fail on a 64-bit word built from two atomic loads. Native min/max64 support
+      // does not avoid this failure; read each half with an atomic OR of 0 in the emulated path.
       auto read_half = [=, &ir, &air](unsigned i) -> Value * {
-        if (air.HasAtomicMinMax64())
-          return air.CreateDeviceCoherentLoad(i32, half(i));
         return air.CreateAtomicRMW(AtomicRMWInst::Or, half(i), ir.getInt32(0));
       };
       return {key, llvm::air::MemFlags::Device,
