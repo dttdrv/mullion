@@ -1,4 +1,6 @@
 # tests of source that also builds for the host, run without a GPU or Wine: the suite 'host', which CI runs whole
+test('host_colorspace', executable('host_colorspace', 'colorspace.cpp',
+                                 override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_geometry_budget', executable('host_geometry_budget', 'geometry_budget.cpp',
                                       include_directories : mullion_native_include_path,
                                       override_options : ['cpp_std=c++20'], native : true), suite : 'host')

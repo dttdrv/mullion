@@ -2054,7 +2054,7 @@ enum WMTColorSpace : uint64_t {
 };
 
 #if !defined(WMT_COLORSPACE_IS_HDR)
-#define WMT_COLORSPACE_IS_HDR(x) x & 0b100
+#define WMT_COLORSPACE_IS_HDR(x) (((x) & 0b100) != 0)
 #endif
 
 WINEMETAL_API bool CGColorSpace_checkColorSpaceSupported(enum WMTColorSpace colorspace);
