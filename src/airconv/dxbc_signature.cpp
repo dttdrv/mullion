@@ -519,7 +519,7 @@ void handle_signature_ps(
       return;
     default:
       // Unexpected/unhandled input system value: the declaration is ignored
-      break;
+      return;
     }
     signature_handlers.push_back([=](SignatureContext &ctx) {
       ctx.prologue << init_input_reg(
@@ -574,7 +574,7 @@ void handle_signature_ps(
       return;
     default:
       // Unexpected/unhandled input system value: the declaration is ignored
-      break;
+      return;
     }
     signature_handlers.push_back([=](SignatureContext &ctx) {
       ctx.prologue << init_input_reg(assigned_index, reg, mask);
