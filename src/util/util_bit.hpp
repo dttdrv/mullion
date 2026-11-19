@@ -40,6 +40,7 @@
 #include "util_likely.hpp"
 #include "util_math.hpp"
 
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -48,14 +49,8 @@
 
 namespace mullion::bit {
 
-template <typename T, typename J> T cast(const J &src) {
-  static_assert(sizeof(T) == sizeof(J));
-  static_assert(std::is_trivially_copyable<J>::value &&
-                std::is_trivial<T>::value);
-
-  T dst;
-  std::memcpy(&dst, &src, sizeof(T));
-  return dst;
+template <typename T, typename J> constexpr T cast(const J &src) noexcept {
+  return std::bit_cast<T>(src);
 }
 
 template <typename T> T extract(T value, uint32_t fst, uint32_t lst) {
