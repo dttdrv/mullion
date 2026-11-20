@@ -16,6 +16,28 @@ adds its name there, its row below, and a test that fails without it.
 |---|---|---|---|
 | `memory_limit` | Allocating more than `recommendedMaxWorkingSetSize` and making it resident panics the kernel ([KosmicKrisp's KK_WORKAROUND_20](https://docs.mesa3d.org/drivers/kosmickrisp/workarounds.html), fixed in macOS 27) | macOS 26 and earlier | Refuses an application's buffer, texture, committed resource or heap that would take the device's allocated memory past 95% of the working set, with `E_OUTOFMEMORY` ([`mullion_memory.hpp`](../src/mullion/mullion_memory.hpp)). The budget DXGI reports is that 95% on every macOS |
 
+## In the shader converter
+
+The converter's workarounds change the shaders it writes, so they are named in `MULLION_AIRCONV_SKIP` (comma
+separated), which also names its other optional steps, and a shader cache made with one left out is a cache of other
+shaders: clear it, or use `MULLION_SHADER_CACHE=0`, when comparing. [`tests/fuzz.py`](../tests/fuzz.py) found these,
+and [`tools/metal-bench/integer_miscompiles.swift`](../tools/metal-bench/integer_miscompiles.swift) shows each in plain
+Metal, so a macOS release can be checked for it without Mullion.
+
+| `MULLION_AIRCONV_SKIP` | Fault | Where | What the converter does |
+|---|---|---|---|
+| `sign-bit-counts` | Metal's compiler counts the leading zeros and the ones of a value it can tell is all ones or zero (a sign-extended bool) as if it were 16 bits wide: `clz(c == 0 ? ~0u : 0u)` is 16, `popcount` of it 16 | M6, macOS 27.3 | Every 32-bit `clz` is a `ctz` of the reversed bits, and every 32-bit `popcount` a `popcount` of them, which Metal does not fold back ([`airconv_context.cpp`](../src/airconv/airconv_context.cpp)) |
+| `constant-dividends` | Metal's compiler divides a constant by a variable wrongly for some divisors, how many depending on the program around it: `0xfffffffe / 3` gives `0x55555555`, and over a million divisors `0xfffffffe / y` was wrong for 12% in one kernel (a division of two variables is right) | M6, macOS 27.3 | A 32-bit constant dividend goes through `reverse_bits` twice, which Metal does not fold, so the division is of two values |
+
+Not worked around: the same 16-bit view of a sign-extended bool also reaches `min` and `max` of two such values and a
+third (`min(min(v1, v2), a)` is `0xffff`). Doing so would cost every integer `min` and `max` an operation, and the
+values only come from comparisons a shader stores as integers; `tests/fuzz.py` still finds it in about one program in
+a thousand.
+
+The converter itself made DXBC's `udiv` with an LLVM division by a divisor that may be zero, which LLVM takes as a
+promise it is not, and dropped the all-ones a division by zero gives where a `firstbithigh` read the remainder. That
+was Mullion's fault, not Metal's: it divides by one where the divisor is zero, as its DXIL path did already.
+
 ## Faults other drivers report, not yet seen in Mullion
 
 LunarG's KosmicKrisp (Vulkan on Metal 4) keeps a dated list of faults in
