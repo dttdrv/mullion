@@ -29,6 +29,9 @@ namespace mullion {
     SingletonConfig() {
       merge(Config::getUserConfig());
       merge(Config::getAppConfig(env::getExePath()));
+      // what this process will actually do, once, from the one place that knows every source: until now the
+      // effective list was built and never printed, so a run could not say which option decided a result
+      logOptions();
     };
 
     SingletonConfig(SingletonConfig const&) = delete;             
@@ -95,7 +98,7 @@ namespace mullion {
   };
 
 
-  static void parseUserConfigLine(Config& config, ConfigContext& ctx, const std::string& line) {
+  static void parseUserConfigLine(Config& config, ConfigContext& ctx, const std::string& line, const std::string& source) {
     std::stringstream key;
     std::stringstream value;
 
@@ -119,8 +122,13 @@ namespace mullion {
 
       // Check whether the next char is a '='
       n = skipWhitespace(line, n);
-      if (n >= line.size() || line[n] != '=')
+      if (n >= line.size() || line[n] != '=') {
+        // a key with no value is a typo that silently does nothing today. an empty key is a comment or a blank line,
+        // which is not the reader's mistake to report
+        if (!key.str().empty())
+          WARN("Config: '", key.str(), "' in ", source, " has no '=': the line sets nothing");
         return;
+      }
 
       // Extract the value
       bool insideString = false;
@@ -138,7 +146,7 @@ namespace mullion {
       }
 
       if (ctx.active)
-        config.setOption(key.str(), value.str());
+        config.setOption(key.str(), value.str(), source);
     }
   }
 
@@ -152,13 +160,34 @@ namespace mullion {
 
 
   void Config::merge(const Config& other) {
-    for (auto& pair : other.m_options)
+    for (auto& pair : other.m_options) {
+      auto existing = m_options.find(pair.first);
+      if (existing != m_options.end() && existing->second != pair.second) {
+        auto where = m_sources.find(pair.first);
+        WARN("Config: '", pair.first, "' is set twice, to '", existing->second, "' by ",
+             where != m_sources.end() && !where->second.empty() ? where->second : "an earlier source",
+             " and to '", pair.second, "' by a later one");
+      }
       m_options.insert(pair);
+      auto source = other.m_sources.find(pair.first);
+      if (source != other.m_sources.end())
+        m_sources.insert_or_assign(pair.first, source->second);
+    }
   }
 
 
-  void Config::setOption(const std::string& key, const std::string& value) {
+  void Config::setOption(const std::string& key, const std::string& value, const std::string& source) {
+    auto previous = m_options.find(key);
+    if (previous != m_options.end() && previous->second != value) {
+      // last one wins, and the effective list will show only that one: say what was replaced and by what
+      auto where = m_sources.find(key);
+      WARN("Config: '", key, "' is set twice, to '", previous->second, "' by ",
+           where != m_sources.end() && !where->second.empty() ? where->second : "an earlier source",
+           " and to '", value, "' by ", source.empty() ? "the built-in profile" : source);
+    }
     m_options.insert_or_assign(key, value);
+    if (!source.empty())
+      m_sources.insert_or_assign(key, source);
   }
 
 
@@ -370,7 +399,7 @@ namespace mullion {
       std::string line;
 
       while (std::getline(stream, line))
-        parseUserConfigLine(config, ctx, line);
+        parseUserConfigLine(config, ctx, line, filePath);
     }
 
     if (!confLine.empty()) {
@@ -381,7 +410,7 @@ namespace mullion {
       // the environment applies to this executable, whichever section the file ended in
       ctx.active = true;
       for(auto l : str::split(confLine, ";"))
-        parseUserConfigLine(config, ctx, std::string(l.data(), l.size()));
+        parseUserConfigLine(config, ctx, std::string(l.data(), l.size()), "MULLION_CONFIG");
     }
 
     return config;
@@ -397,8 +426,13 @@ namespace mullion {
     if (!m_options.empty()) {
       Logger::info("Effective configuration:");
 
-      for (auto& pair : m_options)
-        Logger::info(str::format("  ", pair.first, " = ", pair.second));
+      for (auto& pair : m_options) {
+        auto where = m_sources.find(pair.first);
+        if (where != m_sources.end() && !where->second.empty())
+          Logger::info(str::format("  ", pair.first, " = ", pair.second, " (from ", where->second, ")"));
+        else
+          Logger::info(str::format("  ", pair.first, " = ", pair.second));
+      }
     }
   }
 

@@ -469,6 +469,40 @@ def frames(record, first=0, last=None):
               f"longest {ms(s['longest'])} ms, {fps} frames a second")
 
 
+def router(folder):
+    """Print what each Direct3D request was answered with, and the rule that decided it.
+
+    router.log is the record the router appends to (src/mullion/mullion_router.hpp): one line a request,
+    with the generation, whether it was offered, the feature level the request named, and the input that
+    decided it -- this build's rule, the configuration, or the environment. A refusal that does not say
+    which is the thing this exists to avoid, so the line is read back here as it was written.
+    """
+    path = Path(folder)
+    if path.is_dir():
+        path = path / "router.log"
+    if not path.is_file():
+        raise ValueError(f"{path}: no router record; the router writes one while a MULLION_TRACE_ category "
+                         f"is on, or with MULLION_ROUTER_RECORD=1")
+    lines = [line for line in path.read_text(errors="replace").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError(f"{path}: the router record is empty")
+    print(f"{path}: {len(lines)} requests")
+    refused = 0
+    for line in lines:
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        head, _, reason = line.partition(": ")
+        words = head.split()
+        api, verdict = words[0], words[1]
+        source = fields.get("by", "?")
+        level = fields.get("feature_level", "none")
+        forms = " ".join(f for f, want in (("extended", fields.get("extended")), ("on12", fields.get("on12")))
+                         if want == "1")
+        if verdict == "refuse":
+            refused += 1
+        print(f"  {api:7s} {verdict:7s} feature level {level:6s} {forms:18s} by {source:12s} {reason}")
+    print(f"  {refused} refused of {len(lines)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -476,6 +510,9 @@ def main():
     command.add_argument("record", type=Path)
     command.add_argument("--top", type=int, default=15)
     command.add_argument("--frame", type=int, help="tables for this frame alone, counted from 0")
+    command = commands.add_parser("router", help="what answered each Direct3D request, and the rule that said so")
+    command.add_argument("record", type=Path, nargs="?", default=Path.home() / "Library/Logs/Mullion",
+                         help="the trace folder, or a router.log in it (default: ~/Library/Logs/Mullion)")
     command = commands.add_parser("frames", help="one line a record to compare runs")
     command.add_argument("record", type=Path)
     command.add_argument("--from", dest="first", type=int, default=0)
@@ -485,6 +522,9 @@ def main():
            if name in ("top", "frame", "first", "to")):
         parser.error("frame numbers and --top must be nonnegative")
     try:
+        if args.command == "router":
+            router(args.record)
+            return
         for path in records(args.record):
             record = Record(path)
             if args.command == "report":
