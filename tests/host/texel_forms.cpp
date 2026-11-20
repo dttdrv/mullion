@@ -207,7 +207,28 @@ verify(const std::string &module) {
   if (fd < 0 || write(fd, module.data(), module.size()) != ssize_t(module.size()))
     return "the module could not be written for the verifier";
   close(fd);
-  std::string said, command = std::string("xcrun -sdk macosx metal-opt -S '") + path + "' -o /dev/null 2>&1";
+  // xcrun finds the verifier once: asked for each of the kernels, it took most of the test's time on CI's runners
+  // (with the SDK xcrun would have given it)
+  static const std::string tool = [] {
+    auto ask = [](const char *command) {
+      std::string found;
+      if (FILE *where = popen(command, "r")) {
+        char line[1024];
+        if (fgets(line, sizeof(line), where))
+          found = line;
+        pclose(where);
+      }
+      while (!found.empty() && (found.back() == '\n' || found.back() == '\r'))
+        found.pop_back();
+      return found;
+    };
+    std::string found = ask("xcrun -sdk macosx -f metal-opt 2>/dev/null"),
+                sdk = ask("xcrun -sdk macosx --show-sdk-path 2>/dev/null");
+    if (found.empty() || sdk.empty())
+      return std::string("xcrun -sdk macosx metal-opt");
+    return "SDKROOT='" + sdk + "' '" + found + "'";
+  }();
+  std::string said, command = tool + " -S '" + path + "' -o /dev/null 2>&1";
   FILE *out = popen(command.c_str(), "r");
   char line[512];
   while (out && fgets(line, sizeof(line), out))

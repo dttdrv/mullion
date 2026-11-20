@@ -5,7 +5,9 @@
 #include "util_env.hpp"
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
+#include <utility>
 
 namespace mullion::heartbeat {
 
