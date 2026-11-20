@@ -435,8 +435,8 @@ folder_bytes(NSString *folder) {
 
 // each program keeps its Metal cache in a folder of its own ("mullion/<exe>/com.apple.metal"), which grows by every
 // pipeline it compiles, and nothing removed a program's once it was no longer played (2.9 GB for one game here). the
-// folders of all programs are held to MULLION_METAL_CACHE_LIMIT MB (default 8192; 0: no limit): past it, the
-// folders of the programs launched longest ago are emptied, off this thread, but never one a running process holds
+// folders of all programs are held to MULLION_METAL_CACHE_LIMIT MB (default 8192; 0: no limit), checked at most once a
+// day: past it, the folders of the programs launched longest ago are emptied, off this thread, but never one a running process holds
 // (its lock), nor this process's own. a launch is recorded as its lock file's time
 static void
 limit_cache_folders(NSString *cache) {
@@ -450,6 +450,13 @@ limit_cache_folders(NSString *cache) {
   NSString *metal = cache.lastPathComponent;
   if (![programs.lastPathComponent isEqualToString:@"mullion"])
     return; // not the folders dxgi names
+  // sizing every program's folder walks thousands of files, CPU time a game or a test pays at its start: once a day
+  NSString *stamp = [programs stringByAppendingPathComponent:@".limited"];
+  struct stat st;
+  if (!stat(stamp.fileSystemRepresentation, &st) && time(NULL) - st.st_mtimespec.tv_sec < 24 * 3600)
+    return;
+  close(open(stamp.fileSystemRepresentation, O_WRONLY | O_CREAT | O_CLOEXEC, 0666));
+  utimes(stamp.fileSystemRepresentation, NULL);
   [cache retain];
   [programs retain];
   [metal retain];
