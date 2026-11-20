@@ -810,6 +810,11 @@ public:
   commit() {
     MTLResidencySet_commit(handle);
   }
+
+  void
+  requestResidency() {
+    MTLResidencySet_requestResidency(handle);
+  }
 };
 
 class CommandBuffer : public Object {

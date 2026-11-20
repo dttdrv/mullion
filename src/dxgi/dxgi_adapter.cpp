@@ -1,4 +1,5 @@
 #include <atomic>
+#include "mullion_memory.hpp"
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -293,7 +294,11 @@ public:
     // half of a group be reserved. the usage is asked of Metal at each call, since it is "current" (DXGI,
     // DXGI_QUERY_VIDEO_MEMORY_INFO): an application reads it right after it allocates
     bool local = MemorySegmentGroup == DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
-    pVideoMemoryInfo->Budget = local ? memory_ : 0;
+    // the budget follows macOS's memory (mullion_memory.hpp, Budget): at most 95% of the working set, so a game that
+    // fills it leaves macOS its share of unified memory (and macOS 26 its kernel: workaround memory_limit), and less
+    // under memory pressure
+    // and never more than dxgi.maxDeviceMemory, where it is set
+    pVideoMemoryInfo->Budget = local ? std::min(memory::Budget(device_), memory_) : 0;
     pVideoMemoryInfo->CurrentUsage = local ? device_.currentAllocatedSize() : 0;
     pVideoMemoryInfo->AvailableForReservation = pVideoMemoryInfo->Budget / 2;
     // MULLION_TRACE_MEMORY=heavy: every query; a game polls it each frame
@@ -318,19 +323,19 @@ public:
     return S_OK;
   }
 
-  // the budget is the device's, which does not change: the event is set once, as Windows sets it on registration
+  // the event is set on registration, as Windows sets it, and again each time the budget changes with macOS's memory
+  // (mullion_memory.hpp, Budget)
   HRESULT STDMETHODCALLTYPE RegisterVideoMemoryBudgetChangeNotificationEvent(
       HANDLE event, DWORD *cookie) override {
     if (!event || !cookie)
       return FAIL(DXGI_ERROR_INVALID_CALL);
-    SetEvent(event);
-    *cookie = ++event_cookie_;
+    *cookie = memory::RegisterBudgetEvent(device_, event);
     return S_OK;
   }
 
   void STDMETHODCALLTYPE
   UnregisterVideoMemoryBudgetChangeNotification(DWORD cookie) override {
-    // no op
+    memory::UnregisterBudgetEvent(cookie);
   }
 
   WMT::Device STDMETHODCALLTYPE GetMTLDevice() final { return device_; }

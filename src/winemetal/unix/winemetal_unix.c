@@ -3842,6 +3842,25 @@ _MTLBuffer_updateContents(void *obj) {
 }
 
 static NTSTATUS
+_WMTGetMemoryState(void *obj) {
+  struct unixcall_get_memory_state *params = obj;
+  int level = 1;
+  size_t size = sizeof(level);
+  if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, NULL, 0))
+    level = 1;
+  params->ret_pressure = level;
+  vm_statistics64_data_t stats;
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  vm_size_t page = 0;
+  params->ret_available = 0;
+  if (host_page_size(mach_host_self(), &page) == KERN_SUCCESS &&
+      host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&stats, &count) == KERN_SUCCESS)
+    params->ret_available =
+        ((uint64_t)stats.free_count + stats.inactive_count + stats.purgeable_count + stats.speculative_count) * page;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _WMTGetOSVersion(void *obj) {
   struct unixcall_get_os_version *params = obj;
   NSOperatingSystemVersion version = [NSProcessInfo processInfo].operatingSystemVersion;
@@ -4771,6 +4790,13 @@ _MTLResidencySet_commit(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
   id<MTLResidencySet> set = (id<MTLResidencySet>)params->handle;
   [set commit];
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLResidencySet_requestResidency(void *obj) {
+  struct unixcall_generic_obj_noret *params = obj;
+  [(id<MTLResidencySet>)params->handle requestResidency];
   return STATUS_SUCCESS;
 }
 
@@ -7677,6 +7703,8 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLCommandBuffer_encodeFrameInterpolation,
     &_MTLBinaryArchive_add,
     &_WMTRemoveOtherVersions,
+    &_WMTGetMemoryState,
+    &_MTLResidencySet_requestResidency,
 };
 
 #ifndef MULLION_NATIVE
@@ -7898,6 +7926,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLCommandBuffer_encodeFrameInterpolation,
     &_MTLBinaryArchive_add,
     &_WMTRemoveOtherVersions,
+    &_WMTGetMemoryState,
+    &_MTLResidencySet_requestResidency,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

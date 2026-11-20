@@ -417,6 +417,11 @@ struct unixcall_get_os_version {
   uint64_t ret_patch;
 };
 
+struct unixcall_get_memory_state {
+  uint64_t ret_pressure;  // kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4 critical
+  uint64_t ret_available; // bytes macOS can give without paging: free, inactive, purgeable and speculative pages
+};
+
 struct unixcall_mtldevice_newbinaryarchive {
   obj_handle_t device;
   struct WMTConstMemoryPointer url;

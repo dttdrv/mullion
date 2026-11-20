@@ -17,6 +17,8 @@
  */
 
 #include "d3d12_acceleration_structure.hpp"
+#include "mullion_heartbeat.hpp"
+#include "mullion_memory.hpp"
 #include "mullion_diag.hpp"
 #include "airconv_ray.h"
 #include "d3d12_device.hpp"
@@ -288,6 +290,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   std::vector<uint32_t> free_ray_functions_;
   uint32_t next_ray_function_ = SM50_RAY_FUNCTION_FIRST_SHADER;
   WMT::Reference<WMT::ResidencySet> residency_set_;
+  // the set kept wired while the GPU idles (mullion_heartbeat.hpp)
+  uint64_t heartbeat_ = 0;
   WMT::Reference<WMT::Heap> spare_tile_;
   // SparseTailHolds' answers, by texture type, pixel format, size, mips and page size
   mullion::mutex sparse_tails_lock_;
@@ -352,6 +356,7 @@ public:
   }
 
   ~MTLD3D12DeviceImpl() {
+    heartbeat::Forget(heartbeat_);
     if (archive_opener_)
       archive_opener_->Cancel();
     if (archive_writer_.joinable()) {
@@ -391,6 +396,12 @@ public:
       ERR("Failed to create MTLResidencySet: ", err.description().getUTF8String());
       return E_FAIL;
     }
+    heartbeat_ = heartbeat::Watch([this] {
+      std::unique_lock<mullion::mutex> lock(residency_lock_);
+      if (std::exchange(residency_dirty_, false))
+        residency_set_.commit();
+      residency_set_.requestResidency();
+    });
     format_inspector_.Inspect(GetMTLDevice());
     keep_structure_inputs = Config::getInstance().getOption<bool>("d3d12.keepAccelerationStructureInputs", true);
     emulate_depth_bounds = Config::getInstance().getOption<bool>("d3d12.emulateDepthBounds", true);
@@ -1701,6 +1712,12 @@ public:
     hr = ValidateResourceStates(InitialState, pHeapProps);
     if (FAILED(hr))
       return hr;
+    // the allocation stays within the working set where going past it panics the kernel (mullion_memory.hpp)
+    if (!memory::Admit(GetMTLDevice(), [&] {
+          D3D12_RESOURCE_ALLOCATION_INFO info;
+          return GetResourceAllocationInfo(&info, 0, 1, pDesc)->SizeInBytes;
+        }))
+      return FAIL(E_OUTOFMEMORY);
     switch (pDesc->Dimension) {
     case D3D12_RESOURCE_DIMENSION_TEXTURE1D:
     case D3D12_RESOURCE_DIMENSION_TEXTURE2D:
@@ -2620,6 +2637,7 @@ public:
   // the changes before the next command buffer, the first GPU work that can use them
   void
   CommitResidency() final {
+    heartbeat::Submitted();
     std::unique_lock<mullion::mutex> lock(residency_lock_);
     if (std::exchange(residency_dirty_, false))
       residency_set_.commit();

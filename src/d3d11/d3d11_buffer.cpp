@@ -17,6 +17,7 @@
  */
 
 #include "com/com_pointer.hpp"
+#include "mullion_memory.hpp"
 #include "d3d11_device.hpp"
 #include "mullion_buffer.hpp"
 #include "mullion_dynamic.hpp"
@@ -523,6 +524,9 @@ CreateBuffer(
     MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData,
     ID3D11Buffer **ppBuffer
 ) {
+  // the allocation stays within the working set where going past it panics the kernel (mullion_memory.hpp)
+  if (!memory::Admit(pDevice->GetMTLDevice(), [&] { return uint64_t(pDesc->ByteWidth); }))
+    return E_OUTOFMEMORY;
   // a default buffer alone: a share's pages are written where they are, and a dynamic buffer's are replaced
   if ((pDesc->MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)) &&
       pDesc->Usage == D3D11_USAGE_DEFAULT && env::metalVR())
