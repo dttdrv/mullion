@@ -326,7 +326,7 @@ main(int argc, char **argv) {
   }
 
   ComPtr<ID3D12Device2> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   if (argc <= 3)
     return processes(argc, argv);
   if (!count_imports())

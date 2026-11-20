@@ -61,7 +61,7 @@ float4 ps(V v) : SV_Target { return float4(v.uv, 0.5, 1); }
       ExitProcess(verdict());
   };
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {});
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline{};
   pipeline.pRootSignature = rs.Get();
@@ -208,7 +208,7 @@ float4 ps(V v) : SV_Target { return float4(v.uv, 0.5, 1); }
   device.Reset();
   for (UINT count : {0u, 1u, 31u, 32u, 33u, 65u}) {
     step("release everything with %u Presents queued", count);
-    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
     ComPtr<ID3D12CommandQueue> queue;
     CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
     ComPtr<ID3D12Fence> gate, drain;

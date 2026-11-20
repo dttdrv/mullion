@@ -127,7 +127,7 @@ main(int argc, char **argv) {
               "rounding witnesses differ by one ULP and agree")) return verdict();
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER params[] = {{D3D12_ROOT_PARAMETER_TYPE_SRV}, {D3D12_ROOT_PARAMETER_TYPE_UAV}};
   auto rs = root_signature(device.Get(), {std::size(params), params});
   if (!expect(bool(rs), "root signature")) return verdict();

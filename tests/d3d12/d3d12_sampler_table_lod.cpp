@@ -108,7 +108,7 @@ main(int argc, char **argv) {
     return verdict();
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   constexpr UINT size = 256, mips = std::bit_width(size), targets = 6;
   constexpr float depth_scale = 16, sample_bias = -1, least = 3.5f, view_clamp = 3, unwritten = -1;
   D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};

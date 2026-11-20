@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
         return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   // DXGI_SAMPLE_DESC: "The valid range is between zero and one less than the level returned" by the query.
   // https://learn.microsoft.com/en-us/windows/win32/api/dxgicommon/ns-dxgicommon-dxgi_sample_desc
   step("sample-count boundaries and quality-level resource validation");

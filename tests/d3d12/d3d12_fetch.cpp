@@ -47,7 +47,7 @@ main(int argc, char **argv) {
   const UINT side = 15, count = 32, clear = 0xc1ea, centre = side / 2 * side + side / 2, tile = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
   const DXGI_FORMAT format = DXGI_FORMAT_R32_UINT;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
   auto rs = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT});

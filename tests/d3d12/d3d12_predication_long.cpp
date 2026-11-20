@@ -34,7 +34,7 @@ main(int argc, char **argv) {
   };
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER params[kParameters] = {};
   // b0 is the shader's and u0 its output; b1 on are nothing's
   for (UINT i = 0; i < kParameters; i++) {

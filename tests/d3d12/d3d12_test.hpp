@@ -41,6 +41,21 @@ kept(std::string code, const char *entry) {
   return code;
 }
 
+// the device a test draws through. A process the router refuses Direct3D 12 in (mullion.conf's
+// router.d3d12.bitness = refuse: this build does not render it in a 32-bit process) is answered E_NOINTERFACE,
+// which is a skip the run names (docs/TESTING.md 6.2), not a failure the gate counts. D3D12CreateDevice's other
+// errors stay the caller's, whose contracts about them are what some tests read.
+inline HRESULT
+make_device(IUnknown *adapter, D3D_FEATURE_LEVEL level, REFIID riid, void **device) {
+  const HRESULT hr = D3D12CreateDevice(adapter, level, riid, device);
+  if (hr == E_NOINTERFACE) {
+    // the run reads a skip from a last line that says so, and the exit status 77 its results name
+    printf("skipped: this build does not render Direct3D 12 in this process (router.d3d12.bitness = refuse)\n");
+    exit(77);
+  }
+  return hr;
+}
+
 struct Compiler {
   ComPtr<IDxcCompiler3> dxc; // null for DXBC
 

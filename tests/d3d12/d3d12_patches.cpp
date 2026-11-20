@@ -42,7 +42,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT});
   const UINT side = 16, across = 8, patches = across * across, size = side * across;
   const DXGI_FORMAT format = DXGI_FORMAT_R32G32_FLOAT;

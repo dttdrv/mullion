@@ -15,7 +15,7 @@ static ULONG references(IUnknown *object) {
 
 int main(int, char **) {
   ComPtr<ID3D12Device1> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   struct Entry { const char *name; ComPtr<ID3D12Object> object; bool child; };
   std::vector<Entry> objects;
   auto keep = [&](const char *name, auto *object, bool child = true) -> HRESULT {

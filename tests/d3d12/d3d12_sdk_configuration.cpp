@@ -39,7 +39,7 @@ main(int argc, char **argv) {
   }
 
   // the configuration changes nothing about device creation
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   printf("passed: ID3D12SDKConfiguration accepted SetSDKVersion, device created\n");
   return 0;
 }

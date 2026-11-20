@@ -43,7 +43,7 @@ main(int argc, char **argv) {
   const D3D12_RECT full{0, 0, side, side}, empty{0, 0, 0, side};
   auto area = [](const D3D12_RECT &r) { return UINT64(r.right - r.left) * (r.bottom - r.top); };
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {});
   if (!expect(rs != nullptr, "root signature could not be made"))
     return verdict();

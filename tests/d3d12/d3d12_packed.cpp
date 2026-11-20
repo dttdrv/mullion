@@ -219,7 +219,7 @@ main(int argc, char **argv) {
     }
   }
   ComPtr<ID3D12Device2> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS4 options4{};
   D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &options4, sizeof(options4)));

@@ -24,7 +24,7 @@ main(int argc, char **argv) {
     ExitProcess(verdict());
   }).detach();
   ComPtr<ID3D12Device1> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const DWORD timeout = 10000;
   const UINT signals = 65;
   const UINT64 targets[] = {0, 1, UINT64_MAX};

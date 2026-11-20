@@ -33,7 +33,7 @@ main(int argc, char **argv) {
   // parts of at most 8 groups: the grid is cut along each of its sides
   SetEnvironmentVariableA("MULLION_D3D12_THREADS_AT_ONCE", std::to_string(8 * threads[0] * threads[1] * threads[2]).c_str());
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const UINT cells[3] = {groups[0] * threads[0], groups[1] * threads[1], groups[2] * threads[2]};
   const UINT count = cells[0] * cells[1] * cells[2];
   std::vector<std::string> defines;

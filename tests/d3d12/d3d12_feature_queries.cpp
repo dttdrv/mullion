@@ -81,7 +81,7 @@ int
 main(int argc, char **argv) {
   printf("variant: %s; inputs: exhaustive\n", argc > 1 ? argv[1] : "api");
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const struct { DXGI_FORMAT format; const char *name; } formats[] = {
       DXGI_FORMATS,
       {reference::DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE, "DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE"},

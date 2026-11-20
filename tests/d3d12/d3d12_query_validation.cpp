@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
     if (!strncmp(argv[i], "CASE=", 5))
       selected = strtol(argv[i] + 5, nullptr, 0);
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   constexpr UINT queries = 3;
   constexpr UINT64 result_size = sizeof(UINT64), buffer_bytes = 4 * result_size;
   auto result = buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, buffer_bytes, D3D12_RESOURCE_STATE_COPY_DEST);

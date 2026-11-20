@@ -72,7 +72,7 @@ main(int argc, char **argv) {
   }
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_DESCRIPTOR_RANGE ranges[3] = {
       {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 6, 0, 0, 3},
       {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, 9}

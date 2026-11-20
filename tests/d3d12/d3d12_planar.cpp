@@ -90,7 +90,7 @@ run(int argc, char **argv) {
   if (vs.empty())
     return 1;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   step("NV12: required support and plane count");
   D3D12_FEATURE_DATA_FORMAT_SUPPORT support{DXGI_FORMAT_NV12};
   HRESULT hr = device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support));

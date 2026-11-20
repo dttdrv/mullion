@@ -29,7 +29,7 @@ main(int argc, char **argv) {
     return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const UINT64 tile = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
   unsigned failures = 0;
   auto expect = [&](bool ok, const char *what) {
