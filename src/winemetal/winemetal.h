@@ -510,6 +510,9 @@ enum WMTTextureUsage : uint32_t {
   WMTTextureUsageRenderTarget = 4,
   WMTTextureUsagePixelFormatView = 16,
   WMTTextureUsageShaderAtomic = 32,
+  // Mullion's own, never Metal's: the texture is made with lossy compression (MTLTextureCompressionTypeLossy), and
+  // the bit is taken off its usage (mullion::memory::Lossy decides where Metal takes it)
+  WMTTextureUsageLossyCompression = 128,
 };
 
 enum WMTTextureSwizzle : uint8_t {

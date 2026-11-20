@@ -350,7 +350,9 @@ fill_texture_descriptor(MTLTextureDescriptor *desc, struct WMTTextureInfo *info)
   if (info->sample_count > 4)
     family_needs(10, "textures of 8 samples");
   desc.sampleCount = info->sample_count;
-  desc.usage = (MTLTextureUsage)info->usage;
+  desc.usage = (MTLTextureUsage)(info->usage & ~WMTTextureUsageLossyCompression);
+  if (info->usage & WMTTextureUsageLossyCompression)
+    desc.compressionType = MTLTextureCompressionTypeLossy;
   desc.resourceOptions = (MTLResourceOptions)info->options;
   if (@available(macOS 26.0, *))
     desc.placementSparsePageSize = (MTLSparsePageSize)info->placement_sparse_page_size;

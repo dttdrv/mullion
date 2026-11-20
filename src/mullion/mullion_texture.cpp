@@ -18,6 +18,7 @@
 
 #include "mullion_texture.hpp"
 #include "mullion_heartbeat.hpp"
+#include "mullion_memory.hpp"
 #include "mullion_residency.hpp"
 #include "wsi_platform.hpp"
 #include <atomic>
@@ -206,6 +207,8 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     options |= WMTResourceStorageModeManaged;
   }
   info.options = options;
+  if (!bytes_per_image_ && !flags.test(TextureAllocationFlag::Shared) && memory::Lossy(device_, info))
+    info.usage = WMTTextureUsage(info.usage | WMTTextureUsageLossyCompression);
   if (bytes_per_image_) {
     WMTBufferInfo buffer_info;
     buffer_info.length = bytes_per_image_;
@@ -236,6 +239,8 @@ Texture::allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t h
     options |= WMTResourceStorageModeManaged;
   }
   info.options = options;
+  if (!bytes_per_image_ && !flags.test(TextureAllocationFlag::Shared) && memory::Lossy(device_, info))
+    info.usage = WMTTextureUsage(info.usage | WMTTextureUsageLossyCompression);
   flags.set(TextureAllocationFlag::AllocatedOnHeap);
   return new TextureAllocation(this, heap.newTexture(info, heap_offset), info, flags);
 }
