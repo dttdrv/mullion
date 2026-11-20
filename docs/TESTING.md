@@ -219,6 +219,13 @@ construct it adds. Microsoft's compiler folds some expressions by rules of its o
 `MULLION_FUZZ_DISASSEMBLE=1` puts its DXBC beside it for `build/src/airconv/darwin/airconv -S`. 3,000 programs take
 about a minute; what it found is in [workarounds.md](workarounds.md#in-the-shader-converter).
 
+**9.5 Other translation layers.** `tests/lanes.py --lane mullion=<Wine> --lane dxvk=<Wine>:<DXVK's DLLs> d3d11_` runs
+the build's tests through each lane, the lane's DLLs beside a copy of each test's program, and lists first the tests
+Mullion alone fails. On the M6 (macOS 27.3) every D3D10 and D3D11 test Mullion fails, DXVK-MacOS fails with the same
+count of wrong results (`d3d11_fullscreen` aside), which puts those failures in the Apple GPU, the tests' expectations
+or what both share, not Mullion's D3D11. That DXVK reaches Metal through `winemetal.dll` as Mullion does, so a fault
+of the bridge would show in both; D3D12 needs a lane of its own (VKD3D-Proton, D3DMetal).
+
 ## 10. Performance
 
 A performance run starts from the work the change removes ([CODE.md 5.1](CODE.md#5-performance)) and compares the same
