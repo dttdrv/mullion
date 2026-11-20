@@ -7,6 +7,7 @@
 // Metal's own reduction never takes, so Mullion emulates it on every GPU. a tessellated draw takes Metal's tessellator
 // by the pipeline it draws with, which is the one that emulates the sampler
 #include "d3d12_test.hpp"
+#include <algorithm>
 
 static const char hlsl[] = R"hlsl(
 Texture2D<float> t : register(t0);

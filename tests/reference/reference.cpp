@@ -3,6 +3,9 @@
 #define fmin reference_fmin
 #define fmax reference_fmax
 #include "tessellator.cpp"
+// tessellator.cpp's min/max macros would rewrite std::min/std::max in the standard headers below
+#undef min
+#undef max
 #include "reference.hpp"
 
 namespace reference {
