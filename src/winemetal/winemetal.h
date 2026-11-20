@@ -2220,6 +2220,10 @@ WINEMETAL_API void SharedEventListener_destroy(obj_handle_t shared_event_listene
 
 WINEMETAL_API void WMTGetOSVersion(uint64_t *major, uint64_t *minor, uint64_t *patch);
 
+// macOS's memory pressure (1 normal, 2 warning, 4 critical) and the bytes it can still give without paging: what a
+// budget that follows the system's memory reads (mullion_memory.hpp)
+WINEMETAL_API void WMTGetMemoryState(uint64_t *pressure, uint64_t *available);
+
 enum WMTMetalVersion : uint32_t {
   WMTMetal310 = 310,
   WMTMetal320 = 320,
@@ -2427,6 +2431,9 @@ MTLResidencySet_removeAllocations(obj_handle_t residency_set, const obj_handle_t
 WINEMETAL_API void MTLResidencySet_removeAllAllocations(obj_handle_t residency_set);
 
 WINEMETAL_API void MTLResidencySet_commit(obj_handle_t residency_set);
+// makes the set's allocations resident now: macOS unwires GPU memory a while after the GPU goes idle, and the next
+// submission then waits for it to be wired again (mullion_heartbeat.hpp)
+WINEMETAL_API void MTLResidencySet_requestResidency(obj_handle_t residency_set);
 
 WINEMETAL_API void MTLCommandQueue_addResidencySet(obj_handle_t queue, obj_handle_t residency_set);
 
@@ -2658,7 +2665,7 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
-       WMTUnixRemoveOtherVersions, WMTUnixCallCount };
+       WMTUnixRemoveOtherVersions, WMTUnixGetMemoryState, WMTUnixResidencySetRequestResidency, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

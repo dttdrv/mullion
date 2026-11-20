@@ -18,6 +18,7 @@
  */
 
 #include "mullion_command_queue.hpp"
+#include "mullion_heartbeat.hpp"
 #include "Metal.hpp"
 #include "mullion_statistics.hpp"
 #include "util_env.hpp"
@@ -257,6 +258,7 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
   }
   FLIGHT_HEAVY(Gpu, "context queue %p: chunk %llu of frame %llu commits as %#llx", this, seq, chunk.frame_, cmdbuf.handle);
   cmdbuf.commit();
+  heartbeat::Submitted();
 
   ready_for_commit.fetch_add(1, std::memory_order_release);
   ready_for_commit.notify_one();
