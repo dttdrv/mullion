@@ -30,5 +30,11 @@ path). Each line starts with the milliseconds since the log was opened, then the
 Each launch keeps the previous launch's log as `mullion.prev.log`. Lines reach the disk within a second; a GPU line, a
 warning or an error at once, so a process that hangs or is ended right after still has them.
 
+`router.log` in the same folder is the router's own record: one line a Direct3D generation the process asked for,
+what answered it and which input decided -- this build's rule, the configuration, or the environment (see
+[the router's section](../mullion.conf) in `mullion.conf`). `MULLION_TRACE_API=1` writes it, and
+`MULLION_ROUTER_RECORD=1` writes it on its own. `tools/mullion-diag router <folder>` prints it back with the refusals
+counted.
+
 The flight recorder (`<executable>.flight` in the same `~/Library/Logs/Mullion`) is separate and always on: it keeps a
 process's last events in memory and writes them on a crash, a removed device or a stuck command buffer.

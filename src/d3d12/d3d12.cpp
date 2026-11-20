@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "../mullion/mullion_router.hpp"
 #include "d3d12.h"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
@@ -50,6 +51,10 @@ Logger Logger::s_instance("d3d12.log");
 
 extern "C" HRESULT WINAPI
 D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void **ppDevice) {
+
+  if (!mullion::router::offered(
+          mullion::router::Request{mullion::router::Api::D3D12, false, false, uint32_t(MinimumFeatureLevel)}))
+    return E_NOINTERFACE;
 
   Com<IDXGIAdapter> dxgi_adapter = nullptr;
   Com<IDXGIFactory4> dxgi_factory = nullptr;
