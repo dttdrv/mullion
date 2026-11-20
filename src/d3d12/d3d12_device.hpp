@@ -1020,6 +1020,10 @@ public:
   virtual std::vector<uint64_t> SparseBufferMappings() = 0;
   // whether a reserved buffer exists, which SparseBufferMappings has an entry for whatever it maps
   virtual bool HasSparseBuffers() = 0;
+  // whether a reserved buffer's tile has ever been mapped (UpdateTileMappings, on any queue): until one has, nothing is
+  // reached through a reserved buffer, and an aliasing barrier orders nothing a reserved buffer adds. it is never
+  // false again, so false where a queue encodes a list means no mapping, on that queue or one it waited for, came first
+  virtual bool SparseTilesMapped() = 0;
 
   virtual InternalCommandLibrary& GetLib() = 0;
 
