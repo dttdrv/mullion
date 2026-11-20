@@ -1,5 +1,8 @@
 #import <Foundation/Foundation.h>
 #include <os/lock.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include "sqlite3.h"
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
@@ -413,6 +416,91 @@ remove_archive_folders(NSString *cache) {
     });
 }
 
+// the bytes a folder takes on disk
+static uint64_t
+folder_bytes(NSString *folder) {
+  uint64_t total = 0;
+  NSDirectoryEnumerator *walk = [[NSFileManager defaultManager]
+                 enumeratorAtURL:[NSURL fileURLWithPath:folder]
+      includingPropertiesForKeys:@[ NSURLTotalFileAllocatedSizeKey ]
+                         options:0
+                    errorHandler:nil];
+  for (NSURL *file in walk) {
+    NSNumber *size = nil;
+    [file getResourceValue:&size forKey:NSURLTotalFileAllocatedSizeKey error:nil];
+    total += size.unsignedLongLongValue;
+  }
+  return total;
+}
+
+// each program keeps its Metal cache in a folder of its own ("mullion/<exe>/com.apple.metal"), which grows by every
+// pipeline it compiles, and nothing removed a program's once it was no longer played (2.9 GB for one game here). the
+// folders of all programs are held to MULLION_METAL_CACHE_LIMIT MB (default 8192; 0: no limit): past it, the
+// folders of the programs launched longest ago are emptied, off this thread, but never one a running process holds
+// (its lock), nor this process's own. a launch is recorded as its lock file's time
+static void
+limit_cache_folders(NSString *cache) {
+  const char *given = getenv("MULLION_METAL_CACHE_LIMIT");
+  uint64_t limit = (given && *given ? strtoull(given, NULL, 10) : 8192) << 20;
+  NSString *lock_path = [cache stringByAppendingPathComponent:@"mullion.lock"];
+  utimes(lock_path.fileSystemRepresentation, NULL);
+  if (!limit)
+    return;
+  NSString *programs = [[cache stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+  NSString *metal = cache.lastPathComponent;
+  if (![programs.lastPathComponent isEqualToString:@"mullion"])
+    return; // not the folders dxgi names
+  [cache retain];
+  [programs retain];
+  [metal retain];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
+    @autoreleasepool {
+      NSMutableArray<NSArray *> *folders = [NSMutableArray array]; // [path, last launch, bytes]
+      uint64_t total = 0;
+      for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:programs error:nil]) {
+        NSString *folder = [[programs stringByAppendingPathComponent:name] stringByAppendingPathComponent:metal];
+        BOOL directory = NO;
+        if (![[NSFileManager defaultManager] fileExistsAtPath:folder isDirectory:&directory] || !directory)
+          continue;
+        uint64_t bytes = folder_bytes(folder);
+        total += bytes;
+        if ([folder isEqualToString:cache])
+          continue;
+        struct stat st;
+        NSString *lock = [folder stringByAppendingPathComponent:@"mullion.lock"];
+        double launched = !stat(lock.fileSystemRepresentation, &st) ? st.st_mtimespec.tv_sec
+                          : !stat(folder.fileSystemRepresentation, &st) ? st.st_mtimespec.tv_sec : 0;
+        [folders addObject:@[ folder, @(launched), @(bytes) ]];
+      }
+      [folders sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [a[1] compare:b[1]];
+      }];
+      for (NSArray *entry in folders) {
+        if (total <= limit)
+          break;
+        NSString *folder = entry[0];
+        int lock = open([folder stringByAppendingPathComponent:@"mullion.lock"].fileSystemRepresentation,
+                        O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        if (lock < 0)
+          continue;
+        // a program that starts meanwhile waits for its folder to be emptied (remove_archive_folders), and keeps it
+        if (!flock(lock, LOCK_EX | LOCK_NB)) {
+          for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:folder error:nil])
+            if (![name isEqualToString:@"mullion.lock"])
+              [[NSFileManager defaultManager] removeItemAtPath:[folder stringByAppendingPathComponent:name] error:nil];
+          NSLog(@"[mullion] the Metal caches past %llu MB: emptied %@ (%llu MB)", limit >> 20, folder,
+                [entry[2] unsignedLongLongValue] >> 20);
+          total -= [entry[2] unsignedLongLongValue];
+        }
+        close(lock);
+      }
+    }
+    [cache release];
+    [programs release];
+    [metal release];
+  });
+}
+
 int
 _WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
@@ -420,8 +508,10 @@ _WMTSetMetalShaderCachePath(void *obj) {
   NSString *resolved_path = resolve_cache_dir(path, false);
   MTLSetShaderCachePath(resolved_path);
   params->ret_success = [MTLGetShaderCachePath() isEqualToString:resolved_path];
-  if (params->ret_success)
+  if (params->ret_success) {
     remove_archive_folders(resolved_path);
+    limit_cache_folders(resolved_path);
+  }
   [path release];
   return 0;
 };
