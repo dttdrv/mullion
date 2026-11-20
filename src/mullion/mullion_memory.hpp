@@ -40,4 +40,15 @@ Admit(WMT::Device device, Size &&size) {
   return false;
 }
 
+// whether a texture of this description is made with lossy compression, the memory saver: MULLION_LOSSY_TEXTURES=1
+// (off by default; it trades some of a texture's precision for half its memory) on an Apple8 GPU or later, for a
+// private texture Metal can compress so (an M6, macOS 27.3, with API validation: a color format of 8, 16 or 32 bits a
+// channel, not packed, block-compressed, depth or stencil; nothing a shader writes, no view of another format; MSAA,
+// arrays, 3D, cubes, mipmaps and textures placed in a heap all can). a 4096x4096 RGBA8 texture takes 32 MB instead of
+// 64 (tools/metal-bench/lossy.swift). in practice that is Direct3D 12's private textures without a format view: its
+// half and float targets (RGBA16F, R32F, RG16F...), the large ones of an HDR renderer; an RGBA8 texture keeps the view
+// relaxed format casting gives it, and stays lossless. D3D11's textures are shared, and Metal compresses none of those
+// so (d3d12_lossy_textures)
+bool Lossy(WMT::Device device, const WMTTextureInfo &info);
+
 } // namespace mullion::memory

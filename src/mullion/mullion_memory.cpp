@@ -144,4 +144,18 @@ UnregisterBudgetEvent(uint32_t cookie) {
   e.changed.notify_all();
 }
 
+bool
+Lossy(WMT::Device device, const WMTTextureInfo &info) {
+  static const bool on = env::getEnvVar("MULLION_LOSSY_TEXTURES") == "1";
+  if (!on)
+    return false;
+  static const bool family = device.supportsFamily(WMTGPUFamilyApple8);
+  if (!family || (info.options & 0xf0) != WMTResourceStorageModePrivate /* the storage mode bits */ ||
+      (info.usage & (WMTTextureUsageShaderWrite | WMTTextureUsagePixelFormatView | WMTTextureUsageShaderAtomic)))
+    return false;
+  // Metal's own pixel formats below the block-compressed ones are of color, but for the packed ones
+  auto format = uint32_t(ORIGINAL_FORMAT(info.pixel_format));
+  return format && format < 130 && !(format >= 40 && format <= 43) && format != 92 && format != 93;
+}
+
 } // namespace mullion::memory
