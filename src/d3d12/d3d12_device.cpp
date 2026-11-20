@@ -291,6 +291,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   mullion::shared_mutex va_lock_;
   std::map<uint64_t, BufferAllocation *> interval_map_;
   std::map<uint64_t, std::vector<uint64_t>> sparse_buffer_mappings_;
+  // whether a tile of a reserved buffer has ever been mapped, by UpdateTileMappings on any queue: never false again
+  std::atomic<bool> sparse_tiles_mapped_ = false;
   // what a null acceleration structure is to a ray query: a top-level structure of nothing
   std::unique_ptr<AccelerationStructure> null_scene_;
 
@@ -2762,8 +2764,16 @@ public:
   UpdateSparseBufferMappings(BufferAllocation *buffer, const std::vector<WMTSparseBufferMapping> &ranges) {
     std::unique_lock<mullion::shared_mutex> lock(va_lock_);
     auto &tiles = sparse_buffer_mappings_.at(buffer->gpuAddress());
-    for (auto &range : ranges)
+    for (auto &range : ranges) {
       std::fill_n(tiles.begin() + range.first_tile, range.tile_count, range.mode == WMTSparseMappingModeMap);
+      if (range.mode == WMTSparseMappingModeMap && range.tile_count)
+        sparse_tiles_mapped_.store(true, std::memory_order_release);
+    }
+  }
+
+  bool
+  SparseTilesMapped() override {
+    return sparse_tiles_mapped_.load(std::memory_order_acquire);
   }
 
   void
