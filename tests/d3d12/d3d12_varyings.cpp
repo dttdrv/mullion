@@ -139,7 +139,7 @@ main(int argc, char **argv) {
       {"distances", "vs_distances", "ps_distances", constant, [](float, float, const Context &) { return Pixel{{3, 8, 5, 6}}; }},
   };
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {});
   for (auto &c : cases) {
     auto vs = compiler.compile(hlsl, c.vs, "vs", defines), ps = compiler.compile(hlsl, c.ps, "ps", defines);

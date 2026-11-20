@@ -52,7 +52,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
   D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2{};
   D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};

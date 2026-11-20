@@ -30,7 +30,7 @@ main() {
     return verdict();
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<IDXGIFactory4> factory;
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
   {

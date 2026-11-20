@@ -35,7 +35,7 @@ main(int argc, char **argv) {
   if (!expect(!vs.empty() && !ps.empty(), "shaders compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER constants{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
   constants.Constants = {0, 0, 1};
   auto rs = root_signature(device.Get(), {1, &constants});

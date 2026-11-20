@@ -37,7 +37,7 @@ main(int argc, char **argv) {
   // thread, whose pipelines d3d12_deferred_pipelines has
   SetEnvironmentVariableA("MULLION_D3D12_DEFER_PIPELINES", "0");
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");
   ((decltype(&WMTDiagTimeCalls))GetProcAddress(winemetal, "WMTDiagTimeCalls"))();
   auto totals = (decltype(&WMTDiagCallTotals))GetProcAddress(winemetal, "WMTDiagCallTotals");
@@ -105,7 +105,7 @@ main(int argc, char **argv) {
     files++;
   FindClose(archive);
   expect(files > 1, "%u archive files for %zu pipelines", files, many.size() + 3);
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   desc.pRootSignature = (rs = root_signature(device.Get(), {})).Get();
   auto made = make(desc)["MTLDevice_newRenderPipelineState"];
   expect(made == 1, "%llu Metal pipeline creations, want the archive's one", (unsigned long long)made);

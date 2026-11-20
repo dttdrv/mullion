@@ -23,7 +23,7 @@ main(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return 77;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue;
   const D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));

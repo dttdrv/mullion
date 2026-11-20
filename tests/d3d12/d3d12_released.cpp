@@ -73,7 +73,7 @@ released(const Compiler &compiler, bool placed, bool gone, UINT side) {
 
   ComPtr<ID3D12Device> device;
   D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
-  if (!expect(!vs.empty() && !ps.empty() && !cs.empty() && SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) &&
+  if (!expect(!vs.empty() && !ps.empty() && !cs.empty() && SUCCEEDED(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) &&
                   SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))),
               "no shaders or no device"))
     return true;

@@ -80,7 +80,7 @@ main(int argc, char **argv) {
 
   step("create the device");
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER parameter{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
   parameter.Constants = {0, 0, 1};
   parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;

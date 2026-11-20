@@ -13,7 +13,7 @@
 
 int main(int, char **) {
   ComPtr<ID3D12Device8> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto aligned = [](UINT64 bytes, UINT64 alignment) { return (bytes + alignment - 1) / alignment * alignment; };
   for (const auto &format : copy_formats) {
     // depth/stencil plane footprints already have an independent passing conformance witness.

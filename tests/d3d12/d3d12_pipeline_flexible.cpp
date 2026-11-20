@@ -38,7 +38,7 @@ main(int argc, char **argv) {
   // the counts are taken around the create call
   SetEnvironmentVariableA("MULLION_D3D12_DEFER_PIPELINES", "0");
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto winemetal = GetModuleHandleA("winemetal.dll");
   ((decltype(&WMTDiagTimeCalls))GetProcAddress(winemetal, "WMTDiagTimeCalls"))();
   auto totals = (decltype(&WMTDiagCallTotals))GetProcAddress(winemetal, "WMTDiagCallTotals");

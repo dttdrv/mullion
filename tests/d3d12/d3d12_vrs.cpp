@@ -122,7 +122,7 @@ main(int argc, char **argv) {
   // SV_ShadingRate is SM 6.4's
   bool dxil = compiler.dxc;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   unsigned failures = 0, failures_before = 0;
 
   step("the device reports tier 2, 16x16 tiles and the sum combiner");

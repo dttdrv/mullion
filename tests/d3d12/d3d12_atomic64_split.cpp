@@ -67,7 +67,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
   const UINT group = 256, threads = std::max(std::bit_ceil(options1.TotalLaneCount) * 4, 4096u),

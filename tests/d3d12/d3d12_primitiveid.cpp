@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   }
   step("create the device, pipelines and readback target");
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const UINT max_instances = 3, width = 4 * SM50_GEOMETRY_WARP_THREADS + 2, height = 2 * max_instances;
   struct Constants {
     UINT corners, strip, stride, first, every, last, primitives, run_vertices;

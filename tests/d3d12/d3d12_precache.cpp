@@ -34,7 +34,7 @@ main(int argc, char **argv) {
   }
   const UINT variants = 48, threads = 8, seconds = 120;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER stored_at{D3D12_ROOT_PARAMETER_TYPE_UAV};
   auto rs = root_signature(device.Get(), {1, &stored_at});
 

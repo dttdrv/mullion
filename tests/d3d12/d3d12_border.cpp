@@ -53,7 +53,7 @@ main(int argc, char **argv) {
     return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
   // four uniform 4x4 textures of 32-bit texels, two depth textures, and a half texture only read off its edge
   const float value = 0.25f;

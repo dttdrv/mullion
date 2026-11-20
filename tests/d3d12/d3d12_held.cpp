@@ -99,7 +99,7 @@ main(int argc, char **argv) {
   auto hwnd = CreateWindowA("held", "held", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, size, size, nullptr, nullptr,
                             wc.hInstance, nullptr);
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {});
   D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
   desc.pRootSignature = rs.Get();

@@ -64,7 +64,7 @@ main(int argc, char **argv) {
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
                                       D3D_FEATURE_LEVEL_12_1};
   ComPtr<ID3D12Device> probe;
-  CHECK(D3D12CreateDevice(nullptr, levels[0], IID_PPV_ARGS(&probe)));
+  CHECK(make_device(nullptr, levels[0], IID_PPV_ARGS(&probe)));
   D3D12_FEATURE_DATA_FEATURE_LEVELS maximum{ARRAYSIZE(levels), levels};
   CHECK(probe->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &maximum, sizeof(maximum)));
   probe.Reset();
@@ -79,7 +79,7 @@ main(int argc, char **argv) {
     }
     step("feature level %#x: XR support", level);
     ComPtr<ID3D12Device> device;
-    CHECK(D3D12CreateDevice(nullptr, level, IID_PPV_ARGS(&device)));
+    CHECK(make_device(nullptr, level, IID_PPV_ARGS(&device)));
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{xr};
     CHECK(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)));
     const UINT required =

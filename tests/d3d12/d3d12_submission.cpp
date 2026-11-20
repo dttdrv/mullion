@@ -35,7 +35,7 @@ main() {
   const D3D12_PREDICATION_OP ops[] = {D3D12_PREDICATION_OP_EQUAL_ZERO, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO};
   const UINT split_counts[] = {0, 1, 2};
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue, reader;
   D3D12_COMMAND_QUEUE_DESC desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   CHECK(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue)));

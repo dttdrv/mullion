@@ -93,7 +93,7 @@ main(int argc, char **argv) {
     return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   enum { Empty, All, First, Nested, Reused, Compute, NoPixel, Geometry, Queries };
   step("seed %u: create a pipeline statistics heap", seed);
   D3D12_QUERY_HEAP_DESC query_desc{D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, Queries};

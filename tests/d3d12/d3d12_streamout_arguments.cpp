@@ -62,7 +62,7 @@ main(int argc, char **argv) {
   };
   const UINT commands = counts.back(), columns = 2 * commands, rows = 3;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12Resource> predicate;
   if (predicated) {
     predicate = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, sizeof(UINT64), D3D12_RESOURCE_STATE_GENERIC_READ);
