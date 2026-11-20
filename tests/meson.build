@@ -32,8 +32,8 @@ configure_file(input : 'host/resource_cases.py', output : 'resource_cases.hpp',
 # (tests/manifest.py). not a test: it checks nothing, and runs once before a run's tests
 manifest_probe = executable('manifest_probe', 'manifest_probe.cpp')
 
-# as the library builds D3D12 (src/meson.build), now on PE32 too
- test_d3d12 = get_option('enable_d3d12')
+# as the library builds D3D12 (src/meson.build)
+test_d3d12 = get_option('enable_d3d12') and cpu_family != 'x86'
 if test_d3d12
   levels = run_command(cpp.cmd_array() + ['-E', '-P', '-x', 'c++', '-include', 'd3dcommon.h', '/dev/null'],
                        check: true).stdout().split('enum D3D_FEATURE_LEVEL')[1].split('{')[1].split('}')[0]
