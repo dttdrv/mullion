@@ -3,6 +3,7 @@
 #include "com/com_pointer.hpp"
 #include "d3d11.h"
 #include "log/log.hpp"
+#include "../mullion/mullion_router.hpp"
 
 namespace mullion {
 Logger Logger::s_instance("d3d10core.log");
@@ -17,6 +18,10 @@ D3D10CoreCreateDevice(
     IDXGIFactory *pFactory, IDXGIAdapter *pAdapter, UINT Flags, D3D_FEATURE_LEVEL FeatureLevel, ID3D10Device **ppDevice
 ) {
   InitReturnPtr(ppDevice);
+
+  // the level the request names is part of what the record says the title asked for
+  if (!router::offered(router::Request{router::Api::D3D10, false, false, uint32_t(FeatureLevel)}))
+    return E_NOINTERFACE;
 
   Com<ID3D11Device> d3d11_device;
 

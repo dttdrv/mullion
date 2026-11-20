@@ -60,7 +60,8 @@ namespace mullion {
      */
     void setOption(
       const std::string& key,
-      const std::string& value);
+      const std::string& value,
+      const std::string& source = "");
 
     /**
      * \brief Parses an option value
@@ -120,6 +121,9 @@ namespace mullion {
   private:
 
     OptionMap m_options;
+    // where each option's value came from, so the effective list says which file or environment set it: the same key
+    // in two places is a debugging trap that only shows up as a result that will not change
+    std::unordered_map<std::string, std::string> m_sources;
 
     std::string getOptionValue(
       const char*         option) const;
