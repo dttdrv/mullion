@@ -325,7 +325,7 @@ bench(Compiler &compiler) {
   const UINT width = 1920, height = 1080, grid = 64, frames = 40;
   const UINT vertices = grid * (grid * 9 / 16) * 6;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER parameters[2] = {{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}, {D3D12_ROOT_PARAMETER_TYPE_UAV}};
   parameters[0].Constants = {0, 0, 1};
   parameters[1].Descriptor = {1, 0};
@@ -477,7 +477,7 @@ main(int argc, char **argv) {
   };
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER uav{D3D12_ROOT_PARAMETER_TYPE_UAV};
   uav.Descriptor = {1, 0};
   uav.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;

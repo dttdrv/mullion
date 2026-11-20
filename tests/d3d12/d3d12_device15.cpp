@@ -59,7 +59,7 @@ trimmed(const D3D12_TRIM_NOTIFICATION *) {}
 int
 main() {
   ComPtr<ID3D12Device> base;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&base)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&base)));
   UINT failed = 0;
   auto expect = [&](bool holds, const char *what) {
     if (!holds)

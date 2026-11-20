@@ -57,7 +57,7 @@ main(int argc, char **argv) {
   if (!expect(!vs.empty() && !ps.empty(), "HLSL did not compile"))
     return verdict();
   ComPtr<ID3D12Device2> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT});
   if (!expect(!!rs, "root signature"))
     return verdict();

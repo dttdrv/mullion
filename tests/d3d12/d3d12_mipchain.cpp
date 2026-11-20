@@ -49,7 +49,7 @@ main(int argc, char **argv) {
   const UINT width = 300, height = 170, ways = 3;
   const DXGI_FORMAT format = DXGI_FORMAT_R32_FLOAT;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   // every mip down to one texel
   UINT mips = 1;
   while ((std::max(width, height) >> mips) > 0)

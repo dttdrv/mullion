@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
       return verdict();
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER params[]{{D3D12_ROOT_PARAMETER_TYPE_CBV}, {D3D12_ROOT_PARAMETER_TYPE_SRV},
                                 {D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}};
   params[3].Constants = {1, 0, 2};

@@ -11,6 +11,16 @@
 #include <cmath>
 #include <vector>
 
+// reversebits, as D3D defines it. Clang has a builtin for it; libstdc++ does not, and the test runs on both
+static UINT
+reverse_bits(UINT value) {
+  value = ((value >> 1) & 0x55555555u) | ((value & 0x55555555u) << 1);
+  value = ((value >> 2) & 0x33333333u) | ((value & 0x33333333u) << 2);
+  value = ((value >> 4) & 0x0f0f0f0fu) | ((value & 0x0f0f0f0fu) << 4);
+  value = ((value >> 8) & 0x00ff00ffu) | ((value & 0x00ff00ffu) << 8);
+  return (value >> 16) | (value << 16);
+}
+
 static const char hlsl[] = R"hlsl(
 StructuredBuffer<uint2> input : register(t0);
 RWStructuredBuffer<uint4> ints : register(u0);
@@ -76,7 +86,7 @@ main(int argc, char **argv) {
     return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER params[5] = {
       {D3D12_ROOT_PARAMETER_TYPE_SRV},
       {D3D12_ROOT_PARAMETER_TYPE_UAV},
@@ -157,7 +167,7 @@ main(int argc, char **argv) {
     exact("firstbithigh", i, r[0], firsthigh(a));
     exact("firstbitlow", i, r[1], a ? std::countr_zero(a) : ~0u);
     exact("firstbithigh signed", i, r[2], firsthigh((int)b < 0 ? ~b : b));
-    exact("countbits + reversebits", i, r[3], std::popcount(a) + (__builtin_bitreverse32(b) << 8));
+    exact("countbits + reversebits", i, r[3], std::popcount(a) + (reverse_bits(b) << 8));
     if (!std::isnan(x))
       exact("f32tof16", i, r[4], half_toward_zero(x));
     // a NaN converts to some NaN; D3D does not fix its payload

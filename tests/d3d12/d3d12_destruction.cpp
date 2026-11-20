@@ -15,7 +15,7 @@ int
 main(int argc, char **argv) {
   const UINT seed = argc > 2 ? strtoul(argv[2], nullptr, 0) : 1;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   for (UINT count : {0u, 1u, 2u, 17u}) {
     step("seed %u, buffer callbacks %u", seed, count);
     auto resource = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,

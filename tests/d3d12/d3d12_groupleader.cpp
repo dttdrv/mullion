@@ -40,7 +40,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   // 64 threads are two SIMD groups of an Apple GPU, and 1440 groups are what Unreal dispatches
   const UINT group = 64, groups = 1440, rounds = 16, slots = groups * group * rounds;
   auto cs = compiler.compile(hlsl, "cs", "cs", {"GROUP=" + std::to_string(group), "ROUNDS=" + std::to_string(rounds)});

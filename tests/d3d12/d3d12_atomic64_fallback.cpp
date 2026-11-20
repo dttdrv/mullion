@@ -124,7 +124,7 @@ main(int argc, char **argv) {
     }
   SetEnvironmentVariableA("MULLION_SHADER_FLAGS", nullptr);
   ComPtr<ID3D12Device1> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS1 options{};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options, sizeof(options)));
   D3D12_FEATURE_DATA_D3D12_OPTIONS9 optional{};
@@ -390,7 +390,7 @@ main(int argc, char **argv) {
   original_buffer = reinterpret_cast<decltype(original_buffer)>(*import);
   *import = reinterpret_cast<ULONG_PTR>(observe_buffer);
   ComPtr<ID3D12Device> failed;
-  const auto created = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&failed));
+  const auto created = make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&failed));
   *import = reinterpret_cast<ULONG_PTR>(original_buffer);
   expect(VirtualProtect(import, sizeof(*import), protection, &protection), "restore buffer import protection");
   if (!expect(SUCCEEDED(created) && given_up, "device and its lock table captured: %08lx", created))
@@ -412,7 +412,7 @@ main(int argc, char **argv) {
   queue.Reset();
   failed.Reset();
   ComPtr<ID3D12Device> next;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&next)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&next)));
   expect(next->GetDeviceRemovedReason() == S_OK, "removal persists on the failed device alone");
   return verdict();
 }

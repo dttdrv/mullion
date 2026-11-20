@@ -6,7 +6,7 @@
 int
 main(int argc, char **argv) {
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   unsigned checked = 0, mismatches = 0;
   auto fail = [&](const char *what, DXGI_FORMAT format) {
     if (mismatches++ < 12)

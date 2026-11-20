@@ -22,7 +22,7 @@ main(int argc, char **argv) {
       return verdict();
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto root = root_signature(
       device.Get(),
       {0, nullptr, 0, nullptr,

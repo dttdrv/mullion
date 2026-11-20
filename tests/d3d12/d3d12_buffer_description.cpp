@@ -10,7 +10,7 @@
 
 int main(int, char **) {
   ComPtr<ID3D12Device10> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_HEAP_PROPERTIES props{D3D12_HEAP_TYPE_DEFAULT};
   ComPtr<ID3D12Heap> heap;
   D3D12_HEAP_DESC hd{D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, props, 0, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS};

@@ -196,7 +196,7 @@ main(int argc, char **argv) {
   }
 
   ComPtr<ID3D12Device5> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1};
   D3D12_ROOT_PARAMETER params[] = {{D3D12_ROOT_PARAMETER_TYPE_CBV},
                                    {D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE},

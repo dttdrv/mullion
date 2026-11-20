@@ -49,7 +49,7 @@ main() {
     CHECK(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
                             &device11, nullptr, nullptr));
     ComPtr<ID3D12Device> device12;
-    CHECK(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12)));
+    CHECK(make_device(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12)));
     ComPtr<ID3D12CommandQueue> queue;
     D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
     CHECK(device12->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));

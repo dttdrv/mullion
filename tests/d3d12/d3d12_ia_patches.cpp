@@ -25,7 +25,7 @@ int main(int argc, char **argv) {
   auto code = compiler.compile(hlsl, "vs", "vs");
   if (!expect(!code.empty(), "HLSL did not compile")) return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto root = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT});
   if (!expect(bool(root), "no root signature")) return verdict();
   using Vertex = std::array<UINT, 4>;

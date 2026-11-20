@@ -217,7 +217,7 @@ main(int argc, char **argv) {
   step("seed=%u D3D12 queue fence covers copied bytes and allocator reuse", seed);
   {
     ComPtr<ID3D12Device> d3d;
-    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d)));
+    CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d)));
     ComPtr<ID3D12CommandQueue> queue;
     D3D12_COMMAND_QUEUE_DESC desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
     CHECK(d3d->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue)));
