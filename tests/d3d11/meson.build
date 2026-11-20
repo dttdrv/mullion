@@ -40,3 +40,7 @@ test('d3d11_swapchain', executable('d3d11_swapchain', ['d3d11_swapchain.cpp'], d
 test('d3d11_minmax_filters_deferred',
      executable('d3d11_minmax_filters_deferred', 'd3d11_minmax_filters.cpp', dependencies: d3d11_test_deps),
      args: ['deferred'], env: ['MULLION_SHADER_CACHE=0'], timeout: 600)
+
+# 'timing' tests measure time, so run alone
+test('d3d11_idle_residency', executable('d3d11_idle_residency', 'd3d11_idle_residency.cpp', dependencies : d3d11_test_deps),
+     env : ['MULLION_SHADER_CACHE=0'], suite : 'timing', is_parallel : false, timeout : 300)

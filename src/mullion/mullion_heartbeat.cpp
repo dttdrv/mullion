@@ -28,6 +28,34 @@ struct State {
   mullion::thread thread;
 };
 
+// the set Keep fills, under its own lock: allocations are made and freed while a D3D12 device's lock is held, and
+// that lock is taken under the state's
+struct Kept {
+  mullion::mutex mutex;
+  WMT::Reference<WMT::ResidencySet> set;
+  bool dirty = false;
+  uint64_t count = 0;
+};
+
+Kept &
+kept_set() {
+  static Kept *instance = new Kept;
+  return *instance;
+}
+
+// commits the kept set's changes, so allocations taken out of it are freed within a period
+void
+Settle(bool idle) {
+  auto &k = kept_set();
+  std::lock_guard lock(k.mutex);
+  if (!k.set)
+    return;
+  if (std::exchange(k.dirty, false))
+    k.set.commit();
+  if (idle && k.count)
+    k.set.requestResidency();
+}
+
 State &
 state() {
   static State *instance = new State; // left for the process's end, as its thread may still run then
@@ -51,6 +79,7 @@ Beat() {
     if (s.watched.empty())
       break;
     auto idle = clock::now() - clock::time_point(clock::duration(last_submission.load(std::memory_order_relaxed)));
+    Settle(idle >= kIdle && idle <= kGiveUp);
     if (idle < kIdle || idle > kGiveUp) {
       if (kept && idle > kGiveUp)
         TRACE_IN(Memory, "residency heartbeat: idle for over 3 minutes, memory left to macOS");
@@ -96,6 +125,51 @@ Forget(uint64_t id) {
   std::lock_guard lock(s.mutex);
   s.watched.erase(id);
   s.changed.notify_all();
+}
+
+void
+KeepAllocations(WMT::Device device) {
+  if (!enabled())
+    return;
+  auto &k = kept_set();
+  {
+    std::lock_guard lock(k.mutex);
+    if (k.set)
+      return;
+    WMT::Reference<WMT::Error> error;
+    k.set = device.newResidencySet(0, error);
+    if (!k.set) {
+      WARN("residency heartbeat: no residency set for D3D11 allocations");
+      return;
+    }
+  }
+  // the thread runs while a set is watched; this one's work is done in Settle
+  Watch([] {});
+}
+
+bool
+Keep(WMT::Allocation allocation, uint64_t bytes) {
+  if (bytes < (1u << 20) || !allocation)
+    return false;
+  auto &k = kept_set();
+  std::lock_guard lock(k.mutex);
+  if (!k.set)
+    return false;
+  k.set.addAllocations(&allocation, 1);
+  k.dirty = true;
+  k.count++;
+  return true;
+}
+
+void
+Release(WMT::Allocation allocation) {
+  auto &k = kept_set();
+  std::lock_guard lock(k.mutex);
+  if (!k.set)
+    return;
+  k.set.removeAllocations(&allocation, 1);
+  k.dirty = true;
+  k.count--;
 }
 
 void
