@@ -763,6 +763,37 @@ public:
           uint_format = WMTPixelFormatR32Uint;
         }
 
+        // a texture made without Metal's format view (d3d11_resource_helper.cpp) has no integer view: its format's
+        // values hold all its bit patterns, so the bits are written as the values they encode, as ClearUAV::begin
+        // does for Direct3D 12 (GetUIntClearWrite)
+        auto write = view_format == uint_format || (texture->usage() & WMTTextureUsagePixelFormatView)
+                         ? UIntClearWrite::IntegerView : GetUIntClearWrite((WMTPixelFormat)view_format);
+        if (write == UIntClearWrite::Unorm || write == UIntClearWrite::Float) {
+          auto ones = ClearUAV<ArgumentEncodingContext>::clearColor(
+              std::array<uint32_t, 4>{~0u, ~0u, ~0u, ~0u}, (WMTPixelFormat)view_format
+          );
+          std::array<float, 4> values;
+          for (unsigned i = 0; i < 4; i++)
+            values[i] = write == UIntClearWrite::Float ? std::bit_cast<float>(value[i])
+                                                       : float(value[i] & ones[i]) / ones[i];
+          WMT::Texture handle = enc.access(texture, viewId, ResourceAccess::Write).texture;
+          switch (desc.ViewDimension) {
+          default:
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE1D:
+          case D3D11_UAV_DIMENSION_TEXTURE2D:
+            enc.emulated_cmd.ClearTexture2DFloat(handle, values);
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:
+          case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:
+            enc.emulated_cmd.ClearTexture2DArrayFloat(handle, values);
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE3D:
+            enc.emulated_cmd.ClearTexture3DFloat(handle, values, desc.Texture3D.FirstWSlice, desc.Texture3D.WSize);
+            break;
+          }
+          return;
+        }
         if (uint_format == WMTPixelFormatInvalid) {
           WARN("ClearUnorderedAccessViewUint: unhandled format ", view_format);
           return;
