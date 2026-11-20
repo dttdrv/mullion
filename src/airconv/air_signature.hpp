@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <variant>
 #include "nt/air_builder.hpp"
@@ -44,9 +45,9 @@ getOrCreateStructType(llvm::StringRef Name, llvm::LLVMContext &Ctx) {
   return StructType::create(Ctx, Name);
 }
 
-constexpr auto get_name = [](auto msl_type) {
+constexpr auto get_name = [](auto &&msl_type) {
   return std::visit(
-    [](auto msl_type) { return msl_type.get_name(); }, msl_type
+    [](auto type) { return std::string(type.get_name()); }, msl_type
   );
 };
 
@@ -116,7 +117,7 @@ enum class Interpolation {
 };
 
 struct MSLFloat {
-  std::string get_name() const { return "float"; };
+  constexpr std::string_view get_name() const { return "float"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getFloatTy(context);
@@ -124,7 +125,7 @@ struct MSLFloat {
 };
 
 struct MSLHalf {
-  std::string get_name() const { return "half"; };
+  constexpr std::string_view get_name() const { return "half"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getHalfTy(context);
@@ -132,7 +133,7 @@ struct MSLHalf {
 };
 
 struct MSLInt {
-  std::string get_name() const { return "int"; };
+  constexpr std::string_view get_name() const { return "int"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getInt32Ty(context);
@@ -140,7 +141,7 @@ struct MSLInt {
 };
 
 struct MSLUint {
-  std::string get_name() const { return "uint"; };
+  constexpr std::string_view get_name() const { return "uint"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getInt32Ty(context);
@@ -148,7 +149,7 @@ struct MSLUint {
 };
 
 struct MSLUshort {
-  std::string get_name() const { return "ushort"; };
+  constexpr std::string_view get_name() const { return "ushort"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getInt16Ty(context);
@@ -156,7 +157,7 @@ struct MSLUshort {
 };
 
 struct MSLBool {
-  std::string get_name() const { return "bool"; };
+  constexpr std::string_view get_name() const { return "bool"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getInt1Ty(context);
@@ -164,7 +165,7 @@ struct MSLBool {
 };
 
 struct MSLUlong {
-  std::string get_name() const { return "ulong"; };
+  constexpr std::string_view get_name() const { return "ulong"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return llvm::Type::getInt64Ty(context);
@@ -172,7 +173,7 @@ struct MSLUlong {
 };
 
 struct MSLSampler {
-  std::string get_name() const { return "sampler"; };
+  constexpr std::string_view get_name() const { return "sampler"; };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
     return getOrCreateStructType("struct._sampler_t", context)
@@ -199,8 +200,8 @@ struct MSLVector {
     auto scaler_name =
       std::visit([](auto scaler) { return scaler.get_name(); }, scaler);
     if (dimension == 1)
-      return scaler_name;
-    return scaler_name + std::to_string(dimension);
+      return std::string(scaler_name);
+    return std::string(scaler_name) + std::to_string(dimension);
   };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) const {
@@ -230,8 +231,7 @@ struct MSLTexture {
   TextureKind resource_kind_logical;
 
   std::string get_name() const {
-    auto component =
-      std::visit([](auto scaler) { return scaler.get_name(); }, component_type);
+    std::string component(std::visit([](auto scaler) { return scaler.get_name(); }, component_type));
     auto access = [](auto access) -> std::string {
       switch (access) {
       case MemoryAccess::read:
@@ -358,8 +358,7 @@ struct MSLPointer {
   MSLRepresentableType pointee;
   AddressSpace address_space;
   std::string get_name() {
-    // fking weird
-    return std::visit([](auto x) { return x.get_name(); }, pointee);
+    return air::get_name(pointee);
   };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) {
@@ -373,11 +372,7 @@ struct MSLStaticArray {
   uint32_t array_size;
   MSLRepresentableType element_type;
   std::string get_name() {
-    return "array<" +
-           std::visit(
-             [](auto scaler) { return scaler.get_name(); }, element_type
-           ) +
-           "," + std::to_string(array_size) + ">";
+    return "array<" + air::get_name(element_type) + "," + std::to_string(array_size) + ">";
   };
 
   llvm::Type *get_llvm_type(llvm::LLVMContext &context) {
