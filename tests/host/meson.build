@@ -65,3 +65,6 @@ test('host_frames', find_program('python3', native : true),
 # fixtures that must fail -- a guard nobody showed failing is a guard nobody can trust
 test('host_config_keys', find_program('python3', native : true),
      args : files('config_keys.py') + [meson.project_source_root()], suite : 'host')
+# the router's rules, every one of them, without a GPU or a Windows: the policy takes its input as an argument, so
+# precedence, the environment and the 32-bit rule are all reachable here
+test('host_router', executable('host_router', 'router.cpp', override_options : ['cpp_std=c++20'], native : true), suite : 'host')
