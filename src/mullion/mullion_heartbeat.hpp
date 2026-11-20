@@ -1,4 +1,5 @@
 #pragma once
+#include "Metal.hpp"
 #include <cstdint>
 #include <functional>
 
@@ -18,6 +19,17 @@ uint64_t Watch(std::function<void()> keep_resident);
 
 // no more calls of the set's keep_resident after this returns
 void Forget(uint64_t id);
+
+// D3D11 keeps no residency set (its encoders name the resources each pass uses), so for it the heartbeat keeps one of
+// its own: from the first call of KeepAllocations, buffers and textures of a MiB or more (Keep) go in a set that is
+// committed about once a second and asked to stay resident while the GPU idles. Allocations placed in a heap are
+// left out, as D3D12's own set holds those
+void KeepAllocations(WMT::Device device);
+
+// whether an allocation of this many bytes is worth keeping, and keeping it; false if the heartbeat is off or no
+// device asked for KeepAllocations. Release takes it out again before it is freed
+bool Keep(WMT::Allocation allocation, uint64_t bytes);
+void Release(WMT::Allocation allocation);
 
 // a queue submitted work: the GPU is busy, and the heartbeat waits for the next idle second
 void Submitted();
