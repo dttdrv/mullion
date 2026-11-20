@@ -135,7 +135,9 @@ def clone(wine, to):
     Wine run Windows programs only with the 4KB-page entitlement, which a Wine one builds and signs ad hoc cannot have,
     and honours that entitlement only in the app bundle whose provisioning profile grants it: the copy is of the whole
     outermost bundle the Wine is in (or of the Wine alone outside one), its binaries kept as they are, with their
-    signatures and entitlements (ditto), so a Wine of another product runs the tests without the runner changing it"""
+    signatures and entitlements, so a Wine of another product runs the tests without the runner changing it. the copy
+    is made with cp -Rp, not ditto: ditto gives a directory its mode before filling it, so it cannot copy a bundle
+    installed read-only (MetalSharp's MetalSharp-Wine.app), and the copy is then made writable for the install"""
     source = wine.resolve()
     bundle = next((parent for parent in reversed(source.parents) if parent.suffix == ".app"), None)
     root = bundle or source
@@ -144,9 +146,11 @@ def clone(wine, to):
     key = f"{source}\n{(source / 'bin' / 'wine').resolve().stat().st_mtime_ns}\n"
     if not (stamp.exists() and stamp.read_text() == key):
         if to.exists():
+            subprocess.run(["chmod", "-R", "u+w", str(to)], check=True)
             shutil.rmtree(to)
         to.mkdir(parents=True)
-        subprocess.run(["ditto", str(root), str(copy)], check=True)
+        subprocess.run(["cp", "-Rp", str(root), str(copy)], check=True)
+        subprocess.run(["chmod", "-R", "u+w", str(copy)], check=True)
         stamp.write_text(key)
     return copy / source.relative_to(bundle) if bundle else copy
 
