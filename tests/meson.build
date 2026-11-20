@@ -28,8 +28,12 @@ copy_formats_header = configure_file(output : 'copy_formats.hpp',
 configure_file(input : 'host/resource_cases.py', output : 'resource_cases.hpp',
   command : [find_program('python3', native : true), '@INPUT@', '@OUTPUT@'] + cpp.cmd_array())
 
-# as the library builds D3D12 (src/meson.build)
-test_d3d12 = get_option('enable_d3d12') and cpu_family != 'x86'
+# the runner's loader probe: asks the Wine which module it actually loaded, for the provenance manifest
+# (tests/manifest.py). not a test: it checks nothing, and runs once before a run's tests
+manifest_probe = executable('manifest_probe', 'manifest_probe.cpp')
+
+# as the library builds D3D12 (src/meson.build), now on PE32 too
+ test_d3d12 = get_option('enable_d3d12')
 if test_d3d12
   levels = run_command(cpp.cmd_array() + ['-E', '-P', '-x', 'c++', '-include', 'd3dcommon.h', '/dev/null'],
                        check: true).stdout().split('enum D3D_FEATURE_LEVEL')[1].split('{')[1].split('}')[0]
@@ -44,14 +48,25 @@ if test_d3d12
   data.set('D3D12_TEST_FEATURE_LEVELS', ', '.join(names))
   configure_file(output: 'feature_levels.hpp', configuration: data)
   subdir('d3d12')
-  subdir('dxgi')
   subdir('perf')
 endif
+# Wine's i386 ucrtbase has no powf; mingw still imports it. a stub keeps PE32 tests
+# from raising EXCEPTION_WINE_STUB on the first float pow
+powf_stub = []
+if cpu_family == 'x86'
+  powf_stub = static_library('powf_stub', 'powf_stub.c')
+endif
+# DXGI is present whether or not D3D12 is: its common tests run on x86 and on a
+# build without D3D12, and its D3D12 cases are gated in their own directory
+subdir('dxgi')
 subdir('d3d11')
 subdir('d3d10')
 # as the library builds NVAPI (src/meson.build)
 if get_option('enable_nvapi')
   subdir('nvapi')
+endif
+if get_option('enable_d3d9')
+  subdir('d3d9')
 endif
 # the host's own tests build against the macOS LLVM, which a 32-bit build does not make
 if is_variable('llvm_include_path_darwin')

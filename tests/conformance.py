@@ -2,7 +2,7 @@
 """runs the test suites others wrote against Windows in a Wine with the build's libraries, and prints what changed
 against the verdicts recorded in tests/conformance.
 
-the suites are not in this tree. Wine's own Direct3D tests (dlls/{d3d11,d3d10core,dxgi,d3d12}/tests) are built from
+the suites are not in this tree. Wine's own Direct3D tests (dlls/{d3d11,d3d10core,dxgi,d3d12,d3d9}/tests) are built from
 a Wine source tree and the build tree made from it (--wine-source, --wine-build); vkd3d-proton's Direct3D 12 tests
 from a checkout of it with its khronos/Vulkan-Headers submodule (--vkd3d-proton); vkd3d's shader tests from a checkout
 of vkd3d (--vkd3d), each file through the build's Direct3D 12 and Direct3D 11. each test function or file runs in a
@@ -15,6 +15,9 @@ runs once more with the libraries' addresses logged, and where it ended is named
 fault's library or program, function, and source line when the build has debug information. tests/conformance has a file a suite, of
 what a run found of each test and nothing else: its verdict, where it crashed, what its checks said they skipped, how
 many failed and what the first said. --update records this run; a test whose verdict or skips differ is printed.
+
+The exit status is strict: a selected test that did not pass fails the run even when its verdict matches the recorded
+baseline. --update does not bypass that gate, so a recorded failure cannot be mistaken for a clean conformance run.
 """
 import argparse
 import json
@@ -38,7 +41,7 @@ ASSERTION = re.compile(r"Assertion failed: (.*)")
 SKIPPED = re.compile(r"^\S+?:\d+:.*?Tests? skipped: (.*)$", re.M)
 FAILED = re.compile(r"^\S+?:\d+:.*?Test failed:.*$", re.M)
 # Wine's Direct3D tests that are one source file
-WINE_TESTS = ("d3d11", "d3d10core", "dxgi", "d3d12")
+WINE_TESTS = ("d3d11", "d3d10core", "dxgi", "d3d12", "d3d9")
 
 
 def build(commands):
@@ -55,6 +58,20 @@ def makefile(path):
     return {name: value.split() for name, value in re.findall(r"^(\w+)\s*=(.*)$", text, re.M)}
 
 
+def wine_sources(source, dll):
+    """a Wine library's test sources, and every one that holds START_TEST. Newer trees split a library's tests over
+    several programs (d3d9 has no d3d9.c: d3d9ex.c, device.c and stateblock.c each have their own), so a suite is every
+    entry, not the first one a directory walk finds"""
+    tests = source / "dlls" / dll / "tests"
+    makefile_in = tests / "Makefile.in"
+    listed = []
+    if makefile_in.is_file():
+        listed = [tests / name for name in makefile(makefile_in).get("SOURCES", []) if name.endswith(".c")]
+    sources = [path for path in listed if path.is_file()] or sorted(tests.glob("*.c"))
+    entries = [path for path in sources if "START_TEST(" in path.read_text(errors="replace")]
+    return sources, entries
+
+
 def wine_suite(dll, source, objects, out):
     """Wine's tests of one library: the program, its test functions, and how one of them is run"""
     tests, made = source / "dlls" / dll / "tests", makefile(objects / "Makefile")
@@ -63,34 +80,56 @@ def wine_suite(dll, source, objects, out):
     includes = [f"-I{objects / 'include'}", f"-I{source / 'include'}", f"-I{source / 'include' / 'msvcrt'}"]
     # the test's main() queues or calls its test functions by name: each such statement of its body goes behind a
     # question of the environment, in a copy, so that one function runs alone. deeper statements are left: they are
-    # what a test's child process runs
-    code = (tests / f"{dll}.c").read_text()
-    head, body = code.split("\nSTART_TEST(")
-    call = re.compile(r"^(    )((?:queue|run)_\w+\([^;]*?\b(test_\w+)\b[^;]*\);|(test_\w+)\([^;]*\);)$", re.M)
-    name = lambda match: match[3] or match[4]
-    names = list(dict.fromkeys(map(name, call.finditer(body))))
-    wants = 'static int wants(const char *test) { const char *only = getenv("MULLION_TEST"); return !only || !strcmp(only, test); }'
-    guarded = call.sub(lambda match: f'{match[1]}if (wants("{name(match)}")) {match[2]}', body)
+    # what a test's child process runs. the sources beside the entry are compiled as they are.
+    sources, entries = wine_sources(source, dll)
+    if not entries:
+        sys.exit(f"wine-{dll}: no source in {tests} has START_TEST, so its tests cannot be built")
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{dll}.c").write_text(f"{head}\n{wants}\nSTART_TEST({guarded}")
-    sources = [out / f"{dll}.c", objects / "dlls" / dll / "tests" / "testlist.c"]
-    compiled = [out / f"{dll}.{n}.o" for n in range(len(sources))]
-    # as tools/makedep.c builds a test: one of Wine's own sources, with msvcrt for its C library
-    commands = [cc + ["-c", "-o", o, s, f"-I{tests}", *includes, "-D__WINESRC__", "-D_MSVCR_VER=0", *flags, "-w"]
-                for s, o in zip(sources, compiled)]
-    for rc in (name for name in rules["SOURCES"] if name.endswith(".rc")):
-        compiled.append(out / f"{dll}.res")
-        commands.append([objects / "tools" / "wrc" / "wrc", "-u", "-o", compiled[-1], "--nostdinc", f"-I{tests}",
-                         *includes, tests / rc])
-    build(commands)
     # the import libraries of the build tree: the test's own, then what every test of Wine's links
     libraries = [next(objects.glob(f"dlls/*/{arch}-windows/lib{name}.a")) for name in rules["IMPORTS"]]
     libraries += [objects / where / f"{arch}-windows" / f"lib{Path(where).name}.a" for where in
                   ("libs/winecrt0", "libs/compiler-rt", "dlls/msvcrt", "dlls/kernel32", "dlls/ntdll")]
+    resources = [tests / name for name in rules["SOURCES"] if name.endswith(".rc")]
+    # START_TEST expands to `void func_<entry>(void)` (include/wine/test.h), and the generated testlist.c names
+    # every entry's function; the executable's main comes from the test list. So one program holds every entry: the
+    # entries are rewritten to run only the function MULLION_TEST names, and are compiled beside the sources that
+    # have no START_TEST. Linking a subset of entries against the full testlist.c would leave its symbols unresolved
+    programs = {}
+    guarded_sources = []
+    for entry in entries:
+        code = entry.read_text()
+        head, body = code.split("\nSTART_TEST(")
+        call = re.compile(r"^(    )((?:queue|run)_\w+\([^;]*?\b(test_\w+)\b[^;]*\);|(test_\w+)\([^;]*\);)$", re.M)
+        name = lambda match: match[3] or match[4]
+        names = list(dict.fromkeys(map(name, call.finditer(body))))
+        wants = 'static int wants(const char *test) { const char *only = getenv("MULLION_TEST"); return !only || !strcmp(only, test); }'
+        guarded = call.sub(lambda match: f'{match[1]}if (wants("{name(match)}")) {match[2]}', body)
+        generated = out / f"{dll}_{entry.stem}.c"
+        generated.write_text(f"{head}\n{wants}\nSTART_TEST({guarded}")
+        guarded_sources.append(generated)
+        # argv[1] is the testlist entry, which is the START_TEST name, not necessarily the file's stem
+        start_name = body.split(")", 1)[0].strip()
+        for test in names:
+            key = test if test not in programs else f"{entry.stem}:{test}"
+            programs[key] = start_name
+    helpers = [path for path in sources if "START_TEST(" not in path.read_text(errors="replace")]
+    program = [*guarded_sources, *helpers, objects / "dlls" / dll / "tests" / "testlist.c"]
+    compiled = [out / f"{dll}.{n}.o" for n in range(len(program) + len(resources))]
+    # as tools/makedep.c builds a test: one of Wine's own sources, with msvcrt for its C library
+    commands = [cc + ["-c", "-o", o, s, f"-I{tests}", *includes, "-D__WINESRC__", "-D_MSVCR_VER=0", *flags, "-w"]
+                for s, o in zip(program, compiled)]
+    for rc, res in zip(resources, compiled[len(program):]):
+        commands.append([objects / "tools" / "wrc" / "wrc", "-u", "-o", res, "--nostdinc", f"-I{tests}",
+                         *includes, rc])
+    build(commands)
     exe = out / f"{dll}_test.exe"
-    build([[objects / "tools" / "winegcc" / "winegcc", "-o", exe, "--wine-objdir", objects, f"--cc-cmd={' '.join(cc)}",
-            "-b", f"{arch}-windows", *rules.get("EXTRADLLFLAGS", []), *compiled, *libraries, *made[f"{arch}_LDFLAGS"]]])
-    return names, lambda name: ([exe, dll], {"MULLION_TEST": name, "WINETEST_PLATFORM": "windows"})
+    build([[objects / "tools" / "winegcc" / "winegcc", "-o", exe, "--wine-objdir", objects,
+            f"--cc-cmd={' '.join(cc)}", "-b", f"{arch}-windows", *rules.get("EXTRADLLFLAGS", []), *compiled,
+            *libraries, *made[f"{arch}_LDFLAGS"]]])
+    def run(name):
+        # argv[1] selects the testlist entry; MULLION_TEST selects the function inside it, so a split entry runs alone
+        return [exe, programs[name]], {"MULLION_TEST": name.split(":")[-1], "WINETEST_PLATFORM": "windows"}
+    return list(programs), run
 
 
 def vkd3d_suite(checkout, builds, binary, env, out):
@@ -192,7 +231,8 @@ def arguments(parser):
     parser.add_argument("--vkd3d-proton", type=Path, help="a checkout of vkd3d-proton, for its Direct3D 12 tests")
     parser.add_argument("--vkd3d", type=Path, help="a checkout of vkd3d, for its shader tests (needs --dxcompiler)")
     parser.add_argument("--dxcompiler", type=Path, help="the directory of DXC's dxcompiler.dll for the build's machine")
-    parser.add_argument("--update", action="store_true", help="record this run's verdicts in tests/conformance")
+    parser.add_argument("--update", action="store_true",
+                        help="record this run's verdicts in tests/conformance; does not make failures pass")
     parser.add_argument("--seconds", type=int, default=120, help="how long one test may run (default: %(default)s)")
     parser.add_argument("--only", action="append", default=[], help="only this suite, test, or suite:test (may repeat)")
     parser.add_argument("--skip", action="append", default=[], help="not this suite, test, or suite:test (may repeat)")
@@ -211,8 +251,17 @@ def conformance(args, builds, binary, base):
     pe = {path.name: path for path in run.libraries(builds)[1].values()}
     suites = {}
     if args.wine_source and args.wine_build:
+        source, objects = args.wine_source.resolve(), args.wine_build.resolve()
+        # Wine 11 split d3d9's tests across several files, so a suite is the dll whose tests have a START_TEST source.
+        # a dll the run asked for and this tree cannot build is an error rather than a suite that quietly is not there
         for dll in WINE_TESTS:
-            suites[f"wine-{dll}"] = wine_suite(dll, args.wine_source.resolve(), args.wine_build.resolve(), out / "wine")
+            _, entry = wine_sources(source, dll)
+            asked = any(entry in (dll, f"wine-{dll}") or entry.startswith(f"wine-{dll}:") for entry in args.only)
+            if entry is not None:
+                suites[f"wine-{dll}"] = wine_suite(dll, source, objects, out / "wine")
+            elif asked:
+                sys.exit(f"wine-{dll} was asked for, and {source / 'dlls' / dll / 'tests'} has no test source with "
+                         f"START_TEST: this run would not cover it")
     if args.vkd3d_proton:
         suites["vkd3d-proton-d3d12"] = vkd3d_suite(args.vkd3d_proton.resolve(), builds, binary, base, out / "vkd3d-proton")
     if args.vkd3d:
@@ -224,8 +273,16 @@ def conformance(args, builds, binary, base):
     named = lambda suite, name, names: any(n in (suite, name, f"{suite}:{name}") for n in names)
     wanted = lambda suite, name: (not args.only or named(suite, name, args.only)) and not named(suite, name, args.skip)
     changed = 0
+    not_passed = {}
+    if not suites:
+        sys.exit("no suite was built: name --wine-source and --wine-build, --vkd3d-proton or --vkd3d, and check that "
+                 "the tree has the tests")
     for suite, (names, command) in suites.items():
         names = [name for name in names if wanted(suite, name)]
+        # a suite named but selecting nothing would report a run that covered none of it
+        if not names and (not args.only or any(entry in (suite,) or entry.startswith(f"{suite}:") for entry in args.only)):
+            sys.exit(f"{suite}: no test of it was selected, so the run would not cover it")
+        # a family other than the GPU's own runs the same names, so its logs are kept beside their own family's
         logs = out / "logs" / (suite if family == "native" else f"{suite}@{family}")
         logs.mkdir(parents=True, exist_ok=True)
 
@@ -264,8 +321,20 @@ def conformance(args, builds, binary, base):
             record.write_text(json.dumps(dict(sorted({**kept, **ran}.items())), indent=1) + "\n")
         counts = {word: sum(v == word for v in got.values()) for word in sorted(set(got.values()))}
         print(f"{suite:14}  {len(got)} ran: " + ", ".join(f"{n} {word}" for word, n in counts.items()), flush=True)
-    print(f"{changed} verdicts differ from tests/conformance; logs in {out / 'logs'}")
-    return changed
+        # a baseline records what a run found, not what a correct run must find: the gate is every selected test's
+        # actual verdict, independent of whether --update wrote it down
+        not_passed[suite] = sorted(name for name, word in got.items() if word != "passed")
+        if not_passed[suite]:
+            print(f"{suite:14}  did not pass: " + ", ".join(not_passed[suite]), flush=True)
+    # a selection the run did not honour is incomplete coverage, not a pass with fewer tests
+    for entry in args.only:
+        if not any(entry in (suite, name, f"{suite}:{name}") for suite, (names, _) in suites.items()
+                   for name in names):
+            sys.exit(f"--only {entry} names no test of any suite this run built; the run would be incomplete")
+    incomplete = sum(len(names) for names in not_passed.values())
+    print(f"{changed} verdicts differ from tests/conformance; {incomplete} selected tests did not pass; "
+          f"logs in {out / 'logs'}")
+    return changed + incomplete
 
 
 def main():

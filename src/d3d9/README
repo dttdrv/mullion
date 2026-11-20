@@ -1,0 +1,102 @@
+Direct3D 9 on this build's Direct3D 11 device.
+
+A build with `-Denable_d3d9=true` (off unless the build asks) makes `d3d9.dll` for PE32 and PE32+. The device is a HAL over the in tree Direct3D 11 device. Chains present through DXGI. Draws go through airconv, the same road a Direct3D 11 draw takes to Metal. The caps in `d3d9_direct3d.cpp` (`caps_of`) are what `GetDeviceCaps` returns, and `tests/d3d9/d3d9_caps.cpp` holds them to the calls.
+
+# How the source is organised
+
+  * `d3d9.cpp` and `d3d9.def`: the DLL exports.
+  * `d3d9_direct3d.cpp`: the `IDirect3D9` / `IDirect3D9Ex` object, adapters, and caps.
+  * `d3d9_device.cpp`: the device, its chain, Reset, Present, and `GetFrontBufferData`.
+  * `d3d9_device_state.cpp`: render state, the world, view, projection and texture transforms, the eight lights, and the six clip planes.
+  * `d3d9_fixed_function.cpp`: the fixed function shaders, layouts, and constant buffers for one draw.
+  * `d3d9_device_draw.cpp`: validation, primitives, `_UP` staging, and `ProcessVertices`.
+  * `d3d9_device_targets.cpp`: render targets, depth stencil surfaces, viewport, scissor, and Clear, including a rectangle's stencil.
+  * `d3d9_device_shader.cpp` and `d3d9_shader_translator.cpp`: a game's own shaders.
+  * `d3d9_device_texture.cpp`, `d3d9_texture.cpp`, `d3d9_device_transfer.cpp`: textures and copies (`StretchRect`, `UpdateTexture`, `UpdateSurface`, `ColorFill`).
+  * `d3d9_swapchain.cpp`: the implicit chain and `CreateAdditionalSwapChain`.
+
+# Exports
+
+`d3d9.def` exports the 17 names of a modern Windows `d3d9.dll` (NT 10.0 ordinals, the same table Wine and DXVK mirror), plus ordinal 16 with no name:
+
+  * `Direct3DShaderValidatorCreate9` @24, `PSGPError` @25, `PSGPSampleTexture` @26
+  * `D3DPERF_BeginEvent` @27, `D3DPERF_EndEvent` @28, `D3DPERF_GetStatus` @29, `D3DPERF_QueryRepeatFrame` @30, `D3DPERF_SetMarker` @31, `D3DPERF_SetOptions` @32, `D3DPERF_SetRegion` @33
+  * `DebugSetLevel` @34, `DebugSetMute` @35, `Direct3D9EnableMaximizedWindowedModeShim` @36
+  * `Direct3DCreate9` @37, `Direct3DCreate9Ex` @38, `Direct3DCreate9On12` @20, `Direct3DCreate9On12Ex` @21
+  * `Direct3D9ForceHybridEnumeration` @16 `NONAME`
+
+`Direct3DCreate9` and `Direct3DCreate9Ex` return the same object (`IDirect3D9` or `IDirect3D9Ex`). A wrong SDK version is a null `Create9` and `D3DERR_NOTAVAILABLE` from `Create9Ex`. `Create9On12` and `Create9On12Ex` return that ordinary object: this device already sits on the in tree Direct3D 11 device, so there is no second 9On12 Metal path (`d3d9.cpp`).
+
+The `D3DPERF_*` calls do nothing a frame can observe. `BeginEvent` and `EndEvent` return 0, `GetStatus` returns 0, `QueryRepeatFrame` returns `FALSE`, and `SetMarker`, `SetOptions`, and `SetRegion` return without writing state. `tests/d3d9/d3d9_exports.cpp` resolves every name and calls them, including `D3DPERF_SetOptions` before `Direct3DCreate9`, and `D3DPERF_BeginEvent` / `SetMarker` / `EndEvent`.
+
+# Presentation
+
+`CreateDevice` of `D3DDEVTYPE_HAL` makes a Direct3D 11 device on the adapter and a flip model discard chain of at least two buffers. `Windowed` `FALSE` is not refused. `create_chain` passes a `DXGI_SWAP_CHAIN_FULLSCREEN_DESC` with `Windowed` `FALSE`, and `Reset` calls `SetFullscreenState` to enter and to leave. `tests/d3d9/d3d9_extra.cpp` resets to fullscreen and back to windowed.
+
+`Reset` accepts `D3DSWAPEFFECT_DISCARD`, `D3DSWAPEFFECT_FLIP`, `D3DSWAPEFFECT_COPY`, and `D3DSWAPEFFECT_FLIPEX` (value 5). `FLIP` presents as `DISCARD` does. `COPY` keeps the presented frame in the back buffer. A width or height of 0 is the window client area. `D3DFMT_UNKNOWN` keeps the chain format. On return, `BackBufferCount`, `BackBufferWidth`, and `BackBufferHeight` are 0 and `BackBufferFormat` is `D3DFMT_UNKNOWN` (`IDirect3DDevice9::Reset`). A live reference on the implicit back buffer or on a depth stencil surface is `D3DERR_INVALIDCALL` and the chain is unchanged. State is lost. Managed textures are put back. `tests/d3d9/d3d9_reset.cpp`, `tests/d3d9/d3d9_chain.cpp`, `tests/d3d9/d3d9_lifecycle.cpp`.
+
+A multisampled chain is `D3DSWAPEFFECT_DISCARD` only, at a count from 2 to 16 that `CheckMultisampleQualityLevels` reports. The DXGI flip chain itself is single sample. The back buffer is a multisampled texture, and `Present` resolves it. `StretchRect` of that source onto a single sample destination resolves, whole, in a rectangle, or scaled (`D3DTEXF_POINT` or `D3DTEXF_LINEAR`). A multisampled destination is `D3DERR_INVALIDCALL`. `tests/d3d9/d3d9_msaa.cpp`, `tests/d3d9/d3d9_chain.cpp`.
+
+`GetFrontBufferData` on the device and on the chain copies the frame the chain last presented into a system memory surface of the chain's size. Before the first `Present` it is `D3DERR_INVALIDCALL`. `tests/d3d9/d3d9_chain.cpp`.
+
+`CreateRenderTarget` with `Lockable` `TRUE` keeps a staging texture. `LockRect` copies the target into it. An unlock of a write copies it back. `CreateAdditionalSwapChain` makes another windowed `DISCARD` chain without multisampling. The device keeps it: `GetNumberOfSwapChains` counts it after the implicit chain, and `GetSwapChain`, `GetBackBuffer`, `GetDisplayMode`, `GetRasterStatus`, `GetFrontBufferData` and `WaitForVBlank` take its index (`tests/d3d9/d3d9_extra.cpp`, `tests/d3d9/d3d9_topology.cpp`). `WaitForVBlank` waits through `IDXGIOutput::WaitForVBlank` where the adapter has an output, and `GetRasterStatus` counts the blank and scan line from the display's refresh.
+
+`TestCooperativeLevel` is `D3DERR_DEVICENOTRESET` once the Direct3D 11 device was removed, and `Reset` makes a new one. Drawing calls until then are `D3DERR_DEVICELOST`. `tests/d3d9/d3d9_lifecycle.cpp`.
+
+# Draws
+
+Fixed function formats the draw path transforms are `D3DFVF_XYZRHW` and `D3DFVF_XYZ`, with diffuse, with or without a normal, and with one set of texture coordinates, and `D3DFVF_XYZB1` through `D3DFVF_XYZB3` with diffuse. Screen space draws, transformed draws, lit draws, indexed draws, and `_UP` draws are `tests/d3d9/d3d9_triangle.cpp`, `tests/d3d9/d3d9_transform.cpp`, `tests/d3d9/d3d9_lighting.cpp`, `tests/d3d9/d3d9_draw_contract.cpp`.
+
+`SetTransform` keeps the 256 world matrices (`D3DTS_WORLDMATRIX`), `D3DTS_VIEW`, `D3DTS_PROJECTION`, and `D3DTS_TEXTURE0` through `D3DTS_TEXTURE7`. A stage 0 texture transform of `D3DTTFF_COUNT2` is applied by the extended fixed function pixel shader. `D3DRS_VERTEXBLEND` of one, two, or three weights blends `D3DTS_WORLD` through `D3DTS_WORLD3` (`MaxVertexBlendMatrices` is 4). `D3DVBF_TWEENING` lerps `D3DTS_WORLD` and `D3DTS_WORLD1` by `D3DRS_TWEENFACTOR`. `MaxVertexBlendMatrixIndex` is 0: indexed vertex blending is not offered (Microsoft Learn, `D3DCAPS9`: the value is 0 when indexed vertex blending is not supported). `D3DRS_INDEXEDVERTEXBLENDENABLE` is stored. `tests/d3d9/d3d9_transform.cpp`.
+
+`SetClipPlane` keeps six planes (`MaxUserClipPlanes` is 6). `D3DRS_CLIPPLANEENABLE` selects them. A fixed function plane is in world space. Under a vertex shader the planes are in clip space. An `XYZRHW` draw is not clipped. `tests/d3d9/d3d9_transform.cpp`, `tests/d3d9/d3d9_shader_draw.cpp`.
+
+`ProcessVertices` runs the same transform and lighting on the CPU into a `D3DFVF_XYZRHW` buffer, or into the `POSITIONT`, `COLOR0`, and `TEXCOORD0` of the declaration it is given. `D3DPV_DONOTCOPYDATA` writes position and a lit colour. `tests/d3d9/d3d9_transform.cpp`.
+
+Lighting is the documented vertex equation for directional, point, and spot lights (`MaxActiveLights` is 8). The spot cone, including `Falloff`, is in the lit shader. `tests/d3d9/d3d9_lighting.cpp` checks directional and point lights, specular, attenuation, range, a vertex state block, and a spot light's falloff read back from a pixel.
+
+`MaxTextureBlendStages` is 2, the fixed-function blender's stages; `MaxSimultaneousTextures` is 16, the samplers a ps_3_0 program reads, and the two caps are separate counts. Stage 1 after stage 0 is `tests/d3d9/d3d9_ff_extra.cpp`.
+
+A `D3DPT_TRIANGLEFAN` has no Direct3D 11 primitive and is expanded into the triangle list it is, for all four draws that take a topology. `D3DFILL_POINT` draws a primitive's vertices as single pixels, the point list Direct3D 11 has, since its rasterizer fills only wireframe and solid (`tests/d3d9/d3d9_topology.cpp`). `NumSimultaneousRTs` is 4: `SetRenderTarget` takes slots 0 through 3, a ps_3_0 program writes `oC0` through `oC3` to them (the translator already emits `SV_Target0` through `SV_Target3`), and clearing a slot clears the ones above it.
+
+Table fog is drawn when `D3DRS_FOGENABLE` is on and `D3DRS_FOGTABLEMODE` is `D3DFOG_LINEAR`, `D3DFOG_EXP`, or `D3DFOG_EXP2` (`RasterCaps` includes `D3DPRASTERCAPS_FOGTABLE` and `D3DPRASTERCAPS_ZFOG`). `D3DPRASTERCAPS_FOGVERTEX` and `D3DPRASTERCAPS_FOGRANGE` are not set. `tests/d3d9/d3d9_extra.cpp`, `tests/d3d9/d3d9_ff_extra.cpp`.
+
+The alpha test is on a fixed function draw (`d3d9_ff_extended_shaders.hpp`) and on a game's pixel shader (a discard against `D3DRS_ALPHAREF`). `tests/d3d9/d3d9_discard.cpp`. A programmable vertex shader with `SetPixelShader(NULL)` draws through the fixed function pixel shader, including under the alpha test and table fog (`tests/d3d9/d3d9_extra.cpp`).
+
+`Clear` of rectangles clears colour, depth, and stencil. Stencil of a rectangle is a draw (`clear_stencil_rects` in `d3d9_device_targets.cpp`), because `ID3D11DeviceContext1::ClearView` on a depth stencil view clears depth. Depth, stencil state, scissor, viewport, and render targets are `tests/d3d9/d3d9_states.cpp` and `tests/d3d9/d3d9_targets.cpp`.
+
+`SetStreamSource` accepts streams 0 through 15 (`MaxStreams` is 16). `SetStreamSourceFreq` instancing is `tests/d3d9/d3d9_ff_extra.cpp`.
+
+# Textures and copies
+
+`CreateTexture`, `CreateCubeTexture`, and `CreateVolumeTexture` make default and managed resources the caps advertise (`D3DPTEXTURECAPS_CUBEMAP`, `D3DPTEXTURECAPS_VOLUMEMAP`). Cube faces are a `TEXTURECUBE` and are sampled from a programmable pixel shader. Volume levels are a `TEXTURE3D` and are sampled with `tex3D`. `UpdateTexture` copies a managed cube or volume into a default pool texture of the same format, size, and level count, each face or each depth slice in turn. `tests/d3d9/d3d9_cube.cpp`, `tests/d3d9/d3d9_volume.cpp`, `tests/d3d9/d3d9_texture.cpp`, `tests/d3d9/d3d9_mips.cpp`.
+
+`StretchRect` copies the same size or stretches with `D3DTEXF_POINT` or `D3DTEXF_LINEAR`, and resolves a multisampled source as above. `UpdateSurface`, `ColorFill`, dynamic `LockRect`, and render target textures are `tests/d3d9/d3d9_transfer.cpp`. Block compressed levels (`DXT1` through `DXT5`) are `tests/d3d9/d3d9_texture_draw.cpp`.
+
+# Shaders
+
+`CreateVertexShader` reads vs_1_1, vs_2_0, and vs_3_0. `CreatePixelShader` reads ps_1_1 through ps_1_4, ps_2_0, and ps_3_0. Caps report `D3DVS_VERSION(3, 0)` and `D3DPS_VERSION(3, 0)`, 256 float constants, and flow control depth 24. `if` / `else` / `ifc`, `loop` / `rep`, and `call` are translated. A pixel shader samples `dcl_2d`, `dcl_cube`, and `dcl_volume` on samplers `s0` through `s15`. A vertex shader samples through `D3DVERTEXTEXTURESAMPLER0` through `3`, the public sampler ids 257 through 260, translated to the device's compact slots 16 through 19 and bound to its own `s0` through `s3` rather than the pixel shader's; its `texldl` and `texldd` sample those stages (`sample_l` and `sample_d`; a plain vertex `texld` is `sample_l` at lod 0, which is the fetch a Direct3D 11 vertex shader can express). `tests/d3d9/d3d9_caps.cpp` creates a vs_3_0, a ps_3_0, and a ps_1_1, and draws the ps_1_1. `tests/d3d9/d3d9_ff_extra.cpp` draws a vs_3_0 / ps_3_0 pair and a `rep` loop. `tests/d3d9/d3d9_shader_draw.cpp`, `tests/d3d9/d3d9_shader_opcodes.cpp`, `tests/d3d9/d3d9_texture_draw.cpp`.
+
+ps_1_x `texbem`, `texbeml`, `texm3x2tex`, `texm3x3tex`, and `texdp3tex` sample the destination stage. With the default zero bump matrix and without a preceding `texm3x*pad`, the sample uses the stage's interpolator (`tests/d3d9/d3d9_caps.cpp`).
+
+Event queries, occlusion is not answered with an unmeasured number, state blocks, and `DrawIndexedPrimitiveUP` are `tests/d3d9/d3d9_device_calls.cpp`.
+
+# Specification
+
+These calls fail because the specification, or the Direct3D 11 device under this one, has no behaviour to perform. Fullscreen chains are not in this list.
+
+  * `D3DSHADE_PHONG` is `D3DERR_INVALIDCALL`. Microsoft Learn, `D3DSHADEMODE`: "Phong shading is not supported." `tests/d3d9/d3d9_states.cpp`.
+  * A multisampled chain whose swap effect is not `D3DSWAPEFFECT_DISCARD` is `D3DERR_INVALIDCALL`. Microsoft Learn, `D3DPRESENT_PARAMETERS::MultiSampleType`: multisampling is valid only with `D3DSWAPEFFECT_DISCARD`.
+  * `CreateRenderTarget` with `Lockable` `TRUE` and a sample count other than `D3DMULTISAMPLE_NONE` is `D3DERR_INVALIDCALL`. Microsoft Learn, `IDirect3DDevice9::CreateRenderTarget`: if `Lockable` is `TRUE`, `MultiSampleType` must be `D3DMULTISAMPLE_NONE`.
+  * `GetRenderTargetData` of a multisampled target is `D3DERR_INVALIDCALL`. Resolve with `StretchRect` onto a single sample surface (`IDirect3DDevice9::StretchRect`).
+  * `RegisterSoftwareDevice` is `E_NOTIMPL`. Microsoft Learn, `IDirect3D9::RegisterSoftwareDevice`: a software device is a pluggable rasterizer DLL. This HAL has no software rasterizer to register, and Apple Silicon has no path for one.
+
+# Tests
+
+`tests/d3d9/meson.build` builds the window suite when Direct3D 9 is enabled: `d3d9_present`, `d3d9_topology`, `d3d9_triangle`, `d3d9_draw_contract`, `d3d9_states`, `d3d9_targets`, `d3d9_texture`, `d3d9_mips`, `d3d9_shader`, `d3d9_shader_draw`, `d3d9_texture_draw`, `d3d9_device_calls`, `d3d9_lifetime`, `d3d9_containers`, `d3d9_hwnd`, `d3d9_transfer`, `d3d9_reset`, `d3d9_chain`, `d3d9_lifecycle`, `d3d9_discard`, `d3d9_transform`, `d3d9_lighting`, `d3d9_caps`, `d3d9_cube`, `d3d9_volume`, `d3d9_msaa`, `d3d9_extra`, `d3d9_ff_extra`, `d3d9_shader_opcodes`, `d3d9_exports`.
+
+No game row in `docs/game-parity.md` is a result from this device. A title that is not in that table is not claimed here.
+
+# Logs
+
+A refused call is logged once, with the format, the shader version, the state, or the call. `MULLION_LOG_PATH` writes `<executable>_mullion.log`. Without it the lines go to Wine's console. `MULLION_LOG_LEVEL` selects how much is kept (`info` by default, `warn` for refusals).

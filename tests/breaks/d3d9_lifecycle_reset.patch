@@ -1,0 +1,19 @@
+# a managed texture's levels are not uploaded onto the device a Reset makes: the texture is there, the pixels the
+# game authored before the reset are not
+--- a/src/d3d9/d3d9_texture.cpp
++++ b/src/d3d9/d3d9_texture.cpp
+@@ -216,13 +216,9 @@
+   }
+   texture_ = texture;
+   view_ = view;
+   context_ = context;
+-  for (UINT level = 0; level < levels_.size(); level++) {
+-    const Level &one = levels_[level];
+-    if (!one.bytes.empty())
+-      context_->UpdateSubresource(texture_.Get(), level, nullptr, one.bytes.data(), one.pitch, 0);
+-  }
++  // the levels the game authored are not put back: the texture is the new device's, and its contents are not
+   return S_OK;
+ }
+ 
+ HRESULT

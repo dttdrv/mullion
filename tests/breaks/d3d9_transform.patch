@@ -1,0 +1,12 @@
+# SetTransform keeps no matrix: the transform stage ignores the device's world, view and projection, so every
+# D3DFVF_XYZ draw is transformed by the identity the device started with
+--- a/src/d3d9/d3d9_device_targets.cpp
++++ b/src/d3d9/d3d9_device_targets.cpp
+@@ -332,7 +332,6 @@
+              "and no texture coordinate transform, so that transform would be one no draw reads.");
+     return D3DERR_INVALIDCALL;
+   }
+-  *slot = *matrix;
+   if (recording_)
+     record(StateKey{StateKey::Transform, (UINT)state, 0});
+   return S_OK;

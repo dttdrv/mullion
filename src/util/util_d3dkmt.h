@@ -476,6 +476,34 @@ typedef struct _D3DKMT_CLOSEADAPTER
   D3DKMT_HANDLE hAdapter;
 } D3DKMT_CLOSEADAPTER;
 
+// DDI formats used by D3DKMTCreateDCFromMemory (subset matching D3D9 GetDC formats).
+typedef enum _D3DDDIFORMAT {
+  D3DDDIFMT_UNKNOWN = 0,
+  D3DDDIFMT_R8G8B8 = 0x14,
+  D3DDDIFMT_A8R8G8B8 = 0x15,
+  D3DDDIFMT_X8R8G8B8 = 0x16,
+  D3DDDIFMT_R5G6B5 = 0x17,
+  D3DDDIFMT_X1R5G5B5 = 0x18,
+  D3DDDIFMT_A1R5G5B5 = 0x19,
+} D3DDDIFORMAT;
+
+typedef struct _D3DKMT_CREATEDCFROMMEMORY {
+  void *pMemory;
+  D3DDDIFORMAT Format;
+  UINT Width;
+  UINT Height;
+  UINT Pitch;
+  HDC hDeviceDc;
+  PALETTEENTRY *pColorTable;
+  HDC hDc;
+  HANDLE hBitmap;
+} D3DKMT_CREATEDCFROMMEMORY;
+
+typedef struct _D3DKMT_DESTROYDCFROMMEMORY {
+  HDC hDc;
+  HANDLE hBitmap;
+} D3DKMT_DESTROYDCFROMMEMORY;
+
 typedef struct _D3DKMT_OPENNTHANDLEFROMNAME
 {
   DWORD dwDesiredAccess;

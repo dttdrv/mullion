@@ -113,9 +113,13 @@ SelectFeatureLevel(
   return S_OK;
 }
 
-// the bit d3d10core makes its Direct3D 11 device with: what says the asker is another layer of this build, so the
-// router is not asked about a request the application never made (D3D10CoreCreateDevice decides about its own)
+// the bits this build keeps in D3D11CreateDevice's Flags for itself, set by a layer of this build that makes a Direct3D
+// 11 device to draw over: Direct3D 10 and Direct3D 9. A bit in the call is the only way an entry point in one DLL can
+// learn that the asker is another layer of this build (d3d10core, d3d9): state set in one image is not the state
+// another reads. Both say the router is not asked about a request the application never made.
 inline constexpr UINT MULLION_D3D10_DEVICE = 0x80000000u;
+inline constexpr UINT MULLION_INTERNAL_DEVICE = 0x40000000u;
+inline constexpr UINT MULLION_INTERNAL_MASK = MULLION_D3D10_DEVICE | MULLION_INTERNAL_DEVICE;
 
 // the highest feature level a request names, as the record says it
 static uint32_t
@@ -136,7 +140,7 @@ D3D11CoreCreateDevice(IDXGIFactory *pFactory, IDXGIAdapter *pAdapter,
   // every public entry point reaches the device here, so this is the one place one request is decided about once:
   // `router.d3d11 = False` must not take away the device the Direct3D 10 layer needs, and the bit is what says the
   // asker is that layer rather than the application
-  if (!(Flags & MULLION_D3D10_DEVICE) &&
+  if (!(Flags & MULLION_INTERNAL_MASK) &&
       !mullion::router::offered(
           mullion::router::Request{mullion::router::Api::D3D11, false, false, asked_feature_level(pFeatureLevels, FeatureLevels)}))
     return E_NOINTERFACE;
