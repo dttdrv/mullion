@@ -91,7 +91,12 @@ logs show whether frame time spikes coincide with shader compilation.
 
 Validation of the test suite is described in [TESTING.md 6.1](TESTING.md#6-running-tests-and-reading-results):
 `tests/run.py --validate` runs the tests under Metal's API and shader validation, and what the validation reports is
-in each test's log.
+in each test's log. `--validate shaders` runs shader validation alone, which costs a fraction of the API validation,
+for the tests of the shader path a change touches.
+
+`MULLION_SHADER_LOG=1` gives every Metal 3 command queue a log state (macOS 15 and later), so what the GPU logs while it
+runs shaders, such as shader validation's reports under `MTL_SHADER_VALIDATION=1`, goes to stderr as
+`mullion: shader log: <message>` as it happens, in a game as in a test. Metal 4 command buffers do not log this way yet.
 
 ## 5. Capture a Metal frame
 
@@ -160,6 +165,16 @@ anisotropy. `MULLION_TRACE_SHADER=1` names the samplers that need either path.
 ([`mullion_shader_cache.cpp`](../src/mullion/mullion_shader_cache.cpp)). `MULLION_SHADER_CACHE=0` turns it off, and
 `MULLION_SHADER_CACHE_PATH` moves it to another absolute macOS directory. Metal keeps a separate cache of compiled
 pipelines, which `MULLION_USE_DEFAULT_METAL_CACHE=1` leaves at Metal's default ([`dxgi.cpp`](../src/dxgi/dxgi.cpp)).
+Each program's Metal cache is a folder of its own, and together they are held to `MULLION_METAL_CACHE_LIMIT` MB
+(default 8192, `0` for no limit): past it, the folders of the programs launched longest ago and not running are
+emptied, in the background at a program's start ([`cache.c`](../src/winemetal/unix/cache.c)).
+
+**Memory.** `MULLION_LOSSY_TEXTURES=1` is a memory saver: Direct3D 12's private half and float textures (RGBA16F and the
+like, the large render targets of an HDR renderer) are made with Metal's lossy compression on an Apple8 GPU or later,
+and take half their memory, at a small cost in precision ([`mullion_memory.hpp`](../src/mullion/mullion_memory.hpp)).
+`MULLION_MEMORY_BUDGET=fixed` keeps the budget DXGI reports at 95% of the working set instead of following macOS's
+memory pressure, and `MULLION_RESIDENCY_HEARTBEAT=0` lets macOS take an idle game's GPU memory back
+([`mullion_heartbeat.hpp`](../src/mullion/mullion_heartbeat.hpp)).
 Turning Mullion's cache off therefore does not make every compilation cold. A comparison uses a separate cache
 directory, so that shared caches are not deleted.
 

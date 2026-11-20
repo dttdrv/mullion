@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <os/lock.h>
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
 #import <ColorSync/ColorSync.h>
@@ -139,10 +140,57 @@ _NSString_getCString(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// MULLION_SHADER_LOG=1 gives every command queue a log state (macOS 15 on), which hands what the GPU logs while it
+// runs a command buffer's shaders (os_log in a shader, and shader validation's reports under MTL_SHADER_VALIDATION=1)
+// to Mullion's stderr as it comes ("mullion: shader log: <message>"). one
+// state per device, of 1 MB, which Metal fills between command buffers. Metal 4's queues take it per command buffer,
+// so their command buffers have none
+static id<MTLLogState>
+queue_log_state(id<MTLDevice> device) API_AVAILABLE(macos(15.0)) {
+  static bool asked, on;
+  static id<MTLLogState> state;
+  static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+  os_unfair_lock_lock(&lock);
+  if (!asked) {
+    asked = true;
+    const char *given = getenv("MULLION_SHADER_LOG");
+    on = given && !strcmp(given, "1");
+    if (on) {
+      MTLLogStateDescriptor *desc = [[MTLLogStateDescriptor alloc] init];
+      desc.level = MTLLogLevelDebug;
+      desc.bufferSize = 1 << 20;
+      NSError *error = nil;
+      state = [device newLogStateWithDescriptor:desc error:&error];
+      [desc release];
+      if (state)
+        [state addLogHandler:^(NSString *subsystem, NSString *category, MTLLogLevel level, NSString *message) {
+          fprintf(stderr, "mullion: shader log: %s\n", message.UTF8String);
+        }];
+      else
+        fprintf(stderr, "mullion: MULLION_SHADER_LOG: no log state: %s\n",
+                error.localizedDescription.UTF8String ?: "unknown error");
+    }
+  }
+  os_unfair_lock_unlock(&lock);
+  return state;
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newCommandQueue)(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
-  params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newCommandQueueWithMaxCommandBufferCount:params->arg];
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  if (@available(macOS 15.0, *)) {
+    id<MTLLogState> log = queue_log_state(device);
+    if (log) {
+      MTLCommandQueueDescriptor *desc = [[MTLCommandQueueDescriptor alloc] init];
+      desc.maxCommandBufferCount = params->arg;
+      desc.logState = log;
+      params->ret = (obj_handle_t)[device newCommandQueueWithDescriptor:desc];
+      [desc release];
+      return STATUS_SUCCESS;
+    }
+  }
+  params->ret = (obj_handle_t)[device newCommandQueueWithMaxCommandBufferCount:params->arg];
   return STATUS_SUCCESS;
 }
 
