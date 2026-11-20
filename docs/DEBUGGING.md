@@ -117,6 +117,18 @@ capture runs, and a message naming the trace file does not show that the capture
 and stop reported with Metal's result and error, verified by a trace opened in Xcode with the intended commands and
 resources}. Capturing a Wine process from Xcode itself has not been verified.
 
+On macOS 27 and later a trace can also be taken and read without Xcode, from a script:
+
+- [`tools/gputrace.py`](../tools/gputrace.py)` capture --mullion -- <command>` runs a command and has Mullion capture
+  a range of its command buffers from inside the process, counted as they are committed, so work that never presents
+  (a test) is captured too, in any Wine. `gpucapture start -p <pid>` attaches from outside instead, to any lane's
+  process, but only to a debuggable one (`com.apple.security.get-task-allow`), which a Wine signed for distribution
+  is not
+- [`tools/gputrace.py`](../tools/gputrace.py) reads a trace through `gpudebug`: `report` lists the command buffers,
+  encoders and each render attachment's format, usage, storage and compression (`--profile` adds the GPU's cost
+  ranking of encoders and shaders and its counters, on an M3 or later), `fetch-final` saves the last render pass's
+  image as a PNG, and `diff` compares two of them
+
 ## 6. Inspect shader conversion and caches
 
 Three different things can be examined: the Direct3D bytecode the game supplied, the Metal IR Mullion converted it
@@ -200,6 +212,9 @@ Each revision is built with its own dependencies, the libraries it loaded are ch
 shader cache off or fresh, since the cache is versioned by the converter and not by the revision. A faster revision
 counts as good only when it also renders correctly ([TESTING.md 10](TESTING.md#10-performance)).
 {suite: running one fixed case against each revision}.
+
+A regression that comes with a new macOS or GPU may be one of Mullion's workarounds for Apple's faults no longer
+fitting, or a new fault: `MULLION_DISABLE_WORKAROUNDS` turns them off by name ([workarounds.md](workarounds.md)).
 
 The first bad commit is where the observed behaviour changed. It is not necessarily the whole cause, and skipped
 revisions next to it can leave several candidates.
