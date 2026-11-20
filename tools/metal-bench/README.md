@@ -18,3 +18,8 @@ swiftc -O lossy.swift -o /tmp/lossy && /tmp/lossy
 - `lossy.swift [<pixel format> <case>]`: what lossy compression saves (half: a 4096² RGBA8 texture takes 32 MB
   instead of 64) and which textures Metal takes it for, run with `MTL_DEBUG_LAYER=1`. Why `MULLION_LOSSY_TEXTURES=1`
   compresses only the textures it does (src/mullion/mullion_memory.hpp).
+- `integer_miscompiles.swift`: Metal compiler bugs in integer code that `tests/fuzz.py` found, in plain Metal: counts
+  and min/max of a sign-extended bool taken as 16 bits, and a constant divided by a variable. Each line says whether
+  this macOS still has the bug (docs/workarounds.md lists Mullion's workarounds).
+- `format_view.swift`: a compressed texture made without `PixelFormatView` and read through a view of another layout
+  reads every texel wrong, so the usage cannot be dropped on a guess about which views a game will make.
