@@ -61,3 +61,11 @@ test('host_admission', find_program('python3', native : true),
      args : files('admission.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_frames', find_program('python3', native : true),
      args : files('frames.py') + [meson.project_source_root() / 'tools/frames.py'], suite : 'host')
+# the option names in src/ and in mullion.conf held against each other in both directions, over this tree and over
+# fixtures that must fail -- a guard nobody showed failing is a guard nobody can trust
+test('host_config_keys', find_program('python3', native : true),
+     args : files('config_keys.py') + [meson.project_source_root()], suite : 'host')
+# two library headers' own arithmetic, checked where it is written rather than through a device: the vertex-range
+# wrap guard of src/d3d9, and the typed-buffer window clamp of src/mullion
+test('host_stream_range', executable('host_stream_range', ['stream_range.cpp'], override_options : ['cpp_std=c++20'], native : true), suite : 'host')
+test('host_typed_window', executable('host_typed_window', ['typed_window.cpp'], override_options : ['cpp_std=c++20'], native : true), suite : 'host')

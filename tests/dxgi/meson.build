@@ -13,6 +13,13 @@ test('dxgi_vblank', executable('dxgi_vblank', ['dxgi_vblank.cpp'], dependencies 
 # the prefix's trust in the NGX core's certificate, and where NGX finds the core (nvngx.dll where the build has it)
 test('dxgi_ngx_trust', executable('dxgi_ngx_trust', ['dxgi_ngx_trust.cpp'], dependencies : dxgi_test_deps + [cpp.find_library('crypt32')]),
      args : get_option('enable_nvngx') ? ['ngx'] : [], is_parallel : false, timeout : 300)
+# which generation the router answers, the error a refusal gives, and that refusing one generation does not
+# refuse the layer another of this build's generations draws over (tests/host/router.cpp holds the rules themselves)
+test('dxgi_router', executable('dxgi_router', ['dxgi_router.cpp'],
+                               dependencies : dxgi_test_deps + [cpp.find_library('d3d9'), cpp.find_library('d3d11')]),
+     is_parallel : false, timeout : 300)
+# dxgi.dll's export table: every name resolves and is called safely
+test('dxgi_exports', executable('dxgi_exports', ['dxgi_exports.cpp'], dependencies : dxgi_test_deps), timeout : 300)
 # these present to a real window
 foreach name : ['buffers', 'color_space', 'composition', 'factory', 'formats', 'gamma', 'latency', 'object', 'output', 'present', 'present_regions', 'replace', 'resize_queues', 'swapchain_flags']
   test('dxgi_' + name, executable('dxgi_' + name, ['dxgi_' + name + '.cpp'], dependencies : dxgi_test_deps),
