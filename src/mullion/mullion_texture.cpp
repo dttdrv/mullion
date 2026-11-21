@@ -394,6 +394,12 @@ Texture::formatViewMove() {
   if (format_view_.load(std::memory_order_relaxed) != FormatView::Deferred)
     return {};
   std::unique_lock<mullion::shared_mutex> lock(mutex_);
+  // the second allocation stays within the working set as the first did (memory::Admit); refused, it is one without a
+  // texture, as when Metal cannot make it
+  WMTTextureInfo info = info_;
+  info.usage = WMTTextureUsage(info.usage | WMTTextureUsagePixelFormatView);
+  if (!memory::Admit(device_, [&] { return device_.heapTextureSizeAndAlign(info).size; }))
+    return new TextureAllocation(this, WMT::Reference<WMT::Texture>(), info, current_->flags());
   auto moved = allocate(current_->flags(), WMTTextureUsagePixelFormatView);
   if (moved->texture())
     format_view_.store(FormatView::Moved, std::memory_order_release);
