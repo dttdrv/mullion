@@ -294,6 +294,19 @@ public:
       break;
     }
   };
+
+  // a depth stencil or multisampled texture, which the runtime copies only whole
+  bool
+  WholeOnly() const {
+    switch (Dimension) {
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+      return Texture1DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+      return (Texture2DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) || Texture2DDesc.SampleDesc.Count > 1;
+    default:
+      return false;
+    }
+  }
 };
 
 class TextureCopyCommand {
@@ -1266,6 +1279,10 @@ public:
       break;
     }
     default:
+      // the runtime passes a copy with a depth stencil or multisampled texture to a driver only with no box and no
+      // offsets (PFND3D11_1DDI_RESOURCECOPYREGION), and drops any other
+      if ((pSrcBox || DstX || DstY || DstZ) && (Dst.WholeOnly() || Src.WholeOnly()))
+        return;
       CopyTexture(TextureCopyCommand(Dst, DstSubresource, DstX, DstY, DstZ, Src, SrcSubresource, pSrcBox));
       break;
     }
