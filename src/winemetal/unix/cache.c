@@ -135,15 +135,21 @@ remove_other_versions(NSString *stem, NSString *kept) {
   if (!taken && !reader_open(_dbPath, _sqlGet, &connection))
     return nil;
 
-  sqlite3_bind_blob64(connection.stmt, 1, key.bytes, key.length, SQLITE_STATIC);
+  int rc = sqlite3_bind_blob64(connection.stmt, 1, key.bytes, key.length, SQLITE_STATIC);
+  if (rc == SQLITE_OK)
+    rc = sqlite3_step(connection.stmt);
   dispatch_data_t result = nil;
-  if (sqlite3_step(connection.stmt) == SQLITE_ROW) {
+  if (rc == SQLITE_ROW) {
     // the value is SQLite's until the statement is reset, and the caller keeps it for as long as the function made
     // of it lives: it is copied out, and the connection given back
     const void *bytes = sqlite3_column_blob(connection.stmt, 0);
-    int len = sqlite3_column_bytes(connection.stmt, 0);
-    result = dispatch_data_create(bytes, len, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    if (!bytes && sqlite3_errcode(connection.db) == SQLITE_NOMEM)
+      rc = SQLITE_NOMEM;
+    else
+      result = dispatch_data_create(bytes, sqlite3_column_bytes(connection.stmt, 0), nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
   }
+  if (rc != SQLITE_ROW && rc != SQLITE_DONE)
+    NSLog(@"[CacheReader] Lookup failed (%d): %s", rc, sqlite3_errmsg(connection.db));
   // the reset ends the read, so the next lookup on the connection sees what was written since
   sqlite3_reset(connection.stmt);
   sqlite3_clear_bindings(connection.stmt);
@@ -239,8 +245,24 @@ writes(void) {
       return nil;
     }
 
-    sqlite3_exec(_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
-    sqlite3_exec(_db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+    sqlite3_stmt *mode = NULL;
+    int rc = sqlite3_prepare_v2(_db, "PRAGMA journal_mode=WAL;", -1, &mode, NULL);
+    if (rc == SQLITE_OK)
+      rc = sqlite3_step(mode);
+    const char *journal = rc == SQLITE_ROW ? (const char *)sqlite3_column_text(mode, 0) : NULL;
+    bool wal = journal && sqlite3_stricmp(journal, "wal") == 0;
+    if (!wal)
+      NSLog(@"[CacheWriter] Failed to enable WAL: %s", journal ? journal : sqlite3_errmsg(_db));
+    sqlite3_finalize(mode);
+    if (!wal) {
+      [self release];
+      return nil;
+    }
+    if (sqlite3_exec(_db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL) != SQLITE_OK) {
+      NSLog(@"[CacheWriter] Failed to set synchronous=NORMAL: %s", sqlite3_errmsg(_db));
+      [self release];
+      return nil;
+    }
 
     NSString *tableName = [NSString stringWithFormat:@"cache_%llu", version];
     NSString *sqlCreate = [NSString stringWithFormat:@"CREATE TABLE IF NOT EXISTS %@ ("
