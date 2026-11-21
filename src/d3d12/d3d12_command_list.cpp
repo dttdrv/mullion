@@ -5524,7 +5524,18 @@ public:
     pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
     // the next compute dispatch binds its own pipeline again
     dirty_state_.set(DirtyState::ComputePipelineState);
-    BindComputeRootArguments();
+    if (rootsig_compute_) {
+      BindComputeRootArguments();
+    } else {
+      // A pipeline with only local root signatures still runs dispatch_rays with both global buffers bound.
+      for (auto index : {SM50_BINDING_INDEX_ROOT_ARGUMENTS, SM50_BINDING_INDEX_STATIC_SAMPLERS}) {
+        auto &binding = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        binding.type = WMTComputeCommandSetBuffer;
+        binding.buffer = device_->GetNullBufferHandle();
+        binding.offset = 0;
+        binding.index = index;
+      }
+    }
     auto &functions = allocator_->EncodeComputeCommand<wmtcmd_compute_setvisiblefunctiontable>();
     functions.type = WMTComputeCommandSetVisibleFunctionTable;
     functions.table = table;
