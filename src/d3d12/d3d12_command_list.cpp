@@ -5780,6 +5780,22 @@ public:
     return pass;
   }
 
+  static bool
+  UpscaleImage(const Texture *texture) {
+    return texture && texture->textureType() == WMTTextureType2D && texture->sampleCount() == 1;
+  }
+
+  static bool
+  UpscaleSize(const Texture *texture, const Texture *reference) {
+    return UpscaleImage(texture) && texture->width() == reference->width() && texture->height() == reference->height();
+  }
+
+  static bool
+  UpscaleValues(float exposure, float scale_x, float scale_y, float jitter_x, float jitter_y) {
+    return std::isfinite(exposure) && exposure > 0 && std::isfinite(scale_x) && std::isfinite(scale_y) &&
+           std::isfinite(jitter_x) && std::isfinite(jitter_y);
+  }
+
   HRESULT
   TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
     if (!pDesc || !ppCache)
@@ -5787,7 +5803,13 @@ public:
     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
          depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
          exposure = UpscaleTexture(pDesc->ExposureTexture);
-    if (!color || !output || !depth || !motion)
+    const auto *motion_size = pDesc->MotionVectorInDisplayRes ? output : color;
+    if (!UpscaleImage(color) || !UpscaleImage(output) || color == output || !UpscaleSize(depth, color) ||
+        !UpscaleSize(motion, motion_size) || output->width() < color->width() || output->height() < color->height() ||
+        pDesc->InputContentWidth > color->width() || pDesc->InputContentHeight > color->height() ||
+        (pDesc->ExposureTexture && (!UpscaleImage(exposure) || exposure->width() != 1 || exposure->height() != 1)) ||
+        !UpscaleValues(pDesc->PreExposure, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY,
+                       pDesc->JitterOffsetX, pDesc->JitterOffsetY))
       return E_INVALIDARG;
     auto motion_format = MotionVectorFormat(motion->pixelFormat());
     // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer

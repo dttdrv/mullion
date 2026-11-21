@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <vector>
 
 struct Texture {
@@ -98,6 +99,36 @@ main(int argc, char **argv) {
                 packed.resource && output.resource && display_motion.resource
             ? S_OK
             : E_FAIL);
+  CHECK(list->Reset(allocator.Get(), nullptr));
+  MTL_TEMPORAL_UPSCALE_D3D12_DESC valid{};
+  valid.Color = color.resource.Get();
+  valid.Output = output.resource.Get();
+  valid.Depth = depth.resource.Get();
+  valid.MotionVector = motion.resource.Get();
+  valid.ExposureTexture = exposure.resource.Get();
+  valid.PreExposure = valid.MotionVectorScaleX = valid.MotionVectorScaleY = 1;
+  auto rejected = [&](auto change, const char *name) {
+    auto invalid = valid;
+    change(invalid);
+    IMTLD3D12Upscaler *cache = nullptr;
+    expect(ext->TemporalUpscale(&invalid, &cache) == E_INVALIDARG, "%s was accepted", name);
+    expect(!cache, "%s created a scaler", name);
+    if (cache)
+      cache->Destroy();
+  };
+  step("invalid temporal MetalFX inputs");
+  rejected([&](auto &d) { d.InputContentWidth = width + 1; }, "content wider than its texture");
+  rejected([&](auto &d) { d.InputContentHeight = height + 1; }, "content taller than its texture");
+  rejected([&](auto &d) { d.Depth = exposure.resource.Get(); }, "a 1x1 depth texture");
+  rejected([&](auto &d) { d.MotionVector = display_motion.resource.Get(); }, "unmarked display-resolution motion");
+  rejected([&](auto &d) { d.Output = color.resource.Get(); }, "input and output aliasing");
+  rejected([&](auto &d) { d.MotionVectorInDisplayRes = TRUE; }, "input-resolution motion marked as display-resolution");
+  rejected([&](auto &d) { d.ExposureTexture = color.resource.Get(); }, "an exposure texture larger than one texel");
+  rejected([](auto &d) { d.PreExposure = 0; }, "zero pre-exposure");
+  rejected([](auto &d) { d.MotionVectorScaleX = std::numeric_limits<float>::infinity(); }, "infinite motion scale");
+  rejected([](auto &d) { d.JitterOffsetY = std::numeric_limits<float>::quiet_NaN(); }, "NaN jitter");
+
+  CHECK(list->Close());
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
   UINT64 bytes;
   auto out_desc = output.resource->GetDesc();
@@ -353,8 +384,26 @@ main(int argc, char **argv) {
   params->Set("OutWidth", out_width);
   params->Set("OutHeight", out_height);
   params->Set("DLSS.Feature.Create.Flags", int(NVNGX_DLSS_FLAG_MV_LOWRES));
+  unsigned sentinel = 0;
+  unsigned *rejected = &sentinel;
+  expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, nullptr, &rejected) == NVNGX_RESULT_INVALID_PARAMETER &&
+             !rejected, "DLSS creation with no parameters did not reject and clear the handle");
+  for (const char *name : {"Width", "Height", "OutWidth", "OutHeight"}) {
+    unsigned value = 0;
+    params->Get(name, &value);
+    params->Set(name, 0u);
+    rejected = &sentinel;
+    auto result = create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &rejected);
+    expect(result == NVNGX_RESULT_INVALID_PARAMETER && !rejected, "DLSS creation with %s=0 returned %#x, handle %p",
+           name, result, (void *)rejected);
+    if (result == NVNGX_RESULT_OK && rejected && rejected != &sentinel)
+      release(rejected);
+    params->Set(name, value);
+  }
   if (expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &feature) == NVNGX_RESULT_OK && feature,
              "DLSS was not created")) {
+    expect(evaluate(list.Get(), feature, nullptr, nullptr) == NVNGX_RESULT_INVALID_PARAMETER,
+           "DLSS ran without parameters");
     params->Set("Color", color.resource.Get());
     params->Set("Output", (void *)output.resource.Get());
     params->Set("Depth", depth.resource.Get());

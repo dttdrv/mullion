@@ -772,7 +772,10 @@ public:
     info.fail_on_binary_archive_miss = true;
     if (auto found = make(info, error))
       return found;
+    // Compiling the miss with the same archives can make Metal release a binary entry twice at teardown.
     info.fail_on_binary_archive_miss = false;
+    info.num_binary_archives_for_lookup = 0;
+    info.binary_archives_for_lookup.set(nullptr);
     info.keep_for_binary_archive = true;
     error = {};
     auto made = make(info, error);
