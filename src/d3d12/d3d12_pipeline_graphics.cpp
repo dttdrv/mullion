@@ -577,7 +577,7 @@ CompileFunction(
   };
   if (auto function = made())
     return function;
-  auto load = [&](WMT::Reference<WMT::DispatchData> data, WMT::Reference<WMT::Error> &error) {
+  auto load = [&](const WMT::Reference<WMT::DispatchData> &data, WMT::Reference<WMT::Error> &error) {
     auto library = device->GetMTLDevice().newLibrary(data, error);
     auto function = library ? library.newFunction(name) : WMT::Reference<WMT::Function>{};
     return function ? share(function, data) : function;
