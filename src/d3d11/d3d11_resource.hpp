@@ -820,11 +820,14 @@ ExtractEntireResourceViewDescription(MTLD3D11Device *pDevice, const RESOURCE_DES
   return S_OK;
 }
 
+// `pDefersFormatView`: given by a caller that can move the texture to an allocation with Metal's format view at its
+// first view in another layout, which is set where the texture is made without it for that (Texture::deferFormatView)
 template <typename TEXTURE_DESC>
 HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,
                                    const TEXTURE_DESC *pDesc,
                                    TEXTURE_DESC *pOutDesc,
-                                   WMTTextureInfo *pMtlDescOut);
+                                   WMTTextureInfo *pMtlDescOut,
+                                   bool *pDefersFormatView = nullptr);
 
 template <typename VIEW_DESC>
 HRESULT InitializeAndNormalizeViewDescriptor(

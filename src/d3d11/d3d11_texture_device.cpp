@@ -401,6 +401,8 @@ public:
     // a swizzled view is read only: an attachment stores the channels as they are (RenderTargetChannels)
     auto format = descriptor.format;
     descriptor.format = WMTPixelFormat(ORIGINAL_FORMAT(format));
+    if (!this->m_parent->PrepareFormatView(texture, descriptor.format))
+      return E_OUTOFMEMORY;
     *ppView = ref(new TextureRTV(descriptor, format, &finalDesc, this, this->m_parent, attachment_desc));
     return S_OK;
   };
@@ -465,6 +467,8 @@ public:
     if (!ppView) {
       return S_FALSE;
     }
+    if (!this->m_parent->PrepareFormatView(texture, descriptor.format))
+      return E_OUTOFMEMORY;
     *ppView = ref(new TextureSRV(descriptor, &finalDesc, this, this->m_parent));
     return S_OK;
   };
@@ -498,6 +502,8 @@ public:
     if (!ppView) {
       return S_FALSE;
     }
+    if (!this->m_parent->PrepareFormatView(texture, descriptor.format))
+      return E_OUTOFMEMORY;
     *ppView = ref(new TextureUAV(descriptor, &finalDesc, this, this->m_parent));
     return S_OK;
   };
@@ -603,7 +609,14 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
                                     WMTTextureUsage usage = WMTTextureUsageUnknown) {
   WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
-  if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
+  // a texture the device alone uses, of no depth stencil (renamed whole: RenamableTexturePool), can move to an
+  // allocation with Metal's format view at its first view of another layout (Texture::deferFormatView)
+  bool movable = pDesc->Usage == D3D11_USAGE_DEFAULT && !(pDesc->BindFlags & D3D11_BIND_DEPTH_STENCIL) &&
+                 !(pDesc->MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+                                       D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)) &&
+                 !pDevice->shares_with_d3d12;
+  bool defers = false;
+  if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info, movable ? &defers : nullptr))) {
     return E_INVALIDARG;
   }
   info.usage = WMTTextureUsage(info.usage | usage);
@@ -614,6 +627,8 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
   bool single_subresource = info.mipmap_level_count == 1 && info.array_length == 1 &&
                             !(finalDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) && !pDevice->shares_with_d3d12;
   auto texture = Rc<Texture>(new Texture(info, pDevice->GetMTLDevice()));
+  if (defers && !(info.usage & WMTTextureUsagePixelFormatView))
+    texture->deferFormatView();
 
   MTL_DXGI_FORMAT_DESC format_desc;
   MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format_desc);

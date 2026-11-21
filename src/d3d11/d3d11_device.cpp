@@ -1811,6 +1811,29 @@ private:
   std::unique_ptr<D3D11On12Device> on12_;
 };
 
+bool
+MTLD3D11Device::PrepareFormatView(Texture *texture, WMTPixelFormat format) {
+  if (!texture->castsWithoutFormatView(format))
+    return true;
+  // a second view of the texture returns only once the first view's move can be taken
+  std::lock_guard<mullion::mutex> lock(format_view_mutex_);
+  auto moved = texture->formatViewMove();
+  if (!moved)
+    return true;
+  if (!moved->texture())
+    return false;
+  format_view_moves_.emplace_back(texture, std::move(moved));
+  format_view_pending_.store(true, std::memory_order_release);
+  return true;
+}
+
+std::vector<std::pair<Rc<Texture>, Rc<TextureAllocation>>>
+MTLD3D11Device::TakeFormatViewMoves() {
+  std::lock_guard<mullion::mutex> lock(format_view_mutex_);
+  format_view_pending_.store(false, std::memory_order_relaxed);
+  return std::exchange(format_view_moves_, {});
+}
+
 Com<IMTLDXGIDevice> CreateD3D11Device(std::unique_ptr<Device> &&device,
                                       IMTLDXGIAdapter *adapter,
                                       D3D_FEATURE_LEVEL feature_level,

@@ -84,7 +84,16 @@ ImmediateContextBase::RecordWrappedUse(D3D11ResourceCommon *resource, const Reso
 
 template <>
 void
+ImmediateContextBase::MoveToFormatViews() {
+  if (device->FormatViewMovesPending())
+    for (auto &[texture, moved] : device->TakeFormatViewMoves())
+      MoveToFormatView(texture, std::move(moved));
+}
+
+template <>
+void
 ImmediateContextBase::PrepareTextureUse(std::span<const Rc<Texture>> textures) {
+  MoveToFormatViews();
   if (ctx_state.returned.empty())
     return;
   bool split = false;

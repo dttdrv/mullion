@@ -17,6 +17,7 @@
  */
 
 #include "mullion_texture.hpp"
+#include "mullion_format.hpp"
 #include "mullion_heartbeat.hpp"
 #include "mullion_memory.hpp"
 #include "mullion_residency.hpp"
@@ -57,12 +58,19 @@ TextureView::TextureView(TextureAllocation *allocation, unsigned index, TextureV
   );
 }
 
+TextureView::TextureView(TextureAllocation *allocation, unsigned index, TextureViewDescriptor descriptor, std::nullptr_t) :
+    gpuResourceID(0),
+    allocation(allocation),
+    key(descriptor, index, allocation->descriptor->miplevelCount()),
+    awaitsMove(true) {}
+
 TextureAllocation::TextureAllocation(
     Texture *descriptor, WMT::Reference<WMT::Buffer> &&buffer, void *mapped_buffer, const WMTTextureInfo &info,
     unsigned bytes_per_row, Flags<TextureAllocationFlag> flags
 ) :
     descriptor(descriptor),
     mappedMemory(mapped_buffer),
+    formatView(info.usage & WMTTextureUsagePixelFormatView),
     buffer_(std::move(buffer)),
     flags_(flags) {
   auto info_copy = info;
@@ -81,6 +89,7 @@ TextureAllocation::TextureAllocation(
     Flags<TextureAllocationFlag> flags
 ) :
     descriptor(descriptor),
+    formatView(textureDescriptor.usage & WMTTextureUsagePixelFormatView),
     obj_(std::move(texture)),
     flags_(flags) {
   mappedMemory = nullptr;
@@ -116,8 +125,13 @@ Texture::prepareAllocationViews(TextureAllocation *allocation) {
     allocation->cached_view_.push_back(new TextureView(allocation));
     allocation->version_ = 1;
   }
+  bool deferred = format_view_.load(std::memory_order_acquire) != FormatView::Fixed && !allocation->formatView;
   for (unsigned version = allocation->version_; version < version_; version++) {
-    allocation->cached_view_.push_back(new TextureView(allocation, version, viewDescriptors_[version]));
+    auto &descriptor = viewDescriptors_[version];
+    allocation->cached_view_.push_back(
+        deferred && castsLayout(descriptor.format) ? new TextureView(allocation, version, descriptor, nullptr)
+                                                   : new TextureView(allocation, version, descriptor)
+    );
   }
   allocation->version_ = version_;
 }
@@ -193,10 +207,11 @@ Texture::Texture(
 }
 
 Rc<TextureAllocation>
-Texture::allocate(Flags<TextureAllocationFlag> flags) {
+Texture::allocate(Flags<TextureAllocationFlag> flags, WMTTextureUsage usage) {
   WMTResourceOptions options = WMTResourceHazardTrackingModeUntracked;
   WMTTextureInfo info = info_; // copy
   info.mach_port = 0;
+  info.usage = WMTTextureUsage(info.usage | usage);
   if (flags.test(TextureAllocationFlag::CpuWriteCombined)) {
     options |= WMTResourceOptionCPUCacheModeWriteCombined;
   }
@@ -291,7 +306,9 @@ Texture::view(TextureViewKey key, TextureAllocation* allocation) {
     prepareAllocationViews(allocation);
     lock.lock();
   }
-  return *allocation->cached_view_[key.index];
+  auto &view = *allocation->cached_view_[key.index];
+  assert(!view.awaitsMove && "a view in another layout used before its texture moved to Metal's format view");
+  return view;
 }
 
 TextureViewKey Texture::checkViewUseArray(TextureViewKey key, bool isArray) {
@@ -353,6 +370,34 @@ TextureViewKey Texture::checkViewUseFormat(TextureViewKey key, WMTPixelFormat fo
     return createView(new_view_desc);
   }
   return key;
+}
+
+bool
+Texture::castsLayout(WMTPixelFormat format) const {
+  return Forget_sRGB(WMTPixelFormat(ORIGINAL_FORMAT(format))) !=
+         Forget_sRGB(WMTPixelFormat(ORIGINAL_FORMAT(info_.pixel_format)));
+}
+
+void
+Texture::deferFormatView() {
+  assert(!(info_.usage & WMTTextureUsagePixelFormatView));
+  format_view_.store(FormatView::Deferred, std::memory_order_release);
+}
+
+bool
+Texture::castsWithoutFormatView(WMTPixelFormat format) const {
+  return format_view_.load(std::memory_order_acquire) != FormatView::Fixed && castsLayout(format);
+}
+
+Rc<TextureAllocation>
+Texture::formatViewMove() {
+  if (format_view_.load(std::memory_order_relaxed) != FormatView::Deferred)
+    return {};
+  std::unique_lock<mullion::shared_mutex> lock(mutex_);
+  auto moved = allocate(current_->flags(), WMTTextureUsagePixelFormatView);
+  if (moved->texture())
+    format_view_.store(FormatView::Moved, std::memory_order_release);
+  return moved;
 }
 
 Rc<TextureAllocation>
