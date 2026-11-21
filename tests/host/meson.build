@@ -57,6 +57,13 @@ test('host_texel_forms',
      executable('host_texel_forms', 'texel_forms.cpp', dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 300)
+# SHA-1's digests, with an Arm host's blocks on the ARMv8 SHA-1 instructions as an Arm build's are (sha1_neon.c)
+host_sha1_sources = ['sha1.cpp', '../../src/util/sha1/sha1.c']
+if build_machine.cpu_family() == 'aarch64'
+  host_sha1_sources += '../../src/util/sha1/sha1_neon.c'
+endif
+test('host_sha1', executable('host_sha1', host_sha1_sources, include_directories : include_directories('../../src/util'),
+                           override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_diag_profile', find_program('python3', native : true), args : files('diag.py'), suite : 'host')
 test('host_mutate', find_program('python3', native : true), args : files('mutate.py'), suite : 'host')
 test('host_install', find_program('python3', native : true),
