@@ -153,9 +153,18 @@ Lossy(WMT::Device device, const WMTTextureInfo &info) {
   if (!family || (info.options & 0xf0) != WMTResourceStorageModePrivate /* the storage mode bits */ ||
       (info.usage & (WMTTextureUsageShaderWrite | WMTTextureUsagePixelFormatView | WMTTextureUsageShaderAtomic)))
     return false;
-  // Metal's own pixel formats below the block-compressed ones are of color, but for the packed ones
-  auto format = uint32_t(ORIGINAL_FORMAT(info.pixel_format));
-  return format && format < 130 && !(format >= 40 && format <= 43) && format != 92 && format != 93;
+  // the half and float formats: an integer or normalized texture (IDs, masks, packed data) keeps its values exact
+  switch (WMTPixelFormat(ORIGINAL_FORMAT(info.pixel_format))) {
+  case WMTPixelFormatR16Float:
+  case WMTPixelFormatRG16Float:
+  case WMTPixelFormatRGBA16Float:
+  case WMTPixelFormatR32Float:
+  case WMTPixelFormatRG32Float:
+  case WMTPixelFormatRGBA32Float:
+    return true;
+  default:
+    return false;
+  }
 }
 
 } // namespace mullion::memory
