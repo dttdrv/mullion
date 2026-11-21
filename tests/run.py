@@ -163,7 +163,7 @@ def clone(wine, to):
 FAULTS = ("Device error", "failed assertion", "Invalid Metal usage", "message sent to deallocated instance")
 # Metal's API and shader validation, with the shader's reports on stderr, in the test's log (metalvalidation(1))
 VALIDATION = {"MTL_DEBUG_LAYER": "1", "MTL_SHADER_VALIDATION": "1", "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1"}
-# --validate shaders: shader validation alone, a fraction of the API validation's cost, for the tests of one shader
+# --validate-shaders: shader validation alone, a fraction of the API validation's cost, for the tests of one shader
 # path; MULLION_SHADER_LOG puts what the GPU logs in the test's log as well (src/winemetal/unix/winemetal_unix.c)
 SHADER_VALIDATION = {"MTL_SHADER_VALIDATION": "1", "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1", "MULLION_SHADER_LOG": "1"}
 
@@ -469,8 +469,9 @@ def arguments(parser):
                         help="a meson build directory; with several, the first that has a library or the tests gives them")
     parser.add_argument("--wine", required=True, type=Path, help="a Wine's installation: the directory with bin/wine")
     parser.add_argument("--prefix", type=Path, help="the Wine prefix of the tests (made if missing); default: tests-prefix in the first build")
-    parser.add_argument("--validate", nargs="?", const="all", choices=("all", "shaders"),
-                        help="run under Metal's API and shader validation, or (shaders) its shader validation alone")
+    # a flag, not an option with a value: the test names may follow it (CONTRIBUTING.md, faults.py, mutate.py)
+    parser.add_argument("--validate", action="store_true", help="run under Metal's API and shader validation")
+    parser.add_argument("--validate-shaders", action="store_true", help="run under Metal's shader validation alone")
     parser.add_argument("--no-install", action="store_true", help="leave the Wine's libraries as they are")
     parser.add_argument("--clone", nargs="?", const=True, type=Path,
                         help="run in a copy of the Wine, made in this directory (default: tests-wine in the first build) "
@@ -613,8 +614,8 @@ def environment(args):
     overrides = [f"{','.join(native)}=n"] if native else []
     overrides += ["d3dcompiler_47=n,b"] + ([f"{','.join(own)}=b"] if own else []) + ["mscoree,mshtml,winedbg.exe=d"]
     base["WINEDLLOVERRIDES"] = ";".join(overrides)
-    if args.validate:
-        base.update(SHADER_VALIDATION if args.validate == "shaders" else VALIDATION)
+    if args.validate or args.validate_shaders:
+        base.update(VALIDATION if args.validate else SHADER_VALIDATION)
     binary = wine / "bin" / "wine"
     # a Wine macOS will not run runs no test of Windows: the host's own tests still run
     try:
@@ -814,7 +815,7 @@ def own(args, tests, builds, binary, base):
     print(f"\n{counts['passed']} passed, {counts['failed']} failed, {counts['skipped']} skipped; logs in {logs}")
 
     chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
-    default = KNOWN_VALIDATED if getattr(args, "validate", False) else KNOWN
+    default = KNOWN_VALIDATED if getattr(args, "validate", False) or getattr(args, "validate_shaders", False) else KNOWN
     path = getattr(args, "known", None) or default
     if path != default and not path.exists():
         sys.exit(f"no such file: {path}")
