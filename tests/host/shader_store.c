@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #include <pthread.h>
 #include <spawn.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 #include <sys/wait.h>
 #define WINEMETAL_API
@@ -122,6 +123,19 @@ main(int argc, char **argv) {
   NSString *path = [NSString stringWithFormat:@"%s/shaders_test.db", directory];
   bool other = argc > 1 && !strcmp(argv[1], "other");
   struct unixcall_cache_alloc_init params = {{(void *)path.UTF8String}, other ? 2 : 1, 0};
+  if (argc == 1) {
+    // The existing table lets a writer open in rollback mode if it ignores the failed switch to WAL.
+    NSString *database = [NSString stringWithFormat:@"%s/shaders_test.v1.db", directory];
+    sqlite3 *locked = NULL;
+    if (sqlite3_open(database.fileSystemRepresentation, &locked) != SQLITE_OK ||
+        sqlite3_exec(locked, "PRAGMA journal_mode=DELETE; CREATE TABLE cache_1(key BLOB PRIMARY KEY, value BLOB NOT NULL);"
+                             "BEGIN; SELECT * FROM cache_1;", NULL, NULL, NULL) != SQLITE_OK)
+      return printf("failed: setting up a reader in rollback mode: %s\n", sqlite3_errmsg(locked)), 1;
+    _CacheWriter_alloc_init(&params);
+    sqlite3_close(locked);
+    if (params.ret_cache)
+      return printf("wrong: a writer opened while another reader prevented WAL mode\n"), 1;
+  }
   _CacheWriter_alloc_init(&params);
   writer = params.ret_cache;
   params.ret_cache = 0;
