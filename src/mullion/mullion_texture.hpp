@@ -173,6 +173,7 @@ private:
   uint32_t version_ = 0;
   Flags<TextureAllocationFlag> flags_;
   small_vector<TextureViewRef, 4> cached_view_;
+  bool kept_ = false; // in the residency heartbeat's set
 };
 
 class Texture {
