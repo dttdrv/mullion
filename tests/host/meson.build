@@ -8,6 +8,9 @@ test('host_format', executable('host_format', 'format.cpp', include_directories 
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_rc_self_move', executable('host_rc_self_move', 'rc.cpp',
                                     override_options : ['cpp_std=c++20'], native : true), suite : 'host')
+test('host_private_data', executable('host_private_data', ['private_data.cpp', '../../src/util/com/com_private_data.cpp'],
+     include_directories : [mullion_native_include_path, include_directories('../../src/util')],
+     override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_denorm', executable('host_denorm', 'denorm.cpp', include_directories : include_directories('metal'),
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_tessellator',
