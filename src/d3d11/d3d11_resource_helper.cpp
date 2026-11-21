@@ -438,14 +438,10 @@ CreateMTLTextureDescriptorInternal(
       // texture shaders write: only a texture that needs a view in another layout gets it. An R32 view of a 32-bit
       // typeless texture is one (CastsToR32UnorderedAccess), and so is a uint clear's integer view, but for a format
       // whose values hold all its bit patterns, which ClearUnorderedAccessViewUint writes as those values instead
-      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12), and so is the float view an
-      // upscaler reads motion vectors through (MotionVectorFormat). shortcut: a typed texture with no unordered access
-      // gets no format view for that view, which Metal's validation refuses, until a texture can take the format view
-      // at its first view in another format
+      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12)
       auto pixel = pDescOut->pixel_format;
       auto write = GetUIntClearWrite(pixel);
-      auto motion = MotionVectorFormat(pixel);
-      if (CastsToR32UnorderedAccess(Format) || (motion != WMTPixelFormatInvalid && motion != pixel) ||
+      if (CastsToR32UnorderedAccess(Format) ||
           (MTLGetUnsignedIntegerFormat(pixel) != pixel && write != UIntClearWrite::Unorm && write != UIntClearWrite::Float))
         metal_usage |= WMTTextureUsagePixelFormatView;
       // NOTE: R32/RG32_TYPELESS format should be mapped to uint pixel format
@@ -468,10 +464,15 @@ CreateMTLTextureDescriptorInternal(
   }
   // a typeless color texture's views need Metal's format view only where its family's formats differ in layout, not
   // where they are sRGB twins (CastsAcrossLayouts, as Direct3D 12 decides): B8G8R8A8_TYPELESS and the block-compressed
-  // families keep their lossless compression. so do the others, until a view casts one, where the caller can move the
-  // texture to an allocation with the usage then (pDefersFormatView, Texture::deferFormatView)
-  bool casts = (metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && !DepthStencilPlanarFlags(pDescOut->pixel_format) &&
-               CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false);
+  // families keep their lossless compression. a texture a pass can write motion vectors to needs it as well where an
+  // upscaler reads them through a view of another format (MotionVectorFormat). either keeps its lossless compression
+  // until such a view, where the caller can move the texture to an allocation with the usage then (pDefersFormatView,
+  // Texture::deferFormatView)
+  auto motion = MotionVectorFormat(pDescOut->pixel_format);
+  bool casts = ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && !DepthStencilPlanarFlags(pDescOut->pixel_format) &&
+                CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false)) ||
+               ((BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS)) &&
+                motion != WMTPixelFormatInvalid && motion != pDescOut->pixel_format);
 
   // a resolve Metal cannot do renders its destination, any single-sampled default texture (ResolveSubresource)
   if (Usage == D3D11_USAGE_DEFAULT && Dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D && SampleCount == 1 &&
