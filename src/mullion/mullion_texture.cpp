@@ -17,6 +17,8 @@
  */
 
 #include "mullion_texture.hpp"
+#include "mullion_heartbeat.hpp"
+#include "mullion_memory.hpp"
 #include "mullion_residency.hpp"
 #include "wsi_platform.hpp"
 #include <atomic>
@@ -65,6 +67,7 @@ TextureAllocation::TextureAllocation(
     flags_(flags) {
   auto info_copy = info;
   obj_ = buffer_.newTexture(info_copy, 0, bytes_per_row);
+  kept_ = heartbeat::Keep(buffer_, uint64_t(bytes_per_row) * info.height * info.depth * info.array_length);
 
   gpuResourceID = info_copy.gpu_resource_id;
   machPort = 0;
@@ -83,6 +86,11 @@ TextureAllocation::TextureAllocation(
   mappedMemory = nullptr;
   gpuResourceID = textureDescriptor.gpu_resource_id;
   machPort = textureDescriptor.mach_port;
+  // a MiB or more by an estimate of four bytes a texel, for the heartbeat
+  if (!flags.test(TextureAllocationFlag::AllocatedOnHeap) && !textureDescriptor.placement_sparse_page_size)
+    kept_ = heartbeat::Keep(obj_, uint64_t(textureDescriptor.width) * textureDescriptor.height *
+                                      textureDescriptor.depth * textureDescriptor.array_length *
+                                      std::max(1u, uint32_t(textureDescriptor.sample_count)) * 4);
   fenceTrackers.resize(
       flags.test(TextureAllocationFlag::ShaderReadonly) ? 1 : descriptor->arrayLength() * descriptor->miplevelCount()
   );
@@ -90,6 +98,8 @@ TextureAllocation::TextureAllocation(
 
 void
 TextureAllocation::free(){
+  if (kept_)
+    heartbeat::Release(buffer_ ? WMT::Allocation(buffer_) : WMT::Allocation(obj_));
 #ifdef __i386__
   wsi::aligned_free(mappedMemory);
 #endif
@@ -197,6 +207,8 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     options |= WMTResourceStorageModeManaged;
   }
   info.options = options;
+  if (!bytes_per_image_ && !flags.test(TextureAllocationFlag::Shared) && memory::Lossy(device_, info))
+    info.usage = WMTTextureUsage(info.usage | WMTTextureUsageLossyCompression);
   if (bytes_per_image_) {
     WMTBufferInfo buffer_info;
     buffer_info.length = bytes_per_image_;
@@ -227,6 +239,8 @@ Texture::allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t h
     options |= WMTResourceStorageModeManaged;
   }
   info.options = options;
+  if (!bytes_per_image_ && !flags.test(TextureAllocationFlag::Shared) && memory::Lossy(device_, info))
+    info.usage = WMTTextureUsage(info.usage | WMTTextureUsageLossyCompression);
   flags.set(TextureAllocationFlag::AllocatedOnHeap);
   return new TextureAllocation(this, heap.newTexture(info, heap_offset), info, flags);
 }

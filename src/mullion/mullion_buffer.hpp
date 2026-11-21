@@ -194,6 +194,7 @@ private:
   uint32_t suballocation_count_ = 1;
 
   void * placed_buffer = nullptr;
+  bool kept_ = false; // in the residency heartbeat's set
 };
 
 class Buffer {

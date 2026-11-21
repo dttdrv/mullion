@@ -518,8 +518,10 @@ void handle_signature_ps(
       max_input_register = std::max(reg + 1, max_input_register);
       return;
     default:
-      // Unexpected/unhandled input system value: the declaration is ignored
-      break;
+      // Unexpected/unhandled input system value: the declaration is ignored, its register still counted, as the
+      // shader may read it
+      max_input_register = std::max(reg + 1, max_input_register);
+      return;
     }
     signature_handlers.push_back([=](SignatureContext &ctx) {
       ctx.prologue << init_input_reg(
@@ -573,8 +575,10 @@ void handle_signature_ps(
       max_input_register = std::max(reg + 1, max_input_register);
       return;
     default:
-      // Unexpected/unhandled input system value: the declaration is ignored
-      break;
+      // Unexpected/unhandled input system value: the declaration is ignored, its register still counted, as the
+      // shader may read it
+      max_input_register = std::max(reg + 1, max_input_register);
+      return;
     }
     signature_handlers.push_back([=](SignatureContext &ctx) {
       ctx.prologue << init_input_reg(assigned_index, reg, mask);

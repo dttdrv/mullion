@@ -1557,12 +1557,12 @@ CastsAcrossLayouts(WMT::Device device, uint32_t format, bool fully_typed) {
 }
 
 double
-ClampFloatRTVClearColor(float val, float min, float max) {
+ClampFloatRTVClearColor(float val, float min, float max, int fraction_bits = 10) {
   if (!std::isfinite(val) || val == 0)
     return val;
   val = std::clamp(val, min, max);
-  // D3D11.3 3.1.5/3.2.2 require half conversion toward zero, including preserved denorms.
-  constexpr int fraction_bits = 10, minimum_exponent = -14;
+  // D3D11.3 3.1.5/6 and 3.2.2 require narrow float conversion toward zero, preserving denorms.
+  constexpr int minimum_exponent = -14;
   int exponent;
   std::frexp(val, &exponent);
   const int scale = std::min(fraction_bits + 1 - exponent, fraction_bits - minimum_exponent);
@@ -1589,6 +1589,11 @@ SanitizeRTVClearColor(WMTPixelFormat format, WMTClearColor &color) {
     color.g = ClampFloatRTVClearColor(color.g, kHalfMin, kHalfMax);
     color.b = ClampFloatRTVClearColor(color.b, kHalfMin, kHalfMax);
     color.a = ClampFloatRTVClearColor(color.a, kHalfMin, kHalfMax);
+    break;
+  case WMTPixelFormatRG11B10Float:
+    color.r = ClampFloatRTVClearColor(color.r, 0, 65024, 6);
+    color.g = ClampFloatRTVClearColor(color.g, 0, 65024, 6);
+    color.b = ClampFloatRTVClearColor(color.b, 0, 64512, 5);
     break;
   case WMTPixelFormatR8Uint:
   case WMTPixelFormatRG8Uint:
