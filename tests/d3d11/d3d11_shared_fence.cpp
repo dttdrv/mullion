@@ -83,10 +83,21 @@ main(int argc, char **argv) {
   ComPtr<ID3D11DeviceContext> other_context;
   ComPtr<ID3D11Device5> other5;
   ComPtr<ID3D11DeviceContext4> other4;
-  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &other, nullptr,
+  CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, &level, 1, D3D11_SDK_VERSION, &other, nullptr,
                           &other_context));
   CHECK(other.As(&other5));
   CHECK(other_context.As(&other4));
+  step("video-support devices create fences and complete GPU signals");
+  ComPtr<ID3D11Fence> video_fence;
+  CHECK(other5->CreateFence(initial, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&video_fence)));
+  expect(video_fence->GetCompletedValue() == initial, "video fence initial value was lost");
+  CHECK(video_fence->SetEventOnCompletion(initial + 1, completed));
+  expect(WaitForSingleObject(completed, 0) == WAIT_TIMEOUT, "video fence completed before Signal");
+  CHECK(other4->Signal(video_fence.Get(), initial + 1));
+  other_context->Flush();
+  if (!expect(WaitForSingleObject(completed, fence_ms) == WAIT_OBJECT_0, "video fence Signal did not complete"))
+    return verdict();
+  expect(video_fence->GetCompletedValue() == initial + 1, "video fence completed value was lost");
   step("a shared texture still opens as a texture, and cannot open as a fence");
   D3D11_TEXTURE2D_DESC texture_desc{1, 1, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                   D3D11_BIND_SHADER_RESOURCE, 0,
