@@ -37,7 +37,7 @@ main(int argc, char **argv) {
     return verdict();
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   constexpr UINT maximum = D3D12_MAX_MAXANISOTROPY, size = 4 * maximum, mips = std::bit_width(size);
   D3D12_RESOURCE_DESC desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, size, size, 1, mips, DXGI_FORMAT_R32_FLOAT,
                            {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN};

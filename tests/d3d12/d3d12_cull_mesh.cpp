@@ -128,7 +128,7 @@ static int
 bench(Compiler &compiler) {
   const UINT width = 1920, height = 1080, frames = 40;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER constants{D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS};
   constants.Constants = {0, 0, 1};
   auto rs = root_signature(device.Get(), {1, &constants, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE});
@@ -250,7 +250,7 @@ main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[2], "bench"))
     return bench(compiler);
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
   // vertices: cell (x, y) of the grid has corners at its own four vertices, each with its own distances; vertex 65535
   // is the last cell's third corner again

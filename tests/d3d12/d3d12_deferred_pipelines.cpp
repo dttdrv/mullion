@@ -74,7 +74,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
   const UINT drawn = 48, released = 48, threads = 4;
   // after the plain pipelines' columns and the last one's: the tessellated pipeline's and the mesh shader pipeline's

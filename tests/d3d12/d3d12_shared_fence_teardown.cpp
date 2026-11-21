@@ -51,7 +51,7 @@ main(int argc, char **argv) {
     step("round %u: a D3D12 device and a D3D11 device wait for %u and are released", round, round);
     {
       ComPtr<ID3D12Device> device;
-      CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+      CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
       ComPtr<ID3D12Fence> opened;
       CHECK(device->OpenSharedHandle(shared, IID_PPV_ARGS(&opened)));
       CHECK(opened->SetEventOnCompletion(round, waited));

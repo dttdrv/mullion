@@ -27,7 +27,7 @@ main(int argc, char **argv) {
   if (!expect(!fill.empty() && !copy.empty(), "shaders compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   const UINT64 metal_texels = UINT64(1) << 28, span = 4096, group = 64;
   const UINT64 elements = metal_texels + span;
   D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1};

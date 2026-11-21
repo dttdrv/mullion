@@ -264,7 +264,7 @@ main(int, char **) {
     std::vector<D3D_FEATURE_LEVEL> requested = {D3D12_TEST_FEATURE_LEVELS};
     D3D12_FEATURE_DATA_FEATURE_LEVELS levels{(UINT)requested.size(), requested.data()};
     ComPtr<ID3D12Device> reference;
-    CHECK(D3D12CreateDevice(dxgi.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&reference)));
+    CHECK(make_device(dxgi.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&reference)));
     CHECK(reference->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels)));
     reference.Reset();
     expect(levels.MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_11_0, "no D3D12 feature level reported");

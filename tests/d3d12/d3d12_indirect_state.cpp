@@ -40,7 +40,7 @@ main(int argc, char **argv) {
   if (!expect(!code.empty() && !after_code.empty(), "HLSL did not compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   enum Parameter { Cbv, Srv, Uav, Constants, Output, Table, ParameterCount };
   D3D12_ROOT_PARAMETER parameters[ParameterCount] = {
       {D3D12_ROOT_PARAMETER_TYPE_CBV}, {D3D12_ROOT_PARAMETER_TYPE_SRV}, {D3D12_ROOT_PARAMETER_TYPE_UAV},

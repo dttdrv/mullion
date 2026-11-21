@@ -421,7 +421,7 @@ main(int argc, char **argv) {
   if (argc > 4 && !strcmp(argv[4], "shaders"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   if (argc > 3 && !strcmp(argv[2], "child"))
     return child(argv, device, vs, ps, cs);
   char temporary[MAX_PATH], directory[MAX_PATH], exe[MAX_PATH];

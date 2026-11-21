@@ -17,11 +17,11 @@
 int
 main(int, char **) {
   ComPtr<ID3D12Device> first;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&first)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&first)));
 
   step("a second call for the default adapter");
   ComPtr<ID3D12Device> second;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&second)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&second)));
   expect(second.Get() == first.Get(), "a second call gave device %p, not the existing %p", second.Get(), first.Get());
 
   step("an adapter object of another factory, with the same LUID");
@@ -57,12 +57,12 @@ main(int, char **) {
   ComPtr<ID3D12Device> held;
   CHECK(queue->GetDevice(IID_PPV_ARGS(&held)));
   ComPtr<ID3D12Device> while_held;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&while_held)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&while_held)));
   expect(while_held.Get() == held.Get(), "with a queue's device held (%lu references left at release), a call gave %p, "
          "not %p", left, while_held.Get(), held.Get());
   while_held.Reset(), held.Reset(), queue.Reset();
   ComPtr<ID3D12Device5> fresh;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&fresh)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&fresh)));
   expect(fresh->GetDeviceRemovedReason() == S_OK, "the new device is removed: %#lx", fresh->GetDeviceRemovedReason());
   CHECK(fresh->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
   queue.Reset();
@@ -81,7 +81,7 @@ main(int, char **) {
   step("a new device once the removed one is released");
   fresh.Reset();
   ComPtr<ID3D12Device> replacement;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&replacement)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&replacement)));
   expect(replacement->GetDeviceRemovedReason() == S_OK, "the replacement device is removed: %#lx",
          replacement->GetDeviceRemovedReason());
   CHECK(replacement->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));

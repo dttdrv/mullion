@@ -15,7 +15,7 @@ main(int argc, char **argv) {
   const UINT seed = argc > 2 ? strtoul(argv[2], nullptr, 0) : 1;
   std::minstd_rand random(seed);
   ComPtr<ID3D12Device3> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue;
   D3D12_COMMAND_QUEUE_DESC q{};
   CHECK(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)));

@@ -12,7 +12,7 @@
 int
 main(int argc, char **argv) {
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue;
   const D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
@@ -53,7 +53,9 @@ main(int argc, char **argv) {
   };
   std::vector<Copy> copies;
   auto run = [&](UINT target, UINT source, UINT64 dst, UINT64 src, UINT count, INT64 dst_step, INT64 src_step,
-                 UINT64 bytes = block) {
+                 UINT64 bytes = 0) {
+    if (!bytes)
+      bytes = block;
     for (UINT i = 0; i < count; i++)
       copies.push_back({target, source, dst + i * dst_step, src + i * src_step, bytes});
   };

@@ -18,7 +18,7 @@ main(int argc, char **argv) {
     return 77;
   }
   ComPtr<ID3D12Device10> device;
-  if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+  if (FAILED(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
     printf("skipped: no ID3D12Device10\n");
     return 77;
   }

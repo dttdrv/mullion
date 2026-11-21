@@ -14,7 +14,7 @@ main(int argc, char **argv) {
   if (!front_end(argc, argv, compiler))
     return 77;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<IDXGIFactory4> factory;
   ComPtr<IDXGIAdapter3> adapter;
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));

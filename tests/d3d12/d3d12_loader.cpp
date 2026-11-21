@@ -22,7 +22,7 @@ main(int, char **) {
   if (!core && ++wrong)
     printf("no module named D3D12Core.dll in a process that links to d3d12.dll\n");
   ComPtr<ID3D12Device> device;
-  HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+  HRESULT hr = make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
   if (FAILED(hr) && ++wrong)
     printf("no device for an application with an Agility SDK of its own: %#lx\n", hr);
   // the device is the core's: its functions are in that module

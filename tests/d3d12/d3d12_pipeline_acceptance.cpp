@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
   if (!expect(!vs.empty() && !ps.empty() && !ps_dual.empty() && !cs.empty(), "HLSL did not compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto root = root_signature(device.Get(), {});
   if (!expect(root != nullptr, "root signature"))
     return verdict();

@@ -48,7 +48,7 @@ main(int argc, char **argv) {
   if (!expect(!vs.empty() && !info.empty() && !one.empty() && !cs.empty(), "HLSL did not compile"))
     return verdict();
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   for (auto format : {DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_D32_FLOAT}) {
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS support{format, samples};
     HRESULT hr = device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &support, sizeof(support));

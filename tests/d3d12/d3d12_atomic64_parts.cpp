@@ -112,7 +112,7 @@ main(int argc, char **argv) {
   SetEnvironmentVariableA("MULLION_D3D12_THREADS_AT_ONCE", std::to_string(budget).c_str());
   SetEnvironmentVariableA("MULLION_SHADER_FLAGS", std::to_string(SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64).c_str());
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto module = reinterpret_cast<BYTE *>(GetModuleHandleA("d3d12core.dll"));
   if (!expect(module != nullptr, "d3d12core loaded"))
     return verdict();
@@ -170,7 +170,7 @@ main(int argc, char **argv) {
                             std::to_string(emulated ? SM50_SHADER_FLAG_NO_ATOMIC_MINMAX64 : 0).c_str());
     // the flags are read once per device
     device.Reset();
-    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
     D3D12_ROOT_PARAMETER parameters[] = {{D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}};
     parameters[1].Constants = {0, 0, 3};
     auto root = root_signature(device.Get(), {UINT(std::size(parameters)), parameters});

@@ -107,7 +107,7 @@ main(int argc, char **argv) {
   auto texel_of = [=](UINT i) { return texel(i % (size >> lod_of(i)), i / 2 % (size >> lod_of(i)), lod_of(i)); };
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_DESCRIPTOR_RANGE read_range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, stored_range{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2};
   D3D12_ROOT_PARAMETER params[2] = {{D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE}, {D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE}};
   params[0].DescriptorTable = {1, &read_range};

@@ -25,7 +25,7 @@ pixel(UINT frame, UINT row, UINT byte, DXGI_FORMAT format) {
 static int
 child(const char *directory_mode) {
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   if (directory_mode) {
     ComPtr<IUnknown> debug;
     D3D12GetDebugInterface(IID_PPV_ARGS(&debug));

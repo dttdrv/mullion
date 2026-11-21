@@ -56,7 +56,7 @@ main(int argc, char **argv) {
   const DWORD wait_ms = 30 * 1000;
   const DXGI_FORMAT format = DXGI_FORMAT_R32_FLOAT;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)));
   if (!expect((support.Support1 & D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0,
