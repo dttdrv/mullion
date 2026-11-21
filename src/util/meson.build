@@ -25,11 +25,6 @@ util_src = files([
   'sha1/sha1_util.cpp',
 ])
 
-# SHA-1 on the ARMv8 SHA-1 instructions where the build is for Arm (sha1_neon.c); x86 keeps sha1.c's
-if host_machine.cpu_family() == 'aarch64'
-  util_src += files('sha1/sha1_neon.c')
-endif
-
 if not mullion_crossbuild
   util_src += files([
     'wsi_monitor_headless.cpp',

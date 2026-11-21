@@ -1,8 +1,8 @@
 // contract: Mullion's SHA-1 (src/util/sha1) gives FIPS 180's digests, and the same digest whichever path compresses
-// a message's blocks. An Arm build compresses whole 64-byte blocks with the ARMv8 SHA-1 instructions (sha1_neon.c), and
-// the rest with sha1.c's own: an update of fewer than 64 bytes never reaches the block loop, so feeding a message in
-// such pieces digests it all with sha1.c, and feeding it whole digests its blocks on the instructions. Every digest Mullion
-// keys a shader or pipeline by would otherwise change between builds.
+// a message's blocks. An Arm build compresses runs of whole 64-byte blocks with the ARMv8 SHA-1 instructions and the
+// rest with SHA1Transform: an update of fewer than 64 bytes never reaches the block loop, so feeding a message in such
+// pieces digests it all with SHA1Transform, and feeding it whole digests its blocks on the instructions. Every digest
+// Mullion keys a shader or pipeline by would otherwise change between builds.
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
