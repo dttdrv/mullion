@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import run as runner
+
 M = 0xFFFFFFFF
 THREADS = 64
 ZERO = f"inputs[{THREADS * 3}]"  # a zero the compiler cannot see is one
@@ -205,8 +207,10 @@ def main():
                 cases[windows(path)] = (seed, form, path, expected)
         listing = work / "list.txt"
         listing.write_text("".join(f"{name}\n" for name in cases))
-        run = subprocess.run([args.wine / "bin" / "wine", harness, "@" + windows(listing)], env=env,
-                             capture_output=True, text=True, timeout=1200)
+        # one GPU job at a time on the machine, as run.py's tests (MULLION_TEST_LOCK)
+        with runner.alone():
+            run = subprocess.run([args.wine / "bin" / "wine", harness, "@" + windows(listing)], env=env,
+                                 capture_output=True, text=True, timeout=1200)
         written = {}
         for line in run.stdout.splitlines():
             name, _, rest = line.partition(": ")

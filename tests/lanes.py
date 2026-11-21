@@ -30,6 +30,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import run as runner
+
 
 def verdict(code, output):
     last = next((line for line in reversed(output.splitlines()) if line.strip()), "")
@@ -45,7 +47,7 @@ def main():
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--lane", action="append", required=True, help="NAME=WINE[:DLL DIRECTORY[:PREFIX]]")
     parser.add_argument("--prefix", type=Path, help="default: tests-prefix in the build, as run.py's")
-    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--work", type=Path, default=None, help="where the lanes' copies go (default: build/lanes)")
     parser.add_argument("tests", nargs="+", help="test name prefixes")
     args = parser.parse_args()
@@ -87,8 +89,10 @@ def main():
         env = dict(os.environ, WINEPREFIX=str(lane_prefix), WINEDEBUG="-all", WINEDLLOVERRIDES=";".join(overrides),
                    **test.get("env", {}))
         try:
-            done = subprocess.run([binary, local, *test["cmd"][1:]], env=env, cwd=here, capture_output=True, text=True,
-                                  timeout=test.get("timeout") or 600)
+            # one GPU job at a time on the machine, as run.py's tests (MULLION_TEST_LOCK)
+            with runner.alone():
+                done = subprocess.run([binary, local, *test["cmd"][1:]], env=env, cwd=here, capture_output=True,
+                                      text=True, timeout=test.get("timeout") or 600)
             return verdict(done.returncode, done.stdout)
         except subprocess.TimeoutExpired:
             return "failed", "outlived its time"
