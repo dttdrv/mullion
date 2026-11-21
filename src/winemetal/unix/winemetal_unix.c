@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <os/lock.h>
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
 #import <ColorSync/ColorSync.h>
@@ -139,10 +140,57 @@ _NSString_getCString(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// MULLION_SHADER_LOG=1 gives every command queue a log state (macOS 15 on), which hands what the GPU logs while it
+// runs a command buffer's shaders (os_log in a shader, and shader validation's reports under MTL_SHADER_VALIDATION=1)
+// to Mullion's stderr as it comes ("mullion: shader log: <message>"). one
+// state per device, of 1 MB, which Metal fills between command buffers. Metal 4's queues take it per command buffer,
+// so their command buffers have none
+static id<MTLLogState>
+queue_log_state(id<MTLDevice> device) API_AVAILABLE(macos(15.0)) {
+  static bool asked, on;
+  static id<MTLLogState> state;
+  static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+  os_unfair_lock_lock(&lock);
+  if (!asked) {
+    asked = true;
+    const char *given = getenv("MULLION_SHADER_LOG");
+    on = given && !strcmp(given, "1");
+    if (on) {
+      MTLLogStateDescriptor *desc = [[MTLLogStateDescriptor alloc] init];
+      desc.level = MTLLogLevelDebug;
+      desc.bufferSize = 1 << 20;
+      NSError *error = nil;
+      state = [device newLogStateWithDescriptor:desc error:&error];
+      [desc release];
+      if (state)
+        [state addLogHandler:^(NSString *subsystem, NSString *category, MTLLogLevel level, NSString *message) {
+          fprintf(stderr, "mullion: shader log: %s\n", message.UTF8String);
+        }];
+      else
+        fprintf(stderr, "mullion: MULLION_SHADER_LOG: no log state: %s\n",
+                error.localizedDescription.UTF8String ?: "unknown error");
+    }
+  }
+  os_unfair_lock_unlock(&lock);
+  return state;
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newCommandQueue)(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
-  params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newCommandQueueWithMaxCommandBufferCount:params->arg];
+  id<MTLDevice> device = (id<MTLDevice>)params->handle;
+  if (@available(macOS 15.0, *)) {
+    id<MTLLogState> log = queue_log_state(device);
+    if (log) {
+      MTLCommandQueueDescriptor *desc = [[MTLCommandQueueDescriptor alloc] init];
+      desc.maxCommandBufferCount = params->arg;
+      desc.logState = log;
+      params->ret = (obj_handle_t)[device newCommandQueueWithDescriptor:desc];
+      [desc release];
+      return STATUS_SUCCESS;
+    }
+  }
+  params->ret = (obj_handle_t)[device newCommandQueueWithMaxCommandBufferCount:params->arg];
   return STATUS_SUCCESS;
 }
 
@@ -350,7 +398,9 @@ fill_texture_descriptor(MTLTextureDescriptor *desc, struct WMTTextureInfo *info)
   if (info->sample_count > 4)
     family_needs(10, "textures of 8 samples");
   desc.sampleCount = info->sample_count;
-  desc.usage = (MTLTextureUsage)info->usage;
+  desc.usage = (MTLTextureUsage)(info->usage & ~WMTTextureUsageLossyCompression);
+  if (info->usage & WMTTextureUsageLossyCompression)
+    desc.compressionType = MTLTextureCompressionTypeLossy;
   desc.resourceOptions = (MTLResourceOptions)info->options;
   if (@available(macOS 26.0, *))
     desc.placementSparsePageSize = (MTLSparsePageSize)info->placement_sparse_page_size;
@@ -3797,6 +3847,25 @@ _MTLBuffer_updateContents(void *obj) {
 }
 
 static NTSTATUS
+_WMTGetMemoryState(void *obj) {
+  struct unixcall_get_memory_state *params = obj;
+  int level = 1;
+  size_t size = sizeof(level);
+  if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, NULL, 0))
+    level = 1;
+  params->ret_pressure = level;
+  vm_statistics64_data_t stats;
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  vm_size_t page = 0;
+  params->ret_available = 0;
+  if (host_page_size(mach_host_self(), &page) == KERN_SUCCESS &&
+      host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&stats, &count) == KERN_SUCCESS)
+    params->ret_available =
+        ((uint64_t)stats.free_count + stats.inactive_count + stats.purgeable_count + stats.speculative_count) * page;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _WMTGetOSVersion(void *obj) {
   struct unixcall_get_os_version *params = obj;
   NSOperatingSystemVersion version = [NSProcessInfo processInfo].operatingSystemVersion;
@@ -4726,6 +4795,13 @@ _MTLResidencySet_commit(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
   id<MTLResidencySet> set = (id<MTLResidencySet>)params->handle;
   [set commit];
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLResidencySet_requestResidency(void *obj) {
+  struct unixcall_generic_obj_noret *params = obj;
+  [(id<MTLResidencySet>)params->handle requestResidency];
   return STATUS_SUCCESS;
 }
 
@@ -7566,6 +7642,8 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newSpecializedRenderPipeline,
     &_MTLBinaryArchive_add,
     &_WMTRemoveOtherVersions,
+    &_WMTGetMemoryState,
+    &_MTLResidencySet_requestResidency,
 };
 
 #ifndef MULLION_NATIVE
@@ -7785,6 +7863,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newSpecializedRenderPipeline,
     &_MTLBinaryArchive_add,
     &_WMTRemoveOtherVersions,
+    &_WMTGetMemoryState,
+    &_MTLResidencySet_requestResidency,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

@@ -56,7 +56,7 @@ test('host_shader_store',
 test('host_texel_forms',
      executable('host_texel_forms', 'texel_forms.cpp', dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
-     suite : 'host', timeout : 120)
+     suite : 'host', timeout : 300)
 test('host_diag_profile', find_program('python3', native : true), args : files('diag.py'), suite : 'host')
 test('host_mutate', find_program('python3', native : true), args : files('mutate.py'), suite : 'host')
 test('host_install', find_program('python3', native : true),

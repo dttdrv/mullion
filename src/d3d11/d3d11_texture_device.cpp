@@ -18,6 +18,7 @@
  */
 
 #include "com/com_pointer.hpp"
+#include "mullion_memory.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_enumerable.hpp"
 #include "d3d11_view.hpp"
@@ -606,6 +607,9 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     return E_INVALIDARG;
   }
   info.usage = WMTTextureUsage(info.usage | usage);
+  // the allocation stays within the working set where going past it panics the kernel (mullion_memory.hpp)
+  if (!memory::Admit(pDevice->GetMTLDevice(), [&] { return pDevice->GetMTLDevice().heapTextureSizeAndAlign(info).size; }))
+    return E_OUTOFMEMORY;
   // a renamed texture would leave the Direct3D 12 resource Direct3D 11 on 12 makes of it
   bool single_subresource = info.mipmap_level_count == 1 && info.array_length == 1 &&
                             !(finalDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) && !pDevice->shares_with_d3d12;
