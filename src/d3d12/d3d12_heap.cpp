@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "mullion_memory.hpp"
 #include "d3d12_pageable.hpp"
 #include "com/com_pointer.hpp"
 
@@ -105,6 +106,8 @@ public:
     info.sparse_page_size = device_->GetSparsePageSize();
     info.type = WMTHeapTypePlacement;
 
+    if (!memory::Admit(device_->GetMTLDevice(), [&] { return uint64_t(info.size); }))
+      return FAIL(E_OUTOFMEMORY);
     heap = device_->GetMTLDevice().newHeap(info);
     // Metal makes no heap of a size it cannot give
     if (!heap)

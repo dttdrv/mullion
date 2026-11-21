@@ -91,7 +91,12 @@ logs show whether frame time spikes coincide with shader compilation.
 
 Validation of the test suite is described in [TESTING.md 6.1](TESTING.md#6-running-tests-and-reading-results):
 `tests/run.py --validate` runs the tests under Metal's API and shader validation, and what the validation reports is
-in each test's log.
+in each test's log. `--validate-shaders` runs shader validation alone, which costs a fraction of the API validation,
+for the tests of the shader path a change touches.
+
+`MULLION_SHADER_LOG=1` gives every Metal 3 command queue a log state (macOS 15 and later), so what the GPU logs while it
+runs shaders, such as shader validation's reports under `MTL_SHADER_VALIDATION=1`, goes to stderr as
+`mullion: shader log: <message>` as it happens, in a game as in a test. Metal 4 command buffers do not log this way yet.
 
 ## 5. Capture a Metal frame
 
@@ -116,6 +121,18 @@ Both the D3D11 and the D3D12 queues take part. Metal captures only command buffe
 capture runs, and a message naming the trace file does not show that the capture succeeded: {logging: capture start
 and stop reported with Metal's result and error, verified by a trace opened in Xcode with the intended commands and
 resources}. Capturing a Wine process from Xcode itself has not been verified.
+
+On macOS 27 and later a trace can also be taken and read without Xcode, from a script:
+
+- [`tools/gputrace.py`](../tools/gputrace.py)` capture --mullion -- <command>` runs a command and has Mullion capture
+  a range of its frames from inside the process (`--first`, `--count`), in any Wine; work that never presents is not
+  captured this way. `gpucapture start -p <pid>` attaches from outside instead, to any lane's
+  process, but only to a debuggable one (`com.apple.security.get-task-allow`), which a Wine signed for distribution
+  is not
+- [`tools/gputrace.py`](../tools/gputrace.py) reads a trace through `gpudebug`: `report` lists the command buffers,
+  encoders and each render attachment's format, usage, storage and compression (`--profile` adds the GPU's cost
+  ranking of encoders and shaders and its counters, on an M3 or later), `fetch-final` saves the last render pass's
+  image as a PNG, and `diff` compares two of them
 
 ## 6. Inspect shader conversion and caches
 
@@ -148,6 +165,16 @@ anisotropy. `MULLION_TRACE_SHADER=1` names the samplers that need either path.
 ([`mullion_shader_cache.cpp`](../src/mullion/mullion_shader_cache.cpp)). `MULLION_SHADER_CACHE=0` turns it off, and
 `MULLION_SHADER_CACHE_PATH` moves it to another absolute macOS directory. Metal keeps a separate cache of compiled
 pipelines, which `MULLION_USE_DEFAULT_METAL_CACHE=1` leaves at Metal's default ([`dxgi.cpp`](../src/dxgi/dxgi.cpp)).
+Each program's Metal cache is a folder of its own, and together they are held to `MULLION_METAL_CACHE_LIMIT` MB
+(default 8192, `0` for no limit): past it, the folders of the programs launched longest ago and not running are
+emptied, in the background at a program's start ([`cache.c`](../src/winemetal/unix/cache.c)).
+
+**Memory.** `MULLION_LOSSY_TEXTURES=1` is a memory saver: Direct3D's private half and float textures (RGBA16F and the
+like, the large render targets of an HDR renderer) are made with Metal's lossy compression on an Apple8 GPU or later,
+and take half their memory, at a small cost in precision ([`mullion_memory.hpp`](../src/mullion/mullion_memory.hpp)).
+`MULLION_MEMORY_BUDGET=fixed` keeps the budget DXGI reports at 95% of the working set instead of following macOS's
+memory pressure, and `MULLION_RESIDENCY_HEARTBEAT=0` lets macOS take an idle game's GPU memory back
+([`mullion_heartbeat.hpp`](../src/mullion/mullion_heartbeat.hpp)).
 Turning Mullion's cache off therefore does not make every compilation cold. A comparison uses a separate cache
 directory, so that shared caches are not deleted.
 
@@ -200,6 +227,9 @@ Each revision is built with its own dependencies, the libraries it loaded are ch
 shader cache off or fresh, since the cache is versioned by the converter and not by the revision. A faster revision
 counts as good only when it also renders correctly ([TESTING.md 10](TESTING.md#10-performance)).
 {suite: running one fixed case against each revision}.
+
+A regression that comes with a new macOS or GPU may be one of Mullion's workarounds for Apple's faults no longer
+fitting, or a new fault: `MULLION_DISABLE_WORKAROUNDS` turns them off by name ([workarounds.md](workarounds.md)).
 
 The first bad commit is where the observed behaviour changed. It is not necessarily the whole cause, and skipped
 revisions next to it can leave several candidates.

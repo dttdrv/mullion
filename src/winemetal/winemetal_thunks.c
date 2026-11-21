@@ -1348,6 +1348,16 @@ SharedEventListener_destroy(obj_handle_t event_queue) {
 }
 
 WINEMETAL_API void
+WMTGetMemoryState(uint64_t *pressure, uint64_t *available) {
+  struct unixcall_get_memory_state params = {0};
+  UNIX_CALL(WMTUnixGetMemoryState, &params);
+  if (pressure)
+    *pressure = params.ret_pressure;
+  if (available)
+    *available = params.ret_available;
+}
+
+WINEMETAL_API void
 WMTGetOSVersion(uint64_t *major, uint64_t *minor, uint64_t *patch) {
   struct unixcall_get_os_version params;
   UNIX_CALL(111, &params);
@@ -1871,6 +1881,13 @@ MTLResidencySet_commit(obj_handle_t residency_set) {
   struct unixcall_generic_obj_noret params;
   params.handle = residency_set;
   UNIX_CALL(136, &params);
+}
+
+WINEMETAL_API void
+MTLResidencySet_requestResidency(obj_handle_t residency_set) {
+  struct unixcall_generic_obj_noret params;
+  params.handle = residency_set;
+  UNIX_CALL(WMTUnixResidencySetRequestResidency, &params);
 }
 
 WINEMETAL_API void

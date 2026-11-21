@@ -4,6 +4,8 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
@@ -76,6 +78,98 @@ void initializeModule(llvm::Module &M) {
 };
 
 static std::once_flag llvm_overwrite;
+
+// Metal's compiler counts the leading zeros and the ones of a 32-bit value it can tell is all ones or zero (a
+// sign-extended bool, or what it folds to one) as if the value were 16 bits wide: clz(c == 0 ? ~0u : 0u) is 16 for
+// c = 0, and popcount of it 16, not 0 and 32, for scalars and vectors alike (an M6, macOS 27.3; tests/fuzz.py found
+// it in a firstbithigh and a countbits, and plain Metal source does the same). what the converter's passes leave is
+// no guide: Metal's own folding makes the pattern after them (a remainder by a divisor it proves is one, then a
+// select). its trailing zeros and bit reversal are right, so every 32-bit count is of the reversed bits, which
+// Metal does not fold back: clz(x) is ctz(reverse_bits(x)), and popcount(x) popcount(reverse_bits(x)), an operation
+// more each. MULLION_AIRCONV_SKIP=sign-bit-counts leaves the counts as they are
+static void
+AvoidNarrowedSignBitCounts(llvm::Module &M) {
+  if (auto skip = getenv("MULLION_AIRCONV_SKIP"); skip && strstr(skip, "sign-bit-counts"))
+    return;
+  std::vector<CallInst *> counts;
+  for (auto &F : M)
+    for (auto &I : instructions(F))
+      if (auto Call = dyn_cast<CallInst>(&I))
+        if (auto Callee = Call->getCalledFunction();
+            Callee && Call->arg_size() >= 1 && Call->getType()->getScalarSizeInBits() == 32 &&
+            (Callee->getName().startswith("air.clz.") || Callee->getName().startswith("air.popcount.")))
+          counts.push_back(Call);
+  for (auto Call : counts) {
+    auto Name = Call->getCalledFunction()->getName();
+    bool Leading = Name.startswith("air.clz.");
+    auto Suffix = Name.substr(Leading ? strlen("air.clz") : strlen("air.popcount")); // ".i32", ".v2i32"...
+    auto Ty = Call->getType();
+    auto Attrs = Call->getCalledFunction()->getAttributes();
+    IRBuilder<> B(Call);
+    auto Reverse = M.getOrInsertFunction(("air.reverse_bits" + Suffix).str(), FunctionType::get(Ty, {Ty}, false), Attrs);
+    auto Reversed = B.CreateCall(Reverse, {Call->getArgOperand(0)});
+    if (!Leading) {
+      Call->setArgOperand(0, Reversed);
+      continue;
+    }
+    SmallVector<Value *, 2> Args{Reversed};
+    SmallVector<Type *, 2> Types{Ty};
+    for (unsigned i = 1; i < Call->arg_size(); i++) {
+      Args.push_back(Call->getArgOperand(i));
+      Types.push_back(Call->getArgOperand(i)->getType());
+    }
+    auto Trailing = M.getOrInsertFunction(("air.ctz" + Suffix).str(), FunctionType::get(Ty, Types, false), Attrs);
+    auto Count = B.CreateCall(Trailing, Args);
+    auto Callee = Call->getCalledFunction();
+    Call->replaceAllUsesWith(Count);
+    Call->eraseFromParent();
+    if (Callee->use_empty())
+      Callee->eraseFromParent();
+  }
+}
+
+// Metal's compiler divides a constant by a variable wrongly for some divisors, how many depending on the program
+// around it: over a million divisors 0xfffffffe / y was wrong for 12% of them in one kernel and 77 in another, and
+// 0xfffffffe / 3 gives 0x55555555 (an M6, macOS 27.3; tools/metal-bench/integer_miscompiles.swift), the remainder
+// with it. a division of two variables is right, and so is one whose dividend Metal cannot see is constant.
+// tests/fuzz.py found it in a ~uint(b == b) / a. so a 32-bit dividend that is a constant is passed through
+// reverse_bits twice, which Metal does not fold. MULLION_AIRCONV_SKIP=constant-dividends leaves it
+static void
+AvoidConstantDividends(llvm::Module &M) {
+  if (auto skip = getenv("MULLION_AIRCONV_SKIP"); skip && strstr(skip, "constant-dividends"))
+    return;
+  std::vector<BinaryOperator *> divisions;
+  for (auto &F : M)
+    for (auto &I : instructions(F))
+      if (auto Op = dyn_cast<BinaryOperator>(&I))
+        switch (Op->getOpcode()) {
+        case Instruction::UDiv:
+        case Instruction::URem:
+        case Instruction::SDiv:
+        case Instruction::SRem:
+          if (isa<Constant>(Op->getOperand(0)) && !isa<UndefValue>(Op->getOperand(0)) &&
+              !isa<Constant>(Op->getOperand(1)) && Op->getType()->getScalarSizeInBits() == 32)
+            divisions.push_back(Op);
+          break;
+        default:
+          break;
+        }
+  for (auto Op : divisions) {
+    auto Ty = Op->getType();
+    std::string Suffix = ".i32";
+    if (auto Vector = dyn_cast<FixedVectorType>(Ty))
+      Suffix = ".v" + std::to_string(Vector->getNumElements()) + "i32";
+    auto &Context = M.getContext();
+    auto Attrs = AttributeList::get(
+        Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
+                  {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
+                  {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)}}
+    );
+    auto Reverse = M.getOrInsertFunction("air.reverse_bits" + Suffix, FunctionType::get(Ty, {Ty}, false), Attrs);
+    IRBuilder<> B(Op);
+    Op->setOperand(0, B.CreateCall(Reverse, {B.CreateCall(Reverse, {Op->getOperand(0)})}));
+  }
+}
 
 bool
 runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
@@ -197,6 +291,8 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
 
   // Optimize the IR!
   MPM.run(M, MAM);
+  AvoidNarrowedSignBitCounts(M);
+  AvoidConstantDividends(M);
   return true;
 }
 
