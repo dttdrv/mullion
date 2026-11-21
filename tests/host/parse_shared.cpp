@@ -10,8 +10,11 @@
 #include <cstring>
 #include <malloc/malloc.h>
 #include <algorithm>
+#include <array>
+#include <barrier>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 static uint64_t
@@ -118,6 +121,29 @@ main() {
   if (anew)
     SM50Destroy(anew);
   expect(in_use() <= idle + (64 << 10), "a destroyed parse's memory stays");
+  // Start the lookups together while there is no live parse. Each caller owns a reference, so the last
+  // one's parse must still be available after the others have all been destroyed.
+  std::array<sm50_shader_t, 8> concurrent{};
+  std::barrier start(static_cast<std::ptrdiff_t>(concurrent.size()));
+  std::vector<std::thread> workers;
+  for (auto &shader : concurrent)
+    workers.emplace_back([&] {
+      start.arrive_and_wait();
+      shader = initialize(same);
+    });
+  for (auto &worker : workers)
+    worker.join();
+  for (auto shader : concurrent)
+    expect(shader && shader == concurrent.back(), "concurrent callers did not get the same shader");
+  for (size_t i = 0; i + 1 < concurrent.size(); i++)
+    if (concurrent[i])
+      SM50Destroy(concurrent[i]);
+  auto remaining = initialize(same);
+  expect(remaining && remaining == concurrent.back(), "the last caller lost its shader");
+  if (remaining)
+    SM50Destroy(remaining);
+  if (concurrent.back())
+    SM50Destroy(concurrent.back());
   if (!wrong)
     printf("passed\n");
   return wrong ? 1 : 0;
