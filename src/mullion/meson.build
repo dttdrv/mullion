@@ -32,7 +32,7 @@ mullion_shaders = [
   'mullion_command.metal'
 ]
 
-mullion_shaders_ir = metalir_generator.process(mullion_shaders)
+mullion_shaders_ir = metalir_generator.process(mullion_shaders, extra_args: macos_min)
 
 mullion_shaders_lib = metallib_generator.process(mullion_shaders_ir)
 
