@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include "sha1.h"
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
@@ -117,6 +118,29 @@ SHA1Init(SHA1_CTX *context)
 /*
  * Run your data through this.
  */
+#if defined(__aarch64__) || defined(__arm64ec__)
+void SHA1TransformBlocksNeon(uint32_t state[5], const uint8_t *data, size_t blocks);
+#ifdef _WIN32
+#include <windows.h>
+#endif
+/* whether the core has the ARMv8 SHA-1 instructions (sha1_neon.c): every Apple silicon one does, and Windows (Wine)
+ * says so with PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE. MULLION_SHA1_SCALAR=1 keeps sha1.c's own, for comparing */
+static int
+sha1_hardware(void)
+{
+	static int known = -1;
+	if (known < 0) {
+		const char *scalar = getenv("MULLION_SHA1_SCALAR");
+#ifdef _WIN32
+		known = !(scalar && scalar[0] == '1') && IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE);
+#else
+		known = !(scalar && scalar[0] == '1');
+#endif
+	}
+	return known;
+}
+#endif
+
 void
 SHA1Update(SHA1_CTX *context, const uint8_t *data, size_t len)
 {
@@ -127,6 +151,13 @@ SHA1Update(SHA1_CTX *context, const uint8_t *data, size_t len)
 	if ((j + len) > 63) {
 		(void)memcpy(&context->buffer[j], data, (i = 64-j));
 		SHA1Transform(context->state, context->buffer);
+#if defined(__aarch64__) || defined(__arm64ec__)
+		if (sha1_hardware() && i + 63 < len) {
+			size_t blocks = (len - i) / 64;
+			SHA1TransformBlocksNeon(context->state, &data[i], blocks);
+			i += blocks * 64;
+		}
+#endif
 		for ( ; i + 63 < len; i += 64)
 			SHA1Transform(context->state, (uint8_t *)&data[i]);
 		j = 0;
