@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <vector>
 
 struct Texture {
@@ -98,6 +99,36 @@ main(int argc, char **argv) {
                 packed.resource && output.resource && display_motion.resource
             ? S_OK
             : E_FAIL);
+  CHECK(list->Reset(allocator.Get(), nullptr));
+  MTL_TEMPORAL_UPSCALE_D3D12_DESC valid{};
+  valid.Color = color.resource.Get();
+  valid.Output = output.resource.Get();
+  valid.Depth = depth.resource.Get();
+  valid.MotionVector = motion.resource.Get();
+  valid.ExposureTexture = exposure.resource.Get();
+  valid.PreExposure = valid.MotionVectorScaleX = valid.MotionVectorScaleY = 1;
+  auto rejected = [&](auto change, const char *name) {
+    auto invalid = valid;
+    change(invalid);
+    IMTLD3D12Upscaler *cache = nullptr;
+    expect(ext->TemporalUpscale(&invalid, &cache) == E_INVALIDARG, "%s was accepted", name);
+    expect(!cache, "%s created a scaler", name);
+    if (cache)
+      cache->Destroy();
+  };
+  step("invalid temporal MetalFX inputs");
+  rejected([&](auto &d) { d.InputContentWidth = width + 1; }, "content wider than its texture");
+  rejected([&](auto &d) { d.InputContentHeight = height + 1; }, "content taller than its texture");
+  rejected([&](auto &d) { d.Depth = exposure.resource.Get(); }, "a 1x1 depth texture");
+  rejected([&](auto &d) { d.MotionVector = display_motion.resource.Get(); }, "unmarked display-resolution motion");
+  rejected([&](auto &d) { d.Output = color.resource.Get(); }, "input and output aliasing");
+  rejected([&](auto &d) { d.MotionVectorInDisplayRes = TRUE; }, "input-resolution motion marked as display-resolution");
+  rejected([&](auto &d) { d.ExposureTexture = color.resource.Get(); }, "an exposure texture larger than one texel");
+  rejected([](auto &d) { d.PreExposure = 0; }, "zero pre-exposure");
+  rejected([](auto &d) { d.MotionVectorScaleX = std::numeric_limits<float>::infinity(); }, "infinite motion scale");
+  rejected([](auto &d) { d.JitterOffsetY = std::numeric_limits<float>::quiet_NaN(); }, "NaN jitter");
+
+  CHECK(list->Close());
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
   UINT64 bytes;
   auto out_desc = output.resource->GetDesc();
