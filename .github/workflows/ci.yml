@@ -562,8 +562,11 @@ jobs:
           meson setup --cross-file build-win64.txt -Denable_tests=true -Db_ndebug=false -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build --buildtype release
           meson compile -C build
 
+      # a host test of a Windows library (host_metal_target) has meson relink it first, with the cross tools
       - name: Host tests
-        run: meson test -C build --suite host --print-errorlogs
+        run: |
+          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          meson test -C build --suite host --print-errorlogs
 
   test-gpu:
     if: vars.MULLION_WINE != '' && github.event_name != 'schedule' && github.event_name != 'pull_request'
