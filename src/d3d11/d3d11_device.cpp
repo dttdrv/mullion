@@ -1,3 +1,4 @@
+#include "mullion_heartbeat.hpp"
 #include "com/com_guid.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_input_layout.hpp"
@@ -398,6 +399,9 @@ public:
       info_queue_ = std::make_unique<D3D11InfoQueue>(container);
     is_traced_ = !!::GetModuleHandle("dxgitrace.dll");
     format_inspector_.Inspect(GetMTLDevice());
+    // D3D11 has no residency set of its own: its large buffers and textures stay wired while the GPU idles in the
+    // heartbeat's (src/mullion/mullion_heartbeat.hpp)
+    heartbeat::KeepAllocations(GetMTLDevice());
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,

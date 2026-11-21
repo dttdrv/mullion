@@ -17,6 +17,7 @@
  */
 
 #include "mullion_buffer.hpp"
+#include "mullion_heartbeat.hpp"
 #include "mullion_diag.hpp"
 #include "mullion_format.hpp"
 #include "thread.hpp"
@@ -55,6 +56,7 @@ BufferAllocation::BufferAllocation(
     diag::Write(diag::Line("buffer", diag::Now(), obj_.handle, info_.length));
   gpuAddress_ = info_.gpu_address;
   mappedMemory_ = info_.memory.get_accessible_or_null();
+  kept_ = heartbeat::Keep(obj_, info_.length);
 };
 
 BufferAllocation::BufferAllocation(
@@ -111,6 +113,8 @@ BufferAllocation::BufferAllocation(
 
 void
 BufferAllocation::free() {
+  if (kept_)
+    heartbeat::Release(obj_);
   if (placed_buffer) {
     wsi::aligned_free(placed_buffer);
     placed_buffer = nullptr;
