@@ -5,6 +5,9 @@
 // through such a view, which is not held here: a sample reads the view's last mip.
 // a texture of four mips, mip m of the byte (m + 1) * 0x11 in every channel; a compute shader loads and samples
 // the view at a lod of the view's own numbering. zeros are what no mip has.
+// a load at a lod past the view's last mip reads zeros too ("If the value is out of the range [0...(num miplevels in
+// resource-1)]), then out-of-bounds behavior is invoked", Microsoft Learn, ld (sm4 - asm)), a sample there the last
+// mip: through views of the four mips, and of a second texture of one mip, which Metal reads at any lod as its mip.
 #include "d3d12_test.hpp"
 #include <cmath>
 
@@ -48,16 +51,21 @@ main(int argc, char **argv) {
   D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc{rs.Get(), bytecode(cs)};
   CHECK(device->CreateComputePipelineState(&pso_desc, IID_PPV_ARGS(&pso)));
 
-  D3D12_RESOURCE_DESC texture_desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, kSide, kSide, 1, kMips,
-                                   DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}};
+  // textures[0] of kMips mips, textures[1] of one
+  const UINT mip_counts[2] = {kMips, 1};
+  D3D12_RESOURCE_DESC texture_desc[2];
   D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT};
-  ComPtr<ID3D12Resource> texture;
-  CHECK(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COPY_DEST,
-                                        nullptr, IID_PPV_ARGS(&texture)));
+  ComPtr<ID3D12Resource> textures[2];
+  for (UINT t = 0; t < 2; t++) {
+    texture_desc[t] = {D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, kSide, kSide, 1, UINT16(mip_counts[t]),
+                       DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}};
+    CHECK(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc[t],
+                                          D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&textures[t])));
+  }
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[kMips];
   UINT rows[kMips];
   UINT64 bytes;
-  device->GetCopyableFootprints(&texture_desc, 0, kMips, 0, footprints, rows, nullptr, &bytes);
+  device->GetCopyableFootprints(&texture_desc[0], 0, kMips, 0, footprints, rows, nullptr, &bytes);
   auto upload = buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, bytes, D3D12_RESOURCE_STATE_GENERIC_READ);
   auto output = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, 2 * 4 * sizeof(float), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -82,45 +90,57 @@ main(int argc, char **argv) {
   CHECK(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)));
   CHECK(device->CreateCommandAllocator(queue_desc.Type, IID_PPV_ARGS(&allocator)));
   CHECK(device->CreateCommandList(0, queue_desc.Type, allocator.Get(), nullptr, IID_PPV_ARGS(&list)));
-  for (UINT m = 0; m < kMips; m++) {
-    D3D12_TEXTURE_COPY_LOCATION to{texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = m}};
-    D3D12_TEXTURE_COPY_LOCATION from{upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprints[m]}};
-    list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+  // mip m of either texture holds (m + 1) * 0x11: both copy from the same footprints
+  for (UINT t = 0; t < 2; t++) {
+    for (UINT m = 0; m < mip_counts[t]; m++) {
+      D3D12_TEXTURE_COPY_LOCATION to{textures[t].Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = m}};
+      D3D12_TEXTURE_COPY_LOCATION from{upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = footprints[m]}};
+      list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+    }
+    transition(list.Get(), textures[t].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   }
-  transition(list.Get(), texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   CHECK(submit(device.Get(), queue.Get(), list.Get()));
 
-  // the view's first mip and count (0: all the rest), its clamp, the lod asked for in the view's numbering, and
-  // the resource's mip a load and a sample give: -1 for zeros, -2 where the answer is not held
+  // the texture viewed, the view's first mip and count (0: all the rest), its clamp, the lod asked for in the view's
+  // numbering, and the resource's mip a load and a sample give: -1 for zeros, -2 where the answer is not held
   struct Case {
-    UINT first, count;
+    UINT texture, first, count;
     float clamp;
     UINT lod;
     int load, sample;
   };
   const Case cases[] = {
-      {0, 1, 0.0f, 0, 0, 0},
-      {0, 1, 0.1f, 0, -1, -2},
-      {0, 1, 1.0f / 256, 0, -1, -2},
-      {0, 1, 1.0f / 512, 0, -1, -2},
-      {0, 1, 1.5f / 1024, 0, 0, 0},
-      {0, 1, 1.0f / 1024, 0, 0, 0},
-      {0, 2, 1.0f, 1, 1, 1},
-      {0, 2, 1.1f, 1, -1, -2},
-      {0, 2, 1.0f + 1.0f / 256, 1, -1, -2},
-      {0, 2, 1.0f + 1.0f / 512, 1, -1, -2},
-      {0, 2, 1.0f + 1.0f / 1024, 1, 1, 1},
-      {1, 0, 1.0f, 0, 1, 1},
-      {1, 0, 3.0f, 2, 3, 3},
-      {1, 0, 9.0f, 0, -1, -2},
-      {1, 0, 9.0f, 2, -1, -2},
+      {0, 0, 1, 0.0f, 0, 0, 0},
+      {0, 0, 1, 0.1f, 0, -1, -2},
+      {0, 0, 1, 1.0f / 256, 0, -1, -2},
+      {0, 0, 1, 1.0f / 512, 0, -1, -2},
+      {0, 0, 1, 1.5f / 1024, 0, 0, 0},
+      {0, 0, 1, 1.0f / 1024, 0, 0, 0},
+      {0, 0, 2, 1.0f, 1, 1, 1},
+      {0, 0, 2, 1.1f, 1, -1, -2},
+      {0, 0, 2, 1.0f + 1.0f / 256, 1, -1, -2},
+      {0, 0, 2, 1.0f + 1.0f / 512, 1, -1, -2},
+      {0, 0, 2, 1.0f + 1.0f / 1024, 1, 1, 1},
+      {0, 1, 0, 1.0f, 0, 1, 1},
+      {0, 1, 0, 3.0f, 2, 3, 3},
+      {0, 1, 0, 9.0f, 0, -1, -2},
+      {0, 1, 0, 9.0f, 2, -1, -2},
+      {0, 0, 1, 0.0f, 1, -1, 0},
+      {0, 3, 1, 0.0f, 1, -1, 3},
+      {0, 0, 2, 0.0f, 2, -1, 1},
+      {0, 0, 0, 0.0f, 4, -1, 3},
+      {1, 0, 0, 0.0f, 0, 0, 0},
+      {1, 0, 0, 0.0f, 1, -1, 0},
+      {1, 0, 1, 0.0f, 2, -1, 0},
   };
   for (auto &c : cases) {
-    step("mips from %u, %u of them, clamp %.6f, lod %u", c.first, c.count, c.clamp, c.lod);
+    step("texture of %u mips, mips from %u, %u of them, clamp %.6f, lod %u", mip_counts[c.texture], c.first, c.count,
+         c.clamp, c.lod);
     D3D12_SHADER_RESOURCE_VIEW_DESC view{DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_SRV_DIMENSION_TEXTURE2D,
                                          D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
     view.Texture2D = {c.first, c.count ? c.count : ~0u, 0, c.clamp};
-    device->CreateShaderResourceView(texture.Get(), &view, heap->GetCPUDescriptorHandleForHeapStart());
+    device->CreateShaderResourceView(textures[c.texture].Get(), &view, heap->GetCPUDescriptorHandleForHeapStart());
     CHECK(forget(readback.Get()));
     CHECK(allocator->Reset());
     CHECK(list->Reset(allocator.Get(), nullptr));

@@ -1710,9 +1710,11 @@ Converter::TexelAddress(const TextureResourceHandle &Tex, llvm::Value *Coord, co
     auto Texels = ir.CreateSelect(DecodeTextureBufferRGB32(Tex.Metadata), air.getInt(3), air.getInt(1));
     Address = ir.CreateAdd(ir.CreateMul(Address, Texels), DecodeTextureBufferOffset(Tex.Metadata));
   } else if (!Tex.IsUAV && Level && Info.is_mipmaped) {
-    // the view keeps the mip that holds its min-LOD clamp and every smaller one
+    // the view keeps the mip that holds its min-LOD clamp and every smaller one, and has no mip past its last ("out
+    // of the range [0...(num miplevels in resource-1)]", ld): Metal reads a texture of one mip at any level as that mip
     auto MinLevel = air.CreateFPUnOp(llvm::air::AIRBuilder::floor, DecodeTextureMinLODClamp(Tex.Metadata));
-    OOB = ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel));
+    auto Mips = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::num_mip_levels, ir.getInt32(0));
+    OOB = ir.CreateOr(ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel)), ir.CreateICmpUGE(Level, Mips));
   }
   if (!OffsetValue->isNullValue())
     Address = ir.CreateAdd(Address, OffsetValue);
