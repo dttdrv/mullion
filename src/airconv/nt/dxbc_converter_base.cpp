@@ -1375,22 +1375,25 @@ Converter::operator()(const InstIntegerBinaryOpWithTwoDst &bin) {
       StoreOperand(bin.dst_low, ir.CreateMul(Src0Lo, Src1Lo));
     break;
   }
-  case IntegerBinaryOpWithTwoDst::UDiv:
+  case IntegerBinaryOpWithTwoDst::UDiv: {
+    // "dividing by 0 produces 0xffffffff for both the quotient and remainder" (D3D11.3 22.13.43, udiv). LLVM's division
+    // by zero is undefined, and a select after it does not make it defined: the passes may assume the divisor is not
+    // zero and drop the select, which they did where a firstbithigh read the remainder (tests/fuzz.py). so a zero
+    // divisor divides as one, as DXIL's division does here, and the select gives the all-ones
+    auto Divide = [&](llvm::Value *Dividend, llvm::Value *Divisor, bool Remainder) {
+      auto Zero = ir.CreateIsNull(Divisor);
+      auto Safe = ir.CreateSelect(Zero, ConstantInt::get(Divisor->getType(), 1), Divisor);
+      return ir.CreateSelect(
+          Zero, ConstantInt::getAllOnesValue(Divisor->getType()),
+          Remainder ? ir.CreateURem(Dividend, Safe) : ir.CreateUDiv(Dividend, Safe)
+      );
+    };
     if (!IsNull(bin.dst_hi))
-      StoreOperand(
-          bin.dst_hi,
-          ir.CreateSelect(
-              ir.CreateIsNull(Src1Hi), ConstantInt::getAllOnesValue(Src1Hi->getType()), ir.CreateUDiv(Src0Hi, Src1Hi)
-          )
-      );
+      StoreOperand(bin.dst_hi, Divide(Src0Hi, Src1Hi, false));
     if (!IsNull(bin.dst_low))
-      StoreOperand(
-          bin.dst_low,
-          ir.CreateSelect(
-              ir.CreateIsNull(Src1Lo), ConstantInt::getAllOnesValue(Src1Lo->getType()), ir.CreateURem(Src0Lo, Src1Lo)
-          )
-      );
+      StoreOperand(bin.dst_low, Divide(Src0Lo, Src1Lo, true));
     break;
+  }
   case IntegerBinaryOpWithTwoDst::UAddCarry: {
     if (!IsNull(bin.dst_hi))
       StoreOperand(bin.dst_hi, ir.CreateAdd(Src0Hi, Src1Hi));

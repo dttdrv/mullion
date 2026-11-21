@@ -21,8 +21,11 @@ mullion_src = [
   'mullion_subresource.cpp',
   'mullion_deptrack.cpp',
   'mullion_counter.cpp',
+  'mullion_memory.cpp',
+  'mullion_heartbeat.cpp',
   'mullion_fence.cpp',
   'mullion_keyed_mutex.cpp',
+  'mullion_workarounds.cpp',
 ]
 
 mullion_shaders = [

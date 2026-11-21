@@ -1842,9 +1842,12 @@ public:
           break;
         }
         case EncoderType::Settle:
-          // an aliasing barrier once a reserved buffer exists
-          scope.OrderAliases();
-          cmdbuf = scope.inflight->cmdbuf;
+          // an aliasing barrier once a reserved buffer exists, which orders nothing until one of its tiles was mapped:
+          // Starfield's 300 a frame (#32) cost 36 ms of command buffers on Metal 3 and 10 ms on Metal 4 with none
+          if (device_->SparseTilesMapped()) {
+            scope.OrderAliases();
+            cmdbuf = scope.inflight->cmdbuf;
+          }
           break;
         case EncoderType::Predicate: {
           // what its region's kernel decided is in memory once the command buffer with the kernel has completed
@@ -2308,9 +2311,11 @@ public:
       break;
     }
     case EncoderType::Settle:
-      // the encoding threads' aliasing barriers (Parallel); the queue's are the scope's (OrderAliases)
+      // the encoding threads' aliasing barriers (Parallel); the queue's are the scope's (OrderAliases). none while no
+      // reserved buffer's tile was mapped (SparseTilesMapped)
       if constexpr (Metal4)
-        cmdbuf.orderAliases(true);
+        if (device_->SparseTilesMapped())
+          cmdbuf.orderAliases(true);
       break;
     default:
       break;
@@ -2359,11 +2364,12 @@ public:
     // next part's, as OrderAliases carries it to the next command buffer. the last's is the queue's after them
     std::vector<bool> carried(parts + 1);
     carried[0] = order_aliases_;
+    const bool mapped = device_->SparseTilesMapped();
     for (unsigned k = 0; k < parts; k++) {
       carried[k + 1] = carried[k];
       for (auto i = bounds[k]; i < bounds[k + 1]; i++)
         if (passes[i].first->type == EncoderType::Settle)
-          carried[k + 1] = true;
+          carried[k + 1] = carried[k + 1] || mapped;
         else if (passes[i].first->type != EncoderType::Null)
           carried[k + 1] = false;
     }

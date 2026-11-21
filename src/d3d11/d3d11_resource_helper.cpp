@@ -433,8 +433,21 @@ CreateMTLTextureDescriptorInternal(
       metal_usage |= WMTTextureUsageRenderTarget;
     // no shader writes an sRGB texture: it has no view for unordered access
     if ((BindFlags & D3D11_BIND_UNORDERED_ACCESS) && !srgb) {
-      // a uint clear writes through a uint view; a written texture is not compressed anyway
-      metal_usage |= WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite | WMTTextureUsagePixelFormatView;
+      metal_usage |= WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite;
+      // Metal's format view takes the texture's lossless compression, which Apple's GPUs from the M5 keep for a
+      // texture shaders write: only a texture that needs a view in another layout gets it. An R32 view of a 32-bit
+      // typeless texture is one (CastsToR32UnorderedAccess), and so is a uint clear's integer view, but for a format
+      // whose values hold all its bit patterns, which ClearUnorderedAccessViewUint writes as those values instead
+      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12), and so is the float view an
+      // upscaler reads motion vectors through (MotionVectorFormat). shortcut: a typed texture with no unordered access
+      // gets no format view for that view, which Metal's validation refuses, until a texture can take the format view
+      // at its first view in another format
+      auto pixel = pDescOut->pixel_format;
+      auto write = GetUIntClearWrite(pixel);
+      auto motion = MotionVectorFormat(pixel);
+      if (CastsToR32UnorderedAccess(Format) || (motion != WMTPixelFormatInvalid && motion != pixel) ||
+          (MTLGetUnsignedIntegerFormat(pixel) != pixel && write != UIntClearWrite::Unorm && write != UIntClearWrite::Float))
+        metal_usage |= WMTTextureUsagePixelFormatView;
       // NOTE: R32/RG32_TYPELESS format should be mapped to uint pixel format
       if (metal_format.PixelFormat == WMTPixelFormatR32Uint ||
           metal_format.PixelFormat == WMTPixelFormatR32Sint ||
@@ -446,10 +459,15 @@ CreateMTLTextureDescriptorInternal(
     // decoder not supported: D3D11_BIND_DECODER, D3D11_BIND_VIDEO_ENCODER
   }
 
-  // a copy into a staging depth stencil reads the stencil through an X32_Stencil8 view, as D3D12 does
-  if ((metal_format.Flag & (MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_VIDEO_PLANAR)) ||
-      pDescOut->pixel_format == WMTPixelFormatDepth32Float_Stencil8) {
-    // well this is necessary for passing validation layer
+  // a copy into a staging depth stencil reads the stencil through an X32_Stencil8 view, as D3D12 does. A typeless
+  // color texture's views need Metal's format view only where its family's formats differ in layout, not where they
+  // are sRGB twins (CastsAcrossLayouts, as Direct3D 12 decides): B8G8R8A8_TYPELESS and the block-compressed families
+  // keep their lossless compression. A typeless depth texture keeps the view its planes are read through
+  if ((metal_format.Flag & (MTL_DXGI_FORMAT_VIDEO_PLANAR | MTL_DXGI_FORMAT_EMULATED_RGB32)) ||
+      pDescOut->pixel_format == WMTPixelFormatDepth32Float_Stencil8 ||
+      ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
+       (DepthStencilPlanarFlags(pDescOut->pixel_format) ||
+        CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false)))) {
     metal_usage |= WMTTextureUsagePixelFormatView;
   }
 
