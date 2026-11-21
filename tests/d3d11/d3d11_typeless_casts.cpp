@@ -2,9 +2,12 @@
 // format (D3D11.3 4.1, "Typeless Formats": a view "reinterprets" the resource's data; 19.1.2 lists the families),
 // whenever the view is made: before the texture is first used, after it holds rendered, cleared or initial texels, for
 // every subresource of mips, arrays and multisampled textures, through a deferred context, and while another view of
-// the texture stays bound. the expectations are the bits the writes encode (D3D11.3 3.2.3.6's float to UNORM
+// the texture stays bound. a view in the other format writes the texture as its first use too: ClearView "sets all the
+// elements in a resource view to one value" (Microsoft Learn, ID3D11DeviceContext1::ClearView) through a render
+// target in rectangles and through unordered access. the expectations are the bits the writes encode (D3D11.3 3.2.3.6's float to UNORM
 // conversion of k/255, half and float32 encodings of exactly representable values), read back as integers.
 #include "d3d11_test.hpp"
+#include <d3d11_1.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -58,11 +61,17 @@ half_bits(float value) {
   return sign | uint32_t(exponent - 1 + 15) << 10 | uint32_t((fraction * 2 - 1) * 1024);
 }
 
-enum class Kind { Unorm8, Uint8, Half, Float, Unorm10, Cleared8 };
+enum class Kind { Unorm8, Uint8, Half, Float, Unorm10, Cleared8, ClearedFloat };
 
 // the color Kind::Cleared8 clears to, and its UNORM bits
 static const float clear_color[4] = {10 / 255.0f, 20 / 255.0f, 200 / 255.0f, 1};
 static const uint32_t clear_bits[4] = {10, 20, 200, 255};
+// the color Kind::ClearedFloat clears an R32 FLOAT view to
+static const float clear_float[4] = {1.5f, 0, 0, 0};
+
+// how a Cleared kind clears: ClearRenderTargetView, ClearView of the render target in two rectangles (the partial
+// clear's own path), or ClearView of an unordered access view in the write format
+enum class Clear { Target, TargetRects, Unordered };
 
 struct Case {
   const char *name;
@@ -72,6 +81,7 @@ struct Case {
   bool initial = false;  // the texels come from initial data, and nothing is drawn
   bool view_first = false; // the reading view is made before the texture is first used
   bool deferred = false;   // the read is recorded on a deferred context
+  Clear clear = Clear::Target;
 };
 
 // the four words a texel of (x, y) in `layer` and `level` reads as, from the pattern the pixel shaders write
@@ -96,6 +106,9 @@ expected(const Case &c, UINT x, UINT y, UINT layer, UINT level) {
       break;
     case Kind::Cleared8:
       out[i] = clear_bits[i];
+      break;
+    case Kind::ClearedFloat:
+      out[i] = i ? (i == 3 ? 1 : 0) : std::bit_cast<uint32_t>(clear_float[0]);
       break;
     }
   return out;
@@ -136,6 +149,10 @@ run(ID3D11Device *device, ID3D11DeviceContext *immediate, const Case &c) {
 
   D3D11_TEXTURE2D_DESC desc{W, H, c.mips, layers, c.typeless, {c.samples, 0}, D3D11_USAGE_DEFAULT,
                             D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET};
+  if (c.clear == Clear::Unordered)
+    desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+  ComPtr<ID3D11DeviceContext1> immediate1;
+  CHECK(immediate->QueryInterface(IID_PPV_ARGS(&immediate1)));
   ComPtr<ID3D11Texture2D> texture;
   std::vector<std::array<uint32_t, 4>> initial(W * H);
   if (c.initial) {
@@ -184,14 +201,28 @@ run(ID3D11Device *device, ID3D11DeviceContext *immediate, const Case &c) {
         }
         ComPtr<ID3D11RenderTargetView> rtv;
         CHECK(device->CreateRenderTargetView(texture.Get(), &rtv_desc, &rtv));
+        // a clear is the view's first use: nothing else runs on the context between the view and the clear
+        if (c.kind == Kind::Cleared8 || c.kind == Kind::ClearedFloat) {
+          const float *color = c.kind == Kind::Cleared8 ? clear_color : clear_float;
+          const LONG w = W >> mip, h = H >> mip;
+          const D3D11_RECT halves[2] = {{0, 0, w, h / 2}, {0, h / 2, w, h}};
+          if (c.clear == Clear::Target) {
+            immediate->ClearRenderTargetView(rtv.Get(), color);
+          } else if (c.clear == Clear::TargetRects) {
+            immediate1->ClearView(rtv.Get(), color, halves, 2);
+          } else {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc{c.write, D3D11_UAV_DIMENSION_TEXTURE2DARRAY};
+            uav_desc.Texture2DArray = {mip, layer, 1};
+            ComPtr<ID3D11UnorderedAccessView> uav;
+            CHECK(device->CreateUnorderedAccessView(texture.Get(), &uav_desc, &uav));
+            immediate1->ClearView(uav.Get(), color, nullptr, 0);
+          }
+          continue;
+        }
         at = {layer, mip};
         immediate->UpdateSubresource(cb.Get(), 0, nullptr, &at, 0, 0);
         D3D11_VIEWPORT viewport{0, 0, float(W >> mip), float(H >> mip), 0, 1};
         immediate->RSSetViewports(1, &viewport);
-        if (c.kind == Kind::Cleared8) {
-          immediate->ClearRenderTargetView(rtv.Get(), clear_color);
-          continue;
-        }
         immediate->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
         immediate->Draw(3, 0);
       }
@@ -369,6 +400,10 @@ main() {
        DXGI_FORMAT_R16G16B16A16_UINT, Kind::Half},
       {"R32 drawn as FLOAT, read as UINT", DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_UINT,
        Kind::Float},
+      {"R32 cleared by ClearView in rectangles as FLOAT, read as UINT", DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT,
+       DXGI_FORMAT_R32_UINT, Kind::ClearedFloat, 1, 1, 1, false, false, false, Clear::TargetRects},
+      {"R32 cleared by ClearView of unordered access as FLOAT, read as UINT", DXGI_FORMAT_R32_TYPELESS,
+       DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_UINT, Kind::ClearedFloat, 1, 1, 1, false, false, false, Clear::Unordered},
       {"RGB10A2 drawn as UNORM, read as UINT", DXGI_FORMAT_R10G10B10A2_TYPELESS, DXGI_FORMAT_R10G10B10A2_UNORM,
        DXGI_FORMAT_R10G10B10A2_UINT, Kind::Unorm10},
   };

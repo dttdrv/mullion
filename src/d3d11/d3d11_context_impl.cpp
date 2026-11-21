@@ -903,11 +903,9 @@ public:
     if (!pView)
       return;
 
-    if (device->shares_with_d3d12) {
-      Com<ID3D11Resource> resource;
-      pView->GetResource(&resource);
-      PrepareTextureUse({GetTexture(resource.ptr())});
-    }
+    Com<ID3D11Resource> resource;
+    pView->GetResource(&resource);
+    PrepareTextureUse({GetTexture(resource.ptr())});
 
     auto color = std::array<float, 4>({Color[0], Color[1], Color[2], Color[3]});
 
