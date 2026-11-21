@@ -71,6 +71,8 @@ test('host_diag_profile', find_program('python3', native : true), args : files('
 test('host_mutate', find_program('python3', native : true), args : files('mutate.py'), suite : 'host')
 test('host_install', find_program('python3', native : true),
      args : files('install.py') + [meson.project_source_root() / 'install.sh'], suite : 'host')
+test('host_compiler_install', find_program('python3', native : true),
+     args : files('compiler_install.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_lock', find_program('python3', native : true),
      args : files('lock.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_admission', find_program('python3', native : true),
