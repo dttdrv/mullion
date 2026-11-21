@@ -2,11 +2,11 @@
 // bridge records DLSS with, src/nvngx/nvngx.cpp) writes an image whose content is its input's: a uniform image with no
 // motion comes out that color in every texel, within one unit of the 8-bit output, as tests/d3d12/d3d12_metalfx.cpp
 // asks of D3D12. the motion vectors are given in each format the extension takes, typed or typeless, in a texture a
-// pass writes them to, as a render target or with unordered access. they are zero bits, which is no motion however a
-// format's bits are read. the extension reads them through a view of a float format, which Metal makes only of a
-// texture with its format view (MTLTextureUsagePixelFormatView): its validation refuses the view otherwise
-// (tests/run.py --validate). the content size is 0, which is the color's. each upscale writes a new output, all zero
-// before, so one that writes nothing is seen
+// pass writes them to, as a render target or with unordered access, or one only its initial data fills, as a copy
+// would. they are zero bits, which is no motion however a format's bits are read. the extension reads them through a
+// view of a float format, which Metal makes only of a texture with its format view (MTLTextureUsagePixelFormatView):
+// its validation refuses the view otherwise (tests/run.py --validate). the content size is 0, which is the color's.
+// each upscale writes a new output, all zero before, so one that writes nothing is seen
 #include "d3d11_test.hpp"
 #include "../../src/d3d11/d3d11_interfaces.hpp"
 #include <cstdlib>
@@ -74,8 +74,9 @@ main() {
       {DXGI_FORMAT_R16G16B16A16_SINT, "R16G16B16A16_SINT", 8},
   };
   for (auto &[format, name, bytes] : formats) {
-    for (UINT bind : {D3D11_BIND_UNORDERED_ACCESS, D3D11_BIND_RENDER_TARGET}) {
-      step("motion vectors in %s, %s", name, bind == D3D11_BIND_RENDER_TARGET ? "a render target" : "unordered access");
+    for (UINT bind : {UINT(D3D11_BIND_UNORDERED_ACCESS), UINT(D3D11_BIND_RENDER_TARGET), 0u}) {
+      step("motion vectors in %s, %s", name,
+           bind == D3D11_BIND_RENDER_TARGET ? "a render target" : bind ? "unordered access" : "a shader resource alone");
       auto motion = texture(format, width, height, D3D11_BIND_SHADER_RESOURCE | bind, zero, bytes);
       auto output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, out_width, out_height, D3D11_BIND_UNORDERED_ACCESS, zero, 4);
       if (!expect(motion && output, "a texture was refused"))

@@ -465,13 +465,13 @@ CreateMTLTextureDescriptorInternal(
   // a typeless color texture's views need Metal's format view only where its family's formats differ in layout, not
   // where they are sRGB twins (CastsAcrossLayouts, as Direct3D 12 decides): B8G8R8A8_TYPELESS and the block-compressed
   // families keep their lossless compression. a texture a pass can write motion vectors to needs it as well where an
-  // upscaler reads them through a view of another format (MotionVectorFormat). either keeps its lossless compression
-  // until such a view, where the caller can move the texture to an allocation with the usage then (pDefersFormatView,
-  // Texture::deferFormatView)
+  // upscaler reads them through a view of another format (MotionVectorFormat), and so does one a copy fills where it
+  // can defer, as that costs nothing until an upscale. either keeps its lossless compression until such a view, where
+  // the caller can move the texture to an allocation with the usage then (pDefersFormatView, Texture::deferFormatView)
   auto motion = MotionVectorFormat(pDescOut->pixel_format);
   bool casts = ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && !DepthStencilPlanarFlags(pDescOut->pixel_format) &&
                 CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false)) ||
-               ((BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS)) &&
+               ((pDefersFormatView || (BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS))) &&
                 motion != WMTPixelFormatInvalid && motion != pDescOut->pixel_format);
 
   // a resolve Metal cannot do renders its destination, any single-sampled default texture (ResolveSubresource)
