@@ -385,19 +385,19 @@ main(int argc, char **argv) {
   params->Set("OutHeight", out_height);
   params->Set("DLSS.Feature.Create.Flags", int(NVNGX_DLSS_FLAG_MV_LOWRES));
   unsigned sentinel = 0;
-  unsigned *rejected = &sentinel;
-  expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, nullptr, &rejected) == NVNGX_RESULT_INVALID_PARAMETER &&
-             !rejected, "DLSS creation with no parameters did not reject and clear the handle");
+  unsigned *handle = &sentinel;
+  expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, nullptr, &handle) == NVNGX_RESULT_INVALID_PARAMETER &&
+             !handle, "DLSS creation with no parameters did not reject and clear the handle");
   for (const char *name : {"Width", "Height", "OutWidth", "OutHeight"}) {
     unsigned value = 0;
     params->Get(name, &value);
     params->Set(name, 0u);
-    rejected = &sentinel;
-    auto result = create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &rejected);
-    expect(result == NVNGX_RESULT_INVALID_PARAMETER && !rejected, "DLSS creation with %s=0 returned %#x, handle %p",
-           name, result, (void *)rejected);
-    if (result == NVNGX_RESULT_OK && rejected && rejected != &sentinel)
-      release(rejected);
+    handle = &sentinel;
+    auto result = create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &handle);
+    expect(result == NVNGX_RESULT_INVALID_PARAMETER && !handle, "DLSS creation with %s=0 returned %#x, handle %p",
+           name, result, (void *)handle);
+    if (result == NVNGX_RESULT_OK && handle && handle != &sentinel)
+      release(handle);
     params->Set(name, value);
   }
   if (expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &feature) == NVNGX_RESULT_OK && feature,
