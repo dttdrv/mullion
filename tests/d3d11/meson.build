@@ -43,6 +43,8 @@ test('d3d11_minmax_filters_deferred',
      executable('d3d11_minmax_filters_deferred', 'd3d11_minmax_filters.cpp', dependencies: d3d11_test_deps),
      args: ['deferred'], env: ['MULLION_SHADER_CACHE=0'], timeout: 600)
 
+# imports no Direct3D DLL, so its FreeLibrary is the last reference to d3d11.dll
+test('d3d11_unload', executable('d3d11_unload', 'd3d11_unload.cpp'), env : ['MULLION_SHADER_CACHE=0'], timeout : 300)
 # 'timing' tests measure time, so run alone
 test('d3d11_idle_residency', executable('d3d11_idle_residency', 'd3d11_idle_residency.cpp', dependencies : d3d11_test_deps),
      env : ['MULLION_SHADER_CACHE=0'], suite : 'timing', is_parallel : false, timeout : 300)

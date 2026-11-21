@@ -3,6 +3,7 @@
 #include "log/trace.hpp"
 #include "thread.hpp"
 #include "util_env.hpp"
+#include <windows.h>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -64,9 +65,20 @@ state() {
   return *instance;
 }
 
+void Beat();
+
+// the thread runs this module's code, and a program may unload the DLL once its devices are gone (FreeLibrary), while
+// the thread still runs: D3D11's set is watched for the process's life. from the first device on, the module stays
 bool
 enabled() {
-  static const bool on = env::getEnvVar("MULLION_RESIDENCY_HEARTBEAT") != "0";
+  static const bool on = env::getEnvVar("MULLION_RESIDENCY_HEARTBEAT") != "0" && [] {
+    HMODULE module;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(&Beat), &module))
+      return true;
+    WARN("residency heartbeat: off, as its module cannot be kept loaded: ", GetLastError());
+    return false;
+  }();
   return on;
 }
 
