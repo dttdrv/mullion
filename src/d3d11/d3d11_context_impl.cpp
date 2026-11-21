@@ -903,11 +903,9 @@ public:
     if (!pView)
       return;
 
-    if (device->shares_with_d3d12) {
-      Com<ID3D11Resource> resource;
-      pView->GetResource(&resource);
-      PrepareTextureUse({GetTexture(resource.ptr())});
-    }
+    Com<ID3D11Resource> resource;
+    pView->GetResource(&resource);
+    PrepareTextureUse({GetTexture(resource.ptr())});
 
     auto color = std::array<float, 4>({Color[0], Color[1], Color[2], Color[3]});
 
@@ -1132,38 +1130,40 @@ public:
       ERR("ResolveSubresource: invalid format ", Format);
       return;
     }
-    PrepareTextureUse({GetTexture(pSrcResource), GetTexture(pDstResource)});
+    auto src = static_cast<D3D11ResourceCommon *>(pSrcResource)->texture();
+    auto dst = static_cast<D3D11ResourceCommon *>(pDstResource)->texture();
+    // channels are averaged where they are stored
+    auto format = WMTPixelFormat(ORIGINAL_FORMAT(format_desc.PixelFormat));
+    bool native = any_bit_set(device->GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::Resolve);
+    TextureViewDescriptor src_desc;
+    src_desc.format = format;
+    // the draw reads a texture2d_ms, which an array's own type reads as zeros
+    src_desc.type = native ? src->textureType() : WMTTextureType2DMultisample;
+    src_desc.arraySize = 1;
+    src_desc.firstArraySlice = SrcSubresource; // src must be a MS(Array) texture which has exactly 1 mipmap level
+    src_desc.miplevelCount = 1;
+    src_desc.firstMiplevel = 0;
+
+    TextureViewDescriptor dst_desc;
+    dst_desc.format = format;
+    dst_desc.type = WMTTextureType2D;
+    dst_desc.arraySize = 1;
+    dst_desc.firstArraySlice = DstSubresource / Dst.Texture2DDesc.MipLevels;
+    dst_desc.miplevelCount = 1;
+    dst_desc.firstMiplevel = DstSubresource % Dst.Texture2DDesc.MipLevels;
+
+    // made before the textures' use, which moves a texture a view casts (Texture::deferFormatView)
+    if (!device->PrepareFormatView(src.ptr(), format) || !device->PrepareFormatView(dst.ptr(), format)) {
+      ERR("ResolveSubresource: out of memory for a view of ", format);
+      return;
+    }
+    auto src_view = src->createView(src_desc);
+    auto dst_view = dst->createView(dst_desc);
+    PrepareTextureUse({src, dst});
     InvalidateCurrentPass();
     UseWrappedSubresource(pSrcResource, SrcSubresource, false);
     UseWrappedSubresource(pDstResource, DstSubresource, true);
-    EmitOP([src = static_cast<D3D11ResourceCommon *>(pSrcResource)->texture(),
-            dst = static_cast<D3D11ResourceCommon *>(pDstResource)->texture(),
-            dst_level = DstSubresource % Dst.Texture2DDesc.MipLevels,
-            dst_slice = DstSubresource / Dst.Texture2DDesc.MipLevels, SrcSubresource,
-            // channels are averaged where they are stored
-            format = WMTPixelFormat(ORIGINAL_FORMAT(format_desc.PixelFormat)),
-            native = any_bit_set(device->GetMTLPixelFormatCapability(format_desc.PixelFormat) & FormatCapability::Resolve
-            )](ArgumentEncodingContext &enc) mutable {
-      TextureViewDescriptor src_desc;
-      src_desc.format = format;
-      // the draw reads a texture2d_ms, which an array's own type reads as zeros
-      src_desc.type = native ? src->textureType() : WMTTextureType2DMultisample;
-      src_desc.arraySize = 1;
-      src_desc.firstArraySlice = SrcSubresource; // src must be a MS(Array) texture which has exactly 1 mipmap level
-      src_desc.miplevelCount = 1;
-      src_desc.firstMiplevel = 0;
-
-      TextureViewDescriptor dst_desc;
-      dst_desc.format = format;
-      dst_desc.type = WMTTextureType2D;
-      dst_desc.arraySize = 1;
-      dst_desc.firstArraySlice = dst_slice;
-      dst_desc.miplevelCount = 1;
-      dst_desc.firstMiplevel = dst_level;
-
-      auto src_view = src->createView(src_desc);
-      auto dst_view = dst->createView(dst_desc);
-
+    EmitOP([src = std::move(src), dst = std::move(dst), src_view, dst_view, native](ArgumentEncodingContext &enc) mutable {
       if (native)
         return enc.resolveTexture(forward_rc(src), src_view, forward_rc(dst), dst_view);
       // a format Metal cannot resolve is averaged by a draw
@@ -3843,11 +3843,41 @@ public:
       UseWrappedResource(view->resource_.ptr(), view->subset_, write);
   }
   void PrepareTextureUse(std::span<const Rc<Texture>> textures);
+  // the immediate context moves the textures of its device a view made an allocation with Metal's format view
+  // (MTLD3D11Device::PrepareFormatView). every record-time use of a texture comes after it: PrepareShaderTextureUse,
+  // and PrepareTextureUse, which ExecuteCommandList calls for each region of the list before the region's commands
+  void MoveToFormatViews();
   void PrepareTextureUse(std::initializer_list<Rc<Texture>> textures) {
     PrepareTextureUse(std::span(textures.begin(), textures.size()));
   }
 
+  // a texture whose view casts it across layouts moves, in a pass of its own, to the allocation with Metal's format view
+  // the view made (Texture::deferFormatView): every subresource is copied whole. the next pass encodes every binding
+  // again (SwitchToRenderEncoder, SwitchToComputeEncoder), of the texture's new allocation
+  void
+  MoveToFormatView(const Rc<Texture> &texture, Rc<TextureAllocation> &&moved) {
+    InvalidateCurrentPass();
+    SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
+    EmitOP([texture, moved = std::move(moved)](ArgumentEncodingContext &enc) mutable {
+      auto subresources = [&](int flags) {
+        for (unsigned slice = 0; slice < texture->arrayLength(); slice++)
+          for (unsigned level = 0; level < texture->miplevelCount(); level++)
+            enc.access(texture, level, slice, flags);
+        return texture->current()->texture();
+      };
+      WMT::Texture source = subresources(ResourceAccess::Read);
+      auto _ = texture->rename(std::move(moved));
+      WMT::Texture destination = subresources(ResourceAccess::Write);
+      auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_texture>();
+      cmd.type = WMTBlitCommandCopyTexture;
+      cmd.src = source;
+      cmd.dst = destination;
+    });
+    InvalidateCurrentPass();
+  }
+
   void PrepareShaderTextureUse(bool compute) {
+    MoveToFormatViews();
     if (!device->shares_with_d3d12)
       return;
     std::vector<Rc<Texture>> textures;
@@ -6407,6 +6437,18 @@ public:
       // as they are not expected to be created frequently
     }
 
+    // made before the textures' use, which moves a texture the view casts (Texture::deferFormatView)
+    if (!ctx_->device->PrepareFormatView(motion_vector.ptr(), motion_vector_format)) {
+      ERR("TemporalUpscale: out of memory for a motion vector view of ", motion_vector_format);
+      return;
+    }
+    auto mv_view = motion_vector->createView(
+        {.format = motion_vector_format,
+         .type = WMTTextureType2D,
+         .firstMiplevel = 0,
+         .miplevelCount = 1,
+         .firstArraySlice = 0,
+         .arraySize = 1});
     ctx_->PrepareTextureUse({input, output, depth, motion_vector, exposure});
     ctx_->InvalidateCurrentPass();
     ctx_->UseWrappedSubresource(pDesc->Color, 0, false);
@@ -6434,15 +6476,8 @@ public:
                           pDesc->JitterOffsetY,
                           pDesc->PreExposure,
                       },
-                  motion_vector_format, mv_downscaled = std::move(mv_downscaled)
+                  mv_view, mv_downscaled = std::move(mv_downscaled)
                 ](ArgumentEncodingContext &enc) mutable {
-      auto mv_view = motion_vector->createView(
-          {.format = motion_vector_format,
-           .type = WMTTextureType2D,
-           .firstMiplevel = 0,
-           .miplevelCount = 1,
-           .firstArraySlice = 0,
-           .arraySize = 1});
       auto &scaler_info = enc.currentFrameStatistics().last_scaler_info;
       scaler_info.type = ScalerType::Temporal;
       scaler_info.auto_exposure = exposure == nullptr;

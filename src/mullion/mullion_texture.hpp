@@ -99,6 +99,9 @@ public:
   MULLION_RESOURCE_RESIDENCY_STATE residency{};
   TextureAllocation *allocation; // `TextureAllocation` holds strong reference to `TextureView`
   TextureViewKey key;
+  // no Metal view: one in another layout of an allocation without Metal's format view, of a texture that moves to an
+  // allocation with it before the view's first use (Texture::deferFormatView)
+  bool awaitsMove = false;
 
   TextureView(const TextureView &) = delete;
   TextureView(TextureView &&) = delete;
@@ -106,6 +109,7 @@ public:
   TextureView &operator=(TextureView &&) = delete;
   TextureView(TextureAllocation *allocation);
   TextureView(TextureAllocation *allocation, unsigned index, TextureViewDescriptor descriptor);
+  TextureView(TextureAllocation *allocation, unsigned index, TextureViewDescriptor descriptor, std::nullptr_t);
 
 private:
   std::atomic<uint32_t> refcount_ = {0u};
@@ -151,6 +155,8 @@ public:
   void *mappedMemory;
   uint64_t gpuResourceID;
   mach_port_t machPort;
+  // made with Metal's format view (WMTTextureUsagePixelFormatView)
+  bool formatView;
   small_vector<GenericAccessTracker, 1> fenceTrackers;
 
 private:
@@ -300,8 +306,20 @@ public:
   // each of its samples is two of the resource's (RasterSampleCount)
   bool paired = false;
 
-  Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
+  // `usage`: more than the texture's own
+  Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMTTextureUsage usage = WMTTextureUsageUnknown);
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset = 0);
+
+  // a texture made without Metal's format view, which costs its lossless compression, though a view of it may cast
+  // across layouts (its typeless family's): the first such view makes an allocation with the usage, which a context
+  // moves the texture to before the view's first use (MTLD3D11Device::PrepareFormatView), and meanwhile an allocation
+  // without the usage makes no such view
+  void deferFormatView();
+  // whether a view in `format` may need the allocation formatViewMove makes
+  bool castsWithoutFormatView(WMTPixelFormat format) const;
+  // the allocation with Metal's format view the texture moves to, made once: null where it was made before, and one
+  // without a texture where Metal could not make it, which the next call tries again. its caller serializes calls
+  Rc<TextureAllocation> formatViewMove();
   Rc<TextureAllocation> import(mach_port_t mach_port);
   // an allocation of a Metal texture another API made, of this texture's description (D3D11On12's wrapped resources)
   Rc<TextureAllocation> wrap(WMT::Reference<WMT::Texture> &&texture, const WMTTextureInfo &info, Flags<TextureAllocationFlag> flags);
@@ -321,6 +339,11 @@ public:
 
 private:
   void prepareAllocationViews(TextureAllocation* allocation);
+  // a view in another layout than the texture's own, not its sRGB twin, needs Metal's format view
+  bool castsLayout(WMTPixelFormat format) const;
+
+  enum class FormatView : uint8_t { Fixed, Deferred, Moved };
+  std::atomic<FormatView> format_view_ = FormatView::Fixed;
 
   WMTTextureInfo info_;
   unsigned bytes_per_image_ = 0;

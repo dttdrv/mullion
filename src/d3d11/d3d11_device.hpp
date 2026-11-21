@@ -7,6 +7,11 @@
 #include "dxgi_interfaces.h"
 #include "mullion_device.hpp"
 #include "mullion_format.hpp"
+#include "mullion_texture.hpp"
+#include "thread.hpp"
+#include <atomic>
+#include <utility>
+#include <vector>
 
 struct MTL_GRAPHICS_PIPELINE_DESC;
 struct MTL_COMPUTE_PIPELINE_DESC;
@@ -71,6 +76,18 @@ public:
 
   d3d11_device_mutex mutex;
   bool shares_with_d3d12 = false;
+
+  // a view of `texture` in `format` that casts it without Metal's format view (Texture::deferFormatView) makes the
+  // allocation with it the immediate context moves the texture to at its next operation, before the view's first use
+  // (TakeFormatViewMoves). false where the allocation cannot be made
+  bool PrepareFormatView(Texture *texture, WMTPixelFormat format);
+  bool FormatViewMovesPending() const { return format_view_pending_.load(std::memory_order_acquire); }
+  std::vector<std::pair<Rc<Texture>, Rc<TextureAllocation>>> TakeFormatViewMoves();
+
+private:
+  mullion::mutex format_view_mutex_;
+  std::vector<std::pair<Rc<Texture>, Rc<TextureAllocation>>> format_view_moves_; // under format_view_mutex_
+  std::atomic<bool> format_view_pending_ = false;
 };
 
 D3D_FEATURE_LEVEL GetMaxFeatureLevel(WMT::Device device);

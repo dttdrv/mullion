@@ -309,7 +309,7 @@ CreateMTLTextureDescriptorInternal(
     MTLD3D11Device *pDevice, D3D11_RESOURCE_DIMENSION Dimension, UINT Width,
     UINT Height, UINT Depth, UINT ArraySize, UINT SampleCount, UINT BindFlags,
     UINT CPUAccessFlags, UINT MiscFlags, D3D11_USAGE Usage, UINT MipLevels,
-    DXGI_FORMAT Format, WMTTextureInfo *pDescOut) {
+    DXGI_FORMAT Format, WMTTextureInfo *pDescOut, bool *pDefersFormatView) {
   if (Width == 0 || Height == 0 || Depth == 0 || ArraySize == 0 || SampleCount == 0)
     return E_INVALIDARG;
 
@@ -438,14 +438,10 @@ CreateMTLTextureDescriptorInternal(
       // texture shaders write: only a texture that needs a view in another layout gets it. An R32 view of a 32-bit
       // typeless texture is one (CastsToR32UnorderedAccess), and so is a uint clear's integer view, but for a format
       // whose values hold all its bit patterns, which ClearUnorderedAccessViewUint writes as those values instead
-      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12), and so is the float view an
-      // upscaler reads motion vectors through (MotionVectorFormat). shortcut: a typed texture with no unordered access
-      // gets no format view for that view, which Metal's validation refuses, until a texture can take the format view
-      // at its first view in another format
+      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12)
       auto pixel = pDescOut->pixel_format;
       auto write = GetUIntClearWrite(pixel);
-      auto motion = MotionVectorFormat(pixel);
-      if (CastsToR32UnorderedAccess(Format) || (motion != WMTPixelFormatInvalid && motion != pixel) ||
+      if (CastsToR32UnorderedAccess(Format) ||
           (MTLGetUnsignedIntegerFormat(pixel) != pixel && write != UIntClearWrite::Unorm && write != UIntClearWrite::Float))
         metal_usage |= WMTTextureUsagePixelFormatView;
       // NOTE: R32/RG32_TYPELESS format should be mapped to uint pixel format
@@ -460,16 +456,23 @@ CreateMTLTextureDescriptorInternal(
   }
 
   // a copy into a staging depth stencil reads the stencil through an X32_Stencil8 view, as D3D12 does. A typeless
-  // color texture's views need Metal's format view only where its family's formats differ in layout, not where they
-  // are sRGB twins (CastsAcrossLayouts, as Direct3D 12 decides): B8G8R8A8_TYPELESS and the block-compressed families
-  // keep their lossless compression. A typeless depth texture keeps the view its planes are read through
+  // depth texture keeps the view its planes are read through
   if ((metal_format.Flag & (MTL_DXGI_FORMAT_VIDEO_PLANAR | MTL_DXGI_FORMAT_EMULATED_RGB32)) ||
       pDescOut->pixel_format == WMTPixelFormatDepth32Float_Stencil8 ||
-      ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
-       (DepthStencilPlanarFlags(pDescOut->pixel_format) ||
-        CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false)))) {
+      ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && DepthStencilPlanarFlags(pDescOut->pixel_format))) {
     metal_usage |= WMTTextureUsagePixelFormatView;
   }
+  // a typeless color texture's views need Metal's format view only where its family's formats differ in layout, not
+  // where they are sRGB twins (CastsAcrossLayouts, as Direct3D 12 decides): B8G8R8A8_TYPELESS and the block-compressed
+  // families keep their lossless compression. a texture a pass can write motion vectors to needs it as well where an
+  // upscaler reads them through a view of another format (MotionVectorFormat), and so does one a copy fills where it
+  // can defer, as that costs nothing until an upscale. either keeps its lossless compression until such a view, where
+  // the caller can move the texture to an allocation with the usage then (pDefersFormatView, Texture::deferFormatView)
+  auto motion = MotionVectorFormat(pDescOut->pixel_format);
+  bool casts = ((metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) && !DepthStencilPlanarFlags(pDescOut->pixel_format) &&
+                CastsAcrossLayouts(pDevice->GetMTLDevice(), Format, false)) ||
+               ((pDefersFormatView || (BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS))) &&
+                motion != WMTPixelFormatInvalid && motion != pDescOut->pixel_format);
 
   // a resolve Metal cannot do renders its destination, any single-sampled default texture (ResolveSubresource)
   if (Usage == D3D11_USAGE_DEFAULT && Dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D && SampleCount == 1 &&
@@ -483,6 +486,12 @@ CreateMTLTextureDescriptorInternal(
     metal_usage |= WMTTextureUsageRenderTarget;
   }
 
+  if (casts && !(metal_usage & WMTTextureUsagePixelFormatView)) {
+    if (pDefersFormatView)
+      *pDefersFormatView = true;
+    else
+      metal_usage |= WMTTextureUsagePixelFormatView;
+  }
   pDescOut->usage = metal_usage;
 
   WMTResourceOptions options = (WMTResourceOptions)0;
@@ -566,12 +575,12 @@ template <>
 HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,
                                    const D3D11_TEXTURE1D_DESC *pDesc,
                                    D3D11_TEXTURE1D_DESC *pOutDesc,
-                                   WMTTextureInfo *pMtlDescOut) {
+                                   WMTTextureInfo *pMtlDescOut, bool *pDefersFormatView) {
   auto hr = CreateMTLTextureDescriptorInternal(
       pDevice, D3D11_RESOURCE_DIMENSION_TEXTURE1D, pDesc->Width, 1, 1,
       pDesc->ArraySize, 1, pDesc->BindFlags, pDesc->CPUAccessFlags,
       pDesc->MiscFlags, pDesc->Usage, pDesc->MipLevels, pDesc->Format,
-      pMtlDescOut);
+      pMtlDescOut, pDefersFormatView);
   if (SUCCEEDED(hr)) {
     *pOutDesc = *pDesc;
     pOutDesc->MipLevels = (*pMtlDescOut).mipmap_level_count;
@@ -583,7 +592,7 @@ template <>
 HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,
                                    const D3D11_TEXTURE2D_DESC1 *pDesc,
                                    D3D11_TEXTURE2D_DESC1 *pOutDesc,
-                                   WMTTextureInfo *pMtlDescOut) {
+                                   WMTTextureInfo *pMtlDescOut, bool *pDefersFormatView) {
   if (pDesc->Format == DXGI_FORMAT_NV12 && pDesc->SampleDesc.Quality)
     return E_INVALIDARG;
   UINT quality_levels = 0;
@@ -598,7 +607,7 @@ HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,
       pDevice, D3D11_RESOURCE_DIMENSION_TEXTURE2D, pDesc->Width, pDesc->Height,
       1, pDesc->ArraySize, pDesc->SampleDesc.Count, pDesc->BindFlags,
       pDesc->CPUAccessFlags, pDesc->MiscFlags, pDesc->Usage, pDesc->MipLevels,
-      pDesc->Format, pMtlDescOut);
+      pDesc->Format, pMtlDescOut, pDefersFormatView);
   if (SUCCEEDED(hr)) {
     *pOutDesc = *pDesc;
     pOutDesc->MipLevels = (*pMtlDescOut).mipmap_level_count;
@@ -610,12 +619,12 @@ template <>
 HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,
                                    const D3D11_TEXTURE3D_DESC1 *pDesc,
                                    D3D11_TEXTURE3D_DESC1 *pOutDesc,
-                                   WMTTextureInfo *pMtlDescOut) {
+                                   WMTTextureInfo *pMtlDescOut, bool *pDefersFormatView) {
   auto hr = CreateMTLTextureDescriptorInternal(
       pDevice, D3D11_RESOURCE_DIMENSION_TEXTURE3D, pDesc->Width, pDesc->Height,
       pDesc->Depth, 1, 1, pDesc->BindFlags, pDesc->CPUAccessFlags,
       pDesc->MiscFlags, pDesc->Usage, pDesc->MipLevels, pDesc->Format,
-      pMtlDescOut);
+      pMtlDescOut, pDefersFormatView);
   if (SUCCEEDED(hr)) {
     *pOutDesc = *pDesc;
     pOutDesc->MipLevels = (*pMtlDescOut).mipmap_level_count;
