@@ -6415,14 +6415,17 @@ public:
     ctx_->UseWrappedSubresource(pDesc->MotionVector, 0, false);
     if (pDesc->ExposureTexture)
       ctx_->UseWrappedSubresource(pDesc->ExposureTexture, 0, false);
+    // a content size of 0 is the color's (MTL_TEMPORAL_UPSCALE_D3D11_DESC), as Direct3D 12's upscale takes it
+    uint32_t content_width = pDesc->InputContentWidth ? pDesc->InputContentWidth : input->width();
+    uint32_t content_height = pDesc->InputContentHeight ? pDesc->InputContentHeight : input->height();
     ctx_->EmitOP([input = std::move(input), output = std::move(output),
                   depth = std::move(depth),
                   motion_vector = std::move(motion_vector),
                   exposure = std::move(exposure), scaler = std::move(scaler),
                   props =
                       WMTFXTemporalScalerProps{
-                          pDesc->InputContentWidth,
-                          pDesc->InputContentHeight,
+                          content_width,
+                          content_height,
                           (bool)pDesc->InReset,
                           (bool)pDesc->DepthReversed,
                           pDesc->MotionVectorScaleX,

@@ -5,7 +5,8 @@
 // shader can write, as a game's motion vector pass makes them. they are zero bits, which is no motion however a
 // format's bits are read. the extension reads them through a view of a float format, which Metal makes only of a
 // texture with its format view (MTLTextureUsagePixelFormatView): its validation refuses the view otherwise
-// (tests/run.py --validate). each upscale writes a new output, all zero before, so one that writes nothing is seen
+// (tests/run.py --validate). the content size is 0, which is the color's. each upscale writes a new output, all zero
+// before, so one that writes nothing is seen
 #include "d3d11_test.hpp"
 #include "../../src/d3d11/d3d11_interfaces.hpp"
 #include <cstdlib>
@@ -55,9 +56,9 @@ main() {
     const char *name;
     UINT bytes;
   } formats[] = {
+      {DXGI_FORMAT_R16G16_UINT, "R16G16_UINT", 4},
       {DXGI_FORMAT_R16G16_TYPELESS, "R16G16_TYPELESS", 4},
       {DXGI_FORMAT_R16G16_FLOAT, "R16G16_FLOAT", 4},
-      {DXGI_FORMAT_R16G16_UINT, "R16G16_UINT", 4},
       {DXGI_FORMAT_R16G16_UNORM, "R16G16_UNORM", 4},
       {DXGI_FORMAT_R16G16_SNORM, "R16G16_SNORM", 4},
       {DXGI_FORMAT_R16G16_SINT, "R16G16_SINT", 4},
