@@ -6314,30 +6314,6 @@ public:
 
   ULONG STDMETHODCALLTYPE Release() final { return ctx_->Release(); }
 
-  WMTPixelFormat GetCorrectMotionVectorFormat(WMTPixelFormat format) {
-    switch (format) {
-    case WMTPixelFormatRG16Uint:
-    case WMTPixelFormatRG16Float:
-    case WMTPixelFormatRG16Sint:
-    case WMTPixelFormatRG16Snorm:
-    case WMTPixelFormatRG16Unorm:
-      return WMTPixelFormatRG16Float;
-    case WMTPixelFormatRG32Uint:
-    case WMTPixelFormatRG32Float:
-    case WMTPixelFormatRG32Sint:
-      return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Sint:
-    case WMTPixelFormatRGBA16Snorm:
-    case WMTPixelFormatRGBA16Uint:
-    case WMTPixelFormatRGBA16Unorm:
-    case WMTPixelFormatRGBA16Float:
-      return WMTPixelFormatRGBA16Float;
-    default:
-      break;
-    }
-    return WMTPixelFormatInvalid;
-  }
-
   void STDMETHODCALLTYPE TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D11_DESC *pDesc) final {
     Rc<Texture> input, output, depth, motion_vector, exposure;
     if (!(input = static_cast<D3D11ResourceCommon *>(pDesc->Color)->texture()))
@@ -6351,7 +6327,7 @@ public:
     if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
       return;
 
-    WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
+    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_vector->pixelFormat());
     if (motion_vector_format == WMTPixelFormatInvalid) {
       ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
       return;

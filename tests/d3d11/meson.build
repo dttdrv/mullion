@@ -43,6 +43,10 @@ test('d3d11_minmax_filters_deferred',
      executable('d3d11_minmax_filters_deferred', 'd3d11_minmax_filters.cpp', dependencies: d3d11_test_deps),
      args: ['deferred'], env: ['MULLION_SHADER_CACHE=0'], timeout: 600)
 
+# MetalFX through Mullion's own context extension (src/d3d11/d3d11_interfaces.hpp)
+test('d3d11_metalfx', executable('d3d11_metalfx', 'd3d11_metalfx.cpp', dependencies : d3d11_test_deps,
+                                 include_directories : include_directories('../../src/util')),
+     env : ['MULLION_SHADER_CACHE=0'], timeout : 600)
 # imports no Direct3D DLL, so its FreeLibrary is the last reference to d3d11.dll
 test('d3d11_unload', executable('d3d11_unload', 'd3d11_unload.cpp'), env : ['MULLION_SHADER_CACHE=0'], timeout : 300)
 # 'timing' tests measure time, so run alone

@@ -438,10 +438,14 @@ CreateMTLTextureDescriptorInternal(
       // texture shaders write: only a texture that needs a view in another layout gets it. An R32 view of a 32-bit
       // typeless texture is one (CastsToR32UnorderedAccess), and so is a uint clear's integer view, but for a format
       // whose values hold all its bit patterns, which ClearUnorderedAccessViewUint writes as those values instead
-      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12)
+      // (GetUIntClearWrite's Unorm and Float, as ClearUAV::begin does for Direct3D 12), and so is the float view an
+      // upscaler reads motion vectors through (MotionVectorFormat). shortcut: a typed texture with no unordered access
+      // gets no format view for that view, which Metal's validation refuses, until a texture can take the format view
+      // at its first view in another format
       auto pixel = pDescOut->pixel_format;
       auto write = GetUIntClearWrite(pixel);
-      if (CastsToR32UnorderedAccess(Format) ||
+      auto motion = MotionVectorFormat(pixel);
+      if (CastsToR32UnorderedAccess(Format) || (motion != WMTPixelFormatInvalid && motion != pixel) ||
           (MTLGetUnsignedIntegerFormat(pixel) != pixel && write != UIntClearWrite::Unorm && write != UIntClearWrite::Float))
         metal_usage |= WMTTextureUsagePixelFormatView;
       // NOTE: R32/RG32_TYPELESS format should be mapped to uint pixel format
