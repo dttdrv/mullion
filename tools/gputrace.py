@@ -201,12 +201,12 @@ def capture(args):
     name = args.name or Path(command[-1].replace("\\", "/")).name
     out = args.out.resolve()
     if args.mullion:
-        # Mullion's own capture (src/mullion/mullion_capture.cpp): command buffers N to N + count of the executable,
-        # counted as they are committed (MULLION_CAPTURE_BY_CHUNK), so work that never presents is captured too
+        # Mullion's own capture (src/mullion/mullion_capture.cpp): frames N to N + count of the executable, counted
+        # by its presents
         out.parent.mkdir(parents=True, exist_ok=True)
         before = set(out.parent.glob("*.gputrace"))
         env = dict(os.environ, MTL_CAPTURE_ENABLED="1", MULLION_CAPTURE_EXECUTABLE=Path(name).stem,
-                   MULLION_CAPTURE_BY_CHUNK="1", MULLION_CAPTURE_FRAME=str(args.first), MULLION_CAPTURE_FRAMES=str(args.count),
+                   MULLION_CAPTURE_FRAME=str(args.first), MULLION_CAPTURE_FRAMES=str(args.count),
                    MULLION_CAPTURE_PATH=str(out.parent) + "/")
         status = subprocess.run(command, env=env).returncode
         made = sorted(set(out.parent.glob("*.gputrace")) - before, key=lambda path: path.stat().st_mtime)
@@ -328,8 +328,8 @@ def main():
     p.add_argument("--timeout", type=float, default=120, help="seconds to wait for the process (default: %(default)s)")
     p.add_argument("--mullion", action="store_true",
                    help="capture with Mullion inside the process (any Wine, signed or not) instead of gpucapture")
-    p.add_argument("--first", type=int, default=1, help="with --mullion, the first command buffer (default: %(default)s)")
-    p.add_argument("--count", type=int, default=100, help="with --mullion, how many command buffers (default: %(default)s)")
+    p.add_argument("--first", type=int, default=1, help="with --mullion, the first frame (default: %(default)s)")
+    p.add_argument("--count", type=int, default=1, help="with --mullion, how many frames (default: %(default)s)")
     p.add_argument("command", nargs=argparse.REMAINDER)
     p.set_defaults(handler=capture)
     p = commands.add_parser("diff", help="compare two PNGs")

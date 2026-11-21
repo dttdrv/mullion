@@ -125,8 +125,8 @@ resources}. Capturing a Wine process from Xcode itself has not been verified.
 On macOS 27 and later a trace can also be taken and read without Xcode, from a script:
 
 - [`tools/gputrace.py`](../tools/gputrace.py)` capture --mullion -- <command>` runs a command and has Mullion capture
-  a range of its command buffers from inside the process, counted as they are committed, so work that never presents
-  (a test) is captured too, in any Wine. `gpucapture start -p <pid>` attaches from outside instead, to any lane's
+  a range of its frames from inside the process (`--first`, `--count`), in any Wine; work that never presents is not
+  captured this way. `gpucapture start -p <pid>` attaches from outside instead, to any lane's
   process, but only to a debuggable one (`com.apple.security.get-task-allow`), which a Wine signed for distribution
   is not
 - [`tools/gputrace.py`](../tools/gputrace.py) reads a trace through `gpudebug`: `report` lists the command buffers,
