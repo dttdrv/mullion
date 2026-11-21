@@ -8,6 +8,8 @@ test('host_format', executable('host_format', 'format.cpp', include_directories 
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_rc_self_move', executable('host_rc_self_move', 'rc.cpp',
                                     override_options : ['cpp_std=c++20'], native : true), suite : 'host')
+test('host_metal_reference', executable('host_metal_reference', 'metal_reference.cpp',
+                                       override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_denorm', executable('host_denorm', 'denorm.cpp', include_directories : include_directories('metal'),
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_tessellator',
