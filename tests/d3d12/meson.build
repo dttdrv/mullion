@@ -44,7 +44,7 @@ test('d3d12_trace_log', exe, timeout: 600)
 exe = executable('d3d12_copy_memory', ['d3d12_copy_memory.cpp'], dependencies: d3d12_test_deps)
 test('d3d12_copy_memory_dxbc', exe, args: ['dxbc'], timeout: 600)
 # the memory saver (MULLION_LOSSY_TEXTURES=1), which the test sets itself, and the size and contents without it
-exe = executable('d3d12_lossy_textures', ['d3d12_lossy_textures.cpp'], dependencies: d3d12_test_deps)
+exe = executable('d3d12_lossy_textures', ['d3d12_lossy_textures.cpp'], dependencies: d3d12_test_deps + [winemetal_dep])
 test('d3d12_lossy_textures', exe, timeout: 600)
 test('d3d12_lossy_textures_lossless', exe, args: ['lossless'], timeout: 600)
 exe = executable('d3d12_archive_memory', ['d3d12_archive_memory.cpp'], dependencies: d3d12_test_deps)

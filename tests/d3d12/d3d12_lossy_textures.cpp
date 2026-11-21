@@ -5,6 +5,7 @@
 // layout, which Metal makes no lossy texture for.)
 // the test sets the variable itself; with the argument "lossless" it leaves it unset, and expects the full size.
 #include "d3d12_test.hpp"
+#include "../../src/winemetal/Metal.hpp"
 #include <dxgi1_4.h>
 #include <cmath>
 #include <cstdlib>
@@ -44,9 +45,12 @@ main(int argc, char **argv) {
   CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
   CHECK(factory->EnumAdapters1(0, &adapter1));
   CHECK(adapter1.As(&adapter));
-  DXGI_ADAPTER_DESC1 desc;
-  CHECK(adapter->GetDesc1(&desc));
-  if (wcsstr(desc.Description, L"M1")) {
+  // the family the bridge answers as, which the memory saver asks (src/mullion/mullion_memory.cpp): a newer GPU run as
+  // Apple7 (MULLION_GPU_FAMILY) has no lossy compression either. the lossless case expects the full size on any
+  auto pool = WMT::MakeAutoreleasePool();
+  auto devices = WMT::CopyAllDevices();
+  CHECK(devices && devices.count() ? S_OK : E_FAIL);
+  if (!lossless && !devices.object(0).supportsFamily(WMTGPUFamilyApple8)) {
     printf("skipped: an Apple7 GPU has no lossy compression\n");
     return 77;
   }
