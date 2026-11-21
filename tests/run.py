@@ -149,7 +149,8 @@ def clone(wine, to):
             subprocess.run(["chmod", "-R", "u+w", str(to)], check=True)
             shutil.rmtree(to)
         to.mkdir(parents=True)
-        subprocess.run(["cp", "-Rp", str(root), str(copy)], check=True)
+        # the root's contents: outside a bundle the copy is the directory just made, which cp would put it in
+        subprocess.run(["cp", "-Rp", f"{root}/.", str(copy)], check=True)
         subprocess.run(["chmod", "-R", "u+w", str(copy)], check=True)
         stamp.write_text(key)
     return copy / source.relative_to(bundle) if bundle else copy
