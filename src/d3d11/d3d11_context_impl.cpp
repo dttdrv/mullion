@@ -762,6 +762,37 @@ public:
           uint_format = WMTPixelFormatR32Uint;
         }
 
+        // a texture made without Metal's format view (d3d11_resource_helper.cpp) has no integer view: its format's
+        // values hold all its bit patterns, so the bits are written as the values they encode, as ClearUAV::begin
+        // does for Direct3D 12 (GetUIntClearWrite)
+        auto write = view_format == uint_format || (texture->usage() & WMTTextureUsagePixelFormatView)
+                         ? UIntClearWrite::IntegerView : GetUIntClearWrite((WMTPixelFormat)view_format);
+        if (write == UIntClearWrite::Unorm || write == UIntClearWrite::Float) {
+          auto ones = ClearUAV<ArgumentEncodingContext>::clearColor(
+              std::array<uint32_t, 4>{~0u, ~0u, ~0u, ~0u}, (WMTPixelFormat)view_format
+          );
+          std::array<float, 4> values;
+          for (unsigned i = 0; i < 4; i++)
+            values[i] = write == UIntClearWrite::Float ? std::bit_cast<float>(value[i])
+                                                       : float(value[i] & ones[i]) / ones[i];
+          WMT::Texture handle = enc.access(texture, viewId, ResourceAccess::Write).texture;
+          switch (desc.ViewDimension) {
+          default:
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE1D:
+          case D3D11_UAV_DIMENSION_TEXTURE2D:
+            enc.emulated_cmd.ClearTexture2DFloat(handle, values);
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:
+          case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:
+            enc.emulated_cmd.ClearTexture2DArrayFloat(handle, values);
+            break;
+          case D3D11_UAV_DIMENSION_TEXTURE3D:
+            enc.emulated_cmd.ClearTexture3DFloat(handle, values, desc.Texture3D.FirstWSlice, desc.Texture3D.WSize);
+            break;
+          }
+          return;
+        }
         if (uint_format == WMTPixelFormatInvalid) {
           WARN("ClearUnorderedAccessViewUint: unhandled format ", view_format);
           return;
@@ -6283,30 +6314,6 @@ public:
 
   ULONG STDMETHODCALLTYPE Release() final { return ctx_->Release(); }
 
-  WMTPixelFormat GetCorrectMotionVectorFormat(WMTPixelFormat format) {
-    switch (format) {
-    case WMTPixelFormatRG16Uint:
-    case WMTPixelFormatRG16Float:
-    case WMTPixelFormatRG16Sint:
-    case WMTPixelFormatRG16Snorm:
-    case WMTPixelFormatRG16Unorm:
-      return WMTPixelFormatRG16Float;
-    case WMTPixelFormatRG32Uint:
-    case WMTPixelFormatRG32Float:
-    case WMTPixelFormatRG32Sint:
-      return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Sint:
-    case WMTPixelFormatRGBA16Snorm:
-    case WMTPixelFormatRGBA16Uint:
-    case WMTPixelFormatRGBA16Unorm:
-    case WMTPixelFormatRGBA16Float:
-      return WMTPixelFormatRGBA16Float;
-    default:
-      break;
-    }
-    return WMTPixelFormatInvalid;
-  }
-
   void STDMETHODCALLTYPE TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D11_DESC *pDesc) final {
     Rc<Texture> input, output, depth, motion_vector, exposure;
     if (!(input = static_cast<D3D11ResourceCommon *>(pDesc->Color)->texture()))
@@ -6320,7 +6327,7 @@ public:
     if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
       return;
 
-    WMTPixelFormat motion_vector_format = GetCorrectMotionVectorFormat(motion_vector->pixelFormat());
+    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_vector->pixelFormat());
     if (motion_vector_format == WMTPixelFormatInvalid) {
       ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
       return;
@@ -6408,14 +6415,17 @@ public:
     ctx_->UseWrappedSubresource(pDesc->MotionVector, 0, false);
     if (pDesc->ExposureTexture)
       ctx_->UseWrappedSubresource(pDesc->ExposureTexture, 0, false);
+    // a content size of 0 is the color's (MTL_TEMPORAL_UPSCALE_D3D11_DESC), as Direct3D 12's upscale takes it
+    uint32_t content_width = pDesc->InputContentWidth ? pDesc->InputContentWidth : input->width();
+    uint32_t content_height = pDesc->InputContentHeight ? pDesc->InputContentHeight : input->height();
     ctx_->EmitOP([input = std::move(input), output = std::move(output),
                   depth = std::move(depth),
                   motion_vector = std::move(motion_vector),
                   exposure = std::move(exposure), scaler = std::move(scaler),
                   props =
                       WMTFXTemporalScalerProps{
-                          pDesc->InputContentWidth,
-                          pDesc->InputContentHeight,
+                          content_width,
+                          content_height,
                           (bool)pDesc->InReset,
                           (bool)pDesc->DepthReversed,
                           pDesc->MotionVectorScaleX,
