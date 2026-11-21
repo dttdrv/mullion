@@ -1,4 +1,5 @@
-// Ignored pixel inputs must add neither a function argument nor a register initializer.
+// Ignored pixel inputs must add neither a function argument nor a register initializer, and still count their
+// register: the shader may read it, from the input array that count sizes.
 #include "dxbc_converter.hpp"
 #include <cstdio>
 
@@ -24,7 +25,7 @@ main() {
 
       unsigned expected = name == supported;
       if (shader.signature_handlers.size() != expected || shader.func_signature.InputCount() != expected ||
-          shader.max_input_register != 8 * expected) {
+          shader.max_input_register != 8) {
         printf("wrong: opcode %u, system value %u: handlers=%zu inputs=%u registers=%u\n",
                unsigned(opcode), unsigned(name), shader.signature_handlers.size(),
                unsigned(shader.func_signature.InputCount()), unsigned(shader.max_input_register));
