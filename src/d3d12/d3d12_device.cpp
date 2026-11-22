@@ -1000,7 +1000,9 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
-      out->HighestShaderModel = std::min(out->HighestShaderModel, D3D_SHADER_MODEL_6_7);
+      // shader model 6.8: wave size ranges, SampleCmpBias and SampleCmpGrad, SV_StartVertexLocation and
+      // SV_StartInstanceLocation, and Barrier of separate memory and semantics (work graphs are optional and absent)
+      out->HighestShaderModel = std::min(out->HighestShaderModel, D3D_SHADER_MODEL(0x68));
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS: {
@@ -1336,9 +1338,10 @@ public:
     case sdk::D3D12_FEATURE_D3D12_OPTIONS21: {
       if (DataSize != sizeof(sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS21))
         return FAIL(E_INVALIDARG);
-      // no work graphs, and command signatures have tier 1.0's arguments (no incrementing constant)
+      // no work graphs, and command signatures have tier 1.0's arguments (no incrementing constant); shader model
+      // 6.8's comparison sampling at a bias or gradient, and its start vertex and instance locations
       *reinterpret_cast<sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS21 *>(pFeatureData) = {
-          0, sdk::D3D12_EXECUTE_INDIRECT_TIER_1_0, FALSE, FALSE
+          0, sdk::D3D12_EXECUTE_INDIRECT_TIER_1_0, TRUE, TRUE
       };
       return S_OK;
     }

@@ -380,13 +380,13 @@ main(int argc, char **argv) {
                E_INVALIDARG,
            "options 20 accepts size %u", size);
   // tier 1.0 is ExecuteIndirect's base, which the feature levels Mullion reports require; Mullion has no work graphs,
-  // nor tier 1.1's incrementing constant, nor the two capabilities
+  // nor tier 1.1's incrementing constant, and has shader model 6.8's two capabilities (d3d12_sm68)
   step("options 21");
   reference::D3D12_FEATURE_DATA_D3D12_OPTIONS21 options21{~0u, ~0u, ~0, ~0};
   expect(device->CheckFeatureSupport(D3D12_FEATURE(reference::D3D12_FEATURE_D3D12_OPTIONS21), &options21,
                                      sizeof(options21)) == S_OK &&
              options21.WorkGraphsTier == 0 && options21.ExecuteIndirectTier == 10 &&
-             !options21.SampleCmpGradientAndBiasSupported && !options21.ExtendedCommandInfoSupported,
+             options21.SampleCmpGradientAndBiasSupported && options21.ExtendedCommandInfoSupported,
          "options 21: work graphs %u, ExecuteIndirect tier %u, %u, %u", options21.WorkGraphsTier,
          options21.ExecuteIndirectTier, options21.SampleCmpGradientAndBiasSupported,
          options21.ExtendedCommandInfoSupported);
