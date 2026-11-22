@@ -1,4 +1,5 @@
 #include <mutex>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include "llvm/IR/Constants.h"
@@ -171,6 +172,142 @@ AvoidConstantDividends(llvm::Module &M) {
   }
 }
 
+// a varying as the stages link registers (dxbc::varying_name): reg<register>_<component>
+static bool
+IsRegisterVarying(const MDNode *Output) {
+  for (unsigned i = 0; Output && i + 1 < Output->getNumOperands(); i++)
+    if (auto Key = dyn_cast_or_null<MDString>(Output->getOperand(i).get()); Key && Key->getString() == "air.arg_name") {
+      auto Name = dyn_cast_or_null<MDString>(Output->getOperand(i + 1).get());
+      if (!Name)
+        return false;
+      StringRef Rest = Name->getString(), Reg, Component;
+      if (!Rest.consume_front("reg"))
+        return false;
+      std::tie(Reg, Component) = Rest.split('_');
+      return !Reg.empty() && !Component.empty() && Reg.find_first_not_of("0123456789") == StringRef::npos &&
+             Component.find_first_not_of("0123456789") == StringRef::npos;
+    }
+  return false;
+}
+
+// the indices of a mesh function's vertex or primitive data (`Kind`: air.mesh_vertex_data, air.mesh_primitive_data)
+// that are register varyings
+static void
+MeshRegisterVaryings(const MDNode *Node, StringRef Kind, std::set<uint64_t> &Indices, unsigned Depth = 0) {
+  if (!Node || Depth > 8)
+    return;
+  if (Node->getNumOperands() > 1)
+    if (auto Name = dyn_cast_or_null<MDString>(Node->getOperand(0).get()); Name && Name->getString() == Kind) {
+      if (auto Index = mdconst::dyn_extract_or_null<ConstantInt>(Node->getOperand(1)); Index && IsRegisterVarying(Node))
+        Indices.insert(Index->getZExtValue());
+      return;
+    }
+  for (auto &Operand : Node->operands())
+    MeshRegisterVaryings(dyn_cast_or_null<MDNode>(Operand.get()), Kind, Indices, Depth + 1);
+}
+
+// Direct3D draws a depth prepass and the pass after it with different shaders that compute the position with the same
+// expression, and expects the same depths (an EQUAL depth test), and the clip and cull distances to agree with it:
+// the front ends keep each operation of a stage before the rasterizer as written for that (Converter::UseFastMath,
+// read_dxil), and so Metal contracts none of them. what nothing of that depends on may: in each vertex and mesh
+// function, an operation the front end left free (it has afn, as every one that was not precise does) on which no
+// output but a register varying (dxbc::varying_name) and no branch depends gets contract, reassoc and arcp, as a
+// pixel shader's operations have. what the position depends on stays as written, so any two shaders that compute it
+// the same way still give the same: a value it takes from memory that the function also writes could depend on
+// anything, so such a function stays as it is. object and kernel functions, a later stage's inputs, stay as written.
+// MULLION_AIRCONV_SKIP=position-contraction keeps every operation of those stages as written
+static void
+ContractOutsidePosition(llvm::Module &M) {
+  if (auto skip = getenv("MULLION_AIRCONV_SKIP"); skip && strstr(skip, "position-contraction"))
+    return;
+  for (auto Kind : {"air.vertex", "air.mesh"}) {
+    auto Functions = M.getNamedMetadata(Kind);
+    for (unsigned f = 0; Functions && f < Functions->getNumOperands(); f++) {
+      auto Node = Functions->getOperand(f);
+      auto F = Node->getNumOperands() ? mdconst::dyn_extract_or_null<Function>(Node->getOperand(0)) : nullptr;
+      if (!F || F->isDeclaration())
+        continue;
+      bool Vertex = Kind == StringRef("air.vertex");
+      // a vertex function's outputs are its return value's fields, in its first list's order
+      std::set<unsigned> FreeFields;
+      auto Outputs = Vertex && Node->getNumOperands() > 1 ? dyn_cast_or_null<MDNode>(Node->getOperand(1).get()) : nullptr;
+      for (unsigned i = 0; Outputs && i < Outputs->getNumOperands(); i++)
+        if (auto Output = dyn_cast_or_null<MDNode>(Outputs->getOperand(i).get()); Output && Output->getNumOperands() &&
+            isa<MDString>(Output->getOperand(0)) && cast<MDString>(Output->getOperand(0))->getString() == "air.vertex_output" &&
+            IsRegisterVarying(Output))
+          FreeFields.insert(i);
+      std::set<uint64_t> FreeVertexData, FreePrimitiveData;
+      MeshRegisterVaryings(Node, "air.mesh_vertex_data", FreeVertexData);
+      MeshRegisterVaryings(Node, "air.mesh_primitive_data", FreePrimitiveData);
+
+      SmallVector<Value *, 32> Roots;
+      bool Writes = false;
+      for (auto &I : instructions(*F)) {
+        if (auto Branch = dyn_cast<BranchInst>(&I); Branch && Branch->isConditional())
+          Roots.push_back(Branch->getCondition());
+        else if (auto Switch = dyn_cast<SwitchInst>(&I))
+          Roots.push_back(Switch->getCondition());
+        else if (auto Return = dyn_cast<ReturnInst>(&I); Return && Return->getReturnValue()) {
+          // each field the last insertvalue into it gives, of a whole struct an earlier one is not seen through
+          Value *Aggregate = Return->getReturnValue();
+          std::set<unsigned> Given;
+          while (auto Insert = dyn_cast<InsertValueInst>(Aggregate)) {
+            unsigned Field = Insert->getIndices()[0];
+            if (!Given.count(Field) && !FreeFields.count(Field))
+              Roots.push_back(Insert->getInsertedValueOperand());
+            if (Insert->getNumIndices() == 1)
+              Given.insert(Field);
+            Aggregate = Insert->getAggregateOperand();
+          }
+          Roots.push_back(Aggregate);
+        } else if (auto Call = dyn_cast<CallInst>(&I)) {
+          auto Callee = Call->getCalledFunction();
+          auto Name = Callee ? Callee->getName() : StringRef();
+          if (Name.startswith("air.set_") && Name.contains("_mesh")) {
+            auto Index = Call->arg_size() > 1 ? dyn_cast<ConstantInt>(Call->getArgOperand(1)) : nullptr;
+            bool Free = Index && ((Name.startswith("air.set_vertex_data_mesh") && FreeVertexData.count(Index->getZExtValue())) ||
+                                  (Name.startswith("air.set_primitive_data_mesh") &&
+                                   FreePrimitiveData.count(Index->getZExtValue())));
+            if (!Free)
+              for (auto &Arg : Call->args())
+                Roots.push_back(Arg);
+            continue;
+          }
+          Writes |= Call->mayWriteToMemory();
+        } else {
+          Writes |= I.mayWriteToMemory();
+        }
+      }
+
+      SmallPtrSet<Instruction *, 32> Slice;
+      SmallVector<Instruction *, 64> Work;
+      auto Add = [&](Value *V) {
+        if (auto I = dyn_cast<Instruction>(V); I && Slice.insert(I).second)
+          Work.push_back(I);
+      };
+      for (auto Root : Roots)
+        Add(Root);
+      bool Reads = false;
+      while (!Work.empty()) {
+        auto I = Work.pop_back_val();
+        // the constant address space is read only
+        auto Load = dyn_cast<LoadInst>(I);
+        Reads |= I->mayReadFromMemory() && !(Load && Load->getPointerAddressSpace() == 2);
+        for (auto &Operand : I->operands())
+          Add(Operand);
+      }
+      if (Reads && Writes)
+        continue;
+      for (auto &I : instructions(*F))
+        if (isa<FPMathOperator>(&I) && !isa<FCmpInst>(&I) && I.hasApproxFunc() && !Slice.count(&I)) {
+          I.setHasAllowContract(true);
+          I.setHasAllowReassoc(true);
+          I.setHasAllowReciprocal(true);
+        }
+    }
+  }
+}
+
 bool
 runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
   // a pixel shader that was not shaded coarsely keeps every lane's writes
@@ -291,6 +428,7 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
 
   // Optimize the IR!
   MPM.run(M, MAM);
+  ContractOutsidePosition(M);
   AvoidNarrowedSignBitCounts(M);
   AvoidConstantDividends(M);
   return true;
