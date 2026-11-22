@@ -324,9 +324,7 @@
   "verdict": "passed"
  },
  "test_negative_viewports": {
-  "verdict": "failed",
-  "failed": 4,
-  "first": "d3d11.c:29083: Test failed: Feature level 0xa100: Got 0xffffffff, expected 0xff00ff00 at (639, 479, 0), sub-resource 0."
+  "verdict": "passed"
  },
  "test_null_sampler": {
   "verdict": "passed"
