@@ -2095,6 +2095,15 @@ temporal_scaler_motion(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTe
   return !info->jittered_motion_vectors;
 }
 
+// a mask of how much each pixel takes of its current color, where the info has one (macOS 14.4)
+static void
+temporal_scaler_reactive(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTemporalScalerInfo *info) {
+  if (info->reactive_mask_format == WMTPixelFormatInvalid)
+    return;
+  desc.reactiveMaskTextureEnabled = YES;
+  desc.reactiveMaskTextureFormat = to_metal_pixel_format(info->reactive_mask_format);
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newTemporalScaler)(void *obj) {
   struct unixcall_mtldevice_newfxtemporalscaler *params = obj;
@@ -2122,6 +2131,7 @@ CREATES(_MTLDevice_newTemporalScaler)(void *obj) {
   }
   #endif
   desc.autoExposureEnabled = info->auto_exposure;
+  temporal_scaler_reactive(desc, info);
 
   struct sigaction old_action[sizeof(SIGNALS) / sizeof(int)], new_action;
   if (@available(macOS 16, *)) {} else {
@@ -2173,6 +2183,8 @@ temporal_scaler_offsets(id object, const struct WMTFXTemporalScalerProps *props)
     scaler.depthContentOffsetY = props->depth_offset_y;
     scaler.motionContentOffsetX = props->motion_offset_x;
     scaler.motionContentOffsetY = props->motion_offset_y;
+    scaler.reactiveMaskContentOffsetX = props->reactive_offset_x;
+    scaler.reactiveMaskContentOffsetY = props->reactive_offset_y;
   }
 #endif
 }
@@ -2187,6 +2199,7 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   scaler.depthTexture = (id<MTLTexture>)params->depth;
   scaler.motionTexture = (id<MTLTexture>)params->motion;
   scaler.exposureTexture = (id<MTLTexture>)params->exposure;
+  scaler.reactiveMaskTexture = (id<MTLTexture>)params->reactive;
   scaler.fence = (id<MTLFence>)params->fence;
   const struct WMTFXTemporalScalerProps *props = params->props.ptr;
   scaler.inputContentWidth = props->input_content_width;
@@ -2285,6 +2298,7 @@ CREATES(_MTLDevice_newTemporalScaler4)(void *obj) {
     desc.inputContentPropertiesEnabled = info->input_content_properties_enabled;
     desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
     desc.autoExposureEnabled = info->auto_exposure;
+    temporal_scaler_reactive(desc, info);
     if (temporal_scaler_motion(desc, info))
       params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
     [desc release];
@@ -6520,11 +6534,13 @@ _MTL4CommandBuffer_encodeTemporalScale(void *obj) {
     metal4_resident(state, (id<MTLTexture>)params->depth);
     metal4_resident(state, (id<MTLTexture>)params->motion);
     metal4_resident(state, (id<MTLTexture>)params->exposure);
+    metal4_resident(state, (id<MTLTexture>)params->reactive);
     scaler.colorTexture = (id<MTLTexture>)params->color;
     scaler.outputTexture = (id<MTLTexture>)params->output;
     scaler.depthTexture = (id<MTLTexture>)params->depth;
     scaler.motionTexture = (id<MTLTexture>)params->motion;
     scaler.exposureTexture = (id<MTLTexture>)params->exposure;
+    scaler.reactiveMaskTexture = (id<MTLTexture>)params->reactive;
     scaler.fence = (id<MTLFence>)params->fence;
     scaler.inputContentWidth = props->input_content_width;
     scaler.inputContentHeight = props->input_content_height;

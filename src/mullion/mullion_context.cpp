@@ -1610,7 +1610,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       begin_scaler.endEncoding();
 
       cmdbuf.encodeTemporalScale(
-          data->scaler->scaler(), data->input, data->output, data->depth, data->motion_vector, data->exposure,
+          data->scaler->scaler(), data->input, data->output, data->depth, data->motion_vector, data->exposure, {},
           data->scaler->fence(), data->props
       );
 
