@@ -52,6 +52,12 @@ test('host_dxil_header',
      executable('host_dxil_header', 'dxil_header.cpp', dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 120)
+test('host_position_invariance',
+     executable('host_position_invariance', 'position_invariance.cpp',
+                include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
 test('host_metallib_header',
      executable('host_metallib_header', 'metallib_header.cpp', include_directories : llvm_include_path_darwin,
                 dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
