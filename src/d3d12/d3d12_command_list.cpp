@@ -1170,7 +1170,7 @@ public:
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false, bool Native = false) {
     TakeFuller();
-    if (!pso_graphics_)
+    if (!pso_graphics_ || pso_graphics_->failed)
       return DrawCallStatus::Invalid;
     // Metal's tessellator binds the domain shader's stage as a vertex stage, the mesh pipeline as a mesh stage
     if (Native != native_bound_) {
