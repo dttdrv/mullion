@@ -92,3 +92,10 @@ foreach t : [['d3d12_sdk_configuration', []], ['d3d12_metal4_passes', []], ['d3d
     endif
   endforeach
 endforeach
+# DLSS's statistics, against what MetalFX's scaler of a feature's sizes takes, through Mullion's NGX core where the
+# build has it, which loads with NVEXT on only
+if get_option('enable_nvngx')
+  exe = executable('d3d12_ngx_stats', ['d3d12_ngx_stats.cpp'], dependencies: d3d12_test_deps,
+                   include_directories: include_directories('../../src/util'))
+  test('d3d12_ngx_stats', exe, env: ['MULLION_ENABLE_NVEXT=1'], timeout: 600)
+endif
