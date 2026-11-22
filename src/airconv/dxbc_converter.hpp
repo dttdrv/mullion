@@ -112,8 +112,8 @@ public:
   bool use_samplepos = false;
   // a compute shader whose quads (SM 6.6) are 2x2 blocks of its thread IDs, not four consecutive threads
   bool quads_2d = false;
-  // the wave size a shader requires ([WaveSize], SM 6.6), or 0
-  uint32_t wave_size = 0;
+  // the wave sizes a shader runs with ([WaveSize(min, max)], SM 6.6 and 6.8: one size where max is min), or 0
+  uint32_t wave_size = 0, wave_size_max = 0;
   std::vector<PhaseInfo> phases;
   uint32_t pull_mode_reg_mask = 0;
   // the input registers a pixel shader also reads at each vertex of the primitive (DXIL's AttributeAtVertex)
