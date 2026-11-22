@@ -2159,6 +2159,24 @@ CREATES(_MTLDevice_newSpatialScaler)(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// where each input's content starts in its texture, where MetalFX takes it (macOS 27)
+static void
+temporal_scaler_offsets(id object, const struct WMTFXTemporalScalerProps *props) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *)) {
+    id<MTLFXTemporalScalerBase> scaler = object;
+    if (![scaler respondsToSelector:@selector(setColorContentOffsetX:)])
+      return;
+    scaler.colorContentOffsetX = props->color_offset_x;
+    scaler.colorContentOffsetY = props->color_offset_y;
+    scaler.depthContentOffsetX = props->depth_offset_x;
+    scaler.depthContentOffsetY = props->depth_offset_y;
+    scaler.motionContentOffsetX = props->motion_offset_x;
+    scaler.motionContentOffsetY = props->motion_offset_y;
+  }
+#endif
+}
+
 static NTSTATUS
 _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   struct unixcall_mtlcommandbuffer_temporal_scale *params = obj;
@@ -2180,6 +2198,7 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   scaler.jitterOffsetX = props->jitter_offset_x;
   scaler.jitterOffsetY = props->jitter_offset_y;
   scaler.preExposure = props->pre_exposure;
+  temporal_scaler_offsets(scaler, props);
   [scaler encodeToCommandBuffer:cmdbuf];
   return STATUS_SUCCESS;
 }
@@ -2447,6 +2466,11 @@ _MTLDevice_temporalScalerSupport(void *obj) {
     params->support.input_content_max_scale =
         [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
   }
+  params->support.content_offsets = false;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *))
+    params->support.content_offsets = true;
+#endif
   return STATUS_SUCCESS;
 }
 
@@ -6511,6 +6535,7 @@ _MTL4CommandBuffer_encodeTemporalScale(void *obj) {
     scaler.jitterOffsetX = props->jitter_offset_x;
     scaler.jitterOffsetY = props->jitter_offset_y;
     scaler.preExposure = props->pre_exposure;
+    temporal_scaler_offsets(scaler, props);
     [scaler encodeToCommandBuffer:state->buffer];
   }
   return STATUS_SUCCESS;

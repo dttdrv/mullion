@@ -1897,6 +1897,14 @@ struct WMTFXTemporalScalerProps {
   float jitter_offset_x;
   float jitter_offset_y;
   float pre_exposure;
+  // where each input's content starts in its texture (MTLFXTemporalScalerBase colorContentOffsetX..., macOS 27): 0
+  // where MetalFX lacks them (WMTFXTemporalScalerSupport.content_offsets), which reads each from its texture's corner
+  uint32_t color_offset_x;
+  uint32_t color_offset_y;
+  uint32_t depth_offset_x;
+  uint32_t depth_offset_y;
+  uint32_t motion_offset_x;
+  uint32_t motion_offset_y;
 };
 
 WINEMETAL_API void MTLCommandBuffer_encodeTemporalScale(
@@ -2004,6 +2012,8 @@ WINEMETAL_API bool MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool 
 struct WMTFXTemporalScalerSupport {
   float input_content_min_scale;
   float input_content_max_scale;
+  /* the inputs' content can start anywhere in their textures (WMTFXTemporalScalerProps color_offset_x..., macOS 27) */
+  bool content_offsets;
 };
 
 WINEMETAL_API void MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support);

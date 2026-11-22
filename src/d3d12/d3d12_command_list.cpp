@@ -5707,7 +5707,15 @@ public:
     Rc<DenoisedScaler> denoised;
     // display-resolution motion vectors brought to the input resolution (DownscaleMotion)
     WMT::Reference<WMT::Texture> motion;
+    // MetalFX reads each input's content where it starts in its texture (WMTFXTemporalScalerSupport)
+    bool content_offsets = false;
   };
+
+  // where content of `size` texels that starts at `offset` starts in a texture of `extent`: as far in as it fits
+  static uint32_t
+  ContentOffset(uint32_t offset, uint32_t size, uint32_t extent) {
+    return size >= extent ? 0 : std::min(offset, extent - size);
+  }
 
   // MetalFX reads motion vectors at the input resolution, in its pixels: those DLSS was given at the output resolution
   // (MotionVectorInDisplayRes) are read at each input pixel's place, scaled to pixels by `scale` and then to the input
@@ -5878,6 +5886,7 @@ public:
       auto support = device_->GetMTLDevice().temporalScalerSupport();
       info.input_content_min_scale = support.input_content_min_scale;
       info.input_content_max_scale = support.input_content_max_scale;
+      cache->content_offsets = support.content_offsets;
       info.auto_exposure = pDesc->AutoExposure;
       info.input_content_properties_enabled = true;
       // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
@@ -5946,9 +5955,24 @@ public:
     pass->motion = motion_pass ? WMT::Texture(cache->motion) : UpscaleView(motion, motion_format);
     pass->exposure =
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
+    // the content, which takes the rest of the color's texture from where it starts where no size is given, and where
+    // each input's starts: within its texture, and in the motion vectors brought to the input resolution where they
+    // are
+    uint32_t content_width = pDesc->InputContentWidth
+                                 ? pDesc->InputContentWidth
+                                 : color->width() - std::min(pDesc->ColorOffsetX, color->width() - 1),
+             content_height = pDesc->InputContentHeight
+                                  ? pDesc->InputContentHeight
+                                  : color->height() - std::min(pDesc->ColorOffsetY, color->height() - 1);
+    uint32_t motion_x = pDesc->MotionVectorOffsetX, motion_y = pDesc->MotionVectorOffsetY;
+    if (display_motion) {
+      motion_x = uint64_t(motion_x) * color->width() / motion->width();
+      motion_y = uint64_t(motion_y) * color->height() / motion->height();
+    }
+    const auto *motion_read = display_motion ? color : motion;
     pass->props = WMTFXTemporalScalerProps{
-        pDesc->InputContentWidth ? pDesc->InputContentWidth : color->width(),
-        pDesc->InputContentHeight ? pDesc->InputContentHeight : color->height(),
+        content_width,
+        content_height,
         bool(pDesc->InReset),
         bool(pDesc->DepthReversed),
         motion_pass ? 1.0f : pDesc->MotionVectorScaleX,
@@ -5956,7 +5980,20 @@ public:
         pDesc->JitterOffsetX,
         pDesc->JitterOffsetY,
         pDesc->PreExposure,
+        ContentOffset(pDesc->ColorOffsetX, content_width, color->width()),
+        ContentOffset(pDesc->ColorOffsetY, content_height, color->height()),
+        ContentOffset(pDesc->DepthOffsetX, content_width, depth->width()),
+        ContentOffset(pDesc->DepthOffsetY, content_height, depth->height()),
+        ContentOffset(motion_x, content_width, motion_read->width()),
+        ContentOffset(motion_y, content_height, motion_read->height()),
     };
+    auto &props = pass->props;
+    if (!cache->content_offsets && (props.color_offset_x || props.color_offset_y || props.depth_offset_x ||
+                                    props.depth_offset_y || props.motion_offset_x || props.motion_offset_y)) {
+      static std::atomic_flag warned;
+      if (!warned.test_and_set())
+        WARN("MetalFX: this macOS reads each input's content from its texture's corner, not where it starts");
+    }
     return S_OK;
   }
 
