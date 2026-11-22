@@ -53,6 +53,20 @@ get_vertex_primitive_count_in_warp(D3D10_SB_PRIMITIVE primitive, bool strip, uin
   return {warp.vertices, warp.primitives, per_primitive};
 }
 
+uint32_t
+geometry_mesh_invocations(const SM50ShaderInternal *pShaderInternal) {
+  return 1;
+}
+
+uint32_t
+geometry_mesh_invocations(const SM50ShaderInternal *pShaderInternal, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs) {
+  SM50_SHADER_PSO_GEOMETRY_SHADER_DATA *pso_data = nullptr;
+  args_get_data<SM50_SHADER_PSO_GEOMETRY_SHADER, SM50_SHADER_PSO_GEOMETRY_SHADER_DATA>(pArgs, &pso_data);
+  SM50_SHADER_STREAM_OUTPUT_DATA *so = nullptr;
+  args_get_data<SM50_SHADER_STREAM_OUTPUT, SM50_SHADER_STREAM_OUTPUT_DATA>(pArgs, &so);
+  return SM50GeometryMeshInvocations(geometry_mesh_invocations(pShaderInternal), pso_data && pso_data->conservative, so);
+}
+
 std::optional<std::array<uint32_t, 4>>
 fixed_stream_primitives(const SM50ShaderInternal *pShaderInternal) {
   uint32_t per_primitive = pShaderInternal->gs_output_topology == D3D10_SB_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP ? 3
@@ -3251,7 +3265,10 @@ convert_dxbc_vertex_for_geometry_shader(
       strip_offset, builder.CreateConstInBoundsGEP1_32(types._int, payload, payload_strip_offset(max_output_register))
   );
 
-  air.CreateSetMeshProperties(air.getInt3(gs_instances ? warp_primitive_count : 0, gs_instances, 1));
+  // a mesh threadgroup takes as many of the primitives as it runs invocations (geometry_mesh_invocations)
+  uint32_t mesh_invocations = pGeometryStage ? geometry_mesh_invocations(pGeometryStage, pArgs) : 1;
+  uint32_t mesh_threadgroups = (warp_primitive_count + mesh_invocations - 1) / mesh_invocations;
+  air.CreateSetMeshProperties(air.getInt3(gs_instances ? mesh_threadgroups : 0, gs_instances, 1));
 
   builder.CreateBr(return_);
 

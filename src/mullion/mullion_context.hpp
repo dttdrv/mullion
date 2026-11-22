@@ -250,6 +250,8 @@ struct RenderEncoderData : EncoderData {
   uint32_t so_geometry_instances = 1;
   // the bound geometry pipeline's mesh threadgroups per object threadgroup and primitive (MeshInstances)
   uint32_t geometry_mesh_instances = 0;
+  // and the geometry shader invocations each of them runs (MeshInvocations)
+  uint32_t geometry_mesh_invocations = 1;
   WMT::Buffer so_targets = {};
   // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
   WMT::Buffer so_scratch = {};

@@ -1244,13 +1244,13 @@ draw_geometry_parts(id<MTLRenderCommandEncoder> encoder, uint32_t warps, uint32_
  * grids from `grids` on, 12 bytes apart, origins (SM50_BINDING_INDEX_DRAW_ORIGIN) from `origins` on, 8 bytes apart */
 static void
 draw_geometry_indirect_parts(id<MTLRenderCommandEncoder> encoder, id<MTLBuffer> args, uint64_t grids, uint64_t origins,
-                             uint32_t parts, uint32_t threads) {
+                             uint32_t parts, uint32_t threads, uint32_t mesh_threads) {
   for (uint32_t i = 0; i < parts; i++) {
     [encoder setObjectBuffer:args offset:origins + 8 * i atIndex:SM50_BINDING_INDEX_DRAW_ORIGIN];
     [encoder drawMeshThreadgroupsWithIndirectBuffer:args
                                indirectBufferOffset:grids + 12 * i
                         threadsPerObjectThreadgroup:MTLSizeMake(threads, 1, 1)
-                          threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
+                          threadsPerMeshThreadgroup:MTLSizeMake(mesh_threads ? mesh_threads : 1, 1, 1)];
   }
 }
 
@@ -1531,7 +1531,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                         offset:body->indirect_args_offset
                        atIndex:SM50_BINDING_INDEX_INDIRECT_ARGUMENTS];
       draw_geometry_indirect_parts(encoder, (id<MTLBuffer>)body->dispatch_args_buffer, body->dispatch_args_offset,
-                                   body->origins_offset, body->parts, body->vertex_per_warp);
+                                   body->origins_offset, body->parts, body->vertex_per_warp, body->mesh_threads);
       [encoder setObjectBuffer:(id<MTLBuffer>)body->imm_draw_arguments
                         offset:0
                        atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
@@ -1547,7 +1547,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
                         offset:body->indirect_args_offset
                        atIndex:SM50_BINDING_INDEX_INDIRECT_ARGUMENTS];
       draw_geometry_indirect_parts(encoder, (id<MTLBuffer>)body->dispatch_args_buffer, body->dispatch_args_offset,
-                                   body->origins_offset, body->parts, body->vertex_per_warp);
+                                   body->origins_offset, body->parts, body->vertex_per_warp, body->mesh_threads);
       [encoder setObjectBuffer:(id<MTLBuffer>)body->imm_draw_arguments
                         offset:0
                        atIndex:SM50_BINDING_INDEX_DRAW_ARGUMENTS];
@@ -6590,14 +6590,15 @@ API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
  * grids from `grids` on, 12 bytes apart, origins (SM50_BINDING_INDEX_DRAW_ORIGIN) from `origins` on, 8 bytes apart */
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_indirect_parts(
-    MullionMetal4Encoder *state, id<MTLBuffer> args, uint64_t grids, uint64_t origins, uint32_t parts, uint32_t threads
+    MullionMetal4Encoder *state, id<MTLBuffer> args, uint64_t grids, uint64_t origins, uint32_t parts, uint32_t threads,
+    uint32_t mesh_threads
 ) {
   id<MTL4RenderCommandEncoder> encoder = (id<MTL4RenderCommandEncoder>)state->encoder;
   for (uint32_t i = 0; i < parts; i++) {
     metal4_buffer(state, Metal4ObjectBinding, (obj_handle_t)args, origins + 8 * i, SM50_BINDING_INDEX_DRAW_ORIGIN);
     [encoder drawMeshThreadgroupsWithIndirectBuffer:metal4_address(state->owner, (obj_handle_t)args) + grids + 12 * i
                         threadsPerObjectThreadgroup:MTLSizeMake(threads, 1, 1)
-                          threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
+                          threadsPerMeshThreadgroup:MTLSizeMake(mesh_threads ? mesh_threads : 1, 1, 1)];
   }
 }
 
@@ -6857,7 +6858,7 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
       );
       metal4_draw_geometry_indirect_parts(
           state, (id<MTLBuffer>)body->dispatch_args_buffer, body->dispatch_args_offset, body->origins_offset,
-          body->parts, body->vertex_per_warp
+          body->parts, body->vertex_per_warp, body->mesh_threads
       );
       metal4_buffer(state, Metal4ObjectBinding, body->imm_draw_arguments, 0, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       break;
@@ -6874,7 +6875,7 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
       );
       metal4_draw_geometry_indirect_parts(
           state, (id<MTLBuffer>)body->dispatch_args_buffer, body->dispatch_args_offset, body->origins_offset,
-          body->parts, body->vertex_per_warp
+          body->parts, body->vertex_per_warp, body->mesh_threads
       );
       metal4_buffer(state, Metal4ObjectBinding, body->imm_draw_arguments, 0, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
       break;

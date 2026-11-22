@@ -1948,7 +1948,8 @@ public:
     auto parts = geometry_draw_parts(
         warps, Args.InstanceCount,
         get_gs_max_object_threadgroups(
-            topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull, device_->mesh_bytes_per_draw
+            topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull, device_->mesh_bytes_per_draw,
+            pso_graphics_->gs_mesh_invocations
         )
     );
     if (!parts)
@@ -1974,8 +1975,8 @@ public:
       cmd.instance_count = Args.InstanceCount;
       cmd.vertex_per_warp = vertex_per_warp;
       cmd.max_object_threadgroups = *parts;
-      // a conservative hull's points, a thread each
-      cmd.mesh_threads = pso_graphics_->conservative_hull ? SM50_CONSERVATIVE_HULL_POINTS : 1;
+      // a conservative hull's points, a thread each, or a geometry shader's invocations
+      cmd.mesh_threads = pso_graphics_->conservative_hull ? SM50_CONSERVATIVE_HULL_POINTS : pso_graphics_->gs_mesh_invocations;
     };
     if (!pso_graphics_->stream_output)
       return draw();
@@ -4372,7 +4373,7 @@ public:
       cmd->geometry_max_warps = std::min<uint64_t>(
           get_gs_max_object_threadgroups(
               topology_, pso_graphics_->vertex_registers, pso_graphics_->mesh_instances, -1ull,
-              device_->mesh_bytes_per_draw
+              device_->mesh_bytes_per_draw, pso_graphics_->gs_mesh_invocations
           ),
           UINT32_MAX
       );
@@ -4431,7 +4432,7 @@ public:
     auto draws = allocator_->ArgumentsAt(cmd->draws), roots = allocator_->ArgumentsAt(cmd->rootsig_qwords),
          samplers = allocator_->ArgumentsAt(cmd->static_samplers), vertices = allocator_->ArgumentsAt(cmd->vertex_buffer),
          counts = allocator_->ArgumentsAt(cmd->statistics), targets = allocator_->ArgumentsAt(cmd->so_targets);
-    WMTSize object{cmd->geometry_threads, 1, 1}, mesh{1, 1, 1};
+    WMTSize object{cmd->geometry_threads, 1, 1}, mesh{pso_graphics_->gs_mesh_invocations, 1, 1};
     // a mesh function alone takes the warps as mesh threadgroups, and what the object stage reads (MeshOnly)
     bool mesh_only = geometry && MeshOnly();
     auto stage = mesh_only ? WMTRenderCommandSetMeshBuffer : WMTRenderCommandSetObjectBuffer;

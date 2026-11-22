@@ -1665,6 +1665,8 @@ struct wmtcmd_render_mullion_geometry_draw_indirect {
   // object threadgroup and instance at origins_offset + 8 x its index in dispatch_args_buffer
   uint32_t parts;
   uint64_t origins_offset;
+  // the threads of each mesh threadgroup (0 or 1: one), a geometry shader invocation each
+  uint32_t mesh_threads;
 };
 
 struct wmtcmd_render_mullion_geometry_draw_indexed_indirect {
@@ -1683,6 +1685,8 @@ struct wmtcmd_render_mullion_geometry_draw_indexed_indirect {
   // object threadgroup and instance at origins_offset + 8 x its index in dispatch_args_buffer
   uint32_t parts;
   uint64_t origins_offset;
+  // the threads of each mesh threadgroup (0 or 1: one), a geometry shader invocation each
+  uint32_t mesh_threads;
 };
 
 struct wmtcmd_render_fence_op {
