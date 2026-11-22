@@ -12,7 +12,8 @@
 // the same image whether its motion is given at the input resolution or, as the same motion, at the output's.
 // motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
 // one color come out that color with them. the render sizes NGX's optimal settings give are ones MetalFX takes: the
-// output's size over each is within the scales MetalFX takes on the device
+// output's size over each is within the scales MetalFX takes on the device. content that starts inside its textures
+// (DLSS's Subrect.Base), one color there and another around it, comes out that one color
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <string>
 #include <vector>
 
 struct Texture {
@@ -138,7 +140,7 @@ main(int argc, char **argv) {
   // `square` texels and `b` between them (one color when `square` is 0), or in the one square of `moved`; the
   // output's texels, tightly
   auto upscaled = [&](const BYTE *a, const BYTE *b, UINT square, const std::function<bool()> &record,
-                      const Moved *moved = nullptr) {
+                      const Moved *moved = nullptr, const D3D12_RECT *content = nullptr) {
     std::vector<BYTE> texels;
     if (FAILED(forget(read_back.Get())) || FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr)))
       return texels;
@@ -158,6 +160,8 @@ main(int argc, char **argv) {
     };
     Clear clears[] = {{&color, fb.data(), fa.data(), squares}, {&depth, half}, {given, zero}, {&exposure, one},
                       {&display_motion, some}};
+    if (content)
+      clears[0].rects = {*content};
     if (moved) {
       const D3D12_RECT at{moved->x, moved->y, moved->x + moved->side, moved->y + moved->side};
       const LONG times = scale;
@@ -291,6 +295,34 @@ main(int argc, char **argv) {
   }
   if (jittered)
     jittered->Destroy();
+
+  // a frame whose content starts inside its textures (DLSS's Subrect.Base): the content is one color and the rest of
+  // the color texture another, so an upscale that reads the content from the texture's corner shows the other
+  const D3D12_RECT content{48, 24, 48 + 192, 24 + 108};
+  IMTLD3D12Upscaler *offset = nullptr;
+  for (BOOL reset : {TRUE, FALSE}) {
+    step("a %ldx%ld frame of one color at %ld,%ld in its textures, %s", content.right - content.left,
+         content.bottom - content.top, content.left, content.top, reset ? "in reset" : "not in reset");
+    auto record = [&] {
+      MTL_TEMPORAL_UPSCALE_D3D12_DESC desc{};
+      desc.InReset = reset;
+      desc.Color = color.resource.Get();
+      desc.Depth = depth.resource.Get();
+      desc.MotionVector = motion.resource.Get();
+      desc.ExposureTexture = exposure.resource.Get();
+      desc.Output = output.resource.Get();
+      desc.MotionVectorScaleX = desc.MotionVectorScaleY = desc.PreExposure = 1;
+      desc.InputContentWidth = content.right - content.left;
+      desc.InputContentHeight = content.bottom - content.top;
+      desc.ColorOffsetX = desc.DepthOffsetX = desc.MotionVectorOffsetX = content.left;
+      desc.ColorOffsetY = desc.DepthOffsetY = desc.MotionVectorOffsetY = content.top;
+      return SUCCEEDED(ext->TemporalUpscale(&desc, &offset));
+    };
+    if (!uniform(upscaled(frames[0], frames[1], 0, record, nullptr, &content), frames[0]))
+      return verdict();
+  }
+  if (offset)
+    offset->Destroy();
 
   // a light square on dark moves `by` input pixels between a frame in reset and the next. its motion at the output
   // resolution is `scale` times its motion at the input's, in every output pixel of the square: the same motion, so
@@ -447,6 +479,15 @@ main(int argc, char **argv) {
       uniform(upscaled(want, want, 0, [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; }),
               want);
     }
+    step("DLSS of a frame whose content starts inside its textures");
+    params->Set("DLSS.Render.Subrect.Dimensions.Width", unsigned(content.right - content.left));
+    params->Set("DLSS.Render.Subrect.Dimensions.Height", unsigned(content.bottom - content.top));
+    for (const char *input : {"Color.Subrect", "Depth.Subrect", "MV.Subrect"}) {
+      params->Set(("DLSS.Input." + std::string(input) + ".Base.X").c_str(), unsigned(content.left));
+      params->Set(("DLSS.Input." + std::string(input) + ".Base.Y").c_str(), unsigned(content.top));
+    }
+    auto run = [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; };
+    uniform(upscaled(frames[0], frames[1], 0, run, nullptr, &content), frames[0]);
     step("DLSS without depth");
     params->Set("Depth", (ID3D12Resource *)nullptr);
     expect(evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_INVALID_PARAMETER, "DLSS ran without depth");

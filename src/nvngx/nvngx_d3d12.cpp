@@ -292,6 +292,13 @@ NVSDK_NGX_D3D12_EvaluateFeature(
     }
     desc.InputContentWidth = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 0u);
     desc.InputContentHeight = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, 0u);
+    // where each input's content starts in its texture, the motion vectors' in their own pixels
+    desc.ColorOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
+    desc.ColorOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
+    desc.DepthOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
+    desc.DepthOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
+    desc.MotionVectorOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_MV_Subrect_Base_X, 0u);
+    desc.MotionVectorOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_MV_Subrect_Base_Y, 0u);
     desc.DepthReversed = bool(dlss->flag & NVNGX_DLSS_FLAG_DEPTH_INVERTED);
     desc.AutoExposure = bool(dlss->flag & NVNGX_DLSS_FLAG_AUTO_EXPOSURE);
     desc.MotionVectorInDisplayRes = !bool(dlss->flag & NVNGX_DLSS_FLAG_MV_LOWRES);
