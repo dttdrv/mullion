@@ -2699,7 +2699,9 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
                                       (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName, context, *pModule,
                                       pGeometryShaderArgs
                                   )
-                                : mullion::dxbc::convert_null_geometry_shader(FunctionName, context, *pModule, direct)) {
+                                : mullion::dxbc::convert_null_geometry_shader(
+                                      (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName, context, *pModule, direct
+                                  )) {
     errorOut << llvm::toString(std::move(err));
     *ppError = (sm50_error_t)errorObj.release();
     return 1;

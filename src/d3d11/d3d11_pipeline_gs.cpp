@@ -131,7 +131,7 @@ public:
 
     info.object_function = vs[0].Function;
     info.mesh_function = gs[0].Function;
-    info.payload_memory_length = SM50_GEOMETRY_PAYLOAD_SIZE;
+    info.payload_memory_length = SM50GeometryPayloadSize(description->VertexShader->reflection().NumOutputElement);
 
     info.immutable_object_buffers = (1 << 16)  | (1 << 21) | (1 << 29) | (1 << 30);
     info.immutable_mesh_buffers = (1 << 29) | (1 << 30);
