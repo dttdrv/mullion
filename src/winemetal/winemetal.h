@@ -1875,6 +1875,9 @@ struct WMTFXTemporalScalerInfo {
   // the format of a mask of how much each pixel takes of its current color over its history, from 0 to 1
   // (reactiveMaskTextureEnabled, reactiveMaskTextureFormat); WMTPixelFormatInvalid for none
   enum WMTPixelFormat reactive_mask_format;
+  // the motion vectors are at the output resolution (outputResolutionMotionVectorsEnabled, macOS 27): no scaler is
+  // made where MetalFX lacks it (WMTFXTemporalScalerSupport.output_resolution_motion_vectors)
+  bool output_resolution_motion_vectors;
 };
 
 struct WMTFXSpatialScalerInfo {
@@ -2021,6 +2024,8 @@ struct WMTFXTemporalScalerSupport {
   float input_content_max_scale;
   /* the inputs' content can start anywhere in their textures (WMTFXTemporalScalerProps color_offset_x..., macOS 27) */
   bool content_offsets;
+  /* the scaler reads motion vectors at the output resolution (WMTFXTemporalScalerInfo, macOS 27) */
+  bool output_resolution_motion_vectors;
 };
 
 WINEMETAL_API void MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support);

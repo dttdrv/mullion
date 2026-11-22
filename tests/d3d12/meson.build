@@ -39,6 +39,8 @@ exe = executable('d3d12_metalfx', ['d3d12_metalfx.cpp'], dependencies: d3d12_tes
 # and through Mullion's NGX core where the build has it, which loads with NVEXT on only
 test('d3d12_metalfx', exe, args: get_option('enable_nvngx') ? ['ngx'] : [],
      env: get_option('enable_nvngx') ? ['MULLION_ENABLE_NVEXT=1'] : [], timeout: 600)
+# with motion vectors at the output resolution brought to the input's by Mullion where MetalFX would read them
+test('d3d12_metalfx_downscaled', exe, args: ['downscaled'], timeout: 600)
 exe = executable('d3d12_trace_log', ['d3d12_trace_log.cpp'], dependencies: d3d12_test_deps + [cpp.find_library('d3d11')])
 test('d3d12_trace_log', exe, timeout: 600)
 exe = executable('d3d12_copy_memory', ['d3d12_copy_memory.cpp'], dependencies: d3d12_test_deps)

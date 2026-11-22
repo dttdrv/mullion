@@ -31,6 +31,7 @@
 #include "util_env.hpp"
 #include "d3d12_interfaces.hpp"
 #include "mullion_scaler.hpp"
+#include "config/config.hpp"
 
 namespace mullion {
 
@@ -5691,8 +5692,8 @@ public:
     Rc<DenoisedScaler> denoised;
     // display-resolution motion vectors brought to the input resolution (DownscaleMotion)
     WMT::Reference<WMT::Texture> motion;
-    // MetalFX reads each input's content where it starts in its texture (WMTFXTemporalScalerSupport)
-    bool content_offsets = false;
+    // what MetalFX's temporal scaler takes on the device, asked when the cache is made
+    WMTFXTemporalScalerSupport support{};
   };
 
   // where content of `size` texels that starts at `offset` starts in a texture of `extent`: as far in as it fits
@@ -5853,9 +5854,22 @@ public:
       ERR("TemporalUpscale: motion vectors of format ", motion->pixelFormat(), " are not supported");
       return E_INVALIDARG;
     }
-    // motion vectors at the output resolution are brought to the input's (DownscaleMotion), as 32-bit floats
-    bool display_motion = pDesc->MotionVectorInDisplayRes && device_->downscale_motion &&
-                          (motion->width() != color->width() || motion->height() != color->height());
+    auto cache = static_cast<UpscalerCache *>(*ppCache);
+    if (!cache) {
+      *ppCache = cache = new UpscalerCache;
+      cache->support = device_->GetMTLDevice().temporalScalerSupport();
+    }
+    // motion vectors at the output resolution are read there by MetalFX where it reads them so (macOS 27).
+    // elsewhere, or with the option
+    // metalfx.outputResolutionMotionVectors off, they are brought to the input's (DownscaleMotion), as 32-bit floats
+    static const bool output_motion =
+        Config::getInstance().getOption<bool>("metalfx.outputResolutionMotionVectors", true);
+    bool at_output = pDesc->MotionVectorInDisplayRes &&
+                     (motion->width() != color->width() || motion->height() != color->height());
+    bool native_motion = at_output && output_motion && cache->support.output_resolution_motion_vectors &&
+                         motion_format != WMTPixelFormatInvalid && motion->width() == output->width() &&
+                         motion->height() == output->height();
+    bool display_motion = at_output && !native_motion && device_->downscale_motion;
     bool motion_pass = display_motion || formatted;
     auto scaler_motion_format = motion_pass ? WMTPixelFormatRG32Float : motion_format;
     // the pass writes the input resolution's motion vectors, or as many as it reads where they are at it already
@@ -5880,9 +5894,6 @@ public:
       reactive = nullptr;
     }
     auto reactive_format = reactive ? ReactiveMaskFormat(reactive->pixelFormat()) : WMTPixelFormatInvalid;
-    auto cache = static_cast<UpscalerCache *>(*ppCache);
-    if (!cache)
-      *ppCache = cache = new UpscalerCache;
     std::array<uint32_t, 15> key{1,
                                  color->width(),
                                  color->height(),
@@ -5893,7 +5904,7 @@ public:
                                  uint32_t(depth_format),
                                  uint32_t(scaler_motion_format),
                                  uint32_t(!!pDesc->AutoExposure),
-                                 uint32_t(display_motion),
+                                 uint32_t(display_motion) | uint32_t(native_motion) << 1,
                                  uint32_t(!!pDesc->MotionVectorJittered),
                                  pass_width,
                                  pass_height,
@@ -5909,10 +5920,8 @@ public:
       info.output_width = output->width();
       info.output_height = output->height();
       // the scales MetalFX takes on the device, of which DLSS's optimal settings choose the render size (nvngx)
-      auto support = device_->GetMTLDevice().temporalScalerSupport();
-      info.input_content_min_scale = support.input_content_min_scale;
-      info.input_content_max_scale = support.input_content_max_scale;
-      cache->content_offsets = support.content_offsets;
+      info.input_content_min_scale = cache->support.input_content_min_scale;
+      info.input_content_max_scale = cache->support.input_content_max_scale;
       info.auto_exposure = pDesc->AutoExposure;
       info.input_content_properties_enabled = true;
       // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
@@ -5922,6 +5931,7 @@ public:
       // the pass that brings motion vectors to the input resolution writes them in pixels and leaves their jitter in
       info.jittered_motion_vectors = pDesc->MotionVectorJittered;
       info.reactive_mask_format = reactive_format;
+      info.output_resolution_motion_vectors = native_motion;
       cache->temporal = new TemporalScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
       if (!cache->temporal->scaler().handle) {
         cache->temporal = nullptr;
@@ -5954,6 +5964,7 @@ public:
           "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
           info.output_height, device_->UsesMetal4() ? " (Metal 4)" : "",
           display_motion ? ", motion vectors brought from the output resolution" : "",
+          native_motion ? ", motion vectors at the output resolution" : "",
           formatted ? str::format(", motion vectors read from format ", motion->pixelFormat()) : "",
           reactive ? ", with a reactive mask" : ""
       ));
@@ -5985,13 +5996,16 @@ public:
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
     pass->reactive = UpscaleView(reactive, reactive_format);
     // where each input's content starts: within its texture, and in the motion vectors brought to the input resolution
-    // where they are
+    // where they are. MetalFX reads motion vectors at the output resolution over the content's part of them
     uint32_t motion_x = pDesc->MotionVectorOffsetX, motion_y = pDesc->MotionVectorOffsetY;
     if (display_motion) {
       motion_x = uint64_t(motion_x) * color->width() / motion->width();
       motion_y = uint64_t(motion_y) * color->height() / motion->height();
     }
     const auto *motion_read = display_motion ? color : motion;
+    uint32_t motion_width = native_motion ? uint64_t(content_width) * motion->width() / color->width() : content_width,
+             motion_height =
+                 native_motion ? uint64_t(content_height) * motion->height() / color->height() : content_height;
     pass->props = WMTFXTemporalScalerProps{
         content_width,
         content_height,
@@ -6006,15 +6020,15 @@ public:
         ContentOffset(pDesc->ColorOffsetY, content_height, color->height()),
         ContentOffset(pDesc->DepthOffsetX, content_width, depth->width()),
         ContentOffset(pDesc->DepthOffsetY, content_height, depth->height()),
-        ContentOffset(motion_x, content_width, motion_read->width()),
-        ContentOffset(motion_y, content_height, motion_read->height()),
+        ContentOffset(motion_x, motion_width, motion_read->width()),
+        ContentOffset(motion_y, motion_height, motion_read->height()),
         reactive ? ContentOffset(pDesc->ReactiveMaskOffsetX, content_width, reactive->width()) : 0,
         reactive ? ContentOffset(pDesc->ReactiveMaskOffsetY, content_height, reactive->height()) : 0,
     };
     auto &props = pass->props;
-    if (!cache->content_offsets && (props.color_offset_x || props.color_offset_y || props.depth_offset_x ||
-                                    props.depth_offset_y || props.motion_offset_x || props.motion_offset_y ||
-                                    props.reactive_offset_x || props.reactive_offset_y)) {
+    if (!cache->support.content_offsets &&
+        (props.color_offset_x || props.color_offset_y || props.depth_offset_x || props.depth_offset_y ||
+         props.motion_offset_x || props.motion_offset_y || props.reactive_offset_x || props.reactive_offset_y)) {
       static std::atomic_flag warned;
       if (!warned.test_and_set())
         WARN("MetalFX: this macOS reads each input's content from its texture's corner, not where it starts");
