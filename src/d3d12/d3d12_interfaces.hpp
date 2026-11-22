@@ -32,6 +32,11 @@ struct MTL_TEMPORAL_UPSCALE_D3D12_DESC {
   UINT DepthOffsetY;
   UINT MotionVectorOffsetX;
   UINT MotionVectorOffsetY;
+  // optional: how much each pixel takes of its current color over its history, from 0 to 1, at the input resolution
+  // (DLSS's Bias.Current.Color.Mask), and where its content starts in it
+  ID3D12Resource *ReactiveMask;
+  UINT ReactiveMaskOffsetX;
+  UINT ReactiveMaskOffsetY;
 };
 
 // a ray-traced frame, upscaled and denoised from its G-buffer (MTLFXTemporalDenoisedScaler; DLSS Ray Reconstruction)
