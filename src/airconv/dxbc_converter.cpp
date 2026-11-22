@@ -1804,6 +1804,13 @@ static int SM50InitializeUncached(
     return 1;
   }
 
+  // a DXIL part is read only within its size
+  if (dxilBlobIdx != DXBC_BLOB_NOT_FOUND &&
+      !dxil_program_valid(DXBCParser.GetBlob(dxilBlobIdx), DXBCParser.GetBlobSize(dxilBlobIdx))) {
+    errorOut << "Invalid DXIL program header\0";
+    *ppError = (sm50_error_t)errorObj.release();
+    return 1;
+  }
   // DxilProgramHeader's version word has the shader's kind: a library has no signatures, only functions
   bool library = dxilBlobIdx != DXBC_BLOB_NOT_FOUND &&
                  *(const uint32_t *)DXBCParser.GetBlob(dxilBlobIdx) >> 16 == kShaderLibrary;
