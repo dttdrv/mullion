@@ -2089,10 +2089,15 @@ temporal_scaler_motion(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTe
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
   if (@available(macOS 27.0, *)) {
     desc.jitteredMotionVectorsEnabled = info->jittered_motion_vectors;
+    if (info->output_resolution_motion_vectors) {
+      if (![desc respondsToSelector:@selector(setOutputResolutionMotionVectorsEnabled:)])
+        return false;
+      desc.outputResolutionMotionVectorsEnabled = YES;
+    }
     return true;
   }
 #endif
-  return !info->jittered_motion_vectors;
+  return !info->jittered_motion_vectors && !info->output_resolution_motion_vectors;
 }
 
 // a mask of how much each pixel takes of its current color, where the info has one (macOS 14.4)
@@ -2480,10 +2485,14 @@ _MTLDevice_temporalScalerSupport(void *obj) {
     params->support.input_content_max_scale =
         [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
   }
-  params->support.content_offsets = false;
+  params->support.content_offsets = params->support.output_resolution_motion_vectors = false;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
-  if (@available(macOS 27.0, *))
+  if (@available(macOS 27.0, *)) {
     params->support.content_offsets = true;
+    // as D3DMetal asks (MetalFXFullResolutionMotionVectorsSupport)
+    params->support.output_resolution_motion_vectors =
+        [MTLFXTemporalScalerDescriptor instancesRespondToSelector:@selector(setOutputResolutionMotionVectorsEnabled:)];
+  }
 #endif
   return STATUS_SUCCESS;
 }
