@@ -969,7 +969,7 @@ protected:
     info.payload_memory_length = mesh_only ? 0
                                  : !counting && SM50StreamOutputDirect(single, !!GS.pShaderBytecode, pass_through)
                                      ? SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE
-                                     : SM50_GEOMETRY_PAYLOAD_SIZE;
+                                     : SM50GeometryPayloadSize(vertex_registers);
     // `later`: Metal's compile of it into `*target` on a compile thread (DeferredPipeline), as a plain pipeline's.
     // its functions are made here, where what is wrong with the shaders shows, and go with it
     if (later) {

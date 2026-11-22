@@ -143,13 +143,20 @@ stream_output_counts(llvm::IRBuilder<> &builder, pvalue groups) {
   );
   return builder.CreateAdd(stream_output_blocks(builder, groups), builder.CreateMul(blocks, builder.getInt32(4)));
 }
-// the last words of the payload: the primitives each stream wrote before the object threadgroup's, 64 bits each as
-// the counters they end in are (D3D11.3 14.5)
-constexpr uint32_t kPayloadStreamOutputBase = SM50_GEOMETRY_PAYLOAD_SIZE / 4 - 8;
+// the last words of the payload, of a vertex shader of `registers` output registers (SM50GeometryPayloadSize): the
+// primitives each stream wrote before the object threadgroup's, 64 bits each as the counters they end in are
+// (D3D11.3 14.5)
+static uint32_t
+payload_stream_output_base(uint32_t registers) {
+  return SM50GeometryPayloadSize(registers) / 4 - 8;
+}
 // what a strip's primitives need from before their object threadgroup: the whole primitives there, and how far into
 // its strip the group starts
 constexpr uint32_t kPayloadPrimitivesBefore = 3;
-constexpr uint32_t kPayloadStripOffset = kPayloadStreamOutputBase - 1;
+static uint32_t
+payload_strip_offset(uint32_t registers) {
+  return payload_stream_output_base(registers) - 1;
+}
 
 // a strip primitive's parity counts from its strip's start: the last invalid primitive below it in the group (a cut),
 // else the group's offset in its strip
@@ -644,7 +651,7 @@ convert_dxbc_geometry_shader(
                  : nullptr;
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{
       .size = pHullStage ? (uint32_t)module.getDataLayout().getTypeAllocSize(tessellation_payload)
-                         : SM50_GEOMETRY_PAYLOAD_SIZE
+                         : SM50GeometryPayloadSize(pVertexStage->max_output_register)
   });
   // conservative rasterization of the triangles the shader emits: each one Metal triangle of its own
   // (conservative_triangle), which the pipeline asks for only where they fit (MTL_GEOMETRY_SHADER_REFLECTION). after
@@ -1247,7 +1254,10 @@ convert_dxbc_geometry_shader(
   // a strip's primitive counts the whole ones before it, in the warp and (the carry) before the warp
   auto below = builder.CreateSub(builder.CreateShl(one_const, primitive_id_in_warp), one_const);
   auto before = builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadPrimitivesBefore));
-  auto strip_offset = builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadStripOffset));
+  auto strip_offset = builder.CreateLoad(
+      types._int,
+      builder.CreateConstInBoundsGEP1_32(types._int, payload, payload_strip_offset(pVertexStage->max_output_register))
+  );
   bool restarts = is_strip && pShaderInternal->gs_input_primitive != D3D10_SB_PRIMITIVE_POINT;
   resource_map.patch_id = restarts
                               ? builder.CreateAdd(
@@ -1336,7 +1346,9 @@ convert_dxbc_geometry_shader(
       // group's invocations before this one
       auto before = builder.CreateLoad(
           types._long, builder.CreateBitCast(
-                           builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadStreamOutputBase + 2 * s),
+                           builder.CreateConstInBoundsGEP1_32(
+                               types._int, payload, payload_stream_output_base(pVertexStage->max_output_register) + 2 * s
+                           ),
                            types._long->getPointerTo(payload->getType()->getPointerAddressSpace())
                        )
       );
@@ -1693,11 +1705,15 @@ convert_dxbc_geometry_shader(
 // the mesh stage of a pipeline with stream output and no geometry shader, which gets no threadgroups: its payload is
 // the object stage's (SM50StreamOutputDirect)
 llvm::Error
-convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module, bool direct) {
+convert_null_geometry_shader(
+    const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
+    bool direct
+) {
   air::FunctionSignatureBuilder func_signature;
-  func_signature.DefineInput(
-      air::InputPayload{.size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE) : uint32_t(SM50_GEOMETRY_PAYLOAD_SIZE)}
-  );
+  func_signature.DefineInput(air::InputPayload{
+      .size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE)
+                     : SM50GeometryPayloadSize(pVertexStage->max_output_register)
+  });
   func_signature.DefineInput(air::InputMesh{1, 1, air::MeshOutputTopology::Point});
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
   llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", function));
@@ -1771,7 +1787,8 @@ convert_pass_through_geometry_shader(
 
   air::AirType types(context);
   air::FunctionSignatureBuilder func_signature;
-  uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = SM50_GEOMETRY_PAYLOAD_SIZE});
+  uint32_t payload_idx =
+      func_signature.DefineInput(air::InputPayload{.size = SM50GeometryPayloadSize(pVertexStage->max_output_register)});
   // a quadrilateral line is a rectangle 1.4 pixels wide, two triangles whose corners take their end's attributes
   // (D3D11.3 3.4.5): what Metal's own lines are not. conservative rasterization of triangles: each the triangle
   // conservative_triangle makes of it
@@ -1905,8 +1922,8 @@ convert_pass_through_geometry_shader(
   );
   for (uint32_t i = 0; !hull && i < primitives; i++)
     air.CreateSetMeshPrimitiveID(builder.getInt32(i), primitive_id);
-  auto odd = strip_parity(builder, air, valid, lane, word(kPayloadStripOffset));
   uint32_t registers = pVertexStage->max_output_register;
+  auto odd = strip_parity(builder, air, valid, lane, word(payload_strip_offset(registers)));
   // component `c` of register `reg` of the primitive's vertex `corner`
   auto component = [&](uint32_t corner, uint32_t reg, uint32_t c) {
     auto vertex = own_vertex(builder, primitive, strip, registers, lane, odd, corner);
@@ -2452,7 +2469,8 @@ convert_dxbc_vertex_for_geometry_shader(
   uint32_t payload_idx =
       mesh_only ? ~0u
                 : func_signature.DefineInput(air::InputPayload{
-                      .size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE) : uint32_t(SM50_GEOMETRY_PAYLOAD_SIZE)
+                      .size = direct ? uint32_t(SM50_STREAM_OUTPUT_DIRECT_PAYLOAD_SIZE)
+                                     : SM50GeometryPayloadSize(max_output_register)
                   });
   // (warp_size, 1, 1)
   uint32_t thread_id_idx = func_signature.DefineInput(air::InputThreadPositionInThreadgroup{});
@@ -2755,7 +2773,7 @@ convert_dxbc_vertex_for_geometry_shader(
                                : warp_vertex_count;
   auto group_start = builder.CreateMul(warp_id, builder.getInt32(warp_vertex_count));
 
-  // what the group's primitives need from before it (kPayloadPrimitivesBefore, kPayloadStripOffset). only cuts make
+  // what the group's primitives need from before it (kPayloadPrimitivesBefore, payload_strip_offset). only cuts make
   // them more than the group's place: then the threads scan the indices before the group in equal runs, each counting
   // the primitives that end in its run and finding the last cut
   pvalue primitives_before = builder.CreateMul(warp_id, builder.getInt32(warp_primitive_count));
@@ -3215,7 +3233,9 @@ convert_dxbc_vertex_for_geometry_shader(
   for (uint32_t s = 0; so_base && s < 4; s++)
     builder.CreateStore(
         so_before[s], builder.CreateBitCast(
-                          builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadStreamOutputBase + 2 * s),
+                          builder.CreateConstInBoundsGEP1_32(
+                              types._int, payload, payload_stream_output_base(max_output_register) + 2 * s
+                          ),
                           types._long->getPointerTo(payload->getType()->getPointerAddressSpace())
                       )
     );
@@ -3227,7 +3247,9 @@ convert_dxbc_vertex_for_geometry_shader(
   builder.CreateStore(warp_id, builder.CreateConstInBoundsGEP1_32(types._int, payload, 2));
 
   builder.CreateStore(primitives_before, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadPrimitivesBefore));
-  builder.CreateStore(strip_offset, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadStripOffset));
+  builder.CreateStore(
+      strip_offset, builder.CreateConstInBoundsGEP1_32(types._int, payload, payload_strip_offset(max_output_register))
+  );
 
   air.CreateSetMeshProperties(air.getInt3(gs_instances ? warp_primitive_count : 0, gs_instances, 1));
 

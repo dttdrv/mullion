@@ -857,7 +857,10 @@ void setup_immediate_constant_buffer(
   air::AirType &types, llvm::Module &module, llvm::IRBuilder<> &builder
 );
 
-llvm::Error convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module, bool direct);
+llvm::Error convert_null_geometry_shader(
+  const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
+  bool direct
+);
 llvm::Error convert_pass_through_geometry_shader(
   const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
   SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
