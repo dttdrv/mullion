@@ -1869,7 +1869,7 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
-    DrawCallStatus status = PreDraw<true>();
+    DrawCallStatus status = PreDraw<true>(pBufferForArgs);
     if (status == DrawCallStatus::Invalid)
       return;
     if (status == DrawCallStatus::Geometry) {
@@ -1925,7 +1925,7 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
-    DrawCallStatus status = PreDraw<false>();
+    DrawCallStatus status = PreDraw<false>(pBufferForArgs);
     if (status == DrawCallStatus::Invalid)
       return;
     if (status == DrawCallStatus::Geometry) {
@@ -3876,6 +3876,81 @@ public:
     InvalidateCurrentPass();
   }
 
+  // the resources the pass's pixel shaders read and wrote. a draw sees what the draws before it wrote through UAVs
+  // (D3D11.3 5.3.5.1), but a render pass runs every draw's vertex stages before its fragments on a tile-based GPU,
+  // and Metal has no barrier from fragment to vertex work inside a pass (memoryBarrierWithScope:afterStages:
+  // beforeStages:). a draw whose vertex, hull, domain or geometry shader, vertex or index buffers, arguments or
+  // stream output read what a pixel shader of the pass wrote, or write what one read, starts the next pass
+  struct FragmentAccess {
+    D3D11ResourceCommon *resource;
+    bool written;
+  };
+  std::vector<FragmentAccess> pass_fragment_access_;
+
+  template <typename Fn>
+  void
+  EachStageResource(PipelineStage stage, Fn &&fn) {
+    auto &bindings = state_.ShaderStages[stage];
+    auto shader = bindings.Shader ? bindings.Shader->GetManagedShader() : nullptr;
+    if (!shader)
+      return;
+    const auto &reflection = shader->reflection();
+    constexpr auto bits = std::numeric_limits<decltype(reflection.SRVSlotMaskLo)>::digits;
+    for (const auto &[slot, entry] : bindings.SRVs) {
+      auto mask = slot < bits ? reflection.SRVSlotMaskLo : reflection.SRVSlotMaskHi;
+      if ((mask >> (slot % bits)) & 1)
+        fn(entry.SRV->resource_.ptr(), false);
+    }
+    for (const auto &[slot, entry] : bindings.ConstantBuffers)
+      if ((reflection.ConstantBufferSlotMask >> slot) & 1)
+        fn(entry.Buffer.ptr(), false);
+    for (const auto &[slot, entry] : state_.OutputMerger.UAVs)
+      if ((reflection.UAVSlotMask >> slot) & 1)
+        fn(entry.View->resource_.ptr(), true);
+  }
+
+  template <bool IndexedDraw>
+  bool
+  PreRasterAfterFragment(ID3D11Buffer *pArgs) {
+    if (pass_fragment_access_.empty())
+      return false;
+    bool after = false;
+    auto check = [&](D3D11ResourceCommon *resource, bool written) {
+      for (auto &access : pass_fragment_access_)
+        if (resource && access.resource == resource && (written || access.written))
+          after = true;
+    };
+    for (auto stage : {PipelineStage::Vertex, PipelineStage::Hull, PipelineStage::Domain, PipelineStage::Geometry})
+      EachStageResource(stage, check);
+    if (auto layout = state_.InputAssembler.InputLayout.ptr()) {
+      auto mask = layout->GetManagedInputLayout()->input_slot_mask();
+      for (const auto &[slot, entry] : state_.InputAssembler.VertexBuffers)
+        if ((mask >> slot) & 1)
+          check(entry.Buffer.ptr(), false);
+    }
+    if constexpr (IndexedDraw)
+      check(state_.InputAssembler.IndexBuffer.ptr(), false);
+    if (pArgs)
+      check(GetResourceCommon(pArgs), false);
+    for (const auto &[slot, entry] : state_.StreamOutput.Targets)
+      check(entry.Buffer.ptr(), true);
+    return after;
+  }
+
+  void
+  RecordFragmentAccess() {
+    EachStageResource(PipelineStage::Pixel, [&](D3D11ResourceCommon *resource, bool written) {
+      if (!resource)
+        return;
+      for (auto &access : pass_fragment_access_)
+        if (access.resource == resource) {
+          access.written |= written;
+          return;
+        }
+      pass_fragment_access_.push_back({resource, written});
+    });
+  }
+
   void PrepareShaderTextureUse(bool compute) {
     MoveToFormatViews();
     if (!device->shares_with_d3d12)
@@ -5222,6 +5297,7 @@ public:
       allocated_encoder_argbuf_size_ = nullptr;
       visibility_result_segments_ = 0;
       pass_scissors_ = pass_viewports_ = 0;
+      pass_fragment_access_.clear();
       break;
     }
     case CommandBufferState::ComputeEncoderActive:
@@ -5919,8 +5995,11 @@ public:
 
   template <bool IndexedDraw>
   DrawCallStatus
-  PreDraw() {
+  PreDraw(ID3D11Buffer *pArgs = nullptr) {
     PrepareShaderTextureUse(false);
+    if (PreRasterAfterFragment<IndexedDraw>(pArgs))
+      InvalidateCurrentPass(true);
+    RecordFragmentAccess();
     // a draw whose scissors or viewports the pass has no room for starts the next pass
     const UINT rectangles = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     if ((dirty_state.any(DirtyState::Scissors) && pass_scissors_ + rectangles > WMT::kPassRectangles) ||
