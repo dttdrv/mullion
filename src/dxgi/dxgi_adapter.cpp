@@ -103,14 +103,23 @@ public:
       }
     }
 
+    // and a device of the vendor's, which applications look up in their tables
+    // of PC GPUs, where a device ID of 0 is in none: NVIDIA's RTX 4080, the GPU
+    // the NGX core's instructions name (src/nvngx/signing/README.md), and the
+    // other vendors' of its class, AMD's RX 7900 XTX and Intel's Arc A770.
+    // Apple's GPUs have no PCI device ID
     if (options_.customDeviceId >= 0) {
       desc_.DeviceId = options_.customDeviceId;
     } else {
-      desc_.DeviceId = 0;
+      desc_.DeviceId = desc_.VendorId == 0x10DE   ? 0x2704
+                       : desc_.VendorId == 0x1002 ? 0x744C
+                       : desc_.VendorId == 0x8086 ? 0x56A0
+                                                  : 0;
     }
 
-    desc_.SubSysId = 0;
-    desc_.Revision = 0;
+    desc_.SubSysId =
+        options_.customSubSysId >= 0 ? UINT(options_.customSubSysId) : 0;
+    desc_.Revision = options_.customRevision >= 0 ? options_.customRevision : 0;
     // as much of it as a SIZE_T holds, which in a 32-bit process is less than there is
     desc_.DedicatedVideoMemory = std::min<uint64_t>(memory_, std::numeric_limits<SIZE_T>::max());
     desc_.DedicatedSystemMemory = 0;
