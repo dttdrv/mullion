@@ -10,16 +10,21 @@
 // vectors at the output resolution (DLSS without NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) are taken too: frames of one
 // color, the second not in reset, come out that color with them, and a square that moves between two frames comes out
 // the same image whether its motion is given at the input resolution or, as the same motion, at the output's.
-// motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
-// one color come out that color with them. the render sizes NGX's optimal settings give are ones MetalFX takes: the
-// output's size over each is within the scales MetalFX takes on the device. content that starts inside its textures
-// (DLSS's Subrect.Base), one color there and another around it, comes out that one color. a reactive mask (DLSS's
-// Bias.Current.Color.Mask) of 1 has a frame not in reset show less of the frame before than it does without one
+// MetalFX reads the motion vectors at the output resolution itself where it does (macOS 27), and Mullion brings them
+// to the input's elsewhere and with metalfx.outputResolutionMotionVectors off (`downscaled`): the scaler's log line
+// says which. motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as
+// well: frames of one color come out that color with them. the render sizes NGX's optimal settings give are ones
+// MetalFX takes: the output's size over each is within the scales MetalFX takes on the device. content that starts
+// inside its textures (DLSS's Subrect.Base), one color there and another around it, comes out that one color. a
+// reactive mask (DLSS's Bias.Current.Color.Mask) of 1 has a frame not in reset show less of the frame before than it
+// does without one
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
+#include "../../src/winemetal/winemetal.h"
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <string>
@@ -45,8 +50,43 @@ using evaluate_t = NVNGX_RESULT (*)(ID3D12GraphicsCommandList *, const unsigned 
 using release_t = NVNGX_RESULT (*)(unsigned int *);
 using shutdown_t = NVNGX_RESULT (*)(ID3D12Device *);
 
+// the lines of the D3D12 log in `directory` that hold `text`
+static UINT
+logged(const char *directory, const char *text) {
+  WIN32_FIND_DATAA found;
+  auto search = FindFirstFileA((std::string(directory) + "\\*_d3d12.log").c_str(), &found);
+  if (search == INVALID_HANDLE_VALUE)
+    return 0;
+  FindClose(search);
+  UINT count = 0;
+  std::ifstream log(std::string(directory) + "\\" + found.cFileName);
+  for (std::string line; std::getline(log, line);)
+    count += line.find(text) != std::string::npos;
+  return count;
+}
+
 int
 main(int argc, char **argv) {
+  bool ngx = false, downscaled = false;
+  for (int i = 1; i < argc; i++) {
+    ngx |= !strcmp(argv[i], "ngx");
+    downscaled |= !strcmp(argv[i], "downscaled");
+  }
+  // the log says how each scaler reads motion vectors at the output resolution; `downscaled` has Mullion bring them to
+  // the input's where MetalFX would read them at the output's
+  char temporary[MAX_PATH], directory[MAX_PATH];
+  CHECK(GetTempPathA(sizeof(temporary), temporary) && GetTempFileNameA(temporary, "mfx", 0, directory) ? S_OK : E_FAIL);
+  DeleteFileA(directory);
+  CHECK(CreateDirectoryA(directory, nullptr) ? S_OK : E_FAIL);
+  SetEnvironmentVariableA("MULLION_LOG_PATH", directory);
+  if (downscaled) {
+    char config[4096] = "";
+    GetEnvironmentVariableA("MULLION_CONFIG", config, sizeof(config));
+    SetEnvironmentVariableA(
+        "MULLION_CONFIG",
+        (std::string(config) + (*config ? ";" : "") + "metalfx.outputResolutionMotionVectors=False").c_str()
+    );
+  }
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue;
@@ -374,6 +414,25 @@ main(int argc, char **argv) {
            apart(at_input, at_output));
     expect(apart(at_input, other), "half the motion gives the same image: the motion vectors do not show in it");
   }
+  // MetalFX read them at the output resolution where it reads them so (macOS 27), and they were brought to the
+  // input's elsewhere and when asked to be
+  step("who reads motion vectors at the output resolution");
+  auto bridge = LoadLibraryA("winemetal.dll");
+  auto all_devices = reinterpret_cast<decltype(&WMTCopyAllDevices)>(GetProcAddress(bridge, "WMTCopyAllDevices"));
+  auto object = reinterpret_cast<decltype(&NSArray_object)>(GetProcAddress(bridge, "NSArray_object"));
+  auto takes = reinterpret_cast<decltype(&MTLDevice_temporalScalerSupport)>(
+      GetProcAddress(bridge, "MTLDevice_temporalScalerSupport")
+  );
+  if (expect(all_devices && object && takes, "Metal bridge unavailable")) {
+    WMTFXTemporalScalerSupport support{};
+    takes(object(all_devices(), 0), &support);
+    bool metalfx = support.output_resolution_motion_vectors && !downscaled;
+    UINT read = logged(directory, "motion vectors at the output resolution"),
+         brought = logged(directory, "motion vectors brought from the output resolution");
+    expect(metalfx ? read && !brought : !read && brought,
+           "MetalFX %s them at the output resolution, and %u scalers read them so, %u from the input's",
+           metalfx ? "reads" : "does not read", read, brought);
+  }
 
   // the same motion as signed normalized values in units of the input's size, which the scale makes pixels
   step("the same motion given as normalized values");
@@ -397,7 +456,7 @@ main(int argc, char **argv) {
   // DLSS through Mullion's NGX core (src/nvngx/nvngx_d3d12.cpp), called as a game's NGX library calls it, where the
   // build has it: resources set as resources or, as Streamline sets them, as plain pointers, and DLSS's defaults for
   // what a game leaves out (no exposure texture; a pre-exposure of 0, or none, for no pre-exposure)
-  if (argc < 2 || strcmp(argv[1], "ngx"))
+  if (!ngx)
     return verdict();
   step("NGX's core");
   auto core = LoadLibraryA("nvngx.dll");
