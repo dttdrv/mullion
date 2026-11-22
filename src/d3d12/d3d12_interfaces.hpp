@@ -66,4 +66,7 @@ DEFINE_COM_INTERFACE("987426c0-bca1-4bfb-8e8a-1da3257f8467", IMTLD3D12CommandLis
   TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
   virtual HRESULT STDMETHODCALLTYPE
   DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
+  // the ratios of the output's size to the input content's that MetalFX's temporal scaler takes on the device
+  // (MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:, ...MaxScaleForDevice:)
+  virtual void STDMETHODCALLTYPE GetTemporalUpscaleScales(FLOAT *pMinScale, FLOAT *pMaxScale) = 0;
 };

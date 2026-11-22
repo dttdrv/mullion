@@ -50,6 +50,11 @@ Start(ID3D12Device *device) {
     return NVNGX_RESULT_INVALID_PARAMETER;
   auto ext = GetExt(list.ptr());
   denoising = ext && ext->SupportsDenoisedUpscale();
+  if (ext) {
+    float min = 0, max = 0;
+    ext->GetTemporalUpscaleScales(&min, &max);
+    SetTemporalScales(min, max);
+  }
   list->Close();
   return NVNGX_RESULT_OK;
 }

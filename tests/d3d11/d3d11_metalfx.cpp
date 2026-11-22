@@ -6,7 +6,8 @@
 // would. they are zero bits, which is no motion however a format's bits are read. the extension reads them through a
 // view of a float format, which Metal makes only of a texture with its format view (MTLTextureUsagePixelFormatView):
 // its validation refuses the view otherwise (tests/run.py --validate). the content size is 0, which is the color's.
-// each upscale writes a new output, all zero before, so one that writes nothing is seen
+// each upscale writes a new output, all zero before, so one that writes nothing is seen. the extension says the
+// scales MetalFX takes on the device: a range from 1 up
 #include "d3d11_test.hpp"
 #include "../../src/d3d11/d3d11_interfaces.hpp"
 #include <cstdlib>
@@ -27,6 +28,12 @@ main() {
     printf("skipped: no MetalFX temporal scaler on this device\n");
     return 77;
   }
+  // the scales MetalFX takes on the device, which DLSS's optimal settings keep render sizes within (nvngx)
+  step("MetalFX's temporal scales");
+  MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA scales{};
+  HRESULT asked = ext->CheckFeatureSupport(MTL_FEATURE_METALFX_TEMPORAL_SCALES, &scales, sizeof(scales));
+  expect(asked == S_OK && scales.MinScale >= 1 && scales.MaxScale >= scales.MinScale,
+         "the scales are %g to %g (%08lx)", scales.MinScale, scales.MaxScale, asked);
 
   const UINT width = 256, height = 144, out_width = width * 2, out_height = height * 2;
   // a texture of `format` with `texel` (`bytes` of it) in each texel
