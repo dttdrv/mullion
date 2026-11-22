@@ -153,7 +153,9 @@ main(int argc, char **argv) {
   valid.MotionVector = motion.resource.Get();
   valid.ExposureTexture = exposure.resource.Get();
   valid.PreExposure = valid.MotionVectorScaleX = valid.MotionVectorScaleY = 1;
-  auto rejected = [&](auto change, const char *name) {
+  // a missing input is refused; inputs DLSS would not be given are upscaled anyway, as a game's ray traced frame
+  // gives them (src/d3d12/d3d12_command_list.cpp, TemporalUpscale), so only the missing ones are tried here
+  auto refused = [&](auto change, const char *name) {
     auto invalid = valid;
     change(invalid);
     IMTLD3D12Upscaler *cache = nullptr;
@@ -162,17 +164,10 @@ main(int argc, char **argv) {
     if (cache)
       cache->Destroy();
   };
-  step("invalid temporal MetalFX inputs");
-  rejected([&](auto &d) { d.InputContentWidth = width + 1; }, "content wider than its texture");
-  rejected([&](auto &d) { d.InputContentHeight = height + 1; }, "content taller than its texture");
-  rejected([&](auto &d) { d.Depth = exposure.resource.Get(); }, "a 1x1 depth texture");
-  rejected([&](auto &d) { d.MotionVector = display_motion.resource.Get(); }, "unmarked display-resolution motion");
-  rejected([&](auto &d) { d.Output = color.resource.Get(); }, "input and output aliasing");
-  rejected([&](auto &d) { d.MotionVectorInDisplayRes = TRUE; }, "input-resolution motion marked as display-resolution");
-  rejected([&](auto &d) { d.ExposureTexture = color.resource.Get(); }, "an exposure texture larger than one texel");
-  rejected([](auto &d) { d.PreExposure = 0; }, "zero pre-exposure");
-  rejected([](auto &d) { d.MotionVectorScaleX = std::numeric_limits<float>::infinity(); }, "infinite motion scale");
-  rejected([](auto &d) { d.JitterOffsetY = std::numeric_limits<float>::quiet_NaN(); }, "NaN jitter");
+  step("missing temporal MetalFX inputs");
+  refused([](auto &d) { d.Depth = nullptr; }, "no depth");
+  refused([](auto &d) { d.MotionVector = nullptr; }, "no motion vectors");
+  refused([](auto &d) { d.Output = nullptr; }, "no output");
 
   CHECK(list->Close());
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;

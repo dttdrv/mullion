@@ -16,6 +16,7 @@
 #include <vector>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 #include "unknwn.h"
 
 namespace mullion::str {
@@ -185,7 +186,7 @@ void format1(std::stringstream &str, const T &arg, const Tx &...args) {
 template <typename... Args> std::string format(const Args &...args) {
   std::stringstream stream;
   format1(stream, args...);
-  return stream.str();
+  return std::move(stream).str();
 }
 
 inline void strlcpy(char *dst, const char *src, size_t count) {
