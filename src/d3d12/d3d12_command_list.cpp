@@ -3151,10 +3151,18 @@ public:
     WriteMarkers();
     constexpr auto pixels = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE |
                             D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    OrderingPoint(std::ranges::any_of(std::span(barriers, Count), [&](auto &barrier) {
-      auto after = barrier.Transition.StateAfter;
-      return barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !after || (after & ~pixels);
-    }));
+    // the first half of a split barrier orders nothing: the resource is not used until the second half, which orders
+    // the work before the first after it ("Split Barriers", D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY)
+    auto begins = [](const D3D12_RESOURCE_BARRIER &barrier) {
+      return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION &&
+             (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY);
+    };
+    if (!std::ranges::all_of(std::span(barriers, Count), begins))
+      OrderingPoint(std::ranges::any_of(std::span(barriers, Count), [&](auto &barrier) {
+        auto after = barrier.Transition.StateAfter;
+        return !begins(barrier) &&
+               (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !after || (after & ~pixels));
+      }));
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |
                        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
     // Metal orders passes that reach one memory through a reserved buffer and through another resource only with
@@ -3186,7 +3194,7 @@ public:
         BarrierNames(barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ? barrier.Transition.pResource
                      : barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV      ? barrier.UAV.pResource
                                                                             : nullptr);
-      if (ordered)
+      if (ordered || begins(barrier))
         continue;
       // a UAV barrier orders UAV accesses alone: a render pass whose draws used none keeps going, as a dispatch's would
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV && allocator_->encoder_current &&
@@ -5619,15 +5627,24 @@ public:
     barrier_serial_++;
     constexpr auto pixels =
         D3D12_BARRIER_SYNC_PIXEL_SHADING | D3D12_BARRIER_SYNC_DEPTH_STENCIL | D3D12_BARRIER_SYNC_RENDER_TARGET;
-    bool vertices = false;
+    // the first half of a split barrier (SyncAfter SPLIT) orders nothing: its second half (SyncBefore SPLIT) orders
+    // the work before the first after it (Enhanced Barriers, "Split barriers")
+    auto sync_after = [](const D3D12_BARRIER_GROUP &group, UINT32 i) {
+      return group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? group.pGlobalBarriers[i].SyncAfter
+             : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].SyncAfter
+                                                        : group.pBufferBarriers[i].SyncAfter;
+    };
+    bool vertices = false, orders = false;
     for (auto &group : std::span(pBarrierGroups, NumBarrierGroups))
       for (UINT32 i = 0; i < group.NumBarriers; i++) {
-        auto after = group.Type == D3D12_BARRIER_TYPE_GLOBAL    ? group.pGlobalBarriers[i].SyncAfter
-                     : group.Type == D3D12_BARRIER_TYPE_TEXTURE ? group.pTextureBarriers[i].SyncAfter
-                                                                : group.pBufferBarriers[i].SyncAfter;
+        auto after = sync_after(group, i);
+        if (after == D3D12_BARRIER_SYNC_SPLIT)
+          continue;
+        orders = true;
         vertices |= !after || (after & ~pixels);
       }
-    OrderingPoint(vertices);
+    if (orders)
+      OrderingPoint(vertices);
     // an access to or from NO_ACCESS hands memory from one resource to another that aliases it (Enhanced Barriers,
     // Resource Aliasing), after which another may take the addresses. once a reserved buffer exists, an access from
     // NO_ACCESS, which makes a resource the one that uses the memory, is ordered as ResourceBarrier orders an ALIASING
@@ -5675,7 +5692,7 @@ public:
         if (!clears_.empty())
           BarrierNames(resource);
         BarrierLeaves(resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATES(0));
-        if (!ordered)
+        if (!ordered && sync_after(group, i) != D3D12_BARRIER_SYNC_SPLIT)
           ordered = Order(any(before, draw_writes) && PassWrote(resource), any(before, uav) || any(after, uav));
       }
   }
