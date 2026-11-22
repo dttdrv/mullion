@@ -4,6 +4,7 @@
 #include "dxbc_converter.hpp"
 #include "nt/air_builder.hpp"
 #include "nt/dxbc_converter_base.hpp"
+#include "tessellation_limits.hpp"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/AtomicOrdering.h"
@@ -15,6 +16,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <format>
 #include <optional>
 #include <utility>
@@ -53,9 +56,40 @@ get_vertex_primitive_count_in_warp(D3D10_SB_PRIMITIVE primitive, bool strip, uin
   return {warp.vertices, warp.primitives, per_primitive};
 }
 
+// MULLION_AIRCONV_SKIP=gs-packing: every geometry shader invocation is a mesh threadgroup of its own, as before
+// several shared one (it is in the shader cache's key)
+static bool
+gs_packing_skipped() {
+  static const bool skipped = [] {
+    auto names = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return names && strstr(names, "gs-packing");
+  }();
+  return skipped;
+}
+
+// a mesh threadgroup runs several invocations, a thread each, each with slots of its own in the mesh: as many vertices
+// as the rasterized stream takes of it, and as many primitives (a strip's are fewer, a point list's as many). they are
+// as many as the mesh holds: 256 vertices and 512 primitives, and no more bytes than the draw's mesh budget counts a
+// mesh threadgroup (get_gs_max_object_threadgroups: 16 KB), each vertex its position, varyings, point size and clip
+// distances and each primitive four words of what it carries (its culling, viewport, render target and primitive ID).
+// a shader of no output topology emits nothing, and runs one
 uint32_t
 geometry_mesh_invocations(const SM50ShaderInternal *pShaderInternal) {
-  return 1;
+  constexpr uint32_t most = SM50_GEOMETRY_WARP_THREADS, mesh_bytes = 16 * 1024;
+  auto topology = pShaderInternal->gs_output_topology;
+  uint32_t vertices = std::min<uint32_t>(pShaderInternal->gs_max_vertex_output, 256);
+  if (gs_packing_skipped() || !vertices ||
+      (topology != D3D10_SB_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP && topology != D3D10_SB_PRIMITIVE_TOPOLOGY_LINESTRIP &&
+       topology != D3D10_SB_PRIMITIVE_TOPOLOGY_POINTLIST))
+    return 1;
+  uint32_t vertex_size = sizeof(float[4]) + pShaderInternal->num_mesh_vertex_data * sizeof(float) +
+                         pShaderInternal->clip_distance_scalars.size() * sizeof(float) +
+                         (topology == D3D10_SB_PRIMITIVE_TOPOLOGY_POINTLIST ? sizeof(float) : 0);
+  uint32_t invocations = most;
+  while (invocations > 1 && (invocations * vertices > 256 || invocations * vertices > 512 ||
+                             mesh_size(invocations * vertices, vertex_size, 4 * invocations * vertices) > mesh_bytes))
+    invocations--;
+  return invocations;
 }
 
 uint32_t
@@ -685,13 +719,23 @@ convert_dxbc_geometry_shader(
   // all its vertices, the rasterizer the first 256
   constexpr uint32_t mesh_vertex_limit = 256;
   uint32_t mesh_vertices = std::min<uint32_t>(max_vertex_out, mesh_vertex_limit);
+  // a mesh threadgroup runs `invocations` of the shader, a thread each (geometry_mesh_invocations), each with
+  // mesh_vertices of the mesh's vertices and as many of its primitives, from its thread's times that many on. those
+  // it leaves are culled, so the mesh has all of them. a conservative or stream output pipeline's runs one
+  uint32_t invocations = pHullStage ? 1 : geometry_mesh_invocations(pShaderInternal, pArgs);
+  bool packed = invocations > 1;
+  if (packed && conservative)
+    return llvm::make_error<UnsupportedFeature>("conservative geometry shader invocations sharing a mesh threadgroup");
   // it's intended to declare a bit more max primitive count
   auto mesh_idx = func_signature.DefineInput(air::InputMesh{
-      conservative ? 3 * triangles : mesh_vertices, conservative ? triangles : mesh_vertices, topology
+      conservative ? 3 * triangles : invocations * mesh_vertices, conservative ? triangles : invocations * mesh_vertices,
+      topology
   });
   uint32_t tg_in_grid_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
-  // a tessellated draw's mesh threadgroups have the domain stage's threads, of which the first does the work
-  uint32_t thread_idx = pHullStage ? func_signature.DefineInput(air::InputThreadPositionInThreadgroup{}) : ~0u;
+  // a tessellated draw's mesh threadgroups have the domain stage's threads, of which the first does the work; a
+  // packed one's threads are its invocations
+  uint32_t thread_idx =
+      pHullStage || packed ? func_signature.DefineInput(air::InputThreadPositionInThreadgroup{}) : ~0u;
   uint32_t so_idx = so ? stream_output_input(func_signature, context, types) : ~0u;
   // the writing pass counts, not the counting one
   bool statistics = pso_data && pso_data->pipeline_statistics && !(so && so->counting);
@@ -724,7 +768,8 @@ convert_dxbc_geometry_shader(
   // Metal culls by primitive, where Direct3D discards one whose vertices are all behind a cull distance (15.4.2), and
   // a conservative rasterizer one that its clipping leaves nothing of
   bool culls = pShaderInternal->cull_distance_scalars.size() || conservative;
-  if (culls)
+  // and the primitives a packed invocation leaves are culled
+  if (culls || packed)
     func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveCulled{});
   // and the viewports, and the window coordinates the pixel shader tests against
   uint32_t viewports_idx = 0, conservative_at = pShaderInternal->num_mesh_vertex_data;
@@ -773,7 +818,17 @@ convert_dxbc_geometry_shader(
   // workloads, each one's primitives and their instances, counted on from the grid's first workload and instance
   // (the hull stage shares them between the grids of several object threadgroups)
   auto tg_position_in_grid = function->getArg(tg_in_grid_idx);
-  auto primitive_id_in_warp = builder.CreateExtractElement(tg_position_in_grid, uint64_t(!!pHullStage));
+  llvm::Value *primitive_id_in_warp = builder.CreateExtractElement(tg_position_in_grid, uint64_t(!!pHullStage));
+  // a packed mesh threadgroup takes `invocations` primitives of the warp, a thread each; a thread past the warp's last
+  // runs none, and reads the first's place
+  llvm::Value *thread = nullptr, *in_warp = nullptr, *vertex_base = builder.getInt32(0), *primitive_base = vertex_base;
+  if (packed) {
+    thread = builder.CreateExtractElement(function->getArg(thread_idx), uint64_t(0));
+    auto primitive = builder.CreateAdd(builder.CreateMul(primitive_id_in_warp, builder.getInt32(invocations)), thread);
+    in_warp = builder.CreateICmpULT(primitive, builder.getInt32(warp_primitive_count));
+    primitive_id_in_warp = builder.CreateSelect(in_warp, primitive, builder.getInt32(0));
+    vertex_base = primitive_base = builder.CreateMul(thread, builder.getInt32(mesh_vertices));
+  }
   resource_map.gs_instance_id = builder.CreateExtractElement(tg_position_in_grid, uint64_t(1 + !!pHullStage));
   llvm::Value *workload = nullptr;
   if (pHullStage) {
@@ -795,10 +850,11 @@ convert_dxbc_geometry_shader(
   auto const two_const = builder.getInt32(2);
   auto next_write_vertex = builder.CreateAlloca(types._int, nullptr, "next_write_vertex");
   builder.CreateStore(zero_const, next_write_vertex);
+  // a strip's vertices and primitives are this invocation's from its slots' first on
   auto vertex_offset = builder.CreateAlloca(types._int, nullptr, "vertex_offset");
-  builder.CreateStore(zero_const, vertex_offset);
+  builder.CreateStore(vertex_base, vertex_offset);
   auto primitive_count = builder.CreateAlloca(types._int, nullptr, "primitive_count");
-  builder.CreateStore(zero_const, primitive_count);
+  builder.CreateStore(primitive_base, primitive_count);
   // the emits so far, on every stream, and those to the rasterized stream where the mesh has fewer vertices than the
   // shader declares
   auto emits = builder.CreateAlloca(types._int, nullptr, "emits");
@@ -989,15 +1045,16 @@ convert_dxbc_geometry_shader(
       // only one accumulator to maintain, simple one ~
       auto current_write_vertex = builder.CreateLoad(types._int, next_write_vertex);
       builder.CreateStore(builder.CreateAdd(one_const, current_write_vertex), next_write_vertex);
+      auto point = builder.CreateAdd(vertex_base, current_write_vertex);
 
-      MeshOutputContext gs_out_ctx{current_write_vertex, current_write_vertex};
+      MeshOutputContext gs_out_ctx{point, point};
       for (auto &h : gs_output_handlers) {
         co_yield h(gs_out_ctx);
       }
-      emit_clip_distances(current_write_vertex);
-      cull_primitive(current_write_vertex, zero_const, 1);
-      air.CreateSetMeshPointSize(current_write_vertex, air.getFloat(1.0));
-      air.CreateSetMeshIndex(current_write_vertex, current_write_vertex);
+      emit_clip_distances(point);
+      cull_primitive(current_write_vertex, vertex_base, 1);
+      air.CreateSetMeshPointSize(point, air.getFloat(1.0));
+      air.CreateSetMeshIndex(point, point);
       co_return {};
     };
     mesh_cut = []() -> IREffect {
@@ -1446,11 +1503,13 @@ convert_dxbc_geometry_shader(
     builder.CreateRetVoid();
     builder.SetInsertPoint(first);
   }
-  auto active = pHullStage ? corner_location(zero_const).second
-                           : builder.CreateICmpNE(
-                                 builder.CreateAnd(valid_primitive_mask, builder.CreateShl(one_const, primitive_id_in_warp)),
-                                 zero_const
-                             );
+  llvm::Value *active = pHullStage ? corner_location(zero_const).second
+                                   : builder.CreateICmpNE(
+                                         builder.CreateAnd(valid_primitive_mask, builder.CreateShl(one_const, primitive_id_in_warp)),
+                                         zero_const
+                                     );
+  if (packed)
+    active = builder.CreateAnd(in_warp, active);
   builder.CreateCondBr(active, active_, epilogue_bb);
   builder.SetInsertPoint(active_);
 
@@ -1597,10 +1656,46 @@ convert_dxbc_geometry_shader(
     return err;
   }
   // a point is a primitive as it is emitted; a strip's are counted where it ends
-  auto rasterized = builder.CreateLoad(
+  llvm::Value *rasterized = builder.CreateLoad(
       types._int, conservative ? emitted : topology == air::MeshOutputTopology::Point ? next_write_vertex : primitive_count
   );
-  air.CreateSetMeshPrimitiveCount(rasterized);
+  if (packed) {
+    // this invocation's own, from its slots' first on
+    if (topology != air::MeshOutputTopology::Point)
+      rasterized = builder.CreateSub(rasterized, primitive_base);
+    // the slots it leaves are culled, each one ending at its first vertex: a strip's last emits wrote primitives it
+    // does not have, of vertices past its own
+    uint32_t corners = topology == air::MeshOutputTopology::Triangle ? 3 : topology == air::MeshOutputTopology::Line ? 2 : 1;
+    auto from = builder.GetInsertBlock();
+    auto loop = llvm::BasicBlock::Create(context, "unused_slots", function);
+    auto cull = llvm::BasicBlock::Create(context, "cull_slot", function);
+    auto culled = llvm::BasicBlock::Create(context, "slots_culled", function);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(loop);
+    auto slot = builder.CreatePHI(types._int, 2);
+    slot->addIncoming(rasterized, from);
+    builder.CreateCondBr(builder.CreateICmpULT(slot, builder.getInt32(mesh_vertices)), cull, culled);
+    builder.SetInsertPoint(cull);
+    auto primitive = builder.CreateAdd(primitive_base, slot);
+    air.CreateSetMeshPrimitiveCulled(primitive, builder.getTrue());
+    for (uint32_t corner = 0; corner < corners; corner++)
+      air.CreateSetMeshIndex(
+          builder.CreateAdd(builder.CreateMul(primitive, builder.getInt32(corners)), builder.getInt32(corner)), vertex_base
+      );
+    slot->addIncoming(builder.CreateAdd(slot, one_const), cull);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(culled);
+    // and the mesh has every invocation's, which the first thread says
+    auto count = llvm::BasicBlock::Create(context, "count_primitives", function);
+    auto counted = llvm::BasicBlock::Create(context, "primitives_counted", function);
+    builder.CreateCondBr(builder.CreateICmpEQ(thread, zero_const), count, counted);
+    builder.SetInsertPoint(count);
+    air.CreateSetMeshPrimitiveCount(builder.getInt32(invocations * mesh_vertices));
+    builder.CreateBr(counted);
+    builder.SetInsertPoint(counted);
+  } else {
+    air.CreateSetMeshPrimitiveCount(rasterized);
+  }
   if (statistics) {
     auto counted = llvm::BasicBlock::Create(context, "counted", function), count = llvm::BasicBlock::Create(context, "count", function, counted);
     builder.CreateCondBr(active, count, counted);
