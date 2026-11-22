@@ -1,5 +1,6 @@
 // contract: MULLION_TRACE_ENCODERS logs each created render encoder's command-buffer ordinal, size and draws,
-// including clears, resolves and presents; folded records and signals consume no encoder ordinal.
+// including clears, resolves and presents, and the compute encoder before a pass whose direct tessellated draws take
+// Metal's tessellator, with those draws ("hull"); folded records and signals consume no encoder ordinal.
 // "A command encoder defines the actions of a single pass" (Apple, Command encoder factory methods,
 // https://developer.apple.com/documentation/metal/command-encoder-factory-methods). labels identify
 // "The name of the encoder that generates the error information." (Apple, MTLCommandBufferEncoderInfo.label,
@@ -261,7 +262,7 @@ main(int argc, char **argv) {
     expect(status == 0, "child failed with %lu", status);
     struct Pass { const char *kind; UINT index, draws, geometry = 0, tessellation = 0; };
     const Pass expected[] = {{"render", 0, 4}, {"render", 2, 1}, {"render", 0, 1},
-                             {"render", 0, 4, 4}, {"render", 0, 4, 0, 4},
+                             {"render", 0, 4, 4}, {"hull", 0, 2, 0, 2}, {"render", 1, 4, 0, 4},
                              {"clear", 0, 0}, {"clear", 0, 0}, {"clear", 0, 0}, {"clear", 1, 0}, {"resolve", 2, 0},
                              {"clear", 0, 0}, {"present", 1, 1}};
     size_t count = 0;

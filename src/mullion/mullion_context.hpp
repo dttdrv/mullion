@@ -255,6 +255,13 @@ struct RenderEncoderData : EncoderData {
   WMT::Buffer so_scratch = {};
   uint64_t so_scratch_va = 0;
   uint64_t so_scratch_size = 0;
+  // the work of native tessellation draws, a compute encoder's before the pass (encodeHullCommand): what their hull
+  // kernels read made resident, and the kernels. the draws, and whether a pre-raster stage has written a resource in
+  // the pass, which a hull kernel would then read before it was written
+  wmtcmd_compute_nop before_head{WMTComputeCommandNop};
+  wmtcmd_base *before_tail = (wmtcmd_base *)&before_head;
+  uint32_t native_tessellation = 0;
+  bool pre_raster_written = false;
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -357,8 +364,11 @@ GetResidencyMask(PipelineStage type, bool read, bool write) {
     return (read ? MULLION_RESOURCE_RESIDENCY_MESH_GS_READ : MULLION_RESOURCE_RESIDENCY_NULL) |
            (write ? MULLION_RESOURCE_RESIDENCY_MESH_GS_WRITE : MULLION_RESOURCE_RESIDENCY_NULL);
   case PipelineStage::Domain:
-    return (read ? MULLION_RESOURCE_RESIDENCY_MESH_READ : MULLION_RESOURCE_RESIDENCY_NULL) |
-           (write ? MULLION_RESOURCE_RESIDENCY_MESH_WRITE : MULLION_RESOURCE_RESIDENCY_NULL);
+    // the mesh stage, or the vertex stage after Metal's tessellator (a native draw)
+    return (read ? MULLION_RESOURCE_RESIDENCY_MESH_READ | MULLION_RESOURCE_RESIDENCY_VERTEX_READ
+                 : MULLION_RESOURCE_RESIDENCY_NULL) |
+           (write ? MULLION_RESOURCE_RESIDENCY_MESH_WRITE | MULLION_RESOURCE_RESIDENCY_VERTEX_WRITE
+                  : MULLION_RESOURCE_RESIDENCY_NULL);
   case PipelineStage::Compute:
     return (read ? MULLION_RESOURCE_RESIDENCY_READ : MULLION_RESOURCE_RESIDENCY_NULL) |
            (write ? MULLION_RESOURCE_RESIDENCY_WRITE : MULLION_RESOURCE_RESIDENCY_NULL);
@@ -613,6 +623,21 @@ public:
       const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments,
       uint64_t argument_buffer_offset
   );
+  // what a tessellation pipeline's stage table set by `cmd` is to a native draw: the vertex and hull shaders' are its
+  // hull kernel's (tess_hull_tables), and the domain shader's are the vertex stage's after Metal's tessellator too
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  encodeTessellationTable(const wmtcmd_render_setbufferoffset &cmd) {
+    if constexpr (kind == PipelineKind::Tessellation && (stage == PipelineStage::Vertex || stage == PipelineStage::Hull))
+      tess_hull_tables[cmd.index] = cmd.offset;
+    if constexpr (kind == PipelineKind::Tessellation && stage == PipelineStage::Domain) {
+      auto &vertex = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
+      vertex.type = WMTRenderCommandSetVertexBufferOffset;
+      vertex.offset = cmd.offset;
+      vertex.index = cmd.index;
+    }
+  }
+
   // the targets' offset in the encoder's `so_targets`, and their GPU address
   std::pair<uint64_t, uint64_t> encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations);
 
@@ -639,6 +664,14 @@ public:
       cmd.resource = resource;
       cmd.usage = GetUsageFromResidencyMask(requested);
       cmd.stages = GetStagesFromResidencyMask(requested);
+      // the vertex and hull shaders of a tessellation pipeline run in a hull kernel before the pass as well, for a
+      // native draw; only they make a resource resident in the object stage, first in a pass
+      if constexpr (kind == PipelineKind::Tessellation && (stage == PipelineStage::Vertex || stage == PipelineStage::Hull)) {
+        auto &hull = encodeHullCommand<wmtcmd_compute_useresource>();
+        hull.type = WMTComputeCommandUseResource;
+        hull.resource = resource;
+        hull.usage = cmd.usage;
+      }
     }
   }
   template <PipelineStage stage, PipelineKind kind>
@@ -738,6 +771,20 @@ public:
         {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
          dispatch_args_resource_id + write_offset, control_point_count, patch_per_group, parts}
     );
+  }
+
+  // a command of the compute encoder before the current render pass, which its native tessellation draws' hull
+  // kernels run in (RenderEncoderData::before_head)
+  template <typename cmd_struct>
+  cmd_struct &
+  encodeHullCommand() {
+    assert(encoder_current->type == EncoderType::Render);
+    auto encoder = static_cast<RenderEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)allocate_cpu_heap(sizeof(cmd_struct), 16);
+    encoder->before_tail->next.set(storage);
+    encoder->before_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
   }
 
   template <typename cmd_struct>
@@ -954,6 +1001,17 @@ public:
   uint32_t tess_threads_per_patch;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t tess_parts;
+  // the bound tessellation pipeline's Metal tessellator, null without one: the hull kernel, the pipeline of its
+  // patches, the bytes of a group of patches and of a patch's factors (MTL_COMPILED_TESSELLATION_MESH_PIPELINE)
+  WMT::ComputePipelineState tess_hull;
+  WMT::RenderPipelineState tess_patches;
+  // and its mesh pipeline, which the draws Metal's tessellator does not take draw with
+  WMT::RenderPipelineState tess_mesh;
+  uint32_t tess_patch_group_size;
+  uint32_t tess_patch_factor_size;
+  // where the vertex and hull shaders' tables are in the current pass's argument buffer, by their binding index
+  // (SM50_BINDING_INDEX_*): a hull kernel binds them as the object stage of the mesh pipeline does
+  std::array<uint64_t, SM50_BINDING_INDEX_ARGUMENT_TABLE2 + 1> tess_hull_tables{};
   // the arguments of the last DrawAuto, which a second draw of it reads again
   AllocatedTempBufferSlice draw_auto_arguments;
 
@@ -1014,6 +1072,8 @@ private:
   
   uint64_t encoder_id_ = kParityLane; // actually important to not start from 0
   std::array<WMT::Reference<WMT::Fence>, kParityLane> fence_pool_;
+  // what a pass's draws wait for of the hull kernels before it
+  WMT::Reference<WMT::Fence> hull_fence_;
   FenceLocalityCheck fence_locality_;
 
   uint64_t seq_id_;
@@ -1115,6 +1175,7 @@ ArgumentEncodingContext::track(GenericAccessTracker &tracker, int flags) {
   auto current_encoder = currentRenderEncoder();
   auto id = current_encoder->encoder_id_vertex;
   EncoderBarrierState &barrier_state = current_encoder->barrier_state;
+  current_encoder->pre_raster_written |= bool(flags & ResourceAccess::Write);
   if (flags & ResourceAccess::Write)
     tracker.accessExclusivePreRaster(
         id, current_encoder->fence_wait_vertex, barrier_state, flags & ResourceAccess::UAV
