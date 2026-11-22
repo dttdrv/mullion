@@ -292,6 +292,7 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
   obj_handle_t depth;
   obj_handle_t motion;
   obj_handle_t exposure;
+  obj_handle_t reactive;
   obj_handle_t fence;
   struct WMTConstMemoryPointer props;
 };

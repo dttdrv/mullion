@@ -5686,7 +5686,7 @@ public:
     Destroy() final {
       delete this;
     }
-    std::array<uint32_t, 14> key{};
+    std::array<uint32_t, 15> key{};
     Rc<TemporalScaler> temporal;
     Rc<DenoisedScaler> denoised;
     // display-resolution motion vectors brought to the input resolution (DownscaleMotion)
@@ -5759,6 +5759,12 @@ public:
     }
   }
 
+  // a reactive mask as MetalFX reads it: a value from 0 to 1, held in a typeless resource as unsigned integers
+  static WMTPixelFormat
+  ReactiveMaskFormat(WMTPixelFormat format) {
+    return format == WMTPixelFormatR8Uint ? WMTPixelFormatR8Unorm : ScalarFloatFormat(format);
+  }
+
   // the float format MetalFX reads motion vectors as: DLSS takes them as floats, held as such or, in a typeless
   // resource, as unsigned integers. normalized or signed integer motion vectors hold no float to read
   static WMTPixelFormat
@@ -5818,7 +5824,7 @@ public:
       return E_INVALIDARG;
     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
          depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
-         exposure = UpscaleTexture(pDesc->ExposureTexture);
+         exposure = UpscaleTexture(pDesc->ExposureTexture), reactive = UpscaleTexture(pDesc->ReactiveMask);
     if (!color || !output || !depth || !motion)
       return E_INVALIDARG;
     // inputs DLSS would not be given are still upscaled, as they were before these checks: a game's ray traced
@@ -5856,10 +5862,28 @@ public:
     uint32_t pass_width = !motion_pass ? 0 : display_motion ? color->width() : motion->width(),
              pass_height = !motion_pass ? 0 : display_motion ? color->height() : motion->height();
     auto depth_format = ScalarFloatFormat(depth->pixelFormat());
+    // the content, which takes the rest of the color's texture from where it starts where no size is given
+    uint32_t content_width = pDesc->InputContentWidth
+                                 ? pDesc->InputContentWidth
+                                 : color->width() - std::min(pDesc->ColorOffsetX, color->width() - 1),
+             content_height = pDesc->InputContentHeight
+                                  ? pDesc->InputContentHeight
+                                  : color->height() - std::min(pDesc->ColorOffsetY, color->height() - 1);
+    // a reactive mask that holds the content is read: one of another kind or smaller is left out, as DLSS without one
+    if (reactive &&
+        (!UpscaleImage(reactive) || reactive->width() < content_width || reactive->height() < content_height ||
+         IsIntegerFormat(ReactiveMaskFormat(reactive->pixelFormat())))) {
+      static std::atomic_flag warned;
+      if (!warned.test_and_set())
+        WARN("TemporalUpscale: a reactive mask of format ", reactive->pixelFormat(), ", ", reactive->width(), "x",
+             reactive->height(), ", is left out");
+      reactive = nullptr;
+    }
+    auto reactive_format = reactive ? ReactiveMaskFormat(reactive->pixelFormat()) : WMTPixelFormatInvalid;
     auto cache = static_cast<UpscalerCache *>(*ppCache);
     if (!cache)
       *ppCache = cache = new UpscalerCache;
-    std::array<uint32_t, 14> key{1,
+    std::array<uint32_t, 15> key{1,
                                  color->width(),
                                  color->height(),
                                  output->width(),
@@ -5872,7 +5896,8 @@ public:
                                  uint32_t(display_motion),
                                  uint32_t(!!pDesc->MotionVectorJittered),
                                  pass_width,
-                                 pass_height};
+                                 pass_height,
+                                 uint32_t(reactive_format)};
     if (!cache->temporal || cache->key != key) {
       WMTFXTemporalScalerInfo info{};
       info.color_format = color->pixelFormat();
@@ -5896,6 +5921,7 @@ public:
       info.requires_synchronous_initialization = false;
       // the pass that brings motion vectors to the input resolution writes them in pixels and leaves their jitter in
       info.jittered_motion_vectors = pDesc->MotionVectorJittered;
+      info.reactive_mask_format = reactive_format;
       cache->temporal = new TemporalScaler(device_->GetMTLDevice(), info, device_->UsesMetal4());
       if (!cache->temporal->scaler().handle) {
         cache->temporal = nullptr;
@@ -5928,7 +5954,8 @@ public:
           "MetalFX: temporal upscaling ", info.input_width, "x", info.input_height, " to ", info.output_width, "x",
           info.output_height, device_->UsesMetal4() ? " (Metal 4)" : "",
           display_motion ? ", motion vectors brought from the output resolution" : "",
-          formatted ? str::format(", motion vectors read from format ", motion->pixelFormat()) : ""
+          formatted ? str::format(", motion vectors read from format ", motion->pixelFormat()) : "",
+          reactive ? ", with a reactive mask" : ""
       ));
       // MULLION_LOG_LEVEL=debug: what the game gives the scaler, for an image that comes out wrong
       if (Logger::logLevel() <= LogLevel::Debug)
@@ -5956,15 +5983,9 @@ public:
     pass->motion = motion_pass ? WMT::Texture(cache->motion) : UpscaleView(motion, motion_format);
     pass->exposure =
         UpscaleView(exposure, exposure ? ScalarFloatFormat(exposure->pixelFormat()) : WMTPixelFormatInvalid);
-    // the content, which takes the rest of the color's texture from where it starts where no size is given, and where
-    // each input's starts: within its texture, and in the motion vectors brought to the input resolution where they
-    // are
-    uint32_t content_width = pDesc->InputContentWidth
-                                 ? pDesc->InputContentWidth
-                                 : color->width() - std::min(pDesc->ColorOffsetX, color->width() - 1),
-             content_height = pDesc->InputContentHeight
-                                  ? pDesc->InputContentHeight
-                                  : color->height() - std::min(pDesc->ColorOffsetY, color->height() - 1);
+    pass->reactive = UpscaleView(reactive, reactive_format);
+    // where each input's content starts: within its texture, and in the motion vectors brought to the input resolution
+    // where they are
     uint32_t motion_x = pDesc->MotionVectorOffsetX, motion_y = pDesc->MotionVectorOffsetY;
     if (display_motion) {
       motion_x = uint64_t(motion_x) * color->width() / motion->width();
@@ -5987,10 +6008,13 @@ public:
         ContentOffset(pDesc->DepthOffsetY, content_height, depth->height()),
         ContentOffset(motion_x, content_width, motion_read->width()),
         ContentOffset(motion_y, content_height, motion_read->height()),
+        reactive ? ContentOffset(pDesc->ReactiveMaskOffsetX, content_width, reactive->width()) : 0,
+        reactive ? ContentOffset(pDesc->ReactiveMaskOffsetY, content_height, reactive->height()) : 0,
     };
     auto &props = pass->props;
     if (!cache->content_offsets && (props.color_offset_x || props.color_offset_y || props.depth_offset_x ||
-                                    props.depth_offset_y || props.motion_offset_x || props.motion_offset_y)) {
+                                    props.depth_offset_y || props.motion_offset_x || props.motion_offset_y ||
+                                    props.reactive_offset_x || props.reactive_offset_y)) {
       static std::atomic_flag warned;
       if (!warned.test_and_set())
         WARN("MetalFX: this macOS reads each input's content from its texture's corner, not where it starts");
@@ -6019,7 +6043,7 @@ public:
     if (!cache)
       *ppCache = cache = new UpscalerCache;
     auto depth_format = ScalarFloatFormat(depth->pixelFormat());
-    std::array<uint32_t, 14> key{2,
+    std::array<uint32_t, 15> key{2,
                                  color->width(),
                                  color->height(),
                                  output->width(),

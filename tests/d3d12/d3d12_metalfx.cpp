@@ -13,7 +13,8 @@
 // motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
 // one color come out that color with them. the render sizes NGX's optimal settings give are ones MetalFX takes: the
 // output's size over each is within the scales MetalFX takes on the device. content that starts inside its textures
-// (DLSS's Subrect.Base), one color there and another around it, comes out that one color
+// (DLSS's Subrect.Base), one color there and another around it, comes out that one color. a reactive mask (DLSS's
+// Bias.Current.Color.Mask) of 1 has a frame not in reset show less of the frame before than it does without one
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -96,10 +97,12 @@ main(int argc, char **argv) {
   auto exposure = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, 1, 1, target, input);
   auto normalized = texture(DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R16G16_SNORM, width, height, target, input);
   auto packed = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, width, height, target, input);
+  // DLSS's mask of how much each pixel takes of its current color: all of it
+  auto mask = texture(DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, width, height, target, input);
   auto output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, out_width, out_height,
                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   CHECK(color.resource && depth.resource && motion.resource && exposure.resource && normalized.resource &&
-                packed.resource && output.resource && display_motion.resource
+                packed.resource && output.resource && display_motion.resource && mask.resource
             ? S_OK
             : E_FAIL);
   CHECK(list->Reset(allocator.Get(), nullptr));
@@ -135,6 +138,8 @@ main(int argc, char **argv) {
   // the input-resolution motion vectors the upscale is given, and the scale that makes their values pixels
   Texture *given = &motion;
   float given_scale[2] = {1, 1};
+  // the reactive mask the upscale is given, if any
+  Texture *reactive = nullptr;
 
   // one frame upscaled by what `record` records into the list: the color is `a` in the squares of a checkerboard of
   // `square` texels and `b` between them (one color when `square` is 0), or in the one square of `moved`; the
@@ -159,7 +164,7 @@ main(int argc, char **argv) {
       std::vector<D3D12_RECT> rects;
     };
     Clear clears[] = {{&color, fb.data(), fa.data(), squares}, {&depth, half}, {given, zero}, {&exposure, one},
-                      {&display_motion, some}};
+                      {&display_motion, some}, {&mask, one}};
     if (content)
       clears[0].rects = {*content};
     if (moved) {
@@ -219,6 +224,7 @@ main(int argc, char **argv) {
       desc.MotionVectorScaleX = at_output ? 1 : given_scale[0];
       desc.MotionVectorScaleY = at_output ? 1 : given_scale[1];
       desc.PreExposure = 1;
+      desc.ReactiveMask = reactive ? reactive->resource.Get() : nullptr;
       return SUCCEEDED(ext->TemporalUpscale(&desc, &scaler));
     };
     return upscaled(a, b, square, record, moved);
@@ -271,7 +277,20 @@ main(int argc, char **argv) {
     expect(!apart(first, reset), "%u channels of the frame in reset show the frame before", apart(first, reset));
     expect(apart(first, kept), "a frame not in reset shows nothing of the frame before: reset cannot be told apart");
   }
-  for (auto scaler : {fresh, continued, upscaler})
+  // a reactive mask of 1 everywhere has each pixel take its current color over its history (DLSS's
+  // Bias.Current.Color.Mask, MetalFX's reactiveMaskTexture): a frame not in reset shows less of the frame before
+  // with it than without
+  IMTLD3D12Upscaler *reacting = nullptr;
+  step("the same checkerboard not in reset, after its inverse, with a reactive mask of 1");
+  reactive = &mask;
+  frame(dark, light, square, TRUE, reacting);
+  auto masked = frame(light, dark, square, FALSE, reacting);
+  reactive = nullptr;
+  if (expect(!first.empty() && !kept.empty() && !masked.empty(), "no image"))
+    expect(apart(first, masked) < apart(first, kept),
+           "%u channels of the frame with a reactive mask show the frame before, %u without one", apart(first, masked),
+           apart(first, kept));
+  for (auto scaler : {fresh, continued, upscaler, reacting})
     if (scaler)
       scaler->Destroy();
 
@@ -479,6 +498,26 @@ main(int argc, char **argv) {
       uniform(upscaled(want, want, 0, [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; }),
               want);
     }
+    // the frame before shows less in a frame not in reset with DLSS's mask of how much each pixel takes of its
+    // current color than without
+    auto continued_frame = [&](bool masked) {
+      if (masked)
+        params->Set("DLSS.Input.Bias.Current.Color.Mask", mask.resource.Get());
+      auto run = [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; };
+      params->Set("Reset", 1);
+      upscaled(dark, light, square, run);
+      params->Set("Reset", 0);
+      auto image = upscaled(light, dark, square, run);
+      params->Set("Reset", 1);
+      params->Set("DLSS.Input.Bias.Current.Color.Mask", (ID3D12Resource *)nullptr);
+      return image;
+    };
+    step("DLSS of a checkerboard not in reset, after its inverse, without and with a bias mask of 1");
+    auto unbiased = continued_frame(false), biased = continued_frame(true);
+    if (expect(!first.empty() && !unbiased.empty() && !biased.empty(), "no image"))
+      expect(apart(first, biased) < apart(first, unbiased),
+             "%u channels of the frame with DLSS's bias mask show the frame before, %u without one",
+             apart(first, biased), apart(first, unbiased));
     step("DLSS of a frame whose content starts inside its textures");
     params->Set("DLSS.Render.Subrect.Dimensions.Width", unsigned(content.right - content.left));
     params->Set("DLSS.Render.Subrect.Dimensions.Height", unsigned(content.bottom - content.top));

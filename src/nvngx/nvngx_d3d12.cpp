@@ -299,6 +299,10 @@ NVSDK_NGX_D3D12_EvaluateFeature(
     desc.DepthOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
     desc.MotionVectorOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_MV_Subrect_Base_X, 0u);
     desc.MotionVectorOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_MV_Subrect_Base_Y, 0u);
+    // DLSS's mask of how much each pixel takes of its current color is MetalFX's reactive mask
+    desc.ReactiveMask = GetResource(parameters, NVNGX_Parameter_DLSS_Input_Bias_Current_Color_Mask);
+    desc.ReactiveMaskOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Bias_Current_Color_Subrect_Base_X, 0u);
+    desc.ReactiveMaskOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Bias_Current_Color_Subrect_Base_Y, 0u);
     desc.DepthReversed = bool(dlss->flag & NVNGX_DLSS_FLAG_DEPTH_INVERTED);
     desc.AutoExposure = bool(dlss->flag & NVNGX_DLSS_FLAG_AUTO_EXPOSURE);
     desc.MotionVectorInDisplayRes = !bool(dlss->flag & NVNGX_DLSS_FLAG_MV_LOWRES);

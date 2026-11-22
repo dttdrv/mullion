@@ -1872,6 +1872,9 @@ struct WMTFXTemporalScalerInfo {
   // offsets of each frame (MTLFXTemporalScalerDescriptor.jitteredMotionVectorsEnabled, macOS 27): no scaler is made
   // where MetalFX lacks it
   bool jittered_motion_vectors;
+  // the format of a mask of how much each pixel takes of its current color over its history, from 0 to 1
+  // (reactiveMaskTextureEnabled, reactiveMaskTextureFormat); WMTPixelFormatInvalid for none
+  enum WMTPixelFormat reactive_mask_format;
 };
 
 struct WMTFXSpatialScalerInfo {
@@ -1905,11 +1908,14 @@ struct WMTFXTemporalScalerProps {
   uint32_t depth_offset_y;
   uint32_t motion_offset_x;
   uint32_t motion_offset_y;
+  uint32_t reactive_offset_x;
+  uint32_t reactive_offset_y;
 };
 
 WINEMETAL_API void MTLCommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 );
 
 WINEMETAL_API void MTLCommandBuffer_encodeSpatialScale(
@@ -1921,7 +1927,8 @@ WINEMETAL_API obj_handle_t MTLDevice_newTemporalScaler4(obj_handle_t device, con
 
 WINEMETAL_API void MTL4CommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 );
 
 /* MetalFX temporal denoised upscaling (MTLFXTemporalDenoisedScaler, macOS 26): a ray-traced frame's noisy color,
