@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <atomic>
 #include <bit>
 #include <functional>
 #include "d3d12_command_allocator.hpp"
@@ -5796,6 +5797,13 @@ public:
            std::isfinite(jitter_x) && std::isfinite(jitter_y);
   }
 
+  static void
+  UpscaleUnusual(bool unusual, unsigned which, const char *what) {
+    static std::atomic<unsigned> logged{0};
+    if (unusual && !(logged.fetch_or(1u << which) & (1u << which)))
+      WARN("TemporalUpscale: upscaling ", what, " (logged once)");
+  }
+
   HRESULT
   TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
     if (!pDesc || !ppCache)
@@ -5803,14 +5811,24 @@ public:
     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
          depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
          exposure = UpscaleTexture(pDesc->ExposureTexture);
-    const auto *motion_size = pDesc->MotionVectorInDisplayRes ? output : color;
-    if (!UpscaleImage(color) || !UpscaleImage(output) || color == output || !UpscaleSize(depth, color) ||
-        !UpscaleSize(motion, motion_size) || output->width() < color->width() || output->height() < color->height() ||
-        pDesc->InputContentWidth > color->width() || pDesc->InputContentHeight > color->height() ||
-        (pDesc->ExposureTexture && (!UpscaleImage(exposure) || exposure->width() != 1 || exposure->height() != 1)) ||
-        !UpscaleValues(pDesc->PreExposure, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY,
-                       pDesc->JitterOffsetX, pDesc->JitterOffsetY))
+    if (!color || !output || !depth || !motion)
       return E_INVALIDARG;
+    // inputs DLSS would not be given are still upscaled, as they were before these checks: a game's ray traced
+    // frame (Minecraft's) gives one of them and came out black when the upscale was refused. each is logged once
+    const auto *motion_size = pDesc->MotionVectorInDisplayRes ? output : color;
+    UpscaleUnusual(!UpscaleImage(color) || !UpscaleImage(output), 0, "a color or output texture that is not one 2D image");
+    UpscaleUnusual(color == output, 1, "the same texture as input and output");
+    UpscaleUnusual(!UpscaleSize(depth, color), 2, "depth of another size than the color");
+    UpscaleUnusual(!UpscaleSize(motion, motion_size), 3, "motion vectors of another size than they are marked");
+    UpscaleUnusual(output->width() < color->width() || output->height() < color->height(), 4,
+                   "an output smaller than the color");
+    UpscaleUnusual(pDesc->InputContentWidth > color->width() || pDesc->InputContentHeight > color->height(), 5,
+                   "content larger than the color texture");
+    UpscaleUnusual(pDesc->ExposureTexture && (!UpscaleImage(exposure) || exposure->width() != 1 || exposure->height() != 1),
+                   6, "an exposure texture larger than one texel");
+    UpscaleUnusual(!UpscaleValues(pDesc->PreExposure, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY,
+                                  pDesc->JitterOffsetX, pDesc->JitterOffsetY),
+                   7, "a pre-exposure, motion scale or jitter that is not a finite number (pre-exposure above 0)");
     auto motion_format = MotionVectorFormat(motion->pixelFormat());
     // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer
     // formats", DLSS Programming Guide 3.3): those in one MetalFX does not take, which a shader reads as floats, are
