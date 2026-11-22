@@ -1,4 +1,5 @@
 #include "metallib_writer.hpp"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
 
@@ -398,8 +399,11 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
   header.VersionMajor = 2;
   header.VersionMinor = 7;
   header.OS = OS::MTLBOS_macOS;
-  header.OSVersionMajor = 14;
-  header.OSVersionMinor = 4;
+  // the macOS the module is for, as its target triple names it: Apple's metallib writes the triple's
+  // (MetalLibObjectWriter::writeHeader, Triple::getOSVersion), which Metal 4's AIR has as 26.0
+  auto os = Triple(module.getTargetTriple()).getOSVersion();
+  header.OSVersionMajor = os.getMajor();
+  header.OSVersionMinor = os.getMinor().value_or(0);
 
   // write to stream
   OS << value(header);
