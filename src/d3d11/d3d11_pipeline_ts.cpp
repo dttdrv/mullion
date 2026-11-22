@@ -56,6 +56,25 @@ public:
         tess_factor_config >= 4 && tess_factor_config <= 64)
       max_potential_factor = tess_factor_config;
 
+    // Metal's tessellator, where it tessellates as Direct3D does: a triangle or quad domain to triangles, partitioned to
+    // whole factors, which pow2 is once its hull shader rounds them (D3D11.3 11.7.7.1). its hull kernel runs before
+    // the pass, so its stages write no UAVs; a geometry shader, clip distances the pixel shader tests and cull
+    // distances, which a vertex function has none of, keep the mesh pipeline, which also takes the indirect draws and
+    // those under pipeline statistics. d3d11.nativeTessellation = False keeps it for every draw
+    auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(hull_reflection.Tessellator.Partition);
+    auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(hull_reflection.Tessellator.Domain);
+    output = hull_reflection.Tessellator.OutputPrimitive;
+    static const bool native_enabled = Config::getInstance().getOption<bool>("d3d11.nativeTessellation", true);
+    native = native_enabled && !pDesc->GeometryShader && !pDesc->SOLayout && pDesc->RasterizationEnabled &&
+             !pDesc->ClipDistances && !pDesc->PipelineStatistics && !domain_reflection.CullDistances &&
+             !pDesc->VertexShader->reflection().UAVSlotMask && !hull_reflection.UAVSlotMask &&
+             (domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI ||
+              domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD) &&
+             (partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_INTEGER ||
+              partitioning == microsoft::D3D11_SB_TESSELLATOR_PARTITIONING_POW2) &&
+             (output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW || output == MTL_TESSELLATOR_TRIANGLE_CCW);
+    quad = domain == microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD;
+
     GetTessellationShaders();
     if (pDesc->PixelShader) {
       PixelShader = pDesc->PixelShader->get_pixel_shader(ShaderVariantPixel{
@@ -97,6 +116,13 @@ public:
     DomainShader = desc.DomainShader->get_shader(ShaderVariantTessellationDomain{
         desc.HullShader, max_potential_factor, mesh_vertex_size, !desc.RasterizationEnabled, desc.GeometryShader,
         max_mesh_threadgroups, desc.ClipDistances != 0});
+    if (!native)
+      return;
+    HullKernel = desc.HullShader->get_shader(ShaderVariantTessellationVertexHull{
+        desc.InputLayout, desc.VertexShader, desc.IndexBufferFormat, max_potential_factor, mesh_vertex_size, nullptr,
+        max_mesh_threadgroups, true});
+    PatchShader = desc.DomainShader->get_shader(ShaderVariantTessellationDomain{
+        desc.HullShader, max_potential_factor, mesh_vertex_size, false, nullptr, max_mesh_threadgroups, false, true});
   }
 
   void GetPipeline(MTL_COMPILED_TESSELLATION_MESH_PIPELINE *pPipeline, bool statistics) final {
@@ -109,7 +135,8 @@ public:
     }
     ready_.wait(false, std::memory_order_acquire);
     *pPipeline = {state_rasterization_, hull_reflection.NumOutputElement,
-                  hull_reflection.ThreadsPerPatch, parts};
+                  hull_reflection.ThreadsPerPatch, parts, state_hull_, state_patches_,
+                  hull_reflection.Tessellator.PatchGroupSize, quad ? 12u : 8u};
   }
 
   ThreadpoolWork *RunThreadpoolWork() {
@@ -140,6 +167,11 @@ public:
         return this;
       }
     }
+    MTL_COMPILED_SHADER hull{}, patch{};
+    if (native && !HullKernel->GetShader(&hull))
+      return HullKernel;
+    if (native && !PatchShader->GetShader(&patch))
+      return PatchShader;
 
     WMTMeshRenderPipelineInfo info;
     WMT::InitializeMeshRenderPipelineInfo(info);
@@ -194,9 +226,73 @@ public:
     if (state_rasterization_ == nullptr) {
       ERR("Failed to create tessellation raster PSO: ",
           err.description().getUTF8String());
+      return this;
     }
+    if (native)
+      CreateTessellator(hull, patch);
 
     return this;
+  }
+
+  // Metal's tessellator: the hull kernel, and the pipeline of the patches it writes, whose vertex function is the
+  // domain shader. one Metal does not make leaves the draws on the mesh pipeline
+  void CreateTessellator(const MTL_COMPILED_SHADER &hull, const MTL_COMPILED_SHADER &patch) {
+    if (!hull.Function || !patch.Function) {
+      ERR("Failed to create the tessellator: invalid hull kernel or domain shader");
+      return;
+    }
+    WMT::Reference<WMT::Error> err;
+    WMTComputePipelineInfo hull_info;
+    WMT::InitializeComputePipelineInfo(hull_info);
+    hull_info.compute_function = hull.Function;
+    hull_info.tgsize_is_multiple_of_sgwidth = true;
+    auto kernel = device_->GetMTLDevice().newComputePipelineState(hull_info, err);
+    if (!kernel) {
+      ERR("Failed to create the tessellator's hull kernel: ", err.description().getUTF8String());
+      return;
+    }
+
+    WMTRenderPipelineInfo info;
+    WMT::InitializeRenderPipelineInfo(info);
+    info.vertex_function = patch.Function;
+    MTL_COMPILED_SHADER ps;
+    if (PixelShader && PixelShader->GetShader(&ps))
+      info.fragment_function = ps.Function;
+    info.rasterization_enabled = true;
+    for (unsigned i = 0; i < num_rtvs; i++) {
+      if (rtv_formats[i] == WMTPixelFormatInvalid)
+        continue;
+      info.colors[i].pixel_format = rtv_formats[i];
+    }
+    if (depth_stencil_format != WMTPixelFormatInvalid)
+      info.depth_pixel_format = depth_stencil_format;
+    if (DepthStencilPlanarFlags(depth_stencil_format) & 2)
+      info.stencil_pixel_format = depth_stencil_format;
+    if (pBlendState)
+      pBlendState->SetupMetalPipelineDescriptor((WMTRenderPipelineBlendInfo *)&info, num_rtvs, ps_valid_render_targets);
+    // explicit shader coverage disables A2C (D3D11.3 17.18)
+    if (description->PixelShader && description->PixelShader->reflection().PixelShader.HasCoverageOutput)
+      info.alpha_to_coverage_enabled = false;
+    info.raster_sample_count = SampleCount;
+    info.immutable_vertex_buffers = (1 << 29) | (1 << 30);
+    info.immutable_fragment_buffers = (1 << 29) | (1 << 30);
+    info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+    // the hull kernel rounds pow2's factors to whole ones, and writes each instance's after the instance before
+    info.tessellation_partition_mode = WMTTessellationPartitionModeInteger;
+    info.tessellation_factor_step = WMTTessellationFactorStepFunctionPerPatchAndPerInstance;
+    // Metal turns its triangles the other way round the domain's points from Direct3D's: the reference's clockwise
+    // triangles are Metal's counterclockwise ones (d3d11_tessellator, culling back faces)
+    info.tessellation_output_winding_order =
+        output == MTL_TESSELLATOR_OUTPUT_TRIANGLE_CW ? WMTWindingCounterClockwise : WMTWindingClockwise;
+    // the most Direct3D's tessellator takes (D3D11_TESSELLATOR_MAX_TESSELLATION_FACTOR)
+    info.max_tessellation_factor = 64;
+    auto patches = device_->GetMTLDevice().newRenderPipelineState(info, err);
+    if (!patches) {
+      ERR("Failed to create the tessellator's pipeline: ", err.description().getUTF8String());
+      return;
+    }
+    state_hull_ = std::move(kernel);
+    state_patches_ = std::move(patches);
   }
 
   bool GetIsDone() { return ready_; }
@@ -215,6 +311,9 @@ private:
   std::atomic_bool ready_;
   IMTLD3D11BlendState *pBlendState;
   WMT::Reference<WMT::RenderPipelineState> state_rasterization_;
+  // Metal's tessellator (CreateTessellator)
+  WMT::Reference<WMT::ComputePipelineState> state_hull_;
+  WMT::Reference<WMT::RenderPipelineState> state_patches_;
   bool RasterizationEnabled;
   UINT SampleCount;
 
@@ -228,6 +327,12 @@ private:
   CompiledShader *VertexHullShader;
   CompiledShader *PixelShader;
   CompiledShader *DomainShader;
+  // whether the pipeline has Metal's tessellator, and its hull kernel and domain shader
+  bool native = false;
+  bool quad = false;
+  MTL_TESSELLATOR_OUTPUT_PRIMITIVE output;
+  CompiledShader *HullKernel = nullptr;
+  CompiledShader *PatchShader = nullptr;
 };
 
 std::unique_ptr<MTLCompiledTessellationMeshPipeline>

@@ -281,6 +281,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.max_mesh_threadgroups);
   if (variant.geometry_shader_handle)
     h.update(variant.geometry_shader_handle->sha1());
+  h.update(variant.native);
   auto variant_digest = h.final();
   std::string func_name = "vshs_" + shader->sha1().string().substr(0, 8) + "_" +  variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
@@ -303,6 +304,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     pso_tess.max_potential_tess_factor = variant.max_potential_tess_factor;
     pso_tess.mesh_vertex_size = variant.mesh_vertex_size;
     pso_tess.max_mesh_threadgroups = variant.max_mesh_threadgroups;
+    pso_tess.native = variant.native;
     if (variant.geometry_shader_handle && !(pso_tess.geometry = variant.geometry_shader_handle->handle()))
       return nullptr;
 
@@ -339,6 +341,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.clip_distance_varyings);
   if (variant.geometry_shader_handle)
     h.update(variant.geometry_shader_handle->sha1());
+  h.update(variant.native);
   auto variant_digest = h.final();
   std::string func_name = "ds_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
@@ -354,6 +357,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     pso_tess.max_potential_tess_factor = variant.max_potential_tess_factor;
     pso_tess.mesh_vertex_size = variant.mesh_vertex_size;
     pso_tess.max_mesh_threadgroups = variant.max_mesh_threadgroups;
+    pso_tess.native = variant.native;
     if (variant.geometry_shader_handle && !(pso_tess.geometry = variant.geometry_shader_handle->handle()))
       return nullptr;
 
