@@ -1364,10 +1364,16 @@ read_dxil(
     outputs(entry.output, *outputParser.Signature(0), shader->mesh_outputs[0]);
     outputs(entry.patch, patchParser, shader->mesh_outputs[1]);
   }
-  // kDxilWaveSizeTag, a number or (DXIL 1.8) a tuple starting with it
+  // kDxilWaveSizeTag, a number or (DXIL 1.8) a tuple starting with it; kDxilRangedWaveSizeTag (SM 6.8), a tuple of the
+  // least, the most (0: the least alone) and the preferred size, which is a hint (DxilMetadataHelper.h)
   if (auto size = tag(entry.properties, 11)) {
     auto tuple = dyn_cast<MDNode>(size->get());
-    info.wave_size = md_uint(tuple ? tuple->getOperand(0) : *size);
+    info.wave_size = info.wave_size_max = md_uint(tuple ? tuple->getOperand(0) : *size);
+  }
+  if (auto size = tag(entry.properties, 23)) {
+    auto range = cast<MDNode>(size->get());
+    info.wave_size = md_uint(range->getOperand(0));
+    info.wave_size_max = std::max<uint32_t>(info.wave_size, range->getNumOperands() > 1 ? md_uint(range->getOperand(1)) : 0);
   }
   // SM 6.6 quads: in groups with even X and Y, 2x2 blocks of thread IDs. Metal's are four consecutive threads, which
   // other groups' quads already are, so these groups' IDs are derived from the flattened one and the group's
@@ -1450,11 +1456,17 @@ convert_dxil(
     SM50ShaderInternal *shader, context &ctx, const std::string &function, llvm::BasicBlock *epilogue,
     std::unique_ptr<llvm::Module> linked, ShaderInfo *linked_info
 ) {
-  // a required wave size runs only on a GPU whose SIMD groups have it (SM 6.6)
-  auto wave_size = shader->shader_info.wave_size;
-  if (wave_size && ctx.simd_width && wave_size != ctx.simd_width)
+  // a required wave size runs only on a GPU whose SIMD groups have it (SM 6.6), a range only on one whose size is in
+  // it (SM 6.8: "the shader is compiled for and will only run with a wave size in this range")
+  auto &waves = shader->shader_info;
+  if (waves.wave_size && ctx.simd_width && (ctx.simd_width < waves.wave_size || ctx.simd_width > waves.wave_size_max))
     return make_error<UnsupportedFeature>(
-        std::format("the shader needs waves of {} lanes, and this GPU's have {}", wave_size, ctx.simd_width)
+        waves.wave_size == waves.wave_size_max
+            ? std::format("the shader needs waves of {} lanes, and this GPU's have {}", waves.wave_size, ctx.simd_width)
+            : std::format(
+                  "the shader needs waves of {} to {} lanes, and this GPU's have {}", waves.wave_size, waves.wave_size_max,
+                  ctx.simd_width
+              )
     );
   auto module = linked ? Expected<std::unique_ptr<Module>>(std::move(linked)) : parse(shader->dxil, ctx.llvm);
   if (!module)
