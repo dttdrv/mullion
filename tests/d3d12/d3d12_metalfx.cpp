@@ -11,7 +11,8 @@
 // color, the second not in reset, come out that color with them, and a square that moves between two frames comes out
 // the same image whether its motion is given at the input resolution or, as the same motion, at the output's.
 // motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
-// one color come out that color with them
+// one color come out that color with them. the render sizes NGX's optimal settings give are ones MetalFX takes: the
+// output's size over each is within the scales MetalFX takes on the device
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
@@ -369,6 +370,41 @@ main(int argc, char **argv) {
              denoising == unsigned(ext->SupportsDenoisedUpscale()),
          "Ray Reconstruction is offered as %u where the denoiser is %s", denoising,
          ext->SupportsDenoisedUpscale() ? "there" : "not");
+  // the render sizes of DLSS's optimal settings, a game's choice of render size, are ones MetalFX's scaler takes: the
+  // output's size over each is within the scales MetalFX takes on the device, as are the dynamic range's bounds
+  step("DLSS's optimal render sizes for %ux%u", out_width, out_height);
+  float min_scale = 0, max_scale = 0;
+  ext->GetTemporalUpscaleScales(&min_scale, &max_scale);
+  expect(min_scale >= 1 && max_scale >= min_scale, "MetalFX's scales are %g to %g", min_scale, max_scale);
+  NVNGX_RESULT (*optimal)(NVNGXParameter *) = nullptr;
+  if (caps)
+    caps->Get("DLSSOptimalSettingsCallback", (void **)&optimal);
+  NVNGXParameter *settings = nullptr;
+  if (expect(optimal, "no optimal settings callback") &&
+      expect(allocate(&settings) == NVNGX_RESULT_OK, "no parameters")) {
+    // a scale of the output's size over a render size, in the device's range
+    auto within = [&](UINT output_size, UINT render, const char *what, int mode) {
+      float scale = render ? float(output_size) / float(render) : 0;
+      expect(render && scale >= min_scale && scale <= max_scale, "mode %d's %s %u is a scale of %g, outside %g to %g",
+             mode, what, render, scale, min_scale, max_scale);
+    };
+    for (int mode = NVNGX_PERFQUALITY_MAXPERF; mode <= NVNGX_PERFQUALITY_DLAA; mode++) {
+      settings->Set("Width", out_width);
+      settings->Set("Height", out_height);
+      settings->Set("PerfQualityValue", mode);
+      if (!expect(optimal(settings) == NVNGX_RESULT_OK, "mode %d has no optimal settings", mode))
+        continue;
+      unsigned sizes[6] = {};
+      const char *names[6] = {"OutWidth", "OutHeight", "DLSS.Get.Dynamic.Min.Render.Width",
+                              "DLSS.Get.Dynamic.Min.Render.Height", "DLSS.Get.Dynamic.Max.Render.Width",
+                              "DLSS.Get.Dynamic.Max.Render.Height"};
+      for (int i = 0; i < 6; i++) {
+        settings->Get(names[i], &sizes[i]);
+        within(i % 2 ? out_height : out_width, sizes[i], names[i], mode);
+      }
+    }
+    destroy(settings);
+  }
   if (caps)
     destroy(caps);
   step("a DLSS feature for %ux%u to %ux%u", width, height, out_width, out_height);

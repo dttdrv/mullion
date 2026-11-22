@@ -2436,6 +2436,21 @@ _MTLDevice_supportsFXDenoisedScaler(void *obj) {
 }
 
 static NTSTATUS
+_MTLDevice_temporalScalerSupport(void *obj) {
+  struct unixcall_mtldevice_fxtemporalscalersupport *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->device;
+  // no scale but the output's size where MetalFX does not say (macOS 14)
+  params->support.input_content_min_scale = params->support.input_content_max_scale = 1.0f;
+  if (@available(macOS 14.0, *)) {
+    params->support.input_content_min_scale =
+        [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:device];
+    params->support.input_content_max_scale =
+        [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MetalLayer_setProps(void *obj) {
   struct unixcall_generic_obj_constptr_noret *params = obj;
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
@@ -7644,6 +7659,7 @@ const void *__wine_unix_call_funcs[] = {
     &_WMTRemoveOtherVersions,
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
+    &_MTLDevice_temporalScalerSupport,
 };
 
 #ifndef MULLION_NATIVE
@@ -7865,6 +7881,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_WMTRemoveOtherVersions,
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
+    &_MTLDevice_temporalScalerSupport,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

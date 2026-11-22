@@ -273,6 +273,11 @@ struct unixcall_mtldevice_newfxtemporalscaler {
   obj_handle_t ret;
 };
 
+struct unixcall_mtldevice_fxtemporalscalersupport {
+  obj_handle_t device;
+  struct WMTFXTemporalScalerSupport support;
+};
+
 struct unixcall_mtldevice_newfxspatialscaler {
   obj_handle_t device;
   struct WMTConstMemoryPointer info;

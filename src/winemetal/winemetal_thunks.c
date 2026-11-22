@@ -1610,6 +1610,13 @@ MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4) {
   return params.ret;
 }
 
+WINEMETAL_API void
+MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support) {
+  struct unixcall_mtldevice_fxtemporalscalersupport params = {.device = device};
+  UNIX_CALL(WMTUnixDeviceTemporalScalerSupport, &params);
+  *support = params.support;
+}
+
 WINEMETAL_API bool
 MTLDevice_supportsSamplerReduction(obj_handle_t device) {
   struct unixcall_generic_obj_uint64_ret params;

@@ -5875,8 +5875,10 @@ public:
       info.input_height = color->height();
       info.output_width = output->width();
       info.output_height = output->height();
-      info.input_content_min_scale = 1.0f;
-      info.input_content_max_scale = 3.0f;
+      // the scales MetalFX takes on the device, of which DLSS's optimal settings choose the render size (nvngx)
+      auto support = device_->GetMTLDevice().temporalScalerSupport();
+      info.input_content_min_scale = support.input_content_min_scale;
+      info.input_content_max_scale = support.input_content_max_scale;
       info.auto_exposure = pDesc->AutoExposure;
       info.input_content_properties_enabled = true;
       // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
@@ -6086,6 +6088,14 @@ public:
     HRESULT STDMETHODCALLTYPE
     DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) final {
       return list_->DenoisedUpscale(pDesc, ppCache);
+    }
+    void STDMETHODCALLTYPE
+    GetTemporalUpscaleScales(FLOAT *pMinScale, FLOAT *pMaxScale) final {
+      auto support = list_->device_->GetMTLDevice().temporalScalerSupport();
+      if (pMinScale)
+        *pMinScale = support.input_content_min_scale;
+      if (pMaxScale)
+        *pMaxScale = support.input_content_max_scale;
     }
 
   private:
