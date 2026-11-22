@@ -1999,6 +1999,15 @@ WINEMETAL_API bool MTLDevice_supportsFXTemporalScaler(obj_handle_t device);
 /* MetalFX temporal denoised upscaling, for Metal 4 command buffers or for Metal 3 ones */
 WINEMETAL_API bool MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4);
 
+/* what MetalFX's temporal scaler takes on the device: the range of output-to-input content scales a scaler can be
+ * made for (MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:, ...MaxScaleForDevice:) */
+struct WMTFXTemporalScalerSupport {
+  float input_content_min_scale;
+  float input_content_max_scale;
+};
+
+WINEMETAL_API void MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support);
+
 struct WMTLayerProps {
   obj_handle_t device;
   double contents_scale;
@@ -2668,7 +2677,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
-       WMTUnixRemoveOtherVersions, WMTUnixGetMemoryState, WMTUnixResidencySetRequestResidency, WMTUnixCallCount };
+       WMTUnixRemoveOtherVersions, WMTUnixGetMemoryState, WMTUnixResidencySetRequestResidency,
+       WMTUnixDeviceTemporalScalerSupport, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

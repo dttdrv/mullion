@@ -1535,6 +1535,13 @@ public:
     return MTLDevice_supportsFXDenoisedScaler(handle, metal4);
   }
 
+  WMTFXTemporalScalerSupport
+  temporalScalerSupport() {
+    WMTFXTemporalScalerSupport support;
+    MTLDevice_temporalScalerSupport(handle, &support);
+    return support;
+  }
+
   void
   setShouldMaximizeConcurrentCompilation(bool value) {
     MTLDevice_setShouldMaximizeConcurrentCompilation(handle, value);
