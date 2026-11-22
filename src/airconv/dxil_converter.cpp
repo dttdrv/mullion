@@ -22,6 +22,7 @@
 #include "dxbc_converter.hpp"
 #include "nt/dxbc_converter_base.hpp"
 #include "airconv_ray.h"
+#include "DXBCParser/BlobContainer.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/Dominators.h"
@@ -1004,12 +1005,26 @@ link_libraries(Module &M, StringRef entry, ArrayRef<SM50ShaderInternal *> librar
 
 } // namespace
 
+// the part holds DxilProgramHeader (version, size in words) and in it DxilBitcodeHeader (magic, version, the bitcode's
+// offset from it and its size), the program fits the part, the magic is 'DXIL' and the bitcode is nonempty and in the
+// part: what DirectXShaderCompiler takes (DxilContainer.h, IsValidDxilProgramHeader, IsValidDxilBitcodeHeader)
+bool
+dxil_program_valid(const void *part, size_t size) {
+  constexpr size_t program_header = 2 * sizeof(uint32_t), bitcode_header = 4 * sizeof(uint32_t);
+  uint32_t header[6];
+  if (!part || size < program_header + bitcode_header)
+    return false;
+  memcpy(header, part, sizeof(header));
+  uint64_t program = uint64_t(header[1]) * sizeof(uint32_t), offset = header[4], bytes = header[5];
+  return program <= size && header[2] == microsoft::DXBC_DXIL && bytes && program_header + offset + bytes <= size;
+}
+
 llvm::Error
 read_dxil(
     const void *part, SM50ShaderInternal *shader, CSignatureParser &inputParser, CSignatureParser5 &outputParser,
     CSignatureParser &patchParser
 ) {
-  // DxilProgramHeader: version, size, then DxilBitcodeHeader: magic, version, offset, size
+  // DxilProgramHeader: version, size, then DxilBitcodeHeader: magic, version, offset, size (dxil_program_valid)
   auto header = (const uint32_t *)part;
   shader->shader_type = (D3D10_SB_TOKENIZED_PROGRAM_TYPE)(header[0] >> 16);
   // a mesh or amplification shader has no DXBC counterpart: its stage is built here (convert_dxil_mesh_stage)
