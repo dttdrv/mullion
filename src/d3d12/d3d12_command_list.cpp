@@ -427,6 +427,8 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   };
   std::vector<ActiveQuery> active_queries_;
   std::vector<uint64_t> visibility_slots_;
+  // whether a draw counted in the last slot
+  bool visibility_drawn_ = false;
   std::vector<std::pair<MTLD3D12QueryHeap *, OcclusionSum>> occlusion_sums_;
 
   // running and ended queries retain their GPU draw counts and indirect dispatches until summed into the heap
@@ -546,6 +548,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
                       : nullptr;
     if (!render)
       return;
+    visibility_drawn_ = false;
     auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
     cmd.type = WMTRenderCommandSetVisibilityMode;
     cmd.mode = WMTVisibilityResultModeDisabled;
@@ -1205,6 +1208,10 @@ public:
          (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles) ||
          (pass->rasterless && !pso_graphics_->rasterless)))
       allocator_->InvalidateCurrentPass();
+    // Metal counts a slot's samples in 32 bits (tests/native/visibility_width.swift): a draw an occlusion query counts
+    // after another in its slot takes one of its own, and only a draw of 2^32 samples alone wraps
+    if (visibility_drawn_ && !active_queries_.empty())
+      CountVisibility();
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
       allocator_->InvalidateCurrentPass();
@@ -1310,6 +1317,7 @@ public:
       // a draw whose vertices may read what the pass's own work since it began did not
       allocator_->encoder_current->late = false;
     }
+    visibility_drawn_ = !active_queries_.empty();
 
     // the conservative rasterizer's viewports and state, bound again when they or the pipeline change
     bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState) || dirty_state_.test(DirtyState::Viewport);

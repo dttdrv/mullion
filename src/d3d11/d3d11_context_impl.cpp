@@ -5151,6 +5151,8 @@ public:
 
   bool promote_flush = false;
   unsigned active_visibility_queries_ = 0;
+  // of those, the occlusion ones: a pipeline statistics query reads no visibility count
+  unsigned active_occlusion_queries_ = 0;
   // the pipeline statistics of every draw so far, but the pixel shader's, which queries count on the GPU
   D3D11_QUERY_DATA_PIPELINE_STATISTICS pipeline_counts_{};
   D3D11_QUERY_DATA_PIPELINE_STATISTICS &PipelineCounts();
@@ -5190,6 +5192,18 @@ public:
         ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments)
       InvalidateCurrentPass(true);
     dirty_state.set(DirtyState::VisibilityQuery);
+  }
+
+  // Metal counts a segment's samples in 32 bits (tests/native/visibility_width.swift): while an occlusion query
+  // counts, a draw after another in a segment takes one of its own, and only a draw of 2^32 samples alone wraps
+  bool
+  OcclusionCounting() {
+    return active_occlusion_queries_;
+  }
+  void
+  SplitVisibility() {
+    VisibilityQueryBoundary(true);
+    EmitST([](ArgumentEncodingContext &enc) { enc.splitVisibilityResult(); });
   }
 
   /**
@@ -5921,6 +5935,9 @@ public:
   DrawCallStatus
   PreDraw() {
     PrepareShaderTextureUse(false);
+    // no boundary since the last draw: this one would count in its segment
+    if (OcclusionCounting() && !dirty_state.any(DirtyState::VisibilityQuery))
+      SplitVisibility();
     // a draw whose scissors or viewports the pass has no room for starts the next pass
     const UINT rectangles = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     if ((dirty_state.any(DirtyState::Scissors) && pass_scissors_ + rectangles > WMT::kPassRectangles) ||
