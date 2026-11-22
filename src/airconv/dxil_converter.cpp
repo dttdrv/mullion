@@ -1554,7 +1554,8 @@ convert_dxil(
   // a * 0), and D3D's shaders compute with both (D3D11.3 3.1.1, 3.1.2: NaN and infinity propagate). so a comparison
   // carries no flag, and no other operation assumes its operands or result are neither. a stage before the
   // rasterizer also keeps each operation as written, as a DXBC shader's do (Converter::UseFastMath): two shaders
-  // that compute a position with the same expression then give the same depth, whatever else each one does
+  // that compute a position with the same expression then give the same depth, whatever else each one does. what the
+  // position does not depend on is freed again once the module is optimized (ContractOutsidePosition)
   if (start) {
     bool as_written = ctx.shader_type != D3D10_SB_PIXEL_SHADER && ctx.shader_type != D3D11_SB_COMPUTE_SHADER &&
                       ctx.shader_type != kShaderLibrary;
