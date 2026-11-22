@@ -42,6 +42,12 @@ test('host_pixel_input_declarations',
                 dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 120)
+test('host_geometry_payload',
+     executable('host_geometry_payload', 'geometry_payload.cpp',
+                include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
 # which DXIL operations shaders use, for tests/coverage.py; it reads DXIL with the LLVM the converter is built with
 executable('dxilops', ['dxilops.cpp'], include_directories : llvm_include_path_darwin,
            link_args : [ llvm_ld_flags_darwin, llvm_deps ], cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true)
