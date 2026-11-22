@@ -92,3 +92,11 @@ foreach t : [['d3d12_sdk_configuration', []], ['d3d12_metal4_passes', []], ['d3d
     endif
   endforeach
 endforeach
+# the bias d3d12.samplerLodBias adds: none, a positive and a negative one
+exe = executable('d3d12_sampler_lod_bias', ['d3d12_sampler_lod_bias.cpp'], dependencies: d3d12_test_deps)
+foreach front_end : ['dxil', 'dxbc']
+  foreach run : [['', '0'], ['_positive', '1.5'], ['_negative', '-2']]
+    test('d3d12_sampler_lod_bias' + run[0] + '_' + front_end, exe, args: [front_end, run[1]],
+         env: run[1] == '0' ? [] : ['MULLION_CONFIG=d3d12.samplerLodBias=' + run[1]], timeout: 600)
+  endforeach
+endforeach

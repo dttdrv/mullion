@@ -15,6 +15,13 @@ foreach name : ['blending', 'block_values', 'clear_values', 'constant_updates', 
                   cpp_args : d3d11_test_args.get(name, [])),
        env : ['MULLION_SHADER_CACHE=0'], timeout : 600)
 endforeach
+# the bias d3d11.samplerLodBias adds: none, a positive and a negative one
+sampler_lod_bias = executable('d3d11_sampler_lod_bias', ['d3d11_sampler_lod_bias.cpp'], dependencies : d3d11_test_deps)
+foreach run : [['', '0'], ['_positive', '1.5'], ['_negative', '-2']]
+  test('d3d11_sampler_lod_bias' + run[0], sampler_lod_bias, args : [run[1]],
+       env : ['MULLION_SHADER_CACHE=0'] + (run[1] == '0' ? [] : ['MULLION_CONFIG=d3d11.samplerLodBias=' + run[1]]),
+       timeout : 600)
+endforeach
 if test_d3d12
   on12 = executable('d3d11_on12', 'd3d11_on12.cpp',
                     dependencies : d3d11_test_deps + [cpp.find_library('d3d12')])
