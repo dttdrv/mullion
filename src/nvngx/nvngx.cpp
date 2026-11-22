@@ -265,9 +265,23 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
   return NVNGX_RESULT_OK;
 }
 
+// the memory DLSS takes for a feature of the parameters' sizes, MetalFX's temporal scaler's: 23 bytes for each render
+// pixel and 30 for each output pixel, within 1% of what the device's allocated size grows by when one is made, at 540p
+// to 2160p (an M6, macOS 27.3; d3d12_ngx_stats). CreateFeature takes the render size as Width and Height and the
+// output's as OutWidth and OutHeight, which the optimal settings callback writes the other way round: the smaller is
+// the render size. without the sizes there is no feature to count
 inline static NVNGX_RESULT
 NVNGX_DLSS_GetStatsCallback(NVNGXParameter *params) {
-  params->Set("SizeInBytes", 0ull);
+  unsigned int width = 0, height = 0, out_width = 0, out_height = 0;
+  unsigned long long bytes = 0;
+  if (params->Get(NVNGX_Parameter_Width, &width) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_Height, &height) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_OutWidth, &out_width) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_OutHeight, &out_height) == NVNGX_RESULT_OK) {
+    unsigned long long a = 1ull * width * height, b = 1ull * out_width * out_height;
+    bytes = a < b ? 23 * a + 30 * b : 30 * a + 23 * b;
+  }
+  params->Set("SizeInBytes", bytes);
   return NVNGX_RESULT_OK;
 }
 
