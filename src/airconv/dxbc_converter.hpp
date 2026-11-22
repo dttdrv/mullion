@@ -744,6 +744,9 @@ llvm::Error convert_dxil_mesh_stage(
   SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
 );
 
+// whether a DXIL part's headers fit it (SM50Initialize checks a part before anything reads it)
+bool dxil_program_valid(const void *part, size_t size);
+// `part`: one dxil_program_valid takes
 llvm::Error read_dxil(
   const void *part, SM50ShaderInternal *shader, microsoft::CSignatureParser &inputParser,
   microsoft::CSignatureParser5 &outputParser, microsoft::CSignatureParser &patchParser
