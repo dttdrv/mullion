@@ -25,12 +25,33 @@ static int32_t parsePciId(const std::string &str) {
   return id;
 }
 
+// a hexadecimal number of 1 to `digits` digits, or -1
+static int64_t parseHex(const std::string &str, size_t digits) {
+  if (str.empty() || str.size() > digits)
+    return -1;
+  int64_t id = 0;
+  for (char c : str) {
+    int value = c >= '0' && c <= '9'   ? c - '0'
+                : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                       : -1;
+    if (value < 0)
+      return -1;
+    id = id * 16 + value;
+  }
+  return id;
+}
+
 DxgiOptions::DxgiOptions(const Config &config) {
   // Fetch these as a string representing a hexadecimal number and parse it.
   this->customVendorId =
       parsePciId(config.getOption<std::string>("dxgi.customVendorId"));
   this->customDeviceId =
       parsePciId(config.getOption<std::string>("dxgi.customDeviceId"));
+  this->customSubSysId =
+      parseHex(config.getOption<std::string>("dxgi.customSubSysId"), 8);
+  this->customRevision = int32_t(
+      parseHex(config.getOption<std::string>("dxgi.customRevision"), 2));
   this->customDeviceDesc =
       config.getOption<std::string>("dxgi.customDeviceDesc", "");
   this->forceSDR = config.getOption<bool>("dxgi.forceSDR", false);
