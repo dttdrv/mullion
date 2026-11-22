@@ -140,6 +140,9 @@ struct ShaderVariantTessellationVertexHull {
   // threadgroups a mesh grid may have (0 when the device tells none)
   ManagedShader geometry_shader_handle;
   uint32_t max_mesh_threadgroups;
+  // the kernel that writes the patches and factors of Metal's tessellator, in place of the object stage
+  // (SM50_SHADER_PSO_TESSELLATOR_DATA's native)
+  bool native = false;
   bool operator==(const this_type &rhs) const = default;
 };
 
@@ -152,6 +155,8 @@ struct ShaderVariantTessellationDomain {
   ManagedShader geometry_shader_handle;
   uint32_t max_mesh_threadgroups;
   bool clip_distance_varyings;
+  // the post-tessellation vertex function of Metal's tessellator, in place of the mesh stage
+  bool native = false;
   bool operator==(const this_type &rhs) const = default;
 };
 

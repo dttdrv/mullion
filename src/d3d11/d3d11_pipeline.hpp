@@ -68,6 +68,12 @@ struct MTL_COMPILED_TESSELLATION_MESH_PIPELINE {
   uint32_t ThreadsPerPatch;
   // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
   uint32_t Parts;
+  // Metal's tessellator, where it tessellates as Direct3D does, null otherwise: the hull kernel that writes a draw's
+  // patches and factors, and the pipeline that draws them; the bytes of a group of patches, and of a patch's factors
+  WMT::ComputePipelineState Hull;
+  WMT::RenderPipelineState Patches;
+  uint32_t PatchGroupSize;
+  uint32_t PatchFactorSize;
 };
 
 namespace std {

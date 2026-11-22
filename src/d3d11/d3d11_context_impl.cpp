@@ -1651,6 +1651,8 @@ public:
       auto ThreadsPerPatch = enc.tess_threads_per_patch;
       auto PatchPerObjectInstance = (PatchCountPerInstance - 1) / PatchPerGroup + 1;
 
+      if (EncodeNativeTessellationDraw(enc, NumControlPoint, VertexCountPerInstance, InstanceCount, draw_arguments_offset))
+        return;
       if (uint64_t(PatchPerObjectInstance) * InstanceCount * enc.tess_parts > max_object_threadgroups) {
         WARN(
             "Omitted mesh draw (TS) because of too many object threadgroups (", PatchPerObjectInstance, "x",
@@ -1659,6 +1661,7 @@ public:
         return;
       }
 
+      BindTessellationPipeline(enc, false);
       if (enc.pipelineStatisticsActive())
         enc.countPipelineStatistics(VertexCountPerInstance, InstanceCount, std::pair{NumControlPoint, NumControlPoint});
       enc.bumpVisibilityResultOffset();
@@ -1672,6 +1675,91 @@ public:
       cmd.patch_per_mesh_instance = PatchPerObjectInstance;
       cmd.parts = enc.tess_parts;
     });
+  }
+
+  // the pipeline of the pass's tessellated draws from here: the mesh pipeline, or Metal's tessellator's
+  static void
+  BindTessellationPipeline(ArgumentEncodingContext &enc, bool native) {
+    auto pso = native ? enc.tess_patches : enc.tess_mesh;
+    auto render_encoder = enc.currentRenderEncoder();
+    if (render_encoder->last_pso == pso)
+      return;
+    auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
+    cmd.type = WMTRenderCommandSetPSO;
+    cmd.pso = pso;
+    render_encoder->last_pso = pso;
+  }
+
+  // a direct draw on Metal's tessellator, false when it takes the mesh pipeline: the pipeline has none, pipeline
+  // statistics count, which Metal does not after its tessellator, or a pre-raster stage has written in the pass what
+  // the hull kernel may read. the kernel runs before the pass, with the tables the mesh pipeline's object stage
+  // takes, and writes each instance's groups of patches after a header that holds their count, and each patch slot's
+  // factors, for the patch draw to read
+  static bool
+  EncodeNativeTessellationDraw(
+      ArgumentEncodingContext &enc, uint32_t ControlPoints, uint32_t Count, uint32_t InstanceCount,
+      uint64_t DrawArguments, WMT::Buffer IndexBuffer = {}, uint64_t IndexBufferOffset = 0
+  ) {
+    auto render_encoder = enc.currentRenderEncoder();
+    auto &barriers = render_encoder->barrier_state;
+    if (!enc.tess_hull || !enc.tess_patches || enc.pipelineStatisticsActive() || render_encoder->pre_raster_written ||
+        barriers.barrierPreRasterSet || barriers.barrierPreRasterAfterFragmentSet)
+      return false;
+    uint32_t per_group = 32 / enc.tess_threads_per_patch;
+    uint32_t patches = Count / ControlPoints, groups = (patches + per_group - 1) / per_group;
+    if (!patches)
+      return true;
+    uint64_t factor_stride = uint64_t(groups) * per_group * enc.tess_patch_factor_size;
+    auto [header, patch_buffer, patch_offset] = enc.queue().AllocateArgumentBuffer(
+        enc.currentSeqId(), SM50_TESSELLATION_HEADER + uint64_t(groups) * enc.tess_patch_group_size * InstanceCount
+    );
+    *static_cast<uint32_t *>(header) = groups;
+    auto factors = enc.allocateTempBuffer1(factor_stride * InstanceCount, sizeof(uint32_t));
+    auto argument_buffer = enc.getFinalArgumentBuffer();
+
+    auto &setpso = enc.encodeHullCommand<wmtcmd_compute_setpso>();
+    setpso.type = WMTComputeCommandSetPSO;
+    setpso.pso = enc.tess_hull;
+    setpso.threadgroup_size = {enc.tess_threads_per_patch, per_group, 1};
+    auto bind = [&](WMT::Buffer buffer, uint64_t offset, uint8_t index) {
+      auto &set = enc.encodeHullCommand<wmtcmd_compute_setbuffer>();
+      set.type = WMTComputeCommandSetBuffer;
+      set.buffer = buffer;
+      set.offset = offset;
+      set.index = index;
+    };
+    for (uint8_t index : {SM50_BINDING_INDEX_CONSTANT_BUFFER, SM50_BINDING_INDEX_ARGUMENT_TABLE,
+                          SM50_BINDING_INDEX_VERTEX_BUFFER, SM50_BINDING_INDEX_CONSTANT_BUFFER2,
+                          SM50_BINDING_INDEX_ARGUMENT_TABLE2})
+      bind(argument_buffer, enc.tess_hull_tables[index], index);
+    bind(argument_buffer, enc.getFinalArgumentBufferOffset(DrawArguments), SM50_BINDING_INDEX_DRAW_ARGUMENTS);
+    if (IndexBuffer)
+      bind(IndexBuffer, IndexBufferOffset, SM50_BINDING_INDEX_INDEX_BUFFER);
+    bind(patch_buffer, patch_offset, SM50_BINDING_INDEX_TESSELLATION_PATCHES);
+    bind(factors.gpu_buffer, factors.offset, SM50_BINDING_INDEX_TESSELLATION_FACTORS);
+    auto &dispatch = enc.encodeHullCommand<wmtcmd_compute_dispatch>();
+    dispatch.type = WMTComputeCommandDispatch;
+    dispatch.size = {groups, InstanceCount, 1};
+    render_encoder->native_tessellation++;
+
+    enc.bumpVisibilityResultOffset();
+    enc.resolveRenderPassBarrier();
+    BindTessellationPipeline(enc, true);
+    // the domain shader reads its patch's control points from the hull kernel's groups, none as Metal's stage input
+    auto &patch_binding = enc.encodeRenderCommand<wmtcmd_render_setbuffer>();
+    patch_binding.type = WMTRenderCommandSetVertexBuffer;
+    patch_binding.buffer = patch_buffer;
+    patch_binding.offset = patch_offset;
+    patch_binding.index = SM50_BINDING_INDEX_TESSELLATION_PATCHES;
+    auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw_patches>();
+    cmd.type = WMTRenderCommandDrawPatches;
+    cmd.factor_buffer = factors.gpu_buffer;
+    cmd.factor_buffer_offset = factors.offset;
+    cmd.factor_instance_stride = factor_stride;
+    cmd.control_points = 0;
+    cmd.patch_count = patches;
+    cmd.instance_count = InstanceCount;
+    return true;
   }
 
   auto
@@ -1716,6 +1804,12 @@ public:
       auto ThreadsPerPatch = enc.tess_threads_per_patch;
       auto PatchPerObjectInstance = (PatchCountPerInstance - 1) / PatchPerGroup + 1;
 
+      auto [index_buffer, index_buffer_offset, index_stride] = IndexBuffer(enc);
+      if (EncodeNativeTessellationDraw(
+              enc, NumControlPoint, IndexCountPerInstance, InstanceCount, draw_arguments_offset, index_buffer,
+              index_buffer_offset
+          ))
+        return;
       if (uint64_t(PatchPerObjectInstance) * InstanceCount * enc.tess_parts > max_object_threadgroups) {
         WARN(
             "Omitted mesh draw (TS) because of too many object threadgroups (", PatchPerObjectInstance, "x",
@@ -1724,7 +1818,7 @@ public:
         return;
       }
 
-      auto [index_buffer, index_buffer_offset, index_stride] = IndexBuffer(enc);
+      BindTessellationPipeline(enc, false);
       if (enc.pipelineStatisticsActive())
         enc.countPipelineStatistics(IndexCountPerInstance, InstanceCount, std::pair{NumControlPoint, NumControlPoint},
                                     index_stride, index_buffer_offset, StartIndexLocation);
@@ -2109,6 +2203,7 @@ public:
             dispatch_arg.gpu_buffer, dispatch_arg.gpu_address,
             dispatch_arg.offset, max_object_threadgroups);
         enc.resolveRenderPassBarrier();
+        BindTessellationPipeline(enc, false);
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_mullion_tessellation_mesh_draw_indirect>();
         cmd.type = WMTRenderCommandMullionTessellationMeshDrawIndirect;
         cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
@@ -2152,6 +2247,7 @@ public:
             dispatch_arg.gpu_buffer, dispatch_arg.gpu_address,
             dispatch_arg.offset, max_object_threadgroups);
         enc.resolveRenderPassBarrier();
+        BindTessellationPipeline(enc, false);
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_mullion_tessellation_mesh_draw_indexed_indirect>();
         cmd.type = WMTRenderCommandMullionTessellationMeshDrawIndexedIndirect;
         cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
@@ -2272,6 +2368,7 @@ public:
             arguments.gpu_buffer, arguments.gpu_address, arguments.offset, ControlPointCount, PatchPerGroup, enc.tess_parts,
             dispatch.gpu_buffer, dispatch.gpu_address, dispatch.offset, max_object_threadgroups
         );
+        BindTessellationPipeline(enc, false);
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_mullion_tessellation_mesh_draw_indirect>();
         cmd.type = WMTRenderCommandMullionTessellationMeshDrawIndirect;
         cmd.dispatch_args_buffer = dispatch.gpu_buffer;
@@ -5855,11 +5952,16 @@ public:
       enc.tess_num_output_control_point_element = GraphicsPipeline.NumControlPointOutputElement;
       enc.tess_threads_per_patch = GraphicsPipeline.ThreadsPerPatch;
       enc.tess_parts = GraphicsPipeline.Parts;
+      enc.tess_hull = GraphicsPipeline.Hull;
+      enc.tess_patches = GraphicsPipeline.Patches;
+      enc.tess_patch_group_size = GraphicsPipeline.PatchGroupSize;
+      enc.tess_patch_factor_size = GraphicsPipeline.PatchFactorSize;
       // a pipeline that could not be built is no pipeline: the draws with it are left out
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
       render_encoder->last_pso = GraphicsPipeline.PipelineState;
+      enc.tess_mesh = GraphicsPipeline.PipelineState;
     });
 
     cmdbuf_state = CommandBufferState::TessellationRenderPipelineReady;

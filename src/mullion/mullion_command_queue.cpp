@@ -78,6 +78,12 @@ CommandQueue::ProfilePass(EncoderData *pass, diag::ProfileBuffer *&profiled) {
       run(commands.gs_draw_arguments_marshal);
     if (!data->ts_arg_marshal_tasks.empty())
       run(commands.ts_draw_arguments_marshal);
+    // the hull kernels of native tessellation draws, in a compute encoder before the pass
+    if (auto hulls = diag::PipelineRuns(data->before_head, [](uint64_t pipeline) {
+          return str::format("Compute:", pipeline);
+        });
+        !hulls.empty())
+      runs += (runs.empty() ? "" : "|") + hulls;
     auto drawn = diag::PipelineRuns(data->cmd_head, [](uint64_t pipeline) {
       return str::format("Render:", pipeline);
     });

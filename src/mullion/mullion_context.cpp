@@ -86,6 +86,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   for (unsigned i = 0; i < kParityLane; i++) {
     fence_pool_[i] = device.newFence();
   }
+  hull_fence_ = device.newFence();
 };
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
@@ -137,6 +138,8 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
       cmd.type = WMTRenderCommandSetObjectBufferOffset;
     else
       cmd.type = WMTRenderCommandSetVertexBufferOffset;
+    if constexpr (kind == PipelineKind::Tessellation)
+      tess_hull_tables[cmd.index] = cmd.offset;
   }
 }
 uint64_t
@@ -322,6 +325,7 @@ ArgumentEncodingContext::encodeConstantBuffers(const MTL_SHADER_REFLECTION *refl
     } else {
       assert(0 && "Not implemented or unreachable");
     }
+    encodeTessellationTable<stage, kind>(cmd);
   }
 };
 
@@ -547,6 +551,7 @@ ArgumentEncodingContext::encodeShaderResources(
     } else {
       assert(0 && "Not implemented or unreachable");
     }
+    encodeTessellationTable<stage, kind>(cmd);
   }
 }
 
@@ -1259,6 +1264,27 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
             readbacks.visibility->visibility_result_windows[data->visibility_result_window];
       }
       auto gpu_buffer_ = data->allocated_argbuf;
+      // the hull kernels of the pass's native tessellation draws, before it: they read what the draws' vertex stages
+      // would, after what those wait for, and the draws wait for what they write
+      if (data->native_tessellation) {
+        auto before = cmdbuf.computeCommandEncoder(true);
+        auto index = metal_encoder_count++;
+        if (diag::errors || diag::trace_encoders) {
+          auto label = str::format(
+              "hull ", seqId, ".", index, ": ", data->render_target_width, "x", data->render_target_height, ", ",
+              data->native_tessellation, " draws (0 geometry, ", data->native_tessellation, " tessellation)"
+          );
+          if (diag::errors)
+            before.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+          if (diag::trace_encoders)
+            Logger::info("encoder " + label);
+        }
+        auto wait = [&](auto id) { before.waitForFence(fence_pool_[id]); };
+        data->fence_wait.forEach(data->fence_wait_vertex, wait, wait);
+        before.encodeCommands(&data->before_head);
+        before.updateFence(hull_fence_);
+        before.endEncoding();
+      }
       auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(render_pass_info, samples)
                                           : cmdbuf.renderCommandEncoder(render_pass_info);
       auto index = metal_encoder_count++;
@@ -1268,8 +1294,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
              cmd = reinterpret_cast<const wmtcmd_base *>(cmd->next.ptr)) {
           geometry += (cmd->type >= WMTRenderCommandMullionGeometryDraw && cmd->type <= WMTRenderCommandMullionGeometryDrawIndexedIndirect) ||
                       cmd->type == WMTRenderCommandMullionMeshDraw;
-          tessellation += cmd->type >= WMTRenderCommandMullionTessellationMeshDraw &&
-                          cmd->type <= WMTRenderCommandMullionTessellationMeshDrawIndexedIndirect;
+          tessellation += (cmd->type >= WMTRenderCommandMullionTessellationMeshDraw &&
+                           cmd->type <= WMTRenderCommandMullionTessellationMeshDrawIndexedIndirect) ||
+                          cmd->type == WMTRenderCommandDrawPatches;
           draws += cmd->type >= WMTRenderCommandDraw && cmd->type <= WMTRenderCommandDrawMeshThreadgroupsIndirect;
         }
         auto label = str::format(
@@ -1286,6 +1313,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); }
       );
+      if (data->native_tessellation)
+        encoder.waitForFence(hull_fence_, WMTRenderStageVertex);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_VERTEX_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
@@ -1780,8 +1809,10 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
     auto r1 = reinterpret_cast<RenderEncoderData *>(latter);
     auto r0 = reinterpret_cast<RenderEncoderData *>(former);
 
-    // a merged pass runs latter's marshals as it begins, before former's draws, whose writes they may wait for
-    if ((!r1->draw_auto_marshal_tasks.empty() || !r1->gs_arg_marshal_tasks.empty() || !r1->ts_arg_marshal_tasks.empty()) &&
+    // a merged pass runs latter's marshals as it begins, before former's draws, whose writes they may wait for, and
+    // latter's hull kernels before it
+    if ((!r1->draw_auto_marshal_tasks.empty() || !r1->gs_arg_marshal_tasks.empty() || !r1->ts_arg_marshal_tasks.empty() ||
+         r1->native_tessellation) &&
         r1->fence_wait_vertex.intersectedWith(r0->fence_update_vertex))
       return MULLION_ENCODER_LIST_OP_SYNCHRONIZE;
     if (r0->visibility_result_count + r1->visibility_result_count <=
@@ -1824,6 +1855,17 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
         r0->cmd_tail = (wmtcmd_base *)&r0->cmd_head;
       }
       r1->use_tessellation = r0->use_tessellation || r1->use_tessellation;
+      // former's hull kernels, then latter's
+      if ((void *)r0->before_tail != &r0->before_head) {
+        r0->before_tail->next.set(r1->before_head.next.get());
+        if ((void *)r1->before_tail == &r1->before_head)
+          r1->before_tail = r0->before_tail;
+        r1->before_head.next.set(r0->before_head.next.get());
+        r0->before_head.next.set(nullptr);
+        r0->before_tail = (wmtcmd_base *)&r0->before_head;
+      }
+      r1->native_tessellation += r0->native_tessellation;
+      r1->pre_raster_written = r0->pre_raster_written || r1->pre_raster_written;
       r1->use_geometry = r0->use_geometry || r1->use_geometry;
       std::move(
         r1->gs_arg_marshal_tasks.begin(),
