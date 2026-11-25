@@ -162,16 +162,17 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
 
   WMTTextureUsage Usage = ORIGINAL_FORMAT(InfoOut.pixel_format) == WMTPixelFormatDepth32Float_Stencil8
                               ? WMTTextureUsagePixelFormatView : WMTTextureUsageUnknown;
-  // a view in another layout needs Metal's format view, which takes the texture's lossless compression (a typed
-  // RGBA8 target's draws and reads cost three times as long without it, d3d12_perf_probe tex_typed_targets): only a
-  // format D3D12 lets a view cast across layouts gets one, its typeless family's, and never a depth texture, which
-  // every view reads as itself. a fully typed format's casts are CastingFullyTypedFormatSupported's, which the device
-  // does not report (CheckFeatureSupport, D3D12_FEATURE_D3D12_OPTIONS3), so a fully typed texture keeps its
-  // compression. a view that casts one anyway is made as asked, as a video format's plane views always were: Metal
-  // reads it right on Apple GPUs (d3d12_format_values' fully typed casts pass so with the feature reported), but does
-  // not promise to without the usage
+  // a view in another layout needs Metal's format view, which takes the texture's lossless compression: a frame drawing
+  // 8 RGBA8 1080p targets and sampling them takes three times as long with it (d3d12_perf_probe tex_typed_targets,
+  // tex_typeless_targets). Apple10's GPUs read and write a view of another layout of the same size right without the
+  // usage, of typeless and of fully typed textures, float and integer alike (d3d12_format_values and the d3d12 tests
+  // on an M6), so there no texture asks for it. elsewhere only a format D3D12 lets a view cast across layouts gets
+  // it, its typeless family's, and never a depth texture, which every view reads as itself: a fully typed format's
+  // casts are CastingFullyTypedFormatSupported's, which the device reports only where the usage is not needed
+  // (CheckFeatureSupport, D3D12_FEATURE_D3D12_OPTIONS3). a view that casts a texture without the usage is made as
+  // asked, as a video format's plane views always were
   if ((Format.Flag & MTL_DXGI_FORMAT_EMULATED_RGB32) ||
-      ((Format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
+      (!Device->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10) && (Format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
        !DepthStencilPlanarFlags(WMTPixelFormat(ORIGINAL_FORMAT(InfoOut.pixel_format))) &&
        CastsAcrossLayouts(Device->GetMTLDevice(), Desc.Format, false)))
     Usage |= WMTTextureUsagePixelFormatView;

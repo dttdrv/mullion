@@ -1124,9 +1124,10 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS3))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS3 *>(pFeatureData);
-      // a fully typed format's casts would cost every texture of the format its lossless compression, as Metal's
-      // format view does (PopulateWMTTextureInfo): its typeless family casts as D3D12 has always let it
-      out->CastingFullyTypedFormatSupported = FALSE;
+      // a fully typed format's casts would cost every texture of the format its lossless compression where a view of
+      // another layout needs Metal's format view (PopulateWMTTextureInfo): there its typeless family casts as D3D12
+      // has always let it. Apple10's GPUs cast without the usage
+      out->CastingFullyTypedFormatSupported = GetMTLDevice().supportsFamily(WMTGPUFamilyApple10);
       // Metal 4's shading language reads barycentrics and inputs at each vertex (SM50_SHADER_METAL_400), which
       // GetAttributeAtVertex needs: winemetal draws a triangle to see that the inputs it reads are the vertices'
       // (macOS 27.2 on an Apple M4 reads others, tests/native/vertex_value)
