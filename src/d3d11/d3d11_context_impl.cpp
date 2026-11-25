@@ -2407,11 +2407,11 @@ public:
   IASetInputLayout(ID3D11InputLayout *pInputLayout) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
-      state_.InputAssembler.InputLayout = expected.ptr();
-    } else {
-      state_.InputAssembler.InputLayout = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout);
+    // the layout the context has changes no pipeline
+    if (state_.InputAssembler.InputLayout.ptr() == expected.ptr())
+      return;
+    state_.InputAssembler.InputLayout = expected.ptr();
     InvalidateRenderPipeline();
   }
   void
@@ -2453,6 +2453,10 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     auto pBuffer = GetResourceCommon(pIndexBuffer);
+    // the buffer, format and offset the context has are bound already
+    if (pBuffer && state_.InputAssembler.IndexBuffer.ptr() == pBuffer &&
+        state_.InputAssembler.IndexBufferFormat == Format && state_.InputAssembler.IndexBufferOffset == Offset)
+      return;
     if (pBuffer && (pBuffer->bindFlags() & D3D11_BIND_INDEX_BUFFER) && ValidateIAHazard(pBuffer)) {
       state_.InputAssembler.IndexBuffer = pBuffer;
       EmitST([buffer = state_.InputAssembler.IndexBuffer->buffer()](ArgumentEncodingContext &enc) mutable {

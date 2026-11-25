@@ -314,6 +314,18 @@ scenes() {
            c()->Draw(4, 0);
          }
        }},
+      {"draws_same_buffers", "10000 indexed draws, each setting the input layout, vertex and index buffer it already has",
+       [] {}, [c](UINT) {
+         c()->VSSetShader(p.vs_input.Get(), nullptr, 0);
+         c()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+         UINT stride = 16, offset = 0;
+         for (UINT i = 0; i < 10000; i++) {
+           c()->IASetInputLayout(p.layout.Get());
+           c()->IASetVertexBuffers(0, 1, p.vbs[0].GetAddressOf(), &stride, &offset);
+           c()->IASetIndexBuffer(p.ibs[0].Get(), DXGI_FORMAT_R16_UINT, 0);
+           c()->DrawIndexed(6, 0, 0);
+         }
+       }},
       {"draws_buffers", "10000 indexed draws, each binding one of 8 vertex and index buffers (input layout)", [] {},
        [c](UINT) {
          c()->VSSetShader(p.vs_input.Get(), nullptr, 0);

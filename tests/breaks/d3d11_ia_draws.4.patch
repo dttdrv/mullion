@@ -1,0 +1,14 @@
+# an index buffer bound again at another offset keeps the offset it had: the draws after it read the indices there
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -2481,7 +2481,7 @@
+     auto pBuffer = GetResourceCommon(pIndexBuffer);
+     // the buffer, format and offset the context has are bound already
+     if (pBuffer && state_.InputAssembler.IndexBuffer.ptr() == pBuffer &&
+-        state_.InputAssembler.IndexBufferFormat == Format && state_.InputAssembler.IndexBufferOffset == Offset)
++        state_.InputAssembler.IndexBufferFormat == Format)
+       return;
+     if (pBuffer && (pBuffer->bindFlags() & D3D11_BIND_INDEX_BUFFER) && ValidateIAHazard(pBuffer)) {
+       state_.InputAssembler.IndexBuffer = pBuffer;
+
