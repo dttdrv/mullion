@@ -1,0 +1,21 @@
+# an aliasing barrier inside a render pass that keeps going leaves the pass unordered against the work before it, and adds no Settle
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3117,7 +3117,7 @@
+         clears_.clear();
+         named_.clear();
+         allocator_->encoder_current->late = false;
+-        allocator_->SettleAround();
++        allocator_->encoder_current->overlap = PassOverlap::Independent;
+         return;
+       }
+       clears_.clear();
+@@ -3147,6 +3147,7 @@
+         continue;
+       if (KeptByAliasing(barrier)) {
+         allocator_->encoder_current->late = false;
++        allocator_->encoder_current->overlap = PassOverlap::Independent;
+         continue;
+       }
+       // a UAV barrier orders UAV accesses alone: a render pass whose draws used none keeps going, as a dispatch's would
