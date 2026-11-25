@@ -323,6 +323,13 @@ scenes() {
            c()->Draw(4, 0);
          }
        }},
+      {"draws_cleared_so", "10000 draws, each clearing the stream output targets, which none are bound to", [] {},
+       [c](UINT) {
+         for (UINT i = 0; i < 10000; i++) {
+           c()->SOSetTargets(0, nullptr, nullptr);
+           c()->Draw(4, 0);
+         }
+       }},
       {"draws_shaders", "10000 draws, each changing the pixel shader among 8", [] {}, [c](UINT) {
          for (UINT i = 0; i < 10000; i++) {
            c()->PSSetShader(p.ps[i % 8].Get(), nullptr, 0);
