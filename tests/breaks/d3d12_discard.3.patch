@@ -1,0 +1,13 @@
+# a discard of a rectangle discards the whole texture
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3833,7 +3833,7 @@
+                                                                                                    : 1;
+       UINT all = desc.MipLevels * (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize) *
+                  std::max(planes, 1u);
+-      if (pRegion->NumRects || pRegion->FirstSubresource || pRegion->NumSubresources < all)
++      if (pRegion->FirstSubresource || pRegion->NumSubresources < all)
+         return;
+     }
+     DiscardTexture(resource->texture.ptr());
