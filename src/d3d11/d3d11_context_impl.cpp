@@ -3593,7 +3593,10 @@ public:
         ERR("RSSetState: invalid ID3D11RasterizerState object.");
       }
     } else {
-      if (state_.Rasterizer.RasterizerState) {
+      // the default state the context has is encoded already, as a state it was set to is
+      if (!state_.Rasterizer.RasterizerState)
+        return;
+      {
         if (state_.Rasterizer.RasterizerState->IsScissorEnabled() != default_rasterizer_state->IsScissorEnabled()) {
           dirty_state.set(DirtyState::Scissors);
         }
@@ -4415,14 +4418,20 @@ public:
         bool replaced = false;
         auto &entry = VertexBuffers.bind(slot, {pVertexBuffer}, replaced, !pVertexBuffer->hazardsFree());
         if (!replaced) {
+          bool changed = false;
           if (pStrides && pStrides[slot - StartSlot] != entry.Stride) {
             VertexBuffers.set_dirty(slot);
             entry.Stride = pStrides[slot - StartSlot];
+            changed = true;
           }
           if (pOffsets && pOffsets[slot - StartSlot] != entry.Offset) {
             VertexBuffers.set_dirty(slot);
             entry.Offset = pOffsets[slot - StartSlot];
+            changed = true;
           }
+          // the buffer at the offset and stride it has is bound already
+          if (!changed)
+            continue;
           EmitST([=, offset = entry.Offset,
                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
             enc.bindVertexBufferOffset(slot, offset, stride);
