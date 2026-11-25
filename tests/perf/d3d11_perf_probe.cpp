@@ -411,6 +411,17 @@ scenes() {
          }
          c()->OMSetRenderTargets(1, p.rtv.GetAddressOf(), p.dsv.Get());
        }},
+      {"create_depth_initial", "a 1920x1080 D24_UNORM_S8_UINT texture made with initial data and released, each frame", [] {},
+       [](UINT f) {
+         static std::vector<uint32_t> texels(1920 * 1080);
+         for (size_t i = 0; i < texels.size(); i += 4096)
+           texels[i] = f + uint32_t(i);
+         D3D11_TEXTURE2D_DESC desc{1920, 1080, 1, 1, DXGI_FORMAT_D24_UNORM_S8_UINT, {1, 0}, D3D11_USAGE_DEFAULT,
+                                   D3D11_BIND_DEPTH_STENCIL};
+         D3D11_SUBRESOURCE_DATA data{texels.data(), 1920 * 4};
+         ComPtr<ID3D11Texture2D> depth;
+         CHECK(p.device->CreateTexture2D(&desc, &data, &depth));
+       }},
       {"texture_updates", "200 64x64 UpdateSubresource uploads into a 1024x1024 atlas (fonts, UI)", [] {}, [c](UINT f) {
          static std::vector<uint32_t> pixels(64 * 64, 0xff00ff00);
          for (UINT i = 0; i < 200; i++) {
