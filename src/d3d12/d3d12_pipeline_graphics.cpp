@@ -479,10 +479,10 @@ CompileFunction(
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {
       auto &[next, type, mask, dual, depth, unorm, formats, statistics, coverage, centered, single, paired, clips,
-             culls, cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull, patch] =
+             culls, cull_depth, blend, bounds, late, conservative, coarse, rate, quads, hull] =
           *(SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
       hash(mask, dual, depth, unorm, formats, statistics, coverage, centered, single, paired, clips, culls, cull_depth,
-           blend, bounds, late, conservative, coarse, rate, quads, hull, patch);
+           blend, bounds, late, conservative, coarse, rate, quads, hull);
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -507,10 +507,10 @@ CompileFunction(
       break;
     }
     case SM50_SHADER_PSO_TESSELLATOR: {
-      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics, native, compute] =
+      auto &[next, type, factor, size, groups, geometry, conservative, flat, noperspective, barycentrics] =
           *(SM50_SHADER_PSO_TESSELLATOR_DATA *)arg;
       // `geometry` is the conversion state of a shader among `shaders`, which tell whether there is one
-      hash(factor, size, groups, conservative, flat, noperspective, barycentrics, native, compute);
+      hash(factor, size, groups, conservative, flat, noperspective, barycentrics);
       break;
     }
     case SM50_SHADER_ROOT_SIGNATURE:
@@ -1760,7 +1760,6 @@ public:
       data_ps.conservative = conservative;
       data_ps.conservative_hull = conservative_hull;
       data_ps.quad_lines = quad_lines && ref_ps.PixelShader.Barycentrics;
-      data_ps.patch_varying = false;
       data_ps.coarse_shading = false;
       // the primitive's shading rate, from the stage before the rasterizer: a domain or mesh shader has none
       data_ps.shading_rate_varying = bool(pDesc->GS.pShaderBytecode)      ? ref_gs.ShadingRateOutput
