@@ -171,7 +171,16 @@ PopulateWMTTextureInfo(MTLD3D12Device *Device, WMTTextureInfo &InfoOut, const D3
   // casts are CastingFullyTypedFormatSupported's, which the device reports only where the usage is not needed
   // (CheckFeatureSupport, D3D12_FEATURE_D3D12_OPTIONS3). a view that casts a texture without the usage is made as
   // asked, as a video format's plane views always were
+  // a texture only shaders sample keeps its compression too: one of smooth images samples 3.9 times as fast so, one of
+  // noise (hashed texels, which compress not at all) 3.9 times as slowly (tex_sample_smooth, heap_switch).
+  // MULLION_D3D12_COMPRESS_SAMPLED=0 makes such textures as before, with the format view their casts would have had,
+  // to compare the two in a game
+  static const bool compress_sampled = env::getEnvVar("MULLION_D3D12_COMPRESS_SAMPLED") != "0";
+  const bool sampled_only = !(Desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
+                                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS));
   if ((Format.Flag & MTL_DXGI_FORMAT_EMULATED_RGB32) ||
+      (!compress_sampled && sampled_only && !DepthStencilPlanarFlags(WMTPixelFormat(ORIGINAL_FORMAT(InfoOut.pixel_format))) &&
+       CastsAcrossLayouts(Device->GetMTLDevice(), Desc.Format, !(Format.Flag & MTL_DXGI_FORMAT_TYPELESS))) ||
       (!Device->GetMTLDevice().supportsFamily(WMTGPUFamilyApple10) && (Format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
        !DepthStencilPlanarFlags(WMTPixelFormat(ORIGINAL_FORMAT(InfoOut.pixel_format))) &&
        CastsAcrossLayouts(Device->GetMTLDevice(), Desc.Format, false)))
