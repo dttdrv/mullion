@@ -3492,13 +3492,13 @@ public:
         should_invalidate_pipeline = true;
       }
     }
-    if (BlendFactor) {
-      memcpy(state_.OutputMerger.BlendFactor, BlendFactor, sizeof(float[4]));
-    } else {
-      state_.OutputMerger.BlendFactor[0] = 1.0f;
-      state_.OutputMerger.BlendFactor[1] = 1.0f;
-      state_.OutputMerger.BlendFactor[2] = 1.0f;
-      state_.OutputMerger.BlendFactor[3] = 1.0f;
+    // the factor is encoded again only when it changes: a state set with the factor it had sets no blend color, and
+    // the stencil reference goes with the depth-stencil state, which OMSetDepthStencilState marks
+    const float ones[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float *factor = BlendFactor ? BlendFactor : ones;
+    if (memcmp(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]))) {
+      memcpy(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]));
+      dirty_state.set(DirtyState::BlendFactorAndStencilRef);
     }
     if (state_.OutputMerger.SampleMask != SampleMask) {
       state_.OutputMerger.SampleMask = SampleMask;
@@ -3507,7 +3507,6 @@ public:
     if (should_invalidate_pipeline) {
       InvalidateRenderPipeline();
     }
-    dirty_state.set(DirtyState::BlendFactorAndStencilRef);
   }
   void
   STDMETHODCALLTYPE

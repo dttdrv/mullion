@@ -1,8 +1,8 @@
 # ignores the application sample mask.
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -3381,7 +3381,7 @@
-       state_.OutputMerger.BlendFactor[3] = 1.0f;
+@@ -3527,7 +3527,7 @@
+       dirty_state.set(DirtyState::BlendFactorAndStencilRef);
      }
      if (state_.OutputMerger.SampleMask != SampleMask) {
 -      state_.OutputMerger.SampleMask = SampleMask;
@@ -10,3 +10,4 @@
        should_invalidate_pipeline = true;
      }
      if (should_invalidate_pipeline) {
+
