@@ -1,12 +1,12 @@
 # partial update blits omit the destination storage offset
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -1233,7 +1233,7 @@
+@@ -1402,7 +1402,7 @@
            cmd.src = staging_buffer;
            cmd.src_offset = offset;
            cmd.dst = dst_buffer->buffer();
 -          cmd.dst_offset = copy_offset + dst_offset;
 +          cmd.dst_offset = copy_offset;
-         });
-       } else {
-         UNREACHABLE
+         };
+         if (hoisted)
+           AddPrelude(hoisted, std::move(upload_op));
