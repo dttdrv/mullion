@@ -26,6 +26,10 @@ endif
 # no test: the runner's way to see where the threads of a test that outlived its time are
 # workloads tests/held.py profiles
 executable('d3d11_held', 'd3d11_held.cpp', dependencies : d3d11_test_deps)
+# tessellated draws' GPU time, for work on the mesh pipeline that tessellates them
+benchmark('d3d11_tessellation_bench',
+          executable('d3d11_tessellation_bench', 'd3d11_tessellation_bench.cpp', dependencies : d3d11_test_deps),
+          env : ['MULLION_SHADER_CACHE=0'], timeout : 900)
 # tests/fuzz.py's harness: runs generated compute shaders and prints what they wrote
 executable('d3d11_shader_fuzz', 'd3d11_shader_fuzz.cpp', dependencies : d3d11_test_deps)
 executable('where', ['where.cpp'], dependencies : [cpp.find_library('dbghelp')])
