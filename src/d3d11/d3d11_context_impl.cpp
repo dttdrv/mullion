@@ -3533,11 +3533,12 @@ public:
   OMSetDepthStencilState(ID3D11DepthStencilState *pDepthStencilState, UINT StencilRef) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState)) {
-      state_.OutputMerger.DepthStencilState = expected.ptr();
-    } else {
-      state_.OutputMerger.DepthStencilState = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState);
+    // the state and reference the context has are encoded already, as RSSetState's are: every pass starts with them
+    // marked
+    if (state_.OutputMerger.DepthStencilState == expected.ptr() && state_.OutputMerger.StencilRef == StencilRef)
+      return;
+    state_.OutputMerger.DepthStencilState = expected.ptr();
     state_.OutputMerger.StencilRef = StencilRef;
     dirty_state.set(DirtyState::DepthStencilState);
   }

@@ -287,6 +287,17 @@ scenes() {
            c()->Draw(4, 0);
          }
        }},
+      {"draws_same_states", "10000 draws, each setting the blend, depth-stencil and rasterizer states it already has "
+                            "(an engine that sets every state for every draw)",
+       [] {}, [c](UINT) {
+         float factor[4] = {1, 1, 1, 1};
+         for (UINT i = 0; i < 10000; i++) {
+           c()->OMSetBlendState(p.blends[1].Get(), factor, ~0u);
+           c()->OMSetDepthStencilState(p.depths[1].Get(), 0);
+           c()->RSSetState(p.rasters[1].Get());
+           c()->Draw(4, 0);
+         }
+       }},
       {"draws_shaders", "10000 draws, each changing the pixel shader among 8", [] {}, [c](UINT) {
          for (UINT i = 0; i < 10000; i++) {
            c()->PSSetShader(p.ps[i % 8].Get(), nullptr, 0);
