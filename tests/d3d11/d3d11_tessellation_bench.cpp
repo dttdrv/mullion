@@ -4,14 +4,20 @@
 // the median of `frames` frames less the median of as many frames without the draws, for each domain, partitioning
 // and factor; a frame of a low factor repeats its draws, and its time is divided by the repeats.
 //   d3d11_tessellation_bench [frames] [filter] [plain], filter a substring of a configuration's name ("quad integer
-//   64"), plain a domain shader that only interpolates, culled every triangle culled, capture no frames
+//   64"), mixed edges of factors of their own, plain a domain shader that only interpolates, culled every triangle culled, capture no frames
 //   before those measured, for a GPU capture of the first command buffers (any together: "plain,culled")
 #include "d3d11_test.hpp"
 #include <algorithm>
 #include <cstdlib>
 
 static const char hlsl[] = R"(
-cbuffer Factors : register(b0) { float factor; float patches_x; float time; float pad; };
+cbuffer Factors : register(b0) { float factor; float patches_x; float time; float mixed; };
+// with `mixed`, each edge's factor a share of the inside's, as a distance-adaptive hull shader's differ: a patch's
+// edges take four shares, turned by its number
+float edge_factor(uint id, uint edge) {
+  static const float shares[4] = {1.0, 0.75, 0.5, 0.875};
+  return mixed ? max(1.0, factor * shares[(id + edge) & 3]) : factor;
+}
 struct VSOut { float3 p : POS; };
 VSOut vs(float3 p : POSITION) { VSOut o; o.p = p; return o; }
 struct HSConst {
@@ -24,10 +30,12 @@ struct HSConst {
 HSConst constants(InputPatch<VSOut, CONTROL_POINTS> patch, uint id : SV_PrimitiveID) {
   HSConst c;
 #if QUAD
-  c.edges[0] = c.edges[1] = c.edges[2] = c.edges[3] = factor;
+  for (uint e = 0; e < 4; e++)
+    c.edges[e] = edge_factor(id, e);
   c.inside[0] = c.inside[1] = factor;
 #else
-  c.edges[0] = c.edges[1] = c.edges[2] = factor;
+  for (uint e = 0; e < 3; e++)
+    c.edges[e] = edge_factor(id, e);
   c.inside = factor;
 #endif
   return c;
@@ -72,6 +80,8 @@ main(int argc, char **argv) {
   // declared=F: the hull shader declares F its largest factor, 64 otherwise
   const char *declares = argc > 3 ? strstr(argv[3], "declared=") : nullptr;
   int declared = declares ? atoi(declares + 9) : 0;
+  // mixed: each patch's edges have factors of their own (edge_factor)
+  bool mixed = argc > 3 && strstr(argv[3], "mixed");
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
@@ -154,7 +164,7 @@ main(int argc, char **argv) {
         D3D11_INPUT_ELEMENT_DESC element{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT};
         ComPtr<ID3D11InputLayout> layout;
         CHECK(device->CreateInputLayout(&element, 1, vs_code->GetBufferPointer(), vs_code->GetBufferSize(), &layout));
-        float cb[4] = {factor, float(columns), 0, 0};
+        float cb[4] = {factor, float(columns), 0, mixed ? 1.0f : 0.0f};
         context->UpdateSubresource(constants.Get(), 0, nullptr, cb, 0, 0);
         UINT stride = 12, offset = 0;
         auto vb = quad ? quad_vb : tri_vb;

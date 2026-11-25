@@ -466,12 +466,17 @@ edge_number(Patch patch, int k, int s, tess_edge edge, int i) {
 // (mullion_tessellation_templates.cpp): meshlets of at most template_vertices vertices and template_primitives
 // triangles, each vertex the place of a point (a quad's grid coordinates a | b << 8, a triangle's ring, side and
 // place on the side k | s << 8 | i << 16), each triangle its corners as the meshlet's vertices, clockwise, a byte each.
-// the buffer is words: the version, the count of templates, then for each domain (triangle, quad) and n the first
-// meshlet and the meshlets, then each meshlet's first vertex, its vertices | its triangles << 16, its first triangle
-// and a word unused, then the vertices and triangles they name
-constant constexpr int template_version = 1;
+// a patch whose edges' factors differ from its inside's is drawn from the interior template of its inside's points
+// (a quad's two inside factors the same points): its rings but ring 0, which depend on the inside factor alone, while
+// ring 0's frames, which join the edges to it, are workloads (emit_template).
+// the buffer is words: the version, the count of templates, then for each kind (whole, interior), domain (triangle,
+// quad) and n the first meshlet and the meshlets, then each meshlet's first vertex, its vertices | its triangles << 16,
+// its first triangle and a word unused, then the vertices and triangles they name
+constant constexpr int template_version = 2;
 constant constexpr int template_most_points = 65;
-constant constexpr int template_count = 2 * (template_most_points + 1);
+constant constexpr int template_count = 4 * (template_most_points + 1);
+// the fewest points a side of an inside an interior template draws
+constant constexpr int template_least_interior = 7;
 constant constexpr int template_meshlets = 2 + 2 * template_count;
 constant constexpr int template_vertices = 128;
 constant constexpr int template_primitives = 256;
@@ -481,10 +486,10 @@ struct tess_template {
 };
 
 tess_template
-template_of(device const uint *templates, bool quad, int n) {
+template_of(device const uint *templates, bool quad, int n, bool interior = false) {
   if (!templates || n < 2 || n > template_most_points)
     return {0, 0};
-  int at = 2 + 2 * ((quad ? template_most_points + 1 : 0) + n);
+  int at = 2 + 2 * ((int(interior) * 2 + int(quad)) * (template_most_points + 1) + n);
   return {int(templates[at]), int(templates[at + 1])};
 }
 
@@ -517,6 +522,17 @@ template_points(tri_patch patch) {
   return same ? n : 0;
 }
 
+// the inside's points of a patch an interior template may draw, or 0
+int
+inside_points(quad_patch patch) {
+  return patch.n[0] == patch.n[1] && patch.in[0].odd == patch.in[1].odd ? patch.n[0] : 0;
+}
+
+int
+inside_points(tri_patch patch) {
+  return patch.n;
+}
+
 // what a template's patch keeps in the payload, in the place of its first workload: its factors, which place its
 // points, and its points a side. the patch's group entries are its meshlets, `m | 0xffff << 16` for meshlet m, so
 // that a group's first and end (first workload and end, from the patch's room) tell the meshlet and the room
@@ -525,7 +541,7 @@ struct tess_record {
   uchar odd;     // a bit for each factor's parity
   uchar quad;
   uchar n;
-  uchar unused;
+  uchar interior; // drawn from the interior template of its inside's points (tess_template)
   int unused2[5];
   int patch_index;
 };
@@ -608,23 +624,36 @@ template_point(tri_patch patch, uint code) {
 
 // with groups and templates (`out.group_limit`'s bit 31, for a pipeline whose tessellator outputs triangles), a
 // patch a template draws is its record and its meshlets' groups
+//
+// a patch drawn from an interior template keeps its record in the place of its first workload too, then ring 0's
+// frames, a workload each, which group as emit groups them, then the meshlets' groups
 template <typename Patch>
 bool
 emit_template(Patch patch, tess_output out, device const uint *templates) {
   if (!(out.group_limit & int(0x80000000u)))
     return false;
-  tess_template t = template_of(templates, Patch::sides == 4, template_points(patch));
-  if (!t.count || t.count > out.capacity)
+  out.group_limit &= 0x7fffffff;
+  bool quad = Patch::sides == 4;
+  tess_template t = template_of(templates, quad, template_points(patch));
+  bool interior = !t.count;
+  int frames = interior ? Patch::sides : 0;
+  if (interior)
+    t = template_of(templates, quad, inside_points(patch), true);
+  if (!t.count || t.count > out.capacity || 1 + frames > out.capacity)
     return false;
-  ((object_data tess_record *)out.workloads)[0] = record_of(patch, out.patch_index);
+  tess_record record = record_of(patch, out.patch_index);
+  record.interior = interior;
+  ((object_data tess_record *)out.workloads)[0] = record;
+  out.next[0] = 1;
+  for (int f = 0; f < frames; f++)
+    emit(out, patch.frame(0, f), no_frame);
   for (int m = 0; m < t.count; m++) {
-    // a meshlet's group names its first workload, whose patch is the patch (get_domain_patch_index)
-    if (m)
+    // a meshlet's group names a workload's place, whose patch is the patch (get_domain_patch_index)
+    if (m >= 1 + frames)
       out.workloads[m].patch_index = out.patch_index;
-    out.groups[m] = m | 0xffff << 16;
+    out.groups[out.next[1]++] = m | 0xffff << 16;
   }
-  out.next[0] = t.count;
-  out.next[1] = t.count;
+  out.next[0] = max(out.next[0], t.count);
   return true;
 }
 
@@ -638,7 +667,7 @@ tess_meshlet
 template_meshlet(int first, int end, object_data int *data, device const uint *templates, thread tess_record &record) {
   int room = end - 0xffff;
   record = ((object_data tess_record *)data)[room];
-  return meshlet_of(templates, template_of(templates, record.quad, record.n).first + first - room);
+  return meshlet_of(templates, template_of(templates, record.quad, record.n, record.interior).first + first - room);
 }
 
 void generate_workload_quad(

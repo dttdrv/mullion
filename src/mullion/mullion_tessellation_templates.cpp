@@ -78,10 +78,11 @@ struct built {
   std::vector<uint32_t> meshlets, vertices, triangles; // meshlets' offsets relative to the vertices and triangles
 };
 
-// the patch's triangles, as its points' codes, in meshlets: false where a decoded point is not the tessellator's own
+// the patch's triangles, as its points' codes, in meshlets, or with `interior` those of its rings but ring 0: false
+// where a decoded point is not the tessellator's own
 template <typename Patch>
 bool
-build(const Patch &patch, built &out, int &meshlet_count) {
+build(const Patch &patch, bool interior, built &out, int &meshlet_count) {
   std::vector<uint> codes;             // by the patch's number of each point
   std::vector<std::array<int, 3>> tris; // as numbers
   auto number_of = [&](int k, int s, const tess_edge &edge, int i) {
@@ -97,7 +98,7 @@ build(const Patch &patch, built &out, int &meshlet_count) {
     codes[number] = code;
     return number;
   };
-  for (int f = 0; f < frame_count(patch); f++) {
+  for (int f = interior ? Patch::sides : 0; f < frame_count(patch); f++) {
     tess_along along;
     tess_frame frame = nth_frame(patch, f, along);
     tess_zip zip = {frame.inner, frame.outer, 0, 0, 0};
@@ -170,23 +171,29 @@ make() {
   std::vector<uint32_t> header(template_meshlets, 0);
   header[0] = template_version;
   header[1] = template_count;
+  for (int interior = 0; interior < 2; interior++)
   for (int quad = 0; quad < 2; quad++)
     for (int n = 2; n <= template_most_points; n++) {
+      // a small patch's interior is drawn by its workloads: its own mesh threadgroup costs more than the workloads'
+      // one (d3d11_tessellation_bench, factor 4 against 8)
+      if (interior && n < template_least_interior)
+        continue;
       int first = parts.meshlets.size() / 4, count = 0;
       bool made;
       if (quad) {
         quad_patch patch;
-        made = uniform_patch(patch, n) && build(patch, parts, count);
+        made = uniform_patch(patch, n) && build(patch, interior, parts, count);
       } else {
         tri_patch patch;
-        made = uniform_patch(patch, n) && build(patch, parts, count);
+        made = uniform_patch(patch, n) && build(patch, interior, parts, count);
       }
       if (!made) {
         // its meshlets so far are left unnamed
-        fprintf(stderr, "mullion: no tessellation template of %d points a side (%s)\n", n, quad ? "quad" : "triangle");
+        fprintf(stderr, "mullion: no tessellation template of %d points a side (%s%s)\n", n, quad ? "quad" : "triangle",
+                interior ? ", interior" : "");
         continue;
       }
-      int at = 2 + 2 * ((quad ? template_most_points + 1 : 0) + n);
+      int at = 2 + 2 * ((interior * 2 + quad) * (template_most_points + 1) + n);
       header[at] = first;
       header[at + 1] = count;
     }
