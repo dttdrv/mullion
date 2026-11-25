@@ -5782,6 +5782,28 @@ public:
     return SM50_INDEX_BUFFER_FORMAT_NONE;
   }
 
+  // the pipelines the context took last, by their description's hash, in front of the device's cache: a draw that
+  // changes shaders or states among a few finds its pipeline without the cache's lock and table. the device keeps
+  // every pipeline it makes, and its description, for as long as it lives
+  struct RecentPipeline {
+    size_t hash = 0;
+    MTLCompiledGraphicsPipeline *pipeline = nullptr;
+  };
+  std::array<RecentPipeline, 64> recent_pipelines_{};
+
+  MTLCompiledGraphicsPipeline *
+  RecentGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC &desc) {
+    size_t hash = std::hash<MTL_GRAPHICS_PIPELINE_DESC>{}(desc);
+    auto &recent = recent_pipelines_[hash % recent_pipelines_.size()];
+    if (recent.pipeline && recent.hash == hash &&
+        std::equal_to<MTL_GRAPHICS_PIPELINE_DESC>{}(*recent.pipeline->description, desc))
+      return recent.pipeline;
+    MTLCompiledGraphicsPipeline *pipeline;
+    device->CreateGraphicsPipeline(&desc, &pipeline);
+    recent = {hash, pipeline};
+    return pipeline;
+  }
+
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeTessellationRenderPipeline() {
@@ -5926,12 +5948,10 @@ public:
       return DrawCallStatus::Invalid;
     }
 
-    MTLCompiledGraphicsPipeline *pipeline;
-
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
 
-    device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
+    MTLCompiledGraphicsPipeline *pipeline = RecentGraphicsPipeline(pipelineDesc);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext &enc) {
       if (enc.pipelineStatisticsActive())
         enc.currentRenderEncoder()->statistics_separate_rasterization = false;
