@@ -2100,7 +2100,7 @@ public:
           inflight.physical[WMTMetal4Compute]++;
         auto before = cmdbuf.computeCommandEncoder(true);
         wait(before);
-        // a hull kernel reads the pass's resources as its draws' vertex stages do
+        // a kernel before the pass reads the pass's resources as its draws do
         if (sparse_mappings) {
           inflight.sparse_mappings = sparse_mappings;
           wmtcmd_compute_setbuffer binding{};
@@ -2109,17 +2109,11 @@ public:
           binding.index = kSparseBufferArgumentIndex;
           before.encodeCommands(reinterpret_cast<const wmtcmd_compute_nop *>(&binding));
         }
-        bool order_aliases = false;
         befores([&](auto pass) {
           if (pass->before_head.next.get())
             before.encodeCommands(&pass->before_head);
-          order_aliases |= pass->order_aliases;
         });
         end(before);
-        // the next encoder begins with it: the copy below, whose end updates the fence the pass waits for, or the pass
-        if constexpr (Metal4)
-          if (order_aliases)
-            cmdbuf.orderAliases(false);
         if (omitted_any) {
           size_t count = 0;
           befores([&](auto pass) {

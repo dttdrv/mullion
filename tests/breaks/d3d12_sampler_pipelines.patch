@@ -1,15 +1,12 @@
-# a draw asks the pipeline it was set with whether Metal tessellates it, before the variant that emulates a sampler
-# made since takes its place
-# family native,native-metal3
+# a draw keeps the pipeline it was set with, not the variant that emulates a sampler made since
+# family native
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1690,9 +1690,6 @@
-   bool
-   Native() {
-     // of the pipeline the draw takes, whose tessellator's kernel is made with it (DeferredPipeline)
+@@ -1170,7 +1170,6 @@
+ 
+   DrawCallStatus
+   PreDraw(bool SkipResourceBinding = false) {
 -    TakeFuller();
--    if (!pso_graphics_)
--      return false;
-     pso_graphics_->WaitPipeline();
-     return pso_graphics_->hull && active_statistics_.empty();
-   }
+     if (!pso_graphics_)
+       return DrawCallStatus::Invalid;
+     // a draw that tests the depth bounds where the GPU cannot finds the samples that pass first, unless the pass it is

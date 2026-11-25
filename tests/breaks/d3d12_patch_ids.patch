@@ -1,13 +1,13 @@
-# after the compute tessellator, a pixel shader's SV_PrimitiveID counts the patches over the instances
+# a domain shader's patch is numbered within its object threadgroup's group, not after the groups before it
 # family native
 --- a/src/airconv/dxbc_converter_ts.cpp
 +++ b/src/airconv/dxbc_converter_ts.cpp
-@@ -1315,7 +1315,7 @@
-     setup_domain_patch(
-         pShaderInternal, pHullStage, group_type,
-         native_patches(builder, patches, group_type, builder.CreateUDiv(patch, builder.getInt32(patch_per_group))),
--        builder.CreateURem(patch, builder.getInt32(patch_per_group)), builder.CreateURem(patch, per_instance), ctx
-+        builder.CreateURem(patch, builder.getInt32(patch_per_group)), patch, ctx
-     );
-     llvm::Value *location = llvm::UndefValue::get(air.getFloatTy(2));
-     location = builder.CreateInsertElement(location, coordinate(1), 0ull);
+@@ -272,7 +272,7 @@
+       builder.CreateLoad(types._int, builder.CreateGEP(payload_type, payload, {builder.getInt32(0), builder.getInt32(2)}));
+   auto patch_index = dxbc::Converter(ctx.air, ctx, resource_map).DomainGetPatchIndex(workload_index, data);
+   setup_domain_patch(
+-      pDomainStage, pHullStage, payload_type, payload, patch_index, builder.CreateAdd(batched_patch_start, patch_index), ctx
++      pDomainStage, pHullStage, payload_type, payload, patch_index, patch_index, ctx
+   );
+   return data;
+ }

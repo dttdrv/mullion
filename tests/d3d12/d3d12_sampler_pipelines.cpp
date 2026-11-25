@@ -4,8 +4,7 @@
 // minimum filter (D3D12_FILTER, D3D11.3 5.9.4.5.6: "Texels that are weighted 0 during filtering aren't counted") after
 // the pipelines have drawn with it, each read by a draw, a tessellated draw and a dispatch. the minimum's footprint is
 // the shared edge of a 2x1 {0, 1} texture, which averages to 0.5 and reduces to 0; its mip filter is a point, which
-// Metal's own reduction never takes, so Mullion emulates it on every GPU. a tessellated draw takes Metal's tessellator
-// by the pipeline it draws with, which is the one that emulates the sampler
+// Metal's own reduction never takes, so Mullion emulates it on every GPU
 #include "d3d12_test.hpp"
 
 static const char hlsl[] = R"hlsl(

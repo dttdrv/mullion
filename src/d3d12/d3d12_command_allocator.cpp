@@ -472,21 +472,6 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
   if (encoder_last)
     return FAIL(E_FAIL);
-  // the passes' compute tessellators ran: the next passes have room for what a slot and a pass made at the most
-  auto grow = [](std::atomic<uint32_t> &most, uint32_t made, const char *what) {
-    for (auto now = most.load(); made > now;)
-      if (most.compare_exchange_weak(now, made)) {
-        Logger::info(str::format("CommandAllocator: a tessellated ", what, " ", made));
-        break;
-      }
-  };
-  for (auto pass : std::exchange(tessellation_passes_, {})) {
-    auto slot = [&](uint64_t need) { return pass->patches ? uint32_t((need + pass->patches - 1) / pass->patches) : 0; };
-    grow(device_->tessellation_slot_points, slot(pass->need_points), "patch has room for points:");
-    grow(device_->tessellation_slot_indices, slot(pass->need_indices), "patch has room for indices:");
-    grow(device_->tessellation_pass_points, pass->need_points, "pass has room for points:");
-    grow(device_->tessellation_pass_indices, pass->need_indices, "pass has room for indices:");
-  }
   // "the runtime will not allow a reset while a command list is still being executed": the lists' recording is what
   // the queues' threads still encode and the GPU still reads. Windows' drivers survive the reset and applications
   // rely on that, so the recording stays for the work the queues have, and the allocator starts again without it:
@@ -1086,84 +1071,6 @@ SimpleCommandContext<MTLD3D12CommandAllocatorImpl>::draw(
   draw.vertex_count = vertex_count;
   draw.base_instance = base_instance;
   draw.instance_count = instance_count;
-}
-
-// the pass's compute tessellation runs after its draws' hull kernels, before the pass: each patch counted, the counts
-// summed in the patches' order, each frame made. a barrier between each, as each reads what the one before wrote
-void
-MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
-  auto batch = std::exchange(Render->tessellation, nullptr);
-  auto [draws, draws_offset] = AllocateGPUHeap(sizeof(TessellationDraw) * batch->draws, 16);
-  auto [counts, counts_offset] = AllocateGPUHeap(sizeof(uint32_t) * 3 * (batch->patches + 1), 16);
-  auto [pass, pass_offset] = AllocateGPUHeap(sizeof(TessellationPass), 16);
-  // the arena (TessellationBatch::Room). a point is {patch, u, v} (tess_point), at a whole point from the heap's start,
-  // as the indices number them
-  uint32_t point_room = batch->Room(batch->slot_points, batch->pass_points, batch->most_points,
-                                    device_->kTessellationMostPoints),
-           index_room = batch->Room(batch->slot_indices, batch->pass_indices, batch->most_indices,
-                                    device_->kTessellationMostIndices);
-  constexpr size_t point = 3 * sizeof(uint32_t);
-  auto points = std::get<1>(AllocateGPUHeap(uint64_t(point_room + 1) * point, 16));
-  points += (point - points % point) % point;
-  auto indices = std::get<1>(AllocateGPUHeap(uint64_t(index_room) * sizeof(uint32_t), 16));
-  auto record = static_cast<TessellationDraw *>(draws);
-  for (auto draw = batch->first; draw; draw = draw->next) {
-    *record++ = draw->record;
-    // the arena is in the buffer the list records into now, which may be longer than the one the draw was recorded
-    // with and then alone covers the arena
-    draw->indexed->index_buffer = gpu_heap_buffer_;
-    draw->indexed->index_buffer_offset = indices;
-    draw->points->buffer = gpu_heap_buffer_;
-  }
-  auto words = [](size_t offset) { return uint32_t(offset / sizeof(uint32_t)); };
-  *static_cast<TessellationPass *>(pass) = {
-      words(draws_offset), batch->draws, batch->patches, words(counts_offset), words(points), words(indices),
-      point_room, index_room, {0, 0, 0}, 0, 0, 0
-  };
-  tessellation_passes_.push_back(static_cast<const TessellationPass *>(pass));
-
-  // the arguments have a longer buffer since the pass's first tessellated draw (GrowArguments): its hull kernels
-  // wrote through one buffer what these kernels read through another, and these write through theirs what the
-  // pass's draws read through the ones they were recorded with. Metal 4 shows what was written through another
-  // buffer over the same memory only after a barrier that asks for it (d3d12_tessellator's largest draws): one
-  // before these kernels, and one before the pass (MTLD3D12CommandQueue)
-  bool aliased = batch->heap != obj_handle_t(gpu_heap_buffer_);
-  Render->order_aliases = aliased;
-  auto barrier = [&](bool aliases = false) {
-    auto &cmd = EncodeBeforeRender<wmtcmd_compute_memory_barrier>();
-    cmd.type = WMTComputeCommandMemoryBarrier;
-    cmd.scope = WMTBarrierScope(WMTBarrierScopeBuffers | (aliases ? WMTBarrierScopeAliases : 0));
-  };
-  auto kernel = [&](const char *name, uint32_t threads) {
-    auto pipeline = device_->GetLib().ComputePipeline(name);
-    auto &set = EncodeBeforeRender<wmtcmd_compute_setpso>();
-    set.type = WMTComputeCommandSetPSO;
-    set.pso = pipeline;
-    set.threadgroup_size = {threads, 1, 1};
-    for (auto [offset, index] : {std::pair{size_t(0), 0}, std::pair{pass_offset, 1}}) {
-      auto &buffer = EncodeBeforeRender<wmtcmd_compute_setbuffer>();
-      buffer.type = WMTComputeCommandSetBuffer;
-      buffer.buffer = gpu_heap_buffer_;
-      buffer.offset = offset;
-      buffer.index = index;
-    }
-  };
-  barrier(aliased);
-  kernel("tessellation_count", kTessellationThreads);
-  auto &count = EncodeBeforeRender<wmtcmd_compute_dispatch>();
-  count.type = WMTComputeCommandDispatchThreads;
-  count.size = {batch->patches, 1, 1};
-  barrier();
-  kernel("tessellation_scan", 1024);
-  auto &scan = EncodeBeforeRender<wmtcmd_compute_dispatch>();
-  scan.type = WMTComputeCommandDispatch;
-  scan.size = {1, 1, 1};
-  barrier();
-  kernel("tessellation_emit", kTessellationThreads);
-  auto &emit = EncodeBeforeRender<wmtcmd_compute_dispatch_indirect>();
-  emit.type = WMTComputeCommandDispatchIndirect;
-  emit.indirect_args_buffer = gpu_heap_buffer_;
-  emit.indirect_args_offset = pass_offset + offsetof(TessellationPass, emit_groups);
 }
 
 }; // namespace mullion
