@@ -615,6 +615,11 @@ public:
   );
   // the targets' offset in the encoder's `so_targets`, and their GPU address
   std::pair<uint64_t, uint64_t> encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations);
+  // the tessellation templates (SM50_BINDING_INDEX_TESSELLATION_TEMPLATES) a tessellated draw's object and mesh
+  // stages read, made with the first and bound once a render pass
+  void encodeTessellationTemplates();
+  WMT::Reference<WMT::Buffer> tessellation_templates_;
+  uint64_t tessellation_templates_encoder_ = ~0ull;
 
   // per stream, the primitives stream output has written and those it would have with room (D3D11_QUERY_DATA_SO_STATISTICS),
   // counted on by every draw; a query is the difference between two copies of it

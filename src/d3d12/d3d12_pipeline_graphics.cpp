@@ -2019,6 +2019,8 @@ public:
       auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(ref_hs.Tessellator.Domain);
       auto factor = dxbc::get_final_factor(ref_hs.Tessellator.MaxFactor, partitioning, pso_tess.max_potential_tess_factor).second;
       bool geometry = bool(pDesc->GS.pShaderBytecode);
+      // the tessellation templates its draws read, made now rather than at the first draw
+      device_->GetTessellationTemplates();
       tessellation_parts = dxbc::tessellation_grids(
                                dxbc::get_max_potential_workload_count(factor, domain, partitioning) * (32 / threads_per_patch),
                                geometry ? dxbc::get_max_workload_vertices(factor, domain)

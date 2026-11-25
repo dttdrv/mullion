@@ -1376,6 +1376,11 @@ public:
         EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
       dirty_state_.clr(DirtyState::VertexBuffer);
     }
+    // a tessellated draw's stages read the device's tessellation templates; EncodeBuffer binds them once a pass
+    if (pso_graphics_->threads_per_patch)
+      if (auto templates = device_->GetTessellationTemplates())
+        for (auto stage : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer})
+          EncodeBuffer(stage, 0, SM50_BINDING_INDEX_TESSELLATION_TEMPLATES, templates);
 
     if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
       if (rootsig_graphics_) {
@@ -1585,8 +1590,8 @@ public:
   // buffer may leave other bindings behind, so ExecuteIndirect forgets them (ForgetBuffers)
   struct {
     const EncoderData *pass = nullptr;
-    obj_handle_t buffer[4][16];
-    uint64_t offset[4][16];
+    obj_handle_t buffer[4][SM50_BINDING_INDEX_TESSELLATION_TEMPLATES + 1];
+    uint64_t offset[4][SM50_BINDING_INDEX_TESSELLATION_TEMPLATES + 1];
   } bound_;
 
   void

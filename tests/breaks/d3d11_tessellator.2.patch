@@ -1,0 +1,13 @@
+# a template's meshlet's triangles are put wound the other way
+# family native
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -1237,7 +1237,7 @@
+     tess_meshlet meshlet = template_meshlet(first, end, data, templates, record);
+     for (uint t = lane; t < meshlet.triangle_count; t += 32) {
+       uint word = templates[meshlet.triangles + t];
+-      put_triangle(mesh, behind, t, short3(word & 0xff, word >> 8 & 0xff, word >> 16 & 0xff), vertices == 3 ? 0 : 3);
++      put_triangle(mesh, behind, t, short3(word & 0xff, word >> 8 & 0xff, word >> 16 & 0xff), vertices == 3 ? 3 : 0);
+     }
+     if (lane == 0)
+       mesh.set_primitive_count(meshlet.triangle_count);

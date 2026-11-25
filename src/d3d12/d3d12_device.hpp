@@ -911,6 +911,9 @@ public:
   virtual uint64_t GetNullBuffer() = 0;
   // the buffer of those zeros
   virtual obj_handle_t GetNullBufferHandle() = 0;
+  // the tessellation templates every tessellated draw's object and mesh stages read
+  // (SM50_BINDING_INDEX_TESSELLATION_TEMPLATES), made with the first; none where Metal makes no buffer
+  virtual obj_handle_t GetTessellationTemplates() = 0;
   // removes the device if a 64-bit atomic gave up waiting for its lock (dxil_converter.cpp)
   virtual void CheckAtomicLocks() = 0;
 

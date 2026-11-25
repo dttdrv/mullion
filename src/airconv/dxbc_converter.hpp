@@ -783,6 +783,13 @@ uint32_t tessellation_group_limit(
     SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int
 );
 
+// whether a pipeline's patches whose factors all have the same points are drawn from the device's templates, whose
+// meshlets have at most these vertices and triangles (air_tessellation.metal's tess_template)
+constexpr uint32_t tessellation_template_vertices = 128, tessellation_template_primitives = 256;
+bool tessellation_templates(
+    SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int
+);
+
 llvm::StructType *tessellation_payload_type(
     SM50ShaderInternal *pHullStage, uint32_t factor_int, air::AirType &types, llvm::LLVMContext &context,
     uint32_t group_limit = 0

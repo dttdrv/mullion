@@ -298,18 +298,41 @@ emit_workloads(Patch patch, tess_output out) {
     emit(out, patch.last_frame(), no_frame);
 }
 
+// where an edge's point i is in the domain
+float2 point(tess_edge edge, int i);
+
+// where a frame's inner and outer edges run: the ring and side of each (inner_k, inner_s, outer_k, outer_s), by which
+// a patch numbers their points (number). an edge whose points run against its side's has side -1 - s
+struct tess_along {
+  int inner_k, inner_s, outer_k, outer_s;
+};
+
+// ring 0's point i of side s, numbered around the ring from side 0's first point: a side's last point is the next
+// side's first. side `sides` gives the ring's count
+template <typename Patch>
+int
+ring_number(Patch patch, int s, int i) {
+  int at = i, around = 0;
+  for (int t = 0; t < Patch::sides; t++) {
+    at += t < s ? patch.ring0[t] : 0;
+    around += patch.ring0[t];
+  }
+  return s == Patch::sides ? around : at < around ? at : at - around;
+}
+
 struct quad_patch {
   enum { sides = 4 };
   // the factors of the edges u = 0, v = 0, u = 1, v = 1, and of the inside along u and v
   tess_factor out[4], in[2];
-  // the inside factors' points
+  // the inside factors' points, and the segments of ring 0's sides, their edges' factors'
   int n[2];
+  int ring0[4];
 
   // ring k's side s, around the patch from its edge s
   tess_edge side(int k, int s) const {
     bool reverse = s == 0 || s == 3;
     if (k == 0)
-      return run(s & 1 ? quad_u : quad_v, out[s], 0, points(out[s]) - 1, reverse, s >= 2 ? fxp_one : 0);
+      return run(s & 1 ? quad_u : quad_v, out[s], 0, ring0[s], reverse, s >= 2 ? fxp_one : 0);
     int axis = s & 1 ? 0 : 1, other = 1 - axis;
     return run(axis ? quad_v : quad_u, in[axis], k, n[axis] - 1 - k, reverse, place(in[other], s < 2 ? k : n[other] - 1 - k));
   }
@@ -344,6 +367,20 @@ struct quad_patch {
     f.outer.owned = f.outer.segments + 1;
     return f;
   }
+  // where the last frame's edges run (tess_along): the far row turned against its side
+  tess_along last_along() const {
+    int k = shorter() / 2 - 1;
+    return n[0] > n[1] ? tess_along{k, -1 - 3, k, 1} : tess_along{k, -1 - 2, k, 0};
+  }
+  // the patch's points, numbered: ring 0's around it (ring_number), then the inside's by the inside factors' grid,
+  // row by row, which numbers the middle row of an odd count once
+  int number(int k, int s, int i) const {
+    if (!k)
+      return ring_number(*this, s, i);
+    int a = s == 0 ? k : s == 1 ? k + i : s == 2 ? n[0] - 1 - k : n[0] - 1 - k - i;
+    int b = s == 0 ? n[1] - 1 - k - i : s == 1 ? k : s == 2 ? k + i : n[1] - 1 - k;
+    return ring_number(*this, sides, 0) + (a - 1) + (b - 1) * (n[0] - 2);
+  }
 };
 
 struct tri_patch {
@@ -351,11 +388,13 @@ struct tri_patch {
   // the factors of the edges u = 0, v = 0, w = 0, and of the inside
   tess_factor out[3], in;
   int n;
+  // the segments of ring 0's sides, their edges' factors'
+  int ring0[3];
 
   fxp kept(int k) const { return (place(in, k) * fxp_two_thirds + fxp_half) >> 16; }
   tess_edge side(int k, int s) const {
     if (k == 0)
-      return run(tri_0 + s, out[s], 0, points(out[s]) - 1, s != 1, 0);
+      return run(tri_0 + s, out[s], 0, ring0[s], s != 1, 0);
     if (2 * k == n - 1)
       return run(tri_center, in, 0, 0, false, 0);
     return run(tri_0 + s, in, k, n - 1 - k, s != 1, kept(k));
@@ -379,26 +418,247 @@ struct tri_patch {
     int k = n / 2 - 1;
     return {run(tri_2, in, k, k, true, kept(k), 1), run(tri_1, in, k, k + 1, false, kept(k), 2)};
   }
+  // its point is side 0's first, its edge's side 1's two
+  tess_along last_along() const { return {n / 2 - 1, 0, n / 2 - 1, 1}; }
+  // ring 0's points around it (ring_number), then the inside's ring by ring, 3 (n - 1 - 2k) points each, then the
+  // center one
+  int number(int k, int s, int i) const {
+    if (!k)
+      return ring_number(*this, s, i);
+    int m = n - 1 - 2 * k, base = ring_number(*this, sides, 0) + 3 * (k - 1) * (n - 1 - k), along = s * m + i;
+    return m ? base + (along < 3 * m ? along : along - 3 * m) : base;
+  }
 };
 
 bool make_patch(thread quad_patch &patch, partitioning p, float in0, float in1, float out0, float out1, float out2, float out3);
 bool make_patch(thread tri_patch &patch, partitioning p, float in, float out0, float out1, float out2);
 
+// a patch's frames, every ring's sides then the last frame, and where frame f's edges run
+template <typename Patch>
+int
+frame_count(Patch patch) {
+  return patch.rings() * Patch::sides + patch.has_last();
+}
+
+template <typename Patch>
+tess_frame
+nth_frame(Patch patch, int f, thread tess_along &along) {
+  int ring = f / Patch::sides, t = f % Patch::sides;
+  if (ring < patch.rings()) {
+    int s = patch.side_of(t);
+    along = {ring + 1, s, ring, s};
+    return patch.frame(ring, t);
+  }
+  along = patch.last_along();
+  return patch.last_frame();
+}
+
+// the number of an edge's point i
+template <typename Patch>
+int
+edge_number(Patch patch, int k, int s, tess_edge edge, int i) {
+  return s < 0 ? patch.number(k, -1 - s, edge.segments - i) : patch.number(k, s, i);
+}
+
+// tessellation templates: a patch whose factors all have the same points (and so the same parity) is tessellated
+// alike whatever their fractions, which only place its points. such a patch of `n` points a side (2 to
+// template_most_points) is drawn from the template of its domain and `n`, which the device makes once
+// (mullion_tessellation_templates.cpp): meshlets of at most template_vertices vertices and template_primitives
+// triangles, each vertex the place of a point (a quad's grid coordinates a | b << 8, a triangle's ring, side and
+// place on the side k | s << 8 | i << 16), each triangle its corners as the meshlet's vertices, clockwise, a byte each.
+// the buffer is words: the version, the count of templates, then for each domain (triangle, quad) and n the first
+// meshlet and the meshlets, then each meshlet's first vertex, its vertices | its triangles << 16, its first triangle
+// and a word unused, then the vertices and triangles they name
+constant constexpr int template_version = 1;
+constant constexpr int template_most_points = 65;
+constant constexpr int template_count = 2 * (template_most_points + 1);
+constant constexpr int template_meshlets = 2 + 2 * template_count;
+constant constexpr int template_vertices = 128;
+constant constexpr int template_primitives = 256;
+
+struct tess_template {
+  int first, count;
+};
+
+tess_template
+template_of(device const uint *templates, bool quad, int n) {
+  if (!templates || n < 2 || n > template_most_points)
+    return {0, 0};
+  int at = 2 + 2 * ((quad ? template_most_points + 1 : 0) + n);
+  return {int(templates[at]), int(templates[at + 1])};
+}
+
+struct tess_meshlet {
+  uint vertices, vertex_count, triangles, triangle_count;
+};
+
+tess_meshlet
+meshlet_of(device const uint *templates, int index) {
+  device const uint *at = templates + template_meshlets + 4 * index;
+  return {at[0], at[1] & 0xffff, at[2], at[1] >> 16};
+}
+
+// the points of each side of a patch that a template draws, or 0
+int
+template_points(quad_patch patch) {
+  int n = patch.n[0];
+  bool odd = patch.in[0].odd, same = patch.n[1] == n && patch.in[1].odd == odd;
+  for (int s = 0; s < 4; s++)
+    same = same && patch.ring0[s] == n - 1 && patch.out[s].odd == odd;
+  return same ? n : 0;
+}
+
+int
+template_points(tri_patch patch) {
+  int n = patch.n;
+  bool same = true;
+  for (int s = 0; s < 3; s++)
+    same = same && patch.ring0[s] == n - 1 && patch.out[s].odd == patch.in.odd;
+  return same ? n : 0;
+}
+
+// what a template's patch keeps in the payload, in the place of its first workload: its factors, which place its
+// points, and its points a side. the patch's group entries are its meshlets, `m | 0xffff << 16` for meshlet m, so
+// that a group's first and end (first workload and end, from the patch's room) tell the meshlet and the room
+struct tess_record {
+  fxp factor[6]; // a quad's edges' and inside's, a triangle's edges' then its inside's in factor[4]
+  uchar odd;     // a bit for each factor's parity
+  uchar quad;
+  uchar n;
+  uchar unused;
+  int unused2[5];
+  int patch_index;
+};
+
+tess_record
+record_of(quad_patch patch, int patch_index) {
+  tess_record r = {};
+  for (int i = 0; i < 4; i++) {
+    r.factor[i] = patch.out[i].value;
+    r.odd |= patch.out[i].odd << i;
+  }
+  for (int i = 0; i < 2; i++) {
+    r.factor[4 + i] = patch.in[i].value;
+    r.odd |= patch.in[i].odd << (4 + i);
+  }
+  r.quad = 1;
+  r.n = patch.n[0];
+  r.patch_index = patch_index;
+  return r;
+}
+
+tess_record
+record_of(tri_patch patch, int patch_index) {
+  tess_record r = {};
+  for (int i = 0; i < 3; i++) {
+    r.factor[i] = patch.out[i].value;
+    r.odd |= patch.out[i].odd << i;
+  }
+  r.factor[4] = patch.in.value;
+  r.odd |= patch.in.odd << 4;
+  r.quad = 0;
+  r.n = patch.n;
+  r.patch_index = patch_index;
+  return r;
+}
+
+quad_patch
+quad_of(tess_record r) {
+  quad_patch patch;
+  for (int i = 0; i < 4; i++) {
+    patch.out[i] = {r.factor[i], bool(r.odd >> i & 1)};
+    patch.ring0[i] = r.n - 1;
+  }
+  for (int i = 0; i < 2; i++) {
+    patch.in[i] = {r.factor[4 + i], bool(r.odd >> (4 + i) & 1)};
+    patch.n[i] = r.n;
+  }
+  return patch;
+}
+
+tri_patch
+tri_of(tess_record r) {
+  tri_patch patch;
+  for (int i = 0; i < 3; i++) {
+    patch.out[i] = {r.factor[i], bool(r.odd >> i & 1)};
+    patch.ring0[i] = r.n - 1;
+  }
+  patch.in = {r.factor[4], bool(r.odd >> 4 & 1)};
+  patch.n = r.n;
+  return patch;
+}
+
+// where a template's vertex is: a quad's grid point (a, b), on ring 0 placed by the factor of its edge (u = 0, v = 0,
+// u = 1, v = 1), inside by the inside factors (quad_patch::number); a triangle's point i of ring k's side s
+float2
+template_point(quad_patch patch, uint code) {
+  int a = code & 0xff, b = code >> 8 & 0xff, last = patch.n[0] - 1;
+  uint2 uv = a == 0      ? uint2(0, place(patch.out[0], b))
+             : b == 0    ? uint2(place(patch.out[1], a), 0)
+             : a == last ? uint2(fxp_one, place(patch.out[2], b))
+             : b == last ? uint2(place(patch.out[3], a), fxp_one)
+                         : uint2(place(patch.in[0], a), place(patch.in[1], b));
+  return float2(uv) / 65536.0f;
+}
+
+float2
+template_point(tri_patch patch, uint code) {
+  return point(patch.side(code & 0xff, code >> 8 & 0xff), code >> 16);
+}
+
+// with groups and templates (`out.group_limit`'s bit 31, for a pipeline whose tessellator outputs triangles), a
+// patch a template draws is its record and its meshlets' groups
+template <typename Patch>
+bool
+emit_template(Patch patch, tess_output out, device const uint *templates) {
+  if (!(out.group_limit & int(0x80000000u)))
+    return false;
+  tess_template t = template_of(templates, Patch::sides == 4, template_points(patch));
+  if (!t.count || t.count > out.capacity)
+    return false;
+  ((object_data tess_record *)out.workloads)[0] = record_of(patch, out.patch_index);
+  for (int m = 0; m < t.count; m++) {
+    // a meshlet's group names its first workload, whose patch is the patch (get_domain_patch_index)
+    if (m)
+      out.workloads[m].patch_index = out.patch_index;
+    out.groups[m] = m | 0xffff << 16;
+  }
+  out.next[0] = t.count;
+  out.next[1] = t.count;
+  return true;
+}
+
+// a group of a template's meshlet (emit_template): the patch's record and the meshlet
+bool
+is_template(int first, int end) {
+  return end - first > 0x8000;
+}
+
+tess_meshlet
+template_meshlet(int first, int end, object_data int *data, device const uint *templates, thread tess_record &record) {
+  int room = end - 0xffff;
+  record = ((object_data tess_record *)data)[room];
+  return meshlet_of(templates, template_of(templates, record.quad, record.n).first + first - room);
+}
+
 void generate_workload_quad(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float in0, float in1, float out0, float out1, float out2, float out3
+    float in0, float in1, float out0, float out1, float out2, float out3, device const uint *templates
 ) asm("mullion.generate_workload.quad");
 
 void
 generate_workload_quad(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float in0, float in1, float out0, float out1, float out2, float out3
+    float in0, float in1, float out0, float out1, float out2, float out3, device const uint *templates
 ) {
   quad_patch patch;
-  if (make_patch(patch, partitioning(partition), in0, in1, out0, out1, out2, out3))
-    emit_workloads(patch, tess_output{(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit});
+  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
+  if (make_patch(patch, partitioning(partition), in0, in1, out0, out1, out2, out3) && !emit_template(patch, out, templates)) {
+    out.group_limit &= 0x7fffffff;
+    emit_workloads(patch, out);
+  }
 }
 
 // a quad patch of these factors, as the hull shader writes them; false if they cull it
@@ -411,6 +671,8 @@ make_patch(thread quad_patch &patch, partitioning p, float in0, float in1, float
   patch.out[1] = take(out1, p, lower);
   patch.out[2] = take(out2, p, lower);
   patch.out[3] = take(out3, p, lower);
+  for (int i = 0; i < 4; i++)
+    patch.ring0[i] = points(patch.out[i]) - 1;
   // fractional odd: one factor above 1 puts a frame inside the patch (D3D11.3 11.7.11.3). a factor is above 1 if
   // its fixed point value is
   float epsilon = 1.0f / 65536.0f, one = 1 + epsilon / 2;
@@ -437,18 +699,21 @@ make_patch(thread quad_patch &patch, partitioning p, float in0, float in1, float
 void generate_workload_triangle(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float in, float out0, float out1, float out2
+    float in, float out0, float out1, float out2, device const uint *templates
 ) asm("mullion.generate_workload.triangle");
 
 void
 generate_workload_triangle(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float in, float out0, float out1, float out2
+    float in, float out0, float out1, float out2, device const uint *templates
 ) {
   tri_patch patch;
-  if (make_patch(patch, partitioning(partition), in, out0, out1, out2))
-    emit_workloads(patch, tess_output{(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit});
+  tess_output out = {(object_data tess_workload *)out_buffer, out_next, capacity, patch_index, groups, group_limit};
+  if (make_patch(patch, partitioning(partition), in, out0, out1, out2) && !emit_template(patch, out, templates)) {
+    out.group_limit &= 0x7fffffff;
+    emit_workloads(patch, out);
+  }
 }
 
 // a triangle patch of these factors; false if they cull it. a patch whose factors are all 1 is its three corners: two
@@ -461,6 +726,8 @@ make_patch(thread tri_patch &patch, partitioning p, float in, float out0, float 
   patch.out[0] = take(out0, p, lower);
   patch.out[1] = take(out1, p, lower);
   patch.out[2] = take(out2, p, lower);
+  for (int i = 0; i < 3; i++)
+    patch.ring0[i] = points(patch.out[i]) - 1;
   float epsilon = 1.0f / 65536.0f, one = 1 + epsilon / 2;
   if (p == partitioning::fractional_odd && (above(out0, one) || above(out1, one) || above(out2, one)))
     lower = 1 + epsilon;
@@ -477,14 +744,14 @@ make_patch(thread tri_patch &patch, partitioning p, float in, float out0, float 
 void generate_workload_isoline(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float density, float detail
+    float density, float detail, device const uint *templates
 ) asm("mullion.generate_workload.isoline");
 
 void
 generate_workload_isoline(
     int patch_index, thread int *out_next, object_data int *out_buffer, int capacity, object_data int *groups,
     int group_limit, int partition,
-    float density, float detail
+    float density, float detail, device const uint *templates
 ) {
   if (culls(density) || culls(detail))
     return;
@@ -772,10 +1039,18 @@ place_edges(object_data tess_workload *workloads, int first, int w, thread int *
 // the group's workload of SIMD lane `lane`: where its own edges' points start among the group's vertices
 // (place_edges), the first being where all its own start; an edge it shares with the one before has none of its own and
 // starts with a later edge or before the first; past the group's last workload, all are the group's vertex count
-int4 get_group_layout(int first, int end, int lane, object_data int *data) asm("mullion.get_group_layout");
+int4 get_group_layout(int first, int end, int lane, object_data int *data, device const uint *templates) asm(
+    "mullion.get_group_layout"
+);
 
 int4
-get_group_layout(int first, int end, int lane, object_data int *data) {
+get_group_layout(int first, int end, int lane, object_data int *data, device const uint *templates) {
+  // a template's meshlet's vertices are its own
+  if (is_template(first, end)) {
+    tess_record record;
+    int count = template_meshlet(first, end, data, templates, record).vertex_count;
+    return int4(count, count, count, count);
+  }
   object_data tess_workload *workloads = (object_data tess_workload *)data;
   int w = first + lane;
 #if defined(__METAL_VERSION__)
@@ -805,18 +1080,30 @@ group_lane(int4 layout, int lane, int first, int end, object_data int *data) {
 #if defined(__METAL_VERSION__)
   return simd_shuffle(layout, ushort(lane));
 #else
-  return get_group_layout(first, end, lane, data);
+  return get_group_layout(first, end, lane, data, nullptr);
 #endif
 }
 
 // the group's vertex `thread_index`, `layout` being the thread's lane's (get_group_layout)
-domain_location get_group_location(int first, int end, int thread_index, int4 layout, object_data int *data) asm(
-    "mullion.get_group_location"
-);
+domain_location get_group_location(
+    int first, int end, int thread_index, int4 layout, object_data int *data, device const uint *templates
+) asm("mullion.get_group_location");
 
 domain_location
-get_group_location(int first, int end, int thread_index, int4 layout, object_data int *data) {
+get_group_location(int first, int end, int thread_index, int4 layout, object_data int *data, device const uint *templates) {
   simdgroup_barrier(mem_flags::mem_none);
+  if (is_template(first, end)) {
+    tess_record record;
+    tess_meshlet meshlet = template_meshlet(first, end, data, templates, record);
+    domain_location ret{float2(0), uint(thread_index) < meshlet.vertex_count, false};
+    if (ret.active) {
+      uint code = templates[meshlet.vertices + thread_index];
+      ret.uv = record.quad ? template_point(quad_of(record), code) : template_point(tri_of(record), code);
+    }
+    simdgroup_barrier(mem_flags::mem_none);
+    ret.iterate = simd_all(ret.active);
+    return ret;
+  }
 
   object_data tess_workload *workloads = (object_data tess_workload *)data;
   int count = end - first;
@@ -941,8 +1228,21 @@ group_runs(
 // `vertices`: 3 for clockwise triangles, -3 for counter-clockwise ones
 void
 generate_group(
-    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int vertices, int lane
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int vertices, int lane,
+    device const uint *templates
 ) {
+  // a template's meshlet's triangles, as they are
+  if (is_template(first, end)) {
+    tess_record record;
+    tess_meshlet meshlet = template_meshlet(first, end, data, templates, record);
+    for (uint t = lane; t < meshlet.triangle_count; t += 32) {
+      uint word = templates[meshlet.triangles + t];
+      put_triangle(mesh, behind, t, short3(word & 0xff, word >> 8 & 0xff, word >> 16 & 0xff), vertices == 3 ? 0 : 3);
+    }
+    if (lane == 0)
+      mesh.set_primitive_count(meshlet.triangle_count);
+    return;
+  }
   object_data tess_workload *workloads = (object_data tess_workload *)data;
   int primitives = 0, base[4] = {0, 0, 0, 0}, placed = 0;
   for (int w = first; w < end; w++) {
@@ -956,39 +1256,47 @@ generate_group(
 }
 
 void generateGroupTriangle(
-    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
 ) asm("mullion.domain_generate_group.triangle");
 
 void
-generateGroupTriangle(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
-  generate_group(first, end, data, mesh, behind, 3, lane);
+generateGroupTriangle(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
+) {
+  generate_group(first, end, data, mesh, behind, 3, lane, templates);
 }
 
 void generateGroupTriangleCCW(
-    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
 ) asm("mullion.domain_generate_group.triangle_ccw");
 
 void
-generateGroupTriangleCCW(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
-  generate_group(first, end, data, mesh, behind, -3, lane);
+generateGroupTriangleCCW(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
+) {
+  generate_group(first, end, data, mesh, behind, -3, lane, templates);
 }
 
 void generateGroupLine(
-    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
 ) asm("mullion.domain_generate_group.line");
 
 void
-generateGroupLine(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
-  generate_group(first, end, data, mesh, behind, 2, lane);
+generateGroupLine(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
+) {
+  generate_group(first, end, data, mesh, behind, 2, lane, templates);
 }
 
 void generateGroupPoint(
-    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
 ) asm("mullion.domain_generate_group.point");
 
 void
-generateGroupPoint(int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane) {
-  generate_group(first, end, data, mesh, behind, 1, lane);
+generateGroupPoint(
+    int first, int end, object_data int *data, Mesh mesh, threadgroup uint *behind, int lane, device const uint *templates
+) {
+  generate_group(first, end, data, mesh, behind, 1, lane, templates);
 }
 
 // a geometry shader takes the workload's primitives one at a time, each numbered as above

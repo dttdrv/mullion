@@ -1,0 +1,12 @@
+# a template's triangles are kept wound the other way
+--- a/src/mullion/mullion_tessellation_templates.cpp
++++ b/src/mullion/mullion_tessellation_templates.cpp
+@@ -156,7 +156,7 @@
+         used.push_back(number);
+         out.vertices.push_back(codes[number]);
+       }
+-      word |= uint(local[number]) << (8 * c);
++      word |= uint(local[number]) << (8 * (2 - c));
+     }
+     out.triangles.push_back(word);
+   }

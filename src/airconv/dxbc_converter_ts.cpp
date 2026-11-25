@@ -157,6 +157,32 @@ tessellation_group_limit(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION
   );
 }
 
+// MULLION_AIRCONV_SKIP=tessellation-templates: no patch is drawn from a template
+static bool
+tessellation_templates_enabled() {
+  static const bool enabled = [] {
+    auto skip = getenv("MULLION_AIRCONV_SKIP") ?: getenv("DXMT_AIRCONV_SKIP");
+    return !skip || !strstr(skip, "tessellation-templates");
+  }();
+  return enabled;
+}
+
+// whether a patch whose factors all have the same points is drawn from the device's template of it
+// (air_tessellation.metal's tess_template): with groups, for a tessellator of triangles, where a mesh has room for a
+// template's meshlet. its object and mesh stages then read the templates (SM50_BINDING_INDEX_TESSELLATION_TEMPLATES)
+bool
+tessellation_templates(SM50ShaderInternal *pHullStage, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, uint32_t factor_int) {
+  SM50_SHADER_PSO_TESSELLATOR_DATA *pso_tess = nullptr;
+  if (!tessellation_templates_enabled() || !tessellation_group_limit(pHullStage, pArgs, factor_int) ||
+      !args_get_data<SM50_SHADER_PSO_TESSELLATOR, SM50_SHADER_PSO_TESSELLATOR_DATA>(pArgs, &pso_tess))
+    return false;
+  auto primitive = pHullStage->tessellator_output_primitive;
+  return (primitive == microsoft::D3D11_SB_TESSELLATOR_OUTPUT_TRIANGLE_CW ||
+          primitive == microsoft::D3D11_SB_TESSELLATOR_OUTPUT_TRIANGLE_CCW) &&
+         mesh_size(tessellation_template_vertices, pso_tess->mesh_vertex_size, tessellation_template_primitives) <=
+             mesh_size_limit;
+}
+
 // the payload the hull stage leaves the mesh stage: the control points and patch constants of an object threadgroup's
 // patches, its first patch's number, and its workloads
 llvm::StructType *
@@ -446,6 +472,20 @@ convert_dxbc_vertex_hull_shader(
         .raster_order_group = {}
     });
   }
+
+  bool templates = tessellation_templates(pHullStage, pArgs, factor_int);
+  uint32_t templates_idx = ~0u;
+  if (templates)
+    templates_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_TEMPLATES,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLRepresentableType(air::MSLUint{}),
+        .arg_name = "tessellation_templates",
+        .raster_order_group = {}
+    });
 
   uint32_t patch_size_idx = ~0u;
   if (!pHullStage->input_control_point_count)
@@ -891,9 +931,11 @@ convert_dxbc_vertex_hull_shader(
       builder.CreateStore(first, next_workload);
       for (uint32_t i = 1; group_limit && i < 5; i++)
         builder.CreateStore(builder.getInt32(0), next_at(i));
+      // with templates, a patch a template draws is its meshlets (air_tessellation.metal's emit_template)
       dxbc.HullGenerateWorkload(
-          domain.first, patch_offset_in_group, next_workload, workloads, capacity, groups, group_limit,
-          get_partitioning(pHullStage), factors
+          domain.first, patch_offset_in_group, next_workload, workloads, capacity, groups,
+          templates && groups ? group_limit | 0x80000000u : group_limit, get_partitioning(pHullStage), factors,
+          templates ? function->getArg(templates_idx) : nullptr
       );
       return builder.CreateLoad(types._int, next_workload);
     };
@@ -1088,6 +1130,20 @@ convert_dxbc_tesselator_domain_shader(
   uint32_t payload_struct_size = module.getDataLayout().getTypeAllocSize(payload_struct_type);
 
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = payload_struct_size});
+  uint32_t templates_idx = ~0u;
+  // groups have no pieces (tessellation_group_limit)
+  bool templates = tessellation_templates(pHullStage, pArgs, factor_int);
+  if (templates)
+    templates_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_TESSELLATION_TEMPLATES,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLRepresentableType(air::MSLUint{}),
+        .arg_name = "tessellation_templates",
+        .raster_order_group = {}
+    });
 
   bool point_rasterization = false;
 
@@ -1109,6 +1165,11 @@ convert_dxbc_tesselator_domain_shader(
                            : group_limit     ? group_limit & 0xffff
                                              : get_max_workload_vertices(factor_int, pHullStage->tessellation_domain);
   uint32_t mesh_primitives = pieces.primitives ? pieces.primitives : group_limit ? group_limit >> 16 : mesh_vertices;
+  // a template's meshlet takes the mesh too
+  if (templates) {
+    mesh_vertices = std::max(mesh_vertices, tessellation_template_vertices);
+    mesh_primitives = std::max(mesh_primitives, tessellation_template_primitives);
+  }
   switch (pHullStage->tessellator_output_primitive) {
   case microsoft::D3D11_SB_TESSELLATOR_OUTPUT_POINT: {
     func_signature.DefineInput(air::InputMesh{mesh_vertices, mesh_primitives, air::MeshOutputTopology::Point});
@@ -1295,7 +1356,9 @@ convert_dxbc_tesselator_domain_shader(
     air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
   }
   // where each of the group's workloads' points start, one a lane
-  auto layout = group_limit ? dxbc.DomainGetGroupLayout(workload_index, group_end, thread_index, data) : nullptr;
+  auto templates_ptr = templates ? (llvm::Value *)function->getArg(templates_idx) : nullptr;
+  auto layout =
+      group_limit ? dxbc.DomainGetGroupLayout(workload_index, group_end, thread_index, data, templates_ptr) : nullptr;
   auto preheader = builder.GetInsertBlock();
   builder.CreateBr(vertex_start);
 
@@ -1312,7 +1375,9 @@ convert_dxbc_tesselator_domain_shader(
                               get_output_primitive(pHullStage), data
                           )
                         : group_limit
-                            ? dxbc.DomainGetGroupLocation(workload_index, group_end, actual_thread_index, layout, data)
+                            ? dxbc.DomainGetGroupLocation(
+                                  workload_index, group_end, actual_thread_index, layout, data, templates_ptr
+                              )
                             : dxbc.DomainGetLocation(workload_index, actual_thread_index, data);
 
   resource_map.domain = domain_location(location, builder, air);
@@ -1509,7 +1574,9 @@ convert_dxbc_tesselator_domain_shader(
         workload_index, first_primitive, pieces.primitives, data, get_output_primitive(pHullStage), behind_ptr
     );
   else if (group_limit) {
-    dxbc.DomainGenerateGroup(workload_index, group_end, data, get_output_primitive(pHullStage), behind_ptr, thread_index);
+    dxbc.DomainGenerateGroup(
+        workload_index, group_end, data, get_output_primitive(pHullStage), behind_ptr, thread_index, templates_ptr
+    );
     // a group may have more primitives than vertices, and only as many have their patch's number from the vertices'
     // threads: every primitive the mesh may have gets it here
     for (uint32_t p = 0; p < mesh_primitives; p += 32) {

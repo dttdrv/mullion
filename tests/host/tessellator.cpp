@@ -119,11 +119,11 @@ main() {
         std::vector<int> groups(workloads.size());
         auto generate = [&](int *next, int capacity, int limit) {
           if (domain == reference::quad)
-            generate_workload_quad(0, next, data, capacity, groups.data(), limit, partitioning, f[4], f[5], f[0], f[1], f[2], f[3]);
+            generate_workload_quad(0, next, data, capacity, groups.data(), limit, partitioning, f[4], f[5], f[0], f[1], f[2], f[3], nullptr);
           else if (domain == reference::triangle)
-            generate_workload_triangle(0, next, data, capacity, groups.data(), limit, partitioning, f[4], f[0], f[1], f[2]);
+            generate_workload_triangle(0, next, data, capacity, groups.data(), limit, partitioning, f[4], f[0], f[1], f[2], nullptr);
           else
-            generate_workload_isoline(0, next, data, capacity, groups.data(), limit, partitioning, f[0], f[1]);
+            generate_workload_isoline(0, next, data, capacity, groups.data(), limit, partitioning, f[0], f[1], nullptr);
         };
         int count = 0;
         generate(&count, workloads.size(), 0);
@@ -218,7 +218,7 @@ main() {
               // the group's vertices, each a location once
               std::vector<Corner> at;
               while (true) {
-                auto location = get_group_location(first, end, at.size(), int4(0, 0, 0, 0), data);
+                auto location = get_group_location(first, end, at.size(), int4(0, 0, 0, 0), data, nullptr);
                 if (!location.active)
                   break;
                 at.push_back(corner(location.uv.x, location.uv.y));
@@ -258,11 +258,11 @@ main() {
               Mesh lanes_mesh{&lanes};
               for (int lane = 0; lane < 32; lane++)
                 if (vertices == 3)
-                  generateGroupTriangle(first, end, data, lanes_mesh, behind, lane);
+                  generateGroupTriangle(first, end, data, lanes_mesh, behind, lane, nullptr);
                 else if (vertices == 2)
-                  generateGroupLine(first, end, data, lanes_mesh, behind, lane);
+                  generateGroupLine(first, end, data, lanes_mesh, behind, lane, nullptr);
                 else
-                  generateGroupPoint(first, end, data, lanes_mesh, behind, lane);
+                  generateGroupPoint(first, end, data, lanes_mesh, behind, lane, nullptr);
               std::vector<Primitive> got_group;
               bool bad_index = lanes.indices.size() < lanes.primitives * vertices;
               for (uint n = 0; n < lanes.primitives && !bad_index; n++) {

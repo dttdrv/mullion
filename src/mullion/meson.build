@@ -26,6 +26,7 @@ mullion_src = [
   'mullion_fence.cpp',
   'mullion_keyed_mutex.cpp',
   'mullion_workarounds.cpp',
+  'mullion_tessellation_templates.cpp',
 ]
 
 mullion_shaders = [
@@ -40,7 +41,8 @@ mullion_shaders_header = hexdump_generator.process(mullion_shaders_lib)
 
 mullion_lib = static_library('mullion', mullion_src, mullion_shaders_header, mullion_version,
   dependencies        : [ util_dep, airconv_forward_dep, winemetal_dep ],
-  include_directories : [ mullion_include_path ],
+  # the tessellator's Metal source, built for the host as the host tests build it (mullion_tessellation_templates.cpp)
+  include_directories : [ mullion_include_path, include_directories('../../tests/host/metal', '../airconv/shaders') ],
 )
 
 mullion_dep = declare_dependency(

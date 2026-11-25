@@ -20,6 +20,15 @@ test('host_tessellator',
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      # every factor and partitioning on one core: about 270 s on CI's runner, past 300 s when the runner is loaded
      suite : 'host', timeout : 900)
+# the device's tessellation templates, made as the device makes them
+test('host_tessellation_templates',
+     executable('host_tessellation_templates',
+                ['tessellation_templates.cpp', '../reference/reference.cpp',
+                 '../../src/mullion/mullion_tessellation_templates.cpp'],
+                include_directories : include_directories('metal', '../../src/airconv', '../../src/airconv/shaders',
+                                                          '../../libs', '../../src/mullion'),
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 600)
 # the converter's own functions, built for the host as the bridge links them
 test('host_readerio_frame', executable('host_readerio_frame', 'readerio_frame.cpp',
      include_directories : llvm_include_path_darwin, dependencies : airconv_dep_darwin,

@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 128
+#define AIRCONV_VERSION 129
 
 #ifdef __cplusplus
 #include <string>
@@ -56,6 +56,9 @@ enum SM50_BINDING_INDEX: uint32_t {
      combiners (SM50_SHADING_RATE), then the shading rate image's bytes, a D3D12_SHADING_RATE for each tile */
   SM50_BINDING_INDEX_SHADING_RATE = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES + 1,
   SM50_BINDING_INDEX_SHADING_RATE_IMAGE = SM50_BINDING_INDEX_SHADING_RATE + 1,
+  /* a tessellation pipeline's object and mesh stages: the device's tessellation templates (air_tessellation.metal's
+     tess_template), which every tessellated draw binds */
+  SM50_BINDING_INDEX_TESSELLATION_TEMPLATES = SM50_BINDING_INDEX_SHADING_RATE_IMAGE + 1,
 
   SM50_BINDING_INDEX_ROOT_ARGUMENTS = 0,
   SM50_BINDING_INDEX_STATIC_SAMPLERS = 1,
