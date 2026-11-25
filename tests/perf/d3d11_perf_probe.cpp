@@ -346,6 +346,16 @@ scenes() {
          }
          c()->OMSetRenderTargets(1, p.rtv.GetAddressOf(), p.dsv.Get());
        }},
+      {"targets_noclear", "the targets scene without its clears (what the clears cost)", [] {}, [c](UINT) {
+         for (UINT k = 0; k < 40; k++) {
+           ID3D11ShaderResourceView *none = nullptr;
+           c()->PSSetShaderResources(0, 1, &none);
+           c()->OMSetRenderTargets(1, p.rtvs[k % 4].GetAddressOf(), nullptr);
+           for (UINT i = 0; i < 50; i++)
+             c()->Draw(4, 0);
+         }
+         c()->OMSetRenderTargets(1, p.rtv.GetAddressOf(), p.dsv.Get());
+       }},
       {"texture_updates", "200 64x64 UpdateSubresource uploads into a 1024x1024 atlas (fonts, UI)", [] {}, [c](UINT f) {
          static std::vector<uint32_t> pixels(64 * 64, 0xff00ff00);
          for (UINT i = 0; i < 200; i++) {

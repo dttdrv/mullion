@@ -35,6 +35,10 @@ DEFINE_COM_INTERFACE("279a1d66-2fc1-460c-a0a7-a7a5f2b7a48f",
   // the targets the pixel shader blends itself, whose blending this leaves off (ShaderBlend)
   virtual std::array<SM50_SHADER_BLEND, 8>
   SetupMetalPipelineDescriptor(WMTRenderPipelineBlendInfo *blend_info, uint32_t num_rt, uint32_t valid_rt) = 0;
+  // what a pipeline of `num_rt` targets takes of the state, as words made when the state is: equal for two states a
+  // pipeline blends alike (equal_to<MTL_GRAPHICS_PIPELINE_DESC>), without copying either's description
+  virtual uint64_t PipelineHash(uint32_t num_rt) = 0;
+  virtual bool PipelineEqual(IMTLD3D11BlendState *other, uint32_t num_rt) = 0;
 };
 
 namespace std {

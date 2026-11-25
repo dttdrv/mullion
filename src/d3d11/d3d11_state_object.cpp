@@ -253,6 +253,42 @@ public:
          desc_.RenderTarget[0].SrcBlendAlpha >= D3D11_BLEND_SRC1_COLOR ||
          desc_.RenderTarget[0].DestBlendAlpha >= D3D11_BLEND_SRC1_COLOR ||
          desc_.RenderTarget[0].DestBlend >= D3D11_BLEND_SRC1_COLOR);
+    // each target's fields a pipeline compares, those of blending only where it blends and the logic op only where
+    // it has one: two targets blend alike exactly where their words are equal
+    for (unsigned i = 0; i < 8; i++) {
+      auto &t = desc_.RenderTarget[i];
+      uint64_t word = uint64_t(t.RenderTargetWriteMask) | uint64_t(!!t.BlendEnable) << 8 |
+                      uint64_t(!!t.LogicOpEnable) << 9;
+      if (t.BlendEnable)
+        word |= uint64_t(t.BlendOp) << 10 | uint64_t(t.BlendOpAlpha) << 16 | uint64_t(t.SrcBlend) << 22 |
+                uint64_t(t.SrcBlendAlpha) << 30 | uint64_t(t.DestBlend) << 38 | uint64_t(t.DestBlendAlpha) << 46;
+      if (t.LogicOpEnable)
+        word |= uint64_t(t.LogicOp) << 54;
+      target_words_[i] = word;
+    }
+    flags_word_ = uint64_t(!!desc_.IndependentBlendEnable) | uint64_t(!!desc_.AlphaToCoverageEnable) << 1;
+  }
+
+  uint64_t
+  PipelineHash(uint32_t num_rt) final {
+    HashState state;
+    state.add(flags_word_);
+    for (uint32_t i = 0, n = desc_.IndependentBlendEnable ? std::min(num_rt, 8u) : 1; i < n; i++)
+      state.add(target_words_[i]);
+    return state;
+  }
+
+  bool
+  PipelineEqual(IMTLD3D11BlendState *other, uint32_t num_rt) final {
+    auto that = static_cast<MTLD3D11BlendState *>(other);
+    if (that == this)
+      return true;
+    if (that->flags_word_ != flags_word_)
+      return false;
+    for (uint32_t i = 0, n = desc_.IndependentBlendEnable ? std::min(num_rt, 8u) : 1; i < n; i++)
+      if (that->target_words_[i] != target_words_[i])
+        return false;
+    return true;
   }
   ~MTLD3D11BlendState() {}
 
@@ -354,6 +390,8 @@ public:
 private:
   const D3D11_BLEND_DESC1 desc_;
   bool dual_source_blending_;
+  uint64_t target_words_[8]{};
+  uint64_t flags_word_ = 0;
   MTLD3D10BlendState d3d10_;
 };
 
