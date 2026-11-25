@@ -4117,6 +4117,14 @@ public:
     EndPredication();
     if (!pBuffer)
       return;
+    // the kernel of a region that begins in a render pass whose draws wrote nothing but its targets goes before the
+    // pass, which keeps going: nothing in it can have written the predicate, and the pass is ordered after the kernel
+    // as after the work before it (OrderingPoint). 100 regions of a frame were 100 passes, each loading and storing
+    // its targets
+    auto render = allocator_->encoder_current;
+    bool before = render && render->type == EncoderType::Render && render != uav_draw_pass_ && HoistsPredicates();
+    if (before)
+      allocator_->encoder_current = nullptr;
     StartComputePass();
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(PredicationRegion), alignof(PredicationRegion));
     if (allocator_->records_) {
@@ -4145,7 +4153,17 @@ public:
     cmd_dispatch.type = WMTComputeCommandDispatch;
     cmd_dispatch.size = {1, 1, 1};
     allocator_->InvalidateCurrentPass();
+    if (before) {
+      allocator_->encoder_current = render;
+      render->late = false;
+    }
   };
+
+  static bool
+  HoistsPredicates() {
+    static const bool hoists = env::getEnvVar("MULLION_D3D12_HOIST_PREDICATES") != "0";
+    return hoists;
+  }
 
   // a marker is an instant, between passes or inside one, which no pass is named by
   void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {};
