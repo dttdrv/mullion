@@ -3798,6 +3798,28 @@ public:
 
 #pragma region Internal
 
+  // the bindings a rename of `resource` changes, each where it is bound: the next draw encodes again the tables of the
+  // stages it is bound to, and only those. `bind_flags` are what it may be bound as (a constant buffer, a vertex
+  // buffer, a shader resource); a stage table encodes whole when any of its slots is marked, so marking every stage's
+  // had each draw after a map of one buffer encode and track every stage's constant buffers again
+  void
+  DirtyBindingsOf(D3D11ResourceCommon *resource, UINT bind_flags) {
+    if (bind_flags & D3D11_BIND_VERTEX_BUFFER)
+      for (const auto &[slot, entry] : state_.InputAssembler.VertexBuffers)
+        if (entry.Buffer.ptr() == resource)
+          state_.InputAssembler.VertexBuffers.set_dirty(slot);
+    for (auto &stage : state_.ShaderStages) {
+      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER)
+        for (const auto &[slot, entry] : stage.ConstantBuffers)
+          if (entry.Buffer.ptr() == resource)
+            stage.ConstantBuffers.set_dirty(slot);
+      if (bind_flags & D3D11_BIND_SHADER_RESOURCE)
+        for (const auto &[slot, entry] : stage.SRVs)
+          if (entry.SRV->resource_.ptr() == resource)
+            stage.SRVs.set_dirty(slot);
+    }
+  }
+
   // UpdateSubresource1 can rename DEFAULT buffers without granting CPU access (D3D11.3 5.6.9).
   virtual HRESULT MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
                               D3D11_MAPPED_SUBRESOURCE *pMappedResource) = 0;

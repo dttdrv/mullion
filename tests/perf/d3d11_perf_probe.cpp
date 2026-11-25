@@ -254,6 +254,21 @@ scenes() {
            c()->Draw(4, 0);
          }
        }},
+      {"draws_map_ps", "10000 draws, each mapping a dynamic constant buffer with WRITE_DISCARD that only the pixel shader "
+                       "binds, the vertex shader reading a constant buffer of its own",
+       [] {}, [c](UINT) {
+         c()->PSSetShader(p.ps[0].Get(), nullptr, 0);
+         c()->VSSetConstantBuffers(0, 1, p.cbs[0].GetAddressOf());
+         c()->PSSetConstantBuffers(0, 1, p.cbs[1].GetAddressOf());
+         c()->PSSetConstantBuffers(1, 1, p.dynamic_cb.GetAddressOf());
+         for (UINT i = 0; i < 10000; i++) {
+           D3D11_MAPPED_SUBRESOURCE mapped;
+           c()->Map(p.dynamic_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+           draw_constants(static_cast<float *>(mapped.pData), i);
+           c()->Unmap(p.dynamic_cb.Get(), 0);
+           c()->Draw(4, 0);
+         }
+       }},
       {"draws_update", "10000 draws, each UpdateSubresource of a default constant buffer", [] {}, [c](UINT) {
          c()->VSSetConstantBuffers(0, 1, p.default_cb.GetAddressOf());
          c()->PSSetConstantBuffers(0, 1, p.default_cb.GetAddressOf());

@@ -226,19 +226,7 @@ public:
     auto coherent_seq_id = cmd_queue.CoherentSeqId();
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
       if (MapType == D3D11_MAP_WRITE_DISCARD) {
-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
-          state_.InputAssembler.VertexBuffers.set_dirty();
-        }
-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.ConstantBuffers.set_dirty();
-          }
-        }
-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-          }
-        }
+        DirtyBindingsOf(GetResourceCommon(pResource), bind_flag);
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
         pMappedResource->RowPitch = buffer_length;
@@ -251,9 +239,7 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
-      for (auto &stage : state_.ShaderStages) {
-        stage.SRVs.set_dirty();
-      }
+      DirtyBindingsOf(GetResourceCommon(pResource), D3D11_BIND_SHADER_RESOURCE);
 
       pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
       pMappedResource->RowPitch = row_pitch;
@@ -261,9 +247,7 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
-      for (auto &stage : state_.ShaderStages) {
-        stage.SRVs.set_dirty();
-      }
+      DirtyBindingsOf(GetResourceCommon(pResource), D3D11_BIND_SHADER_RESOURCE);
 
       dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
       EmitST([allocation = dynamic->immediateName(),
