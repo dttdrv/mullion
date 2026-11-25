@@ -298,6 +298,16 @@ scenes() {
            c()->Draw(4, 0);
          }
        }},
+      {"draws_cleared_stages", "10000 draws, each clearing the hull, domain and geometry stages that have no shader "
+                               "(a state manager resetting the stages a draw does not use)",
+       [] {}, [c](UINT) {
+         for (UINT i = 0; i < 10000; i++) {
+           c()->HSSetShader(nullptr, nullptr, 0);
+           c()->DSSetShader(nullptr, nullptr, 0);
+           c()->GSSetShader(nullptr, nullptr, 0);
+           c()->Draw(4, 0);
+         }
+       }},
       {"draws_shaders", "10000 draws, each changing the pixel shader among 8", [] {}, [c](UINT) {
          for (UINT i = 0; i < 10000; i++) {
            c()->PSSetShader(p.ps[i % 8].Get(), nullptr, 0);

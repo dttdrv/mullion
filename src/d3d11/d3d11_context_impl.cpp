@@ -4068,6 +4068,10 @@ public:
         D3D11_ASSERT(0 && "unexpected shader object");
       }
     } else {
+      // a stage cleared that has no shader changes no pipeline: a state manager clears the hull, domain and
+      // geometry stages before every draw
+      if (!ShaderStage.Shader)
+        return;
       ShaderStage.Shader = nullptr;
     }
 
