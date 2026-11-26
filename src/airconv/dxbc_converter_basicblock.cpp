@@ -332,7 +332,7 @@ pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element, std::array
         llvm::ConstantInt::get(ctx.llvm, llvm::APInt{32, from_reg, false});
       return load_from_array_at(
                ctx.resource.output.ptr_int4, const_index
-             ) >>= [=, &ctx](auto ivec4) {
+             ) >>= [=](auto ivec4) {
         auto desired_type =
           ctx.function->getReturnType()->getStructElementType(to_element);
         uint32_t stored_mask = 0;
@@ -340,7 +340,7 @@ pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element, std::array
           stored_mask |= (mask >> channels[c] & 1) << c;
         auto stored = ctx.builder.CreateShuffleVector(ivec4, channels);
         return to_desired_type_from_int_vec4(stored, desired_type, stored_mask) |
-               [=, &ctx](auto value) {
+               [=](auto value) {
                  return ctx.builder.CreateInsertValue(ret, value, {to_element});
                };
       };
