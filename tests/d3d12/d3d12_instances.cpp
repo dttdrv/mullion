@@ -62,7 +62,7 @@ main(int argc, char **argv) {
   auto index_at = [=](UINT at) { return 1 + at * 2 % (wide - 3); };
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT});
   const char *names[] = {"COLUMN", "ROW", "SECOND", "STILL", "HIGHSTEP"};
   D3D12_INPUT_ELEMENT_DESC elements[slots];

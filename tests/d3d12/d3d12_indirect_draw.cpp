@@ -29,7 +29,7 @@ main(int argc, char **argv) {
   }
   const UINT size = 8;
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   auto rs = root_signature(device.Get(), {});
   const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
   D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};

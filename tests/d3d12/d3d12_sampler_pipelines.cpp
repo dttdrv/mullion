@@ -6,6 +6,7 @@
 // the shared edge of a 2x1 {0, 1} texture, which averages to 0.5 and reduces to 0; its mip filter is a point, which
 // Metal's own reduction never takes, so Mullion emulates it on every GPU
 #include "d3d12_test.hpp"
+#include <algorithm>
 
 static const char hlsl[] = R"hlsl(
 Texture2D<float> t : register(t0);
@@ -41,7 +42,7 @@ main(int argc, char **argv) {
     return 1;
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
   // the pipelines first, before any sampler exists
   D3D12_DESCRIPTOR_RANGE ranges[2] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1}, {D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 2}};

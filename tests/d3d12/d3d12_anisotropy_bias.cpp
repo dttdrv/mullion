@@ -73,7 +73,7 @@ main(int argc, char **argv) {
     return verdict();
 
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   // the largest footprint at the largest bias stays inside the mips
   constexpr UINT size = 256, mips = std::bit_width(size), slices = 2, targets = 5;
   constexpr float depth_scale = 16;

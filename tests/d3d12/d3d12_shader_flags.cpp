@@ -56,7 +56,7 @@ main(int argc, char **argv) {
       return verdict();
   }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   if (argc < 3) {
     char executable[MAX_PATH], temporary[MAX_PATH], directory[MAX_PATH];
     GetModuleFileNameA(nullptr, executable, sizeof(executable));
@@ -103,7 +103,7 @@ main(int argc, char **argv) {
     step("MULLION_SHADER_FLAGS='%s'", inputs[i].text);
     SetEnvironmentVariableA("MULLION_SHADER_FLAGS", inputs[i].text);
     device.Reset();
-    CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
     D3D12_ROOT_PARAMETER parameter{D3D12_ROOT_PARAMETER_TYPE_UAV};
     auto root = root_signature(device.Get(), {1, &parameter});
     auto output = buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, sizeof(UINT), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,

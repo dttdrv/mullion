@@ -32,7 +32,7 @@ float4 ps() : SV_Target { return float4(1, 0, 0, 1); }
 static int
 run(const std::string &cs, const std::string &vs, const std::string &ps, UINT queries, UINT heaps) {
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_ROOT_PARAMETER parameters[3] = {
       {D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_UAV}, {D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS}
   };

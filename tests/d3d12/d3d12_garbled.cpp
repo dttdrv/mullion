@@ -62,7 +62,7 @@ static bool
 device_takes(const Compiler &compiler, const char *when, bool preview, bool all) {
   auto vs = compiler.compile(hlsl, "vs", "vs"), ps = compiler.compile(hlsl, "ps", "ps"), cs = compiler.compile(hlsl, "cs", "cs");
   ComPtr<ID3D12Device> device;
-  if (!expect(!vs.empty() && !ps.empty() && !cs.empty() && SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))),
+  if (!expect(!vs.empty() && !ps.empty() && !cs.empty() && SUCCEEDED(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))),
               "%s: no shaders or no device", when))
     return false;
   D3D12_DESCRIPTOR_RANGE ranges[2] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1}, {D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1}};

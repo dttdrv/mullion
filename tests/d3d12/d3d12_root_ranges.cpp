@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
         return verdict();
     }
   ComPtr<ID3D12Device> device;
-  CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+  CHECK(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_FEATURE_DATA_ROOT_SIGNATURE support{D3D_ROOT_SIGNATURE_VERSION_1_1};
   CHECK(device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &support, sizeof(support)));
   if (support.HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1_1) {

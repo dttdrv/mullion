@@ -132,7 +132,7 @@ struct Devices {
   bool
   create() {
     const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_1;
-    return SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) &&
+    return SUCCEEDED(make_device(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) &&
            SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION,
                                        &device11, nullptr, &context)) &&
            SUCCEEDED(device11.As(&device1)) && SUCCEEDED(device11.As(&device5));
