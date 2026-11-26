@@ -10,9 +10,16 @@
 #include "winemetal.h"
 #include "wsi_monitor.hpp"
 #include <bit>
+#include <cstddef>
 #include <string>
+#include <vector>
+#include <d3d12.h>
 #define __NVAPI_EMPTY_SAL
+// with d3d12.h NVAPI declares its D3D12 interfaces too, by MSVC's uuid attribute
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-attributes"
 #include "nvapi.h"
+#pragma clang diagnostic pop
 #include "nvapi_interface.h"
 #include "nvShaderExtnEnums.h"
 #undef __NVAPI_EMPTY_SAL
@@ -863,6 +870,157 @@ NvAPI_GPU_GetLogicalGpuInfo(NvLogicalGpuHandle hLogicalGpu, NV_LOGICAL_GPU_DATA 
   return NVAPI_OK;
 }
 
+// none of NVIDIA's ray tracing extensions is Metal's: thread reordering is a no-op ("Thread reordering acts as a
+// no-op"), as no NVIDIA shader extension is lowered, and opacity and displacement micromaps, cluster operations,
+// partitioned top-level structures, spheres and linear swept spheres are not there. each caps type is the value of
+// its enum, and "dataSize ... Must match the size of the caps data requested" (nvapi.h, NvAPI_D3D12_GetRaytracingCaps)
+NVAPI_INTERFACE
+NvAPI_D3D12_GetRaytracingCaps(
+    ID3D12Device *pDevice, NVAPI_D3D12_RAYTRACING_CAPS_TYPE type, void *pData, size_t dataSize
+) {
+  if (!pDevice || !pData)
+    return NVAPI_INVALID_POINTER;
+
+  NvU32 none;
+  switch (type) {
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_THREAD_REORDERING:
+    none = NVAPI_D3D12_RAYTRACING_THREAD_REORDERING_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_OPACITY_MICROMAP:
+    none = NVAPI_D3D12_RAYTRACING_OPACITY_MICROMAP_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_DISPLACEMENT_MICROMAP:
+    none = NVAPI_D3D12_RAYTRACING_DISPLACEMENT_MICROMAP_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_CLUSTER_OPERATIONS:
+    none = NVAPI_D3D12_RAYTRACING_CLUSTER_OPERATIONS_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_PARTITIONED_TLAS:
+    none = NVAPI_D3D12_RAYTRACING_PARTITIONED_TLAS_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_SPHERES:
+    none = NVAPI_D3D12_RAYTRACING_SPHERES_CAP_NONE;
+    break;
+  case NVAPI_D3D12_RAYTRACING_CAPS_TYPE_LINEAR_SWEPT_SPHERES:
+    none = NVAPI_D3D12_RAYTRACING_LINEAR_SWEPT_SPHERES_CAP_NONE;
+    break;
+  default:
+    return NVAPI_INVALID_ARGUMENT;
+  }
+  // every caps type is an enum of flags
+  if (dataSize != sizeof(NVAPI_D3D12_RAYTRACING_THREAD_REORDERING_CAPS))
+    return NVAPI_INVALID_ARGUMENT;
+  memcpy(pData, &none, sizeof(none));
+  return NVAPI_OK;
+}
+
+// an extended build's inputs as Direct3D's, where they are only what Direct3D has: triangles and boxes, and the build
+// flags Direct3D defines, which NVAPI's take the values of
+// (NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS_EX). micromaps, spheres, linear swept spheres and the
+// flags of micromaps and of data access are refused, as their caps say none of them is there. a top-level structure's
+// instances keep their flags, of which Metal's take the four Direct3D has: the two of micromaps change nothing without
+// them
+static NvAPI_Status
+StandardInputs(
+    const NVAPI_D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_EX &in,
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS &out, std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &geometries
+) {
+  constexpr NvU32 standard_flags = NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE_EX |
+                                   NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION_EX |
+                                   NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE_EX |
+                                   NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD_EX |
+                                   NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_MINIMIZE_MEMORY_EX |
+                                   NVAPI_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE_EX;
+  if (in.flags & ~standard_flags)
+    return NVAPI_NOT_SUPPORTED;
+  out = {in.type, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS(in.flags), in.numDescs, in.descsLayout};
+  if (in.type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+    out.InstanceDescs = in.instanceDescs;
+    return NVAPI_OK;
+  }
+  if (in.type != D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL ||
+      (in.descsLayout != D3D12_ELEMENTS_LAYOUT_ARRAY && in.descsLayout != D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS))
+    return NVAPI_INVALID_ARGUMENT;
+  // the stride covers the members a triangle or box geometry has, which is all that is read of each
+  bool array = in.descsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY;
+  if (in.numDescs && (array ? !in.pGeometryDescs : !in.ppGeometryDescs))
+    return NVAPI_INVALID_ARGUMENT;
+  if (in.numDescs && array &&
+      in.geometryDescStrideInBytes < offsetof(NVAPI_D3D12_RAYTRACING_GEOMETRY_DESC_EX, triangles) +
+                                         sizeof(D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC))
+    return NVAPI_INVALID_ARGUMENT;
+  geometries.resize(in.numDescs);
+  for (NvU32 i = 0; i < in.numDescs; i++) {
+    auto &desc = array
+                     ? *reinterpret_cast<const NVAPI_D3D12_RAYTRACING_GEOMETRY_DESC_EX *>(
+                           reinterpret_cast<const char *>(in.pGeometryDescs) + size_t(i) * in.geometryDescStrideInBytes
+                       )
+                     : *in.ppGeometryDescs[i];
+    auto &geometry = geometries[i] = {};
+    geometry.Flags = desc.flags;
+    switch (desc.type) {
+    case NVAPI_D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES_EX:
+      geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+      geometry.Triangles = desc.triangles;
+      break;
+    case NVAPI_D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS_EX:
+      geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+      geometry.AABBs = desc.aabbs;
+      break;
+    default:
+      return NVAPI_NOT_SUPPORTED;
+    }
+  }
+  out.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+  out.pGeometryDescs = geometries.data();
+  return NVAPI_OK;
+}
+
+NVAPI_INTERFACE
+NvAPI_D3D12_GetRaytracingAccelerationStructurePrebuildInfoEx(
+    ID3D12Device5 *pDevice, NVAPI_GET_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO_EX_PARAMS *pParams
+) {
+  if (!pDevice || !pParams)
+    return NVAPI_INVALID_ARGUMENT;
+  if (pParams->version != NVAPI_GET_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO_EX_PARAMS_VER1)
+    return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+  if (!pParams->pDesc || !pParams->pInfo)
+    return NVAPI_INVALID_ARGUMENT;
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+  std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+  if (auto status = StandardInputs(*pParams->pDesc, inputs, geometries); status != NVAPI_OK)
+    return status;
+  pDevice->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, pParams->pInfo);
+  return NVAPI_OK;
+}
+
+// "an extension of ID3D12GraphicsCommandList4::BuildRaytracingAccelerationStructure()": the same build, of the
+// standard inputs, with its post-build information
+NVAPI_INTERFACE
+NvAPI_D3D12_BuildRaytracingAccelerationStructureEx(
+    ID3D12GraphicsCommandList4 *pCommandList, const NVAPI_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_EX_PARAMS *pParams
+) {
+  if (!pCommandList || !pParams)
+    return NVAPI_INVALID_ARGUMENT;
+  if (pParams->version != NVAPI_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_EX_PARAMS_VER1)
+    return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+  if (!pParams->pDesc)
+    return NVAPI_INVALID_ARGUMENT;
+  if (pParams->numPostbuildInfoDescs && !pParams->pPostbuildInfoDescs)
+    return NVAPI_INVALID_COMBINATION;
+  auto &ex = *pParams->pDesc;
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{
+      ex.destAccelerationStructureData, {}, ex.sourceAccelerationStructureData, ex.scratchAccelerationStructureData
+  };
+  std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+  if (auto status = StandardInputs(ex.inputs, desc.Inputs, geometries); status != NVAPI_OK)
+    return status;
+  pCommandList->BuildRaytracingAccelerationStructure(
+      &desc, pParams->numPostbuildInfoDescs, pParams->pPostbuildInfoDescs
+  );
+  return NVAPI_OK;
+}
+
 static void *QueryInterfaceImpl(NvU32 id);
 
 // MULLION_LOG_LEVEL=debug lists every function a program asks for, and whether it got one
@@ -979,6 +1137,12 @@ static void *QueryInterfaceImpl(NvU32 id) {
     return (void *)&NvAPI_GPU_GetAdapterIdFromPhysicalGpu;
   case 0x842b066e:
     return (void *)&NvAPI_GPU_GetLogicalGpuInfo;
+  case 0x85a6c2a0:
+    return (void *)&NvAPI_D3D12_GetRaytracingCaps;
+  case 0x8d025b77:
+    return (void *)&NvAPI_D3D12_GetRaytracingAccelerationStructurePrebuildInfoEx;
+  case 0xe24ead45:
+    return (void *)&NvAPI_D3D12_BuildRaytracingAccelerationStructureEx;
   default:
     break;
   }
