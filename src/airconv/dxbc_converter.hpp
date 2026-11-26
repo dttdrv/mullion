@@ -112,8 +112,8 @@ public:
   bool use_samplepos = false;
   // a compute shader whose quads (SM 6.6) are 2x2 blocks of its thread IDs, not four consecutive threads
   bool quads_2d = false;
-  // the wave size a shader requires ([WaveSize], SM 6.6), or 0
-  uint32_t wave_size = 0;
+  // the wave sizes a shader runs with ([WaveSize(min, max)], SM 6.6 and 6.8: one size where max is min), or 0
+  uint32_t wave_size = 0, wave_size_max = 0;
   std::vector<PhaseInfo> phases;
   uint32_t pull_mode_reg_mask = 0;
   // the input registers a pixel shader also reads at each vertex of the primitive (DXIL's AttributeAtVertex)
@@ -744,6 +744,9 @@ llvm::Error convert_dxil_mesh_stage(
   SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
 );
 
+// whether a DXIL part's headers fit it (SM50Initialize checks a part before anything reads it)
+bool dxil_program_valid(const void *part, size_t size);
+// `part`: one dxil_program_valid takes
 llvm::Error read_dxil(
   const void *part, SM50ShaderInternal *shader, microsoft::CSignatureParser &inputParser,
   microsoft::CSignatureParser5 &outputParser, microsoft::CSignatureParser &patchParser
@@ -857,7 +860,10 @@ void setup_immediate_constant_buffer(
   air::AirType &types, llvm::Module &module, llvm::IRBuilder<> &builder
 );
 
-llvm::Error convert_null_geometry_shader(const char *name, llvm::LLVMContext &context, llvm::Module &module, bool direct);
+llvm::Error convert_null_geometry_shader(
+  const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
+  bool direct
+);
 llvm::Error convert_pass_through_geometry_shader(
   const SM50ShaderInternal *pVertexStage, const char *name, llvm::LLVMContext &context, llvm::Module &module,
   SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
