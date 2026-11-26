@@ -17,7 +17,7 @@ def main():
     wanted = []
     seen = set()
     for test in tests:
-        if "host" not in test.get("suite", []):
+        if not any(s == "host" or s.endswith(":host") for s in test.get("suite", [])):
             continue
         for dep_id in test.get("depends", []):
             target = targets.get(dep_id)
