@@ -1,7 +1,7 @@
 # buffer copies omit the destination storage offset
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -4859,7 +4859,7 @@
+@@ -4084,7 +4084,7 @@
            cmd.src = src->buffer();
            cmd.src_offset = SrcX + src_offset;
            cmd.dst = dst->buffer();
@@ -10,48 +10,30 @@
          });
          promote_flush = true;
        } else if (auto src = GetResourceCommon(pSrcResource)) {
-@@ -4878,7 +4878,7 @@
+@@ -4100,7 +4100,7 @@
            cmd.src = src->buffer();;
            cmd.src_offset = SrcBox.left + src_offset;
            cmd.dst = dst->buffer();
 -          cmd.dst_offset = DstX + dst_offset;
 +          cmd.dst_offset = DstX;
-         };
-         if (hoisted)
-           AddPrelude(hoisted, std::move(copy_op));
-@@ -4907,7 +4907,7 @@
-             cmd.src = src->buffer();
-             cmd.src_offset = SrcBox.left + src_offset;
-             cmd.dst = dst;
--            cmd.dst_offset = dst_offset;
-+            cmd.dst_offset = 0;
-           });
-           UseWrappedSubresource(pSrcResource, SrcSubresource, false);
-           return;
-@@ -4924,7 +4924,7 @@
+         });
+         promote_flush = true;
+       } else {
+@@ -4119,7 +4119,7 @@
            cmd.src = src->buffer();
            cmd.src_offset = SrcBox.left + src_offset;
            cmd.dst = dst->buffer();;
 -          cmd.dst_offset = DstX + dst_offset;
 +          cmd.dst_offset = DstX;
-         };
-         if (hoisted)
-           AddPrelude(hoisted, std::move(copy_op));
-@@ -4946,7 +4946,7 @@
-             cmd.src = src->buffer();
-             cmd.src_offset = SrcBox.left + src_offset;
-             cmd.dst = dst;
--            cmd.dst_offset = dst_offset;
-+            cmd.dst_offset = 0;
-           });
-           UseWrappedSubresource(pSrcResource, SrcSubresource, false);
-           return;
-@@ -4963,7 +4963,7 @@
+         });
+       } else if (auto src = GetResourceCommon(pSrcResource)) {
+         // on-device copy
+@@ -4134,7 +4134,7 @@
            cmd.src = src->buffer();;
            cmd.src_offset = SrcBox.left + src_offset;
            cmd.dst = dst->buffer();;
 -          cmd.dst_offset = DstX + dst_offset;
 +          cmd.dst_offset = DstX;
-         };
-         if (hoisted)
-           AddPrelude(hoisted, std::move(copy_op));
+         });
+       } else {
+         UNREACHABLE

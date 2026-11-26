@@ -1,6 +1,6 @@
 --- a/src/d3d11/d3d11_query.hpp
 +++ b/src/d3d11/d3d11_query.hpp
-@@ -48,7 +48,7 @@
+@@ -48,7 +48,7 @@ enum class QueryState {
  
  class MTLD3D11Query : public ID3D11Query1 {
  public:
@@ -8,4 +8,4 @@
 +  QueryState state_ = QueryState::Signaled;
    // MULLION_DIAG=profile: when GetData first found the query unfinished in this frame, and the frame
    uint64_t polled = 0, polled_frame = 0;
-   // the immediate context's chunk the query ended in, ~0 where unknown (a deferred context's): GetData flushes for a
+ 

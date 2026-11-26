@@ -1,19 +1,9 @@
 # buffer uploads do not register their pending staging read
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index e3714e2..3354f10 100644
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -4895,7 +4895,6 @@
-                                : RenamedCopyDestination(pDstResource, GetResourceCommon(pSrcResource), DstX,
-                                                         SrcBox.right - SrcBox.left);
-         if (renamed) {
--          UseCopySource(staging_src);
-           AddPrelude(renamed->prelude, [src_ = std::move(staging_src), SrcBox, allocation = renamed->allocation,
-                                         suballocation = renamed->suballocation](ArgumentEncodingContext &enc) {
-             auto [src, src_offset] =
-@@ -4914,7 +4913,6 @@
-         }
-         if (!hoisted)
-           SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+@@ -4060,3 +4060,2 @@ public:
+         SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
 -        UseCopySource(staging_src);
-         auto copy_op = [dst_ = dst->buffer(), src_ = std::move(staging_src), DstX, SrcBox](ArgumentEncodingContext &enc) {
-           auto [src, src_offset] = enc.access(src_->buffer(), SrcBox.left, SrcBox.right - SrcBox.left, ResourceAccess::Read);
-           auto [dst, dst_offset] = enc.access(dst_, DstX, SrcBox.right - SrcBox.left, ResourceAccess::Write);
+         EmitOP([dst_ = dst->buffer(), src_ = std::move(staging_src), DstX, SrcBox](ArgumentEncodingContext &enc) {
