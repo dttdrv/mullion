@@ -333,9 +333,7 @@
   "verdict": "passed"
  },
  "test_occlusion_query": {
-  "verdict": "failed",
-  "failed": 1,
-  "first": "d3d11.c:6266: Test failed: Got unexpected query result 0x0000000090000000."
+  "verdict": "passed"
  },
  "test_pipeline_statistics_query": {
   "verdict": "passed"
