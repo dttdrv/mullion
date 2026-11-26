@@ -1651,6 +1651,11 @@ public:
     // on alone read none (mesh_only below runs the vertex shader there too)
     mesh_reads_root_arguments = mesh_shader || tessellation || pDesc->GS.pShaderBytecode;
     mesh_instances = bool(pDesc->GS.pShaderBytecode) ? gs_instances : pass_through;
+    // as the geometry stage's arguments have them (GeometryArguments): its invocations share mesh threadgroups where
+    // the pipeline rasterizes what it emits as it is
+    gs_mesh_invocations = bool(pDesc->GS.pShaderBytecode) && !tessellation
+                              ? SM50GeometryMeshInvocations(ref_gs.GeometryShader.MeshInvocations, conservative, stream_output)
+                              : 1;
     adjacency = plain && (pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE ||
                           pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     patches = plain && stream_output && pDesc->PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;

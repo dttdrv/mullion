@@ -1786,7 +1786,7 @@ public:
           warp_count, InstanceCount,
           get_gs_max_object_threadgroups(
               topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
-              mesh_budget
+              mesh_budget, enc.currentRenderEncoder()->geometry_mesh_invocations
           )
       );
       if (!parts)
@@ -1804,7 +1804,8 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
-        cmd.mesh_threads = 1;
+        // a geometry shader invocation a thread
+        cmd.mesh_threads = enc.currentRenderEncoder()->geometry_mesh_invocations;
       };
       auto encoder = enc.currentRenderEncoder();
       if (encoder->so_count_pso)
@@ -1843,7 +1844,7 @@ public:
           warp_count, InstanceCount,
           get_gs_max_object_threadgroups(
               topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
-              mesh_budget
+              mesh_budget, enc.currentRenderEncoder()->geometry_mesh_invocations
           )
       );
       if (!parts)
@@ -1862,7 +1863,8 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
-        cmd.mesh_threads = 1;
+        // a geometry shader invocation a thread
+        cmd.mesh_threads = enc.currentRenderEncoder()->geometry_mesh_invocations;
         cmd.index_buffer = index_buffer;
         cmd.index_buffer_offset = index_buffer_offset;
       };
@@ -1990,7 +1992,8 @@ public:
         );
         auto encoder = enc.currentRenderEncoder();
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo, vertex_registers);
         uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
@@ -2016,6 +2019,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch_arg.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = buffer->buffer();
           cmd.indirect_args_offset = buffer_offset + AlignedByteOffsetForArgs;
           cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
@@ -2052,7 +2056,8 @@ public:
         );
         auto encoder = enc.currentRenderEncoder();
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo, vertex_registers);
         uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
@@ -2079,6 +2084,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch_arg.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = buffer->buffer();
           cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
           cmd.index_buffer = index_buffer;
@@ -2250,7 +2256,8 @@ public:
         uint32_t max_vertices = offset < vertices->length() ? (vertices->length() - offset) / stride : 0;
         uint32_t max_warps = max_vertices / vertex_increment_per_warp + (max_vertices % vertex_increment_per_warp != 0);
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         // each part's origin (8 bytes), then each part's grid
         auto parts = indirect_geometry_parts(max_part, std::max(max_warps, 1u));
@@ -2269,6 +2276,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = arguments.gpu_buffer;
           cmd.indirect_args_offset = arguments.offset;
           cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
@@ -5929,6 +5937,7 @@ public:
       render_encoder->so_count_pso = GraphicsPipeline.StreamOutputCount;
       render_encoder->so_geometry_instances = GraphicsPipeline.GeometryInstances;
       render_encoder->geometry_mesh_instances = GraphicsPipeline.MeshInstances;
+      render_encoder->geometry_mesh_invocations = GraphicsPipeline.MeshInvocations ? GraphicsPipeline.MeshInvocations : 1;
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;

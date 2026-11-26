@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 126
+#define AIRCONV_VERSION 127
 
 #ifdef __cplusplus
 #include <string>
@@ -157,6 +157,10 @@ struct MTL_GEOMETRY_SHADER_REFLECTION {
      its maxvertexcount: stream output then knows each invocation's primitives before it runs
      (SM50_SHADER_STREAM_OUTPUT_DATA's single_pass) */
   uint32_t FixedEmits;
+  /* the invocations a mesh threadgroup of the geometry pipeline runs, one a thread, where it rasterizes what the
+     shader emits as it is (neither conservative nor streaming output): as many as fit a Metal mesh, at least one.
+     SM50GeometryMeshInvocations gives a pipeline's */
+  uint32_t MeshInvocations;
 };
 
 struct MTL_POST_TESSELLATOR_REFLECTION {
@@ -799,6 +803,15 @@ SM50GeometryWarp(uint32_t per_primitive, bool strip, uint32_t registers) {
     warp.vertices = strip ? warp.primitives * 2 : warp.threads;
   }
   return warp;
+}
+
+/* the geometry shader invocations each mesh threadgroup of a geometry pipeline runs, one a thread, from the shader's
+   MeshInvocations: a conservative pipeline's and one that streams output run one each, as a mesh threadgroup after a
+   tessellator does (its threads are the domain stage's). a draw's mesh threadgroups have this many threads, and the
+   object stage starts one for each of that many of its primitives (rounded up), for each instance */
+static inline uint32_t
+SM50GeometryMeshInvocations(uint32_t mesh_invocations, bool conservative, bool stream_output) {
+  return conservative || stream_output || !mesh_invocations ? 1 : mesh_invocations;
 }
 
 /* the 64-bit counts a draw's shaders add to at SM50_BINDING_INDEX_PIPELINE_STATISTICS, in its words' order: a pixel

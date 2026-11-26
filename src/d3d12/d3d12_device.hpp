@@ -616,6 +616,9 @@ public:
   // the mesh threadgroups an object threadgroup starts for each primitive: the geometry shader's instances, 1 when
   // the mesh stage only passes primitives on, 0 when it starts none (stream output alone)
   uint32_t mesh_instances = 0;
+  // the geometry shader invocations each of a geometry draw's mesh threadgroups runs, a thread each
+  // (SM50GeometryMeshInvocations)
+  uint32_t gs_mesh_invocations = 1;
   // a pipeline without a geometry shader, whose topologies with adjacency run as geometry pipelines that pass the
   // primitives on; and one of stream output alone of patches, whose control points only the topology tells. their
   // Metal pipelines are made by topology, and for stream output's counting pass. null when it cannot be made

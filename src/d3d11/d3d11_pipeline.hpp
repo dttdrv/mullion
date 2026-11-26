@@ -56,6 +56,8 @@ struct MTL_COMPILED_GRAPHICS_PIPELINE {
   // the mesh threadgroups an object threadgroup starts for each primitive: the geometry shader's instances, 1 when
   // the mesh stage only passes primitives on, 0 when it starts none (stream output alone)
   uint32_t MeshInstances;
+  // the geometry shader invocations each mesh threadgroup runs, a thread each (SM50GeometryMeshInvocations); 0 is one
+  uint32_t MeshInvocations;
 };
 
 struct MTL_COMPILED_COMPUTE_PIPELINE {

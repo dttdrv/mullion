@@ -2184,6 +2184,7 @@ static int SM50InitializeUncached(
           3 * triangles <= 256 && triangles <= 512 &&
           mullion::dxbc::mesh_size(3 * triangles, vertex_size, triangles * 4) <= mullion::dxbc::mesh_size_limit;
       pRefl->GeometryShader.FixedEmits = mullion::dxbc::fixed_stream_primitives(sm50_shader).has_value();
+      pRefl->GeometryShader.MeshInvocations = mullion::dxbc::geometry_mesh_invocations(sm50_shader);
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader = {sm50_shader->pso_valid_output_reg_mask, sm50_shader->ps_has_coverage_output, 0, 0,

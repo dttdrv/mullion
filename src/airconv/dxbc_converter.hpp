@@ -881,6 +881,10 @@ llvm::Error convert_dxbc_geometry_shader(
 // FixedEmits): its code runs from start to return without a branch, so its emits and cuts are fixed, and it emits no
 // more vertices than it declares
 std::optional<std::array<uint32_t, 4>> fixed_stream_primitives(const SM50ShaderInternal *pShaderInternal);
+// the geometry shader invocations a mesh threadgroup runs where it rasterizes what the shader emits as it is
+// (MTL_GEOMETRY_SHADER_REFLECTION's MeshInvocations), and a pipeline's, of its arguments (SM50GeometryMeshInvocations)
+uint32_t geometry_mesh_invocations(const SM50ShaderInternal *pShaderInternal);
+uint32_t geometry_mesh_invocations(const SM50ShaderInternal *pShaderInternal, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs);
 
 llvm::Error convert_dxbc_vertex_for_geometry_shader(
   const SM50ShaderInternal *pShaderInternal, const char *name,
