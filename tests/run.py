@@ -504,15 +504,24 @@ def install_compilers(source, wine, prefix, replace):
     """Microsoft's compilers found under source (and DXC's dxil.dll) into the prefix's system directories, each by its
     machine: those the Wine runs natively, 64-bit in system32 and i386 in syswow64. without replace only what the
     prefix lacks"""
-    native = "aarch64" if (wine / "lib" / "wine" / "aarch64-windows").is_dir() else "x86_64"
+    windows = prefix / "drive_c" / "windows"
+    ntdll = windows / "system32" / "ntdll.dll"
+    native = machine(ntdll) if ntdll.is_file() else (
+        "aarch64" if (wine / "lib" / "wine" / "aarch64-windows").is_dir() else "x86_64")
+    kinds = {native}
+    if (windows / "syswow64").is_dir():
+        kinds.add("i386")
     for path in sorted(source.rglob("*.dll")):
         name = path.name.lower()
-        kind = machine(path)
-        if name not in (*COMPILERS, "dxil.dll") or kind not in (native, "i386"):
+        if name not in (*COMPILERS, "dxil.dll"):
             continue
-        if replace or (COMPILERS.get(name) and name not in compilers(prefix, kind)) or (
-                name == "dxil.dll" and "dxcompiler.dll" not in compilers(prefix, kind)):
-            shutil.copy2(path, system(prefix, kind) / name)
+        kind = machine(path)
+        if not kind or kind not in kinds:
+            continue
+        target = system(prefix, kind) / name
+        if replace or not target.is_file() or machine(target) != kind or builtin(target):
+            shutil.copy2(path, target)
+
 
 
 @functools.cache

@@ -24,6 +24,19 @@ struct MTL_TEMPORAL_UPSCALE_D3D12_DESC {
   FLOAT JitterOffsetY;
   // the motion vectors were made with the jittered projections (NVSDK_NGX_DLSS_Feature_Flags_MVJittered)
   BOOL MotionVectorJittered;
+  // where each input's content starts in its texture (DLSS's Subrect.Base): the color's, the depth's and the motion
+  // vectors', these in output pixels where they are at the output resolution
+  UINT ColorOffsetX;
+  UINT ColorOffsetY;
+  UINT DepthOffsetX;
+  UINT DepthOffsetY;
+  UINT MotionVectorOffsetX;
+  UINT MotionVectorOffsetY;
+  // optional: how much each pixel takes of its current color over its history, from 0 to 1, at the input resolution
+  // (DLSS's Bias.Current.Color.Mask), and where its content starts in it
+  ID3D12Resource *ReactiveMask;
+  UINT ReactiveMaskOffsetX;
+  UINT ReactiveMaskOffsetY;
 };
 
 // a ray-traced frame, upscaled and denoised from its G-buffer (MTLFXTemporalDenoisedScaler; DLSS Ray Reconstruction)
@@ -66,4 +79,7 @@ DEFINE_COM_INTERFACE("987426c0-bca1-4bfb-8e8a-1da3257f8467", IMTLD3D12CommandLis
   TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
   virtual HRESULT STDMETHODCALLTYPE
   DenoisedUpscale(const MTL_DENOISED_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppUpscaler) = 0;
+  // the ratios of the output's size to the input content's that MetalFX's temporal scaler takes on the device
+  // (MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:, ...MaxScaleForDevice:)
+  virtual void STDMETHODCALLTYPE GetTemporalUpscaleScales(FLOAT *pMinScale, FLOAT *pMaxScale) = 0;
 };

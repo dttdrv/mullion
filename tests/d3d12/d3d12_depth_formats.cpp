@@ -20,7 +20,7 @@
 // separately checked copy bytes for every mip/slice/plane, through direct and indirect dispatch.
 #include "d3d12_test.hpp"
 #include "../depth_formats.hpp"
-#include "../depth_readback.hpp"
+#include "../../src/mullion/mullion_command_constants.hpp"
 #include "../depth_values.hpp"
 #include <algorithm>
 #include <bit>
@@ -60,9 +60,7 @@ main(int argc, char **argv) {
       if (!expect(!codes[dim][plane].empty(), "depth plane HLSL did not compile"))
         return verdict();
     }
-  UINT group[3]{};
-  if (!expect(depth_readback_group(group), "could not read the depth readback threadgroup"))
-    return verdict();
+  constexpr auto &group = mullion::kDepthReadbackThreadgroup;
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1};

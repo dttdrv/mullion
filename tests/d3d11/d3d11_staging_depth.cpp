@@ -18,7 +18,7 @@
 #include <cmath>
 #include <utility>
 #include "../depth_formats.hpp"
-#include "../depth_readback.hpp"
+#include "../../src/mullion/mullion_command_constants.hpp"
 
 int
 main() {
@@ -40,9 +40,8 @@ main() {
       sscanf(name.c_str() + stencil, "_S%uX%u", &format.stencil_bits, &format.unused_bits);
     formats.push_back(format);
   }
-  UINT group[3]{};
-  if (!expect(!formats.empty() && depth_readback_group(group),
-              "could not read depth formats or the readback threadgroup"))
+  constexpr auto &group = mullion::kDepthReadbackThreadgroup;
+  if (!expect(!formats.empty(), "could not read depth formats"))
     return verdict();
   const UINT seed = 0x5a17;
   ComPtr<ID3D11Device> device;
