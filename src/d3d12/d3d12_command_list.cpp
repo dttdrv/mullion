@@ -1527,13 +1527,12 @@ public:
       bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(words), 16), words, sizeof(words)));
       bytes.length = sizeof(words);
       bytes.index = SM50_BINDING_INDEX_DEPTH_BOUNDS;
-      if (bounds_tested) {
-        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        buffer.type = WMTRenderCommandSetFragmentBuffer;
-        buffer.buffer = depth_bounds_samples_;
-        buffer.offset = 0;
-        buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
-      }
+      // The shader declares the samples buffer even when the draw has no depth attachment.
+      auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+      buffer.type = WMTRenderCommandSetFragmentBuffer;
+      buffer.buffer = bounds_tested ? depth_bounds_samples_.handle : device_->GetNullBufferHandle();
+      buffer.offset = 0;
+      buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
     }
     // coarse shading's rates and combiners, and its image's bytes (or none, but a buffer bound)
     if (coarse) {
