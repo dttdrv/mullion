@@ -3798,7 +3798,7 @@ void
 Converter::HullGenerateWorkload(
     const char *Domain, llvm::Value *PatchIndex, llvm::Value *CountPtr, llvm::Value *DataPtr, uint32_t Capacity,
     llvm::Value *GroupsPtr, uint32_t GroupLimit, TessellatorPartitioning Partitioning,
-    llvm::ArrayRef<llvm::Value *> TessFactors
+    llvm::ArrayRef<llvm::Value *> TessFactors, llvm::Value *Templates
 ) {
   using namespace llvm;
 
@@ -3826,6 +3826,7 @@ Converter::HullGenerateWorkload(
       ir.getInt32((uint32_t)Partitioning)
   };
   Ops.append(TessFactors.begin(), TessFactors.end());
+  Ops.push_back(Templates ? Templates : llvm::Constant::getNullValue(ir.getInt32Ty()->getPointerTo(1)));
   SmallVector<Type *> Tys;
   for (auto Op : Ops)
     Tys.push_back(Op->getType());
@@ -3900,7 +3901,9 @@ Converter::DomainGetLocation(llvm::Value *WorkloadIndex, llvm::Value *ThreadInde
 }
 
 llvm::Value *
-Converter::DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Value *Lane, llvm::Value *DataPtr) {
+Converter::DomainGetGroupLayout(
+    llvm::Value *First, llvm::Value *End, llvm::Value *Lane, llvm::Value *DataPtr, llvm::Value *Templates
+) {
   using namespace llvm;
 
   auto &Context = air.getContext();
@@ -3911,7 +3914,9 @@ Converter::DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Valu
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
   );
-  SmallVector<Value *> Ops{First, End, Lane, DataPtr};
+  SmallVector<Value *> Ops{
+      First, End, Lane, DataPtr, Templates ? Templates : llvm::Constant::getNullValue(ir.getInt32Ty()->getPointerTo(1))
+  };
   SmallVector<Type *> Tys;
   for (auto Op : Ops)
     Tys.push_back(Op->getType());
@@ -3923,7 +3928,8 @@ Converter::DomainGetGroupLayout(llvm::Value *First, llvm::Value *End, llvm::Valu
 
 std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
 Converter::DomainGetGroupLocation(
-    llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *Layout, llvm::Value *DataPtr
+    llvm::Value *First, llvm::Value *End, llvm::Value *ThreadIndex, llvm::Value *Layout, llvm::Value *DataPtr,
+    llvm::Value *Templates
 ) {
   using namespace llvm;
 
@@ -3935,7 +3941,10 @@ Converter::DomainGetGroupLocation(
                 {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
                 {~0U, Attribute::get(Context, Attribute::AttrKind::ReadOnly)}}
   );
-  SmallVector<Value *> Ops{First, End, ThreadIndex, Layout, DataPtr};
+  SmallVector<Value *> Ops{
+      First, End, ThreadIndex, Layout, DataPtr,
+      Templates ? Templates : llvm::Constant::getNullValue(ir.getInt32Ty()->getPointerTo(1))
+  };
   SmallVector<Type *> Tys;
   for (auto Op : Ops)
     Tys.push_back(Op->getType());
@@ -3956,7 +3965,7 @@ Converter::DomainGetGroupLocation(
 void
 Converter::DomainGenerateGroup(
     llvm::Value *First, llvm::Value *End, llvm::Value *DataPtr, TessellatorOutputPrimitive Primitive,
-    llvm::Value *Behind, llvm::Value *Lane
+    llvm::Value *Behind, llvm::Value *Lane, llvm::Value *Templates
 ) {
   using namespace llvm;
 
@@ -3970,7 +3979,8 @@ Converter::DomainGenerateGroup(
   );
   auto TyBehind = ir.getInt32Ty()->getPointerTo(3);
   SmallVector<Value *> Ops{
-      First, End, DataPtr, air.getMeshHandle(), Behind ? Behind : llvm::Constant::getNullValue(TyBehind), Lane
+      First, End, DataPtr, air.getMeshHandle(), Behind ? Behind : llvm::Constant::getNullValue(TyBehind), Lane,
+      Templates ? Templates : llvm::Constant::getNullValue(ir.getInt32Ty()->getPointerTo(1))
   };
   SmallVector<Type *> Tys;
   for (auto Op : Ops)

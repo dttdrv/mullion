@@ -556,10 +556,7 @@ void handle_signature_ps(
     case microsoft::D3D10_SB_NAME_PRIMITIVE_ID:
       sm50_shader->ps_primitive_id = true;
       signature_handlers.push_back([=](SignatureContext &ctx) {
-        auto index = ctx.patch_varying ? ctx.func_signature.DefineInput(InputFragmentStageIn{
-                                             SM50_PATCH_VARYING, msl_uint, Interpolation::flat, false
-                                         })
-                                       : ctx.func_signature.DefineInput(InputPrimitiveID{});
+        auto index = ctx.func_signature.DefineInput(InputPrimitiveID{});
         ctx.prologue << init_input_reg(index, reg, mask);
       });
       max_input_register = std::max(reg + 1, max_input_register);

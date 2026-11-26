@@ -1173,16 +1173,10 @@ public:
   }
 
   DrawCallStatus
-  PreDraw(bool SkipResourceBinding = false, bool Native = false) {
+  PreDraw(bool SkipResourceBinding = false) {
     TakeFuller();
     if (!pso_graphics_ || pso_graphics_->failed)
       return DrawCallStatus::Invalid;
-    // Metal's tessellator binds the domain shader's stage as a vertex stage, the mesh pipeline as a mesh stage
-    if (Native != native_bound_) {
-      native_bound_ = Native;
-      dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::VertexBuffer, DirtyState::GraphicsRootArguments);
-      dirty_state_.set(DirtyState::GraphicsRootSignature);
-    }
     // a draw that tests the depth bounds where the GPU cannot finds the samples that pass first, unless the pass it is
     // in has them for this range and nothing has written depth since
     bool bounds_tested = pso_graphics_->depth_bounds_emulated && pso_graphics_->dsv_mask && dsv.Texture &&
@@ -1325,7 +1319,7 @@ public:
     bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState) || dirty_state_.test(DirtyState::Viewport);
     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
       // a pipeline for a topology with adjacency is made here, and may fail
-      auto pipeline = Native ? RenderTargets(pso_graphics_->pso_patches) : Pipeline();
+      auto pipeline = Pipeline();
       if (!pipeline || (pso_graphics_->stream_output && !SinglePass() && !Pipeline(true)))
         return DrawCallStatus::Invalid;
       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
@@ -1365,7 +1359,7 @@ public:
     // under tessellation the vertex and hull shaders run in the object stage, the domain shader in the mesh stage; with
     // a geometry shader the vertex shader runs in the object stage, the geometry shader in the mesh stage
     // a mesh shader pipeline has an object stage (its amplification shader, if any) and a mesh stage
-    bool mesh = (pso_graphics_->threads_per_patch && !Native) || Geometry() || pso_graphics_->mesh_shader;
+    bool mesh = pso_graphics_->threads_per_patch || Geometry() || pso_graphics_->mesh_shader;
     bool vertex = !mesh;
     // the root arguments and static samplers reach the mesh stage where its function reads them
     // (mesh_reads_root_arguments): not the pass-through mesh stage of a pipeline without a geometry shader
@@ -1387,18 +1381,20 @@ public:
         if (pso_graphics_->mesh_only)
           EncodeBuffer(WMTRenderCommandSetMeshBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
       }
-      if (Stride && vertex && !Native)
+      if (Stride && vertex)
         EncodeBuffer(WMTRenderCommandSetVertexBuffer, Offset, SM50_BINDING_INDEX_VERTEX_BUFFER);
-      hull_bound_.vertex_buffers = Offset;
       dirty_state_.clr(DirtyState::VertexBuffer);
     }
+    // a tessellated draw's stages read the device's tessellation templates; EncodeBuffer binds them once a pass
+    if (pso_graphics_->threads_per_patch)
+      if (auto templates = device_->GetTessellationTemplates())
+        for (auto stage : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer})
+          EncodeBuffer(stage, 0, SM50_BINDING_INDEX_TESSELLATION_TEMPLATES, templates);
 
     if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
       if (rootsig_graphics_) {
         auto uploaded =
             UploadRootArguments(rootsig_graphics_.ptr(), rootarg_graphics_staging_, rootarg_graphics_uploaded_);
-        // the offset holds in the buffer the hull kernels bind too: each of the allocator's covers those before it
-        hull_bound_.root_arguments = uploaded.offset;
         geometry_buffer(uploaded.offset, SM50_BINDING_INDEX_ROOT_ARGUMENTS, uploaded.buffer);
       }
       dirty_state_.clr(DirtyState::GraphicsRootArguments);
@@ -1406,9 +1402,7 @@ public:
 
     if (dirty_state_.test(DirtyState::GraphicsRootSignature) && !SkipResourceBinding) {
       if (rootsig_graphics_)
-        geometry_buffer(
-            hull_bound_.static_samplers = EncodeStaticSamplers(rootsig_graphics_.ptr()), SM50_BINDING_INDEX_STATIC_SAMPLERS
-        );
+        geometry_buffer(EncodeStaticSamplers(rootsig_graphics_.ptr()), SM50_BINDING_INDEX_STATIC_SAMPLERS);
       dirty_state_.clr(DirtyState::GraphicsRootSignature);
     }
 
@@ -1604,8 +1598,8 @@ public:
   // buffer may leave other bindings behind, so ExecuteIndirect forgets them (ForgetBuffers)
   struct {
     const EncoderData *pass = nullptr;
-    obj_handle_t buffer[4][16];
-    uint64_t offset[4][16];
+    obj_handle_t buffer[4][SM50_BINDING_INDEX_TESSELLATION_TEMPLATES + 1];
+    uint64_t offset[4][SM50_BINDING_INDEX_TESSELLATION_TEMPLATES + 1];
   } bound_;
 
   void
@@ -1664,20 +1658,18 @@ public:
 
   // a tessellated draw runs each group of patches in one object threadgroup of 32 threads (airconv's layout), which
   // reads the draw's D3D12 arguments (their layout is the one it expects) and its TessellationInputs; the view of a
-  // draw without indices is empty. a `Fallback` draw follows a native one on the compute tessellator, whose scan writes
-  // the word it counts patches from
+  // draw without indices is empty
   template <typename Arguments>
-  uint32_t
-  EncodeTessellationDraw(const Arguments &Args, uint32_t Count, uint32_t ControlPoints, const D3D12_INDEX_BUFFER_VIEW &View,
-                         bool Fallback = false) {
+  void
+  EncodeTessellationDraw(const Arguments &Args, uint32_t Count, uint32_t ControlPoints, const D3D12_INDEX_BUFFER_VIEW &View) {
     auto patches = ControlPoints ? Count / ControlPoints : 0, per_group = 32 / pso_graphics_->threads_per_patch;
     if (!patches || !Args.InstanceCount)
-      return 0;
+      return;
     TessellationInputs inputs{View, ControlPoints};
     auto [Mapped, Offset] = allocator_->AllocateGPUHeap(sizeof(inputs) + sizeof(Args), 16);
     if (allocator_->records_)
       allocator_->RecordGPUHeap(Mapped, sizeof(inputs) + sizeof(Args), "tessellation inputs", sizeof(inputs),
-                                predication_region_ || Fallback ? sizeof(uint32_t) : 0);
+                                predication_region_ ? sizeof(uint32_t) : 0);
     memcpy(Mapped, &inputs, sizeof(inputs));
     memcpy(reinterpret_cast<char *>(Mapped) + sizeof(inputs), &Args, sizeof(Args));
     // the object stage counts patches from the arguments' first word, so a skipped draw has none
@@ -1697,39 +1689,6 @@ public:
     cmd.patch_per_group = per_group;
     cmd.patch_per_mesh_instance = (patches + per_group - 1) / per_group;
     cmd.parts = pso_graphics_->tessellation_parts;
-    // the word the object stage counts patches from
-    return uint32_t((Offset + sizeof(inputs)) / sizeof(uint32_t));
-  }
-
-  // what the pass's hull kernels read of the state its draws bind: the last root arguments, static samplers and vertex
-  // buffer table, in the GPU heap; and whether the pipeline bound is Metal's tessellator's
-  struct {
-    uint64_t root_arguments, static_samplers, vertex_buffers;
-  } hull_bound_{};
-  bool native_bound_ = false;
-
-  // the state of the mesh draw that follows a native one on the compute tessellator, in the native draw's pass: the
-  // pass's end copies the native draw's record, which says that a mesh draw follows only once that is encoded. or of
-  // the mesh draw that draws a whole draw whose hull buffers had no room, which no record waits for
-  bool
-  FallbackPreDraw() {
-    auto pass = allocator_->encoder_current;
-    if (PreDraw() == DrawCallStatus::Invalid)
-      return false;
-    assert(!tessellation_draw_ || allocator_->encoder_current == pass);
-    return true;
-  }
-
-  // whether a draw takes Metal's tessellator: one direct draw of a pipeline that has it, with no pipeline statistics
-  // to count, which Metal does not count after its tessellator
-  bool
-  Native() {
-    // of the pipeline the draw takes, whose tessellator's kernel is made with it (DeferredPipeline)
-    TakeFuller();
-    if (!pso_graphics_)
-      return false;
-    pso_graphics_->WaitPipeline();
-    return pso_graphics_->hull && active_statistics_.empty();
   }
 
   // a sampler that needs what the pipeline leaves out may have come since it was set (MTLD3D12PipelineState::left_out)
@@ -1739,146 +1698,6 @@ public:
       pso_graphics_ = static_cast<MTLD3D12GraphicsPipelineState *>(pso_graphics_->Fuller(device_));
       dirty_state_.set(DirtyState::GraphicsPipelineState);
     }
-  }
-
-  // a draw on Metal's tessellator: its hull kernel runs in the work before the pass (as the resolvers of indirect
-  // draws do), with what the pass binds its draws, and writes each instance's groups of patches after a header that
-  // holds their count, and each patch slot's factors, for the patch draw to read. the kernel reads the draw's D3D12
-  // arguments and TessellationInputs as EncodeTessellationDraw's object stage does
-  template <typename Arguments>
-  bool
-  EncodeNativeTessellationDraw(const Arguments &Args, uint32_t Count, uint32_t ControlPoints, const D3D12_INDEX_BUFFER_VIEW &View) {
-    auto per_group = 32 / pso_graphics_->threads_per_patch;
-    auto patches = ControlPoints ? Count / ControlPoints : 0, groups = (patches + per_group - 1) / per_group;
-    if (!patches || !Args.InstanceCount)
-      return false;
-    TessellationInputs inputs{View, ControlPoints};
-    uint64_t group_bytes = uint64_t(groups) * pso_graphics_->patch_group_size * Args.InstanceCount;
-    uint64_t factor_stride = uint64_t(groups) * per_group * pso_graphics_->patch_factor_size;
-    tessellation_draw_ = nullptr;
-    // the hull kernel's groups and factors grow with the draw's patches, where its mesh draw holds none of them: when
-    // the recording arena has no room for them, that draws the whole draw instead of the list being cut off
-    auto [header, patches_offset] = allocator_->AllocateGPUHeap(SM50_TESSELLATION_HEADER + group_bytes, 16, false);
-    auto [factors, factors_offset] =
-        allocator_->AllocateGPUHeap(factor_stride * Args.InstanceCount, sizeof(uint32_t), false);
-    if (!header || !factors)
-      return true;
-    auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(inputs) + sizeof(Args), 16);
-    if (!mapped)
-      return false;
-    if (allocator_->records_) {
-      allocator_->RecordGPUHeap(mapped, sizeof(inputs) + sizeof(Args), "tessellation inputs", sizeof(inputs),
-                                predication_region_ ? sizeof(uint32_t) : 0);
-      allocator_->RecordGPUHeap(header, SM50_TESSELLATION_HEADER, "tessellation patch groups");
-    }
-    memcpy(mapped, &inputs, sizeof(inputs));
-    memcpy(reinterpret_cast<char *>(mapped) + sizeof(inputs), &Args, sizeof(Args));
-    *static_cast<uint32_t *>(header) = groups;
-    // a skipped draw has no patches: the kernel culls each patch it has no arguments for
-    if (predication_region_)
-      predicated_.push_back({uint32_t((offset + sizeof(inputs)) / 4), reinterpret_cast<const uint32_t *>(&Args)[0], 0});
-
-    auto &setpso = allocator_->EncodeBeforeRender<wmtcmd_compute_setpso>();
-    setpso.type = WMTComputeCommandSetPSO;
-    setpso.pso = pso_graphics_->hull;
-    setpso.threadgroup_size = {pso_graphics_->threads_per_patch, per_group, 1};
-    std::pair<uint64_t, uint8_t> buffers[] = {
-        {hull_bound_.root_arguments, SM50_BINDING_INDEX_ROOT_ARGUMENTS},
-        {hull_bound_.static_samplers, SM50_BINDING_INDEX_STATIC_SAMPLERS},
-        {hull_bound_.vertex_buffers, SM50_BINDING_INDEX_VERTEX_BUFFER},
-        {offset, SM50_BINDING_INDEX_INDEX_BUFFER},
-        {offset + offsetof(TessellationInputs, control_points), SM50_BINDING_INDEX_PATCH_SIZE},
-        {offset + sizeof(inputs), SM50_BINDING_INDEX_DRAW_ARGUMENTS},
-        {patches_offset, SM50_BINDING_INDEX_TESSELLATION_PATCHES},
-        {factors_offset, SM50_BINDING_INDEX_TESSELLATION_FACTORS},
-    };
-    for (auto [at, index] : buffers) {
-      auto &set = allocator_->EncodeBeforeRender<wmtcmd_compute_setbuffer>();
-      set.type = WMTComputeCommandSetBuffer;
-      set.buffer = allocator_->gpu_heap_buffer_;
-      set.offset = at;
-      set.index = index;
-    }
-    auto &dispatch = allocator_->EncodeBeforeRender<wmtcmd_compute_dispatch>();
-    dispatch.type = WMTComputeCommandDispatch;
-    dispatch.size = {groups, Args.InstanceCount, 1};
-
-    EncodeBuffer(WMTRenderCommandSetVertexBuffer, patches_offset, SM50_BINDING_INDEX_TESSELLATION_PATCHES);
-    if (pso_graphics_->compute_tessellation)
-      return EncodeComputeTessellation(
-          groups * per_group * Args.InstanceCount, patches * Args.InstanceCount, factors_offset, offset + sizeof(inputs)
-      );
-    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_patches>();
-    cmd.type = WMTRenderCommandDrawPatches;
-    cmd.factor_buffer = allocator_->gpu_heap_buffer_;
-    cmd.factor_buffer_offset = factors_offset;
-    cmd.factor_instance_stride = factor_stride;
-    // the domain shader reads its patch's control points from the hull kernel's groups, none as Metal's stage input
-    cmd.control_points = 0;
-    cmd.patch_count = patches;
-    cmd.instance_count = Args.InstanceCount;
-    return false;
-  }
-
-  // the draw just recorded for the pass's compute tessellator
-  TessellationBatch::Draw *tessellation_draw_ = nullptr;
-
-  // a draw's patch slots on the compute tessellator (TessellationPass), `Patches` of them real: recorded for the pass's
-  // tessellation, and drawn from its points and indices by the arguments its scan writes. true when the pass's arena
-  // may have no room for them: a mesh draw must then follow, which draws them where the arena has not, counting
-  // patches from the word that `Source`, the draw's own count, is copied to
-  bool
-  EncodeComputeTessellation(uint32_t Slots, uint32_t Patches, uint64_t Factors, uint64_t Source) {
-    auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
-    auto words = [](uint64_t offset) { return uint32_t(offset / sizeof(uint32_t)); };
-    auto &batch = render->tessellation;
-    if (!batch) {
-      batch = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch), alignof(TessellationBatch))) TessellationBatch();
-      batch->heap = obj_handle_t(allocator_->gpu_heap_buffer_);
-      batch->slot_points = device_->tessellation_slot_points;
-      batch->slot_indices = device_->tessellation_slot_indices;
-      batch->pass_points = device_->tessellation_pass_points;
-      batch->pass_indices = device_->tessellation_pass_indices;
-    }
-    auto [arguments, arguments_offset] = allocator_->AllocateGPUHeap(5 * sizeof(uint32_t), 16);
-    auto draw = new (allocator_->AllocateCPUHeap(sizeof(TessellationBatch::Draw), alignof(TessellationBatch::Draw)))
-        TessellationBatch::Draw{};
-    // nothing drawn until the scan writes them
-    std::array<uint32_t, 5> none{0, 1, 0, 0, 0};
-    memcpy(arguments, none.data(), sizeof(none));
-    draw->record = {batch->patches, Slots, words(Factors), pso_graphics_->tessellation_kind, words(arguments_offset), 0,
-                    words(Source)};
-    *batch->last = tessellation_draw_ = draw;
-    batch->last = &draw->next;
-    batch->draws++;
-    batch->patches += Slots;
-    // the most a patch makes whatever its factors: fewer than (factor + 3)^2 points and twice as many triangles
-    uint64_t side = pso_graphics_->tessellation_factor + 3;
-    batch->most_points += Patches * side * side;
-    batch->most_indices += Patches * 6 * side * side;
-    // the indices number the points from the heap's start. FinishTessellation places the arena and names the buffer
-    // that covers it, which a longer one than this may be by then: a binding of its own, not one EncodeBuffer keeps
-    auto &points = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-    points.type = WMTRenderCommandSetVertexBuffer;
-    points.buffer = allocator_->gpu_heap_buffer_;
-    points.offset = 0;
-    points.index = SM50_BINDING_INDEX_TESSELLATION_POINTS;
-    if (bound_.pass == allocator_->encoder_current)
-      bound_.buffer[0][SM50_BINDING_INDEX_TESSELLATION_POINTS] = 0;
-    draw->points = &points;
-    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
-    cmd.type = WMTRenderCommandDrawIndexedIndirect;
-    cmd.primitive_type = WMTPrimitiveTypeTriangle;
-    cmd.index_type = WMTIndexTypeUInt32;
-    cmd.index_buffer = allocator_->gpu_heap_buffer_;
-    draw->indexed = &cmd;
-    cmd.indirect_args_buffer = allocator_->gpu_heap_buffer_;
-    cmd.indirect_args_offset = arguments_offset;
-    // the slots after it only add room
-    return batch->most_points > batch->Room(batch->slot_points, batch->pass_points, batch->most_points,
-                                            device_->kTessellationMostPoints) ||
-           batch->most_indices > batch->Room(batch->slot_indices, batch->pass_indices, batch->most_indices,
-                                             device_->kTessellationMostIndices);
   }
 
   static bool
@@ -2096,21 +1915,10 @@ public:
     uint32_t cp_count;
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
-    bool native = pso_graphics_ && Native();
-    DrawCallStatus status = PreDraw(false, native);
+    DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
     CountDraw(VertexCountPerInstance, InstanceCount);
-    if (native) {
-      D3D12_DRAW_ARGUMENTS args{VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
-      // where the pass's compute tessellator may have no room, its mesh draw follows
-      if (EncodeNativeTessellationDraw(args, VertexCountPerInstance, cp_count, {}) && FallbackPreDraw()) {
-        auto fallback = EncodeTessellationDraw(args, VertexCountPerInstance, cp_count, {}, true);
-        if (tessellation_draw_)
-          tessellation_draw_->record.fallback = fallback;
-      }
-      return;
-    }
     if (pso_graphics_->threads_per_patch) {
       EncodeTessellationDraw(
           D3D12_DRAW_ARGUMENTS{VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation},
@@ -2159,23 +1967,10 @@ public:
     uint32_t cp_count;
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
-    bool native = pso_graphics_ && Native();
-    DrawCallStatus status = PreDraw(false, native);
+    DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
     CountDraw(IndexCountPerInstance, InstanceCount, true, StartVertexLocation);
-    if (native) {
-      D3D12_DRAW_INDEXED_ARGUMENTS args{
-          IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation, StartInstanceLocation
-      };
-      if (EncodeNativeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_)) &&
-          FallbackPreDraw()) {
-        auto fallback = EncodeTessellationDraw(args, IndexCountPerInstance, cp_count, IndexedView(index_view_), true);
-        if (tessellation_draw_)
-          tessellation_draw_->record.fallback = fallback;
-      }
-      return;
-    }
     if (pso_graphics_->threads_per_patch) {
       EncodeTessellationDraw(
           D3D12_DRAW_INDEXED_ARGUMENTS{

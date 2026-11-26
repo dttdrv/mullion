@@ -442,7 +442,7 @@ removeNamedMetadata(llvm::Module &M, StringRef Name) {
 }
 
 template<size_t N>
-void linkShader(llvm::Module &M, const unsigned char (&bitcode)[N]) {
+void linkShader(llvm::Module &M, const unsigned char (&bitcode)[N], bool inline_all = false) {
   // read in place, and lazily: the linker materializes only the functions the shader calls, and what they need
   Expected<std::unique_ptr<Module>> modOrErr =
       getLazyBitcodeModule(MemoryBufferRef(StringRef((const char *)bitcode, N), "air"), M.getContext());
@@ -462,7 +462,19 @@ void linkShader(llvm::Module &M, const unsigned char (&bitcode)[N]) {
   removeNamedMetadata(*module, "llvm.ident");
   removeNamedMetadata(*module, "llvm.module.flags");
 
+  std::vector<std::string> defined;
+  if (inline_all)
+    for (auto &F : *module)
+      if (!F.isDeclaration() || F.isMaterializable())
+        defined.push_back(F.getName().str());
   llvm::Linker::linkModules(M, std::move(module), Linker::LinkOnlyNeeded);
+  // the library's functions inline into the shader's, as the pipeline's optimization inlines only those that must be
+  // (AlwaysInlinerPass): left as calls, Metal keeps what they are given by pointer on the stack
+  for (auto &name : defined)
+    if (auto F = M.getFunction(name); F && !F->isDeclaration()) {
+      F->removeFnAttr(Attribute::NoInline);
+      F->addFnAttr(Attribute::AlwaysInline);
+    }
 };
 
 void
@@ -482,7 +494,7 @@ linkSamplePos(llvm::Module &M) {
 
 void
 linkTessellation(llvm::Module &M) {
-  linkShader(M, air_tessellation);
+  linkShader(M, air_tessellation, true);
 }
 
 } // namespace mullion

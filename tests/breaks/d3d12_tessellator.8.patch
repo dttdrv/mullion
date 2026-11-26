@@ -1,13 +1,13 @@
-# the compute tessellator draws every patch's triangles wound as clockwise ones
+# a patch drawn from an interior template leaves its ring 0's last frame out
 # family native
---- a/src/mullion/mullion_command.metal
-+++ b/src/mullion/mullion_command.metal
-@@ -1812,7 +1812,7 @@
-   // points numbered from the heap's start, where the pass's vertex functions read them
-   emit_frame(
-       made, frame, patch - draw.first, (device tess_point *)heap, heap + pass.indices + 3 * at[2],
--      pass.points / 3 + at[1], draw.kind >> 3 & 1 ? 3 : 0
-+      pass.points / 3 + at[1], 0
-   );
- }
- 
+--- a/src/airconv/shaders/air_tessellation.metal
++++ b/src/airconv/shaders/air_tessellation.metal
+@@ -645,7 +645,7 @@
+   record.interior = interior;
+   ((object_data tess_record *)out.workloads)[0] = record;
+   out.next[0] = 1;
+-  for (int f = 0; f < frames; f++)
++  for (int f = 0; f < frames - 1; f++)
+     emit(out, patch.frame(0, f), no_frame);
+   for (int m = 0; m < t.count; m++) {
+     // a meshlet's group names a workload's place, whose patch is the patch (get_domain_patch_index)

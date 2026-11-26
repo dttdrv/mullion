@@ -19,6 +19,7 @@
 #include "Metal.hpp"
 #include "airconv_public.h"
 #include "tessellation_limits.hpp"
+#include "mullion_tessellation_templates.hpp"
 #include "config/config.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_pipeline.hpp"
@@ -75,6 +76,8 @@ public:
   // threadgroups then share a patch group's mesh threadgroups
   void GetTessellationShaders() {
     max_mesh_threadgroups = device_->GetMullionDevice().maxMeshThreadgroups();
+    // the tessellation templates its draws read, made now rather than at the first draw
+    TessellationTemplates();
     auto partitioning = microsoft::D3D11_SB_TESSELLATOR_PARTITIONING(hull_reflection.Tessellator.Partition);
     auto domain = microsoft::D3D11_SB_TESSELLATOR_DOMAIN(hull_reflection.Tessellator.Domain);
     auto factor = dxbc::get_final_factor(hull_reflection.Tessellator.MaxFactor, partitioning, max_potential_factor).second;

@@ -63,6 +63,12 @@ static cl::opt<bool> NoCustomBorder(
   cl::desc("Leave out custom border colors, as a pipeline made before any sampler has one does")
 );
 
+static cl::opt<unsigned> TessellatorVertexSize(
+  "tessellator-vertex-size", cl::init(0),
+  cl::desc("Convert a tessellation pipeline's stage as a pipeline of a domain shader of vertices this large does, "
+           "without a geometry shader (SM50_SHADER_PSO_TESSELLATOR_DATA)")
+);
+
 static cl::opt<bool>
   EmitLLVM("S", cl::init(false), cl::desc("Write output as LLVM assembly"));
 
@@ -273,6 +279,13 @@ int main(int argc, char **argv) {
   data.simd_width = 0; // no device to ask; a vertex shader's wave has no lane count here
   data.next = 0;
   data.type = SM50_SHADER_COMMON;
+  SM50_SHADER_PSO_TESSELLATOR_DATA tessellator{};
+  if (TessellatorVertexSize) {
+    tessellator.type = SM50_SHADER_PSO_TESSELLATOR;
+    tessellator.max_potential_tess_factor = 64;
+    tessellator.mesh_vertex_size = TessellatorVertexSize;
+    data.next = &tessellator;
+  }
 
   std::unique_ptr<MemoryBuffer> RootSignatureBuffer;
   SM50_SHADER_ROOT_SIGNATURE_DATA rootsig{};

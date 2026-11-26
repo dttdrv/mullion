@@ -22,6 +22,7 @@
 #include "mullion_diag.hpp"
 #include "airconv_ray.h"
 #include "d3d12_device.hpp"
+#include "mullion_tessellation_templates.hpp"
 #include "d3d12_device_child.hpp"
 #include "d3d12_pipeline.hpp"
 #include "Metal.hpp"
@@ -253,6 +254,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   uint64_t atomic_locks_address_ = 0;
   uint32_t *atomic_locks_given_up_ = nullptr;
   WMT::Reference<WMT::Buffer> null_buffer_;
+  WMT::Reference<WMT::Buffer> tessellation_templates_;
+  std::once_flag tessellation_templates_made_;
   uint64_t null_buffer_address_ = 0;
   WMTSparsePageSize sparse_page_size_ = {};
 
@@ -553,6 +556,21 @@ public:
   obj_handle_t
   GetNullBufferHandle() {
     return null_buffer_.handle;
+  }
+
+  obj_handle_t
+  GetTessellationTemplates() {
+    std::call_once(tessellation_templates_made_, [&] {
+      auto &words = mullion::TessellationTemplates();
+      WMTBufferInfo info{words.size() * sizeof(uint32_t), WMTResourceStorageModeShared};
+      if (!(tessellation_templates_ = GetMTLDevice().newBuffer(info))) {
+        ERR("Failed to create the tessellation templates");
+        return;
+      }
+      memcpy(info.memory.get(), words.data(), info.length);
+      RegisterResidency(tessellation_templates_);
+    });
+    return tessellation_templates_.handle;
   }
 
   void

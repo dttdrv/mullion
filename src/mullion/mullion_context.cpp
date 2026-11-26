@@ -22,6 +22,7 @@
 #include "mullion_deptrack.hpp"
 #include "mullion_format.hpp"
 #include "mullion_query.hpp"
+#include "mullion_tessellation_templates.hpp"
 #include "mullion_presenter.hpp"
 #include "wsi_platform.hpp"
 #include <bit>
@@ -148,6 +149,33 @@ ArgumentEncodingContext::indirectGeometryBound(uint32_t invocations) {
     bound = std::max(bound, std::max(so_scratch_budget_, *so_scratch_overflow_host_) / per_group);
   }
   return bound;
+}
+
+void
+ArgumentEncodingContext::encodeTessellationTemplates() {
+  if (!tessellation_templates_) {
+    auto &words = TessellationTemplates();
+    WMTBufferInfo info{words.size() * sizeof(uint32_t), WMTResourceStorageModeShared};
+    if (!(tessellation_templates_ = device_.newBuffer(info)))
+      return;
+    memcpy(info.memory.get(), words.data(), info.length);
+  }
+  auto encoder = currentEncoder();
+  if (tessellation_templates_encoder_ == encoder->id)
+    return;
+  tessellation_templates_encoder_ = encoder->id;
+  auto &use = encodeRenderCommand<wmtcmd_render_useresource>();
+  use.type = WMTRenderCommandUseResource;
+  use.resource = tessellation_templates_;
+  use.usage = WMTResourceUsageRead;
+  use.stages = WMTRenderStages(WMTRenderStageObject | WMTRenderStageMesh);
+  for (auto type : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer}) {
+    auto &cmd = encodeRenderCommand<wmtcmd_render_setbuffer>();
+    cmd.type = type;
+    cmd.buffer = tessellation_templates_;
+    cmd.offset = 0;
+    cmd.index = SM50_BINDING_INDEX_TESSELLATION_TEMPLATES;
+  }
 }
 
 std::pair<uint64_t, uint64_t>

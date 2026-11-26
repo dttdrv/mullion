@@ -426,6 +426,7 @@ void CHWTessellator::Init(
     {
     case D3D11_TESSELLATOR_PARTITIONING_INTEGER:
     default:
+        m_parity = TESSELLATOR_PARITY_EVEN;
         break;
     case D3D11_TESSELLATOR_PARTITIONING_FRACTIONAL_ODD:
         m_parity = TESSELLATOR_PARITY_ODD;
@@ -523,7 +524,7 @@ void CHWTessellator::QuadProcessTessFactors( float tessFactor_Ueq0, float tessFa
     switch(m_originalPartitioning)
     {
         case D3D11_TESSELLATOR_PARTITIONING_INTEGER:
-        case D3D11_TESSELLATOR_PARTITIONING_POW2: // don’t care about pow2 distinction for validation, just treat as integer
+        case D3D11_TESSELLATOR_PARTITIONING_POW2: // donÂ’t care about pow2 distinction for validation, just treat as integer
             lowerBound = D3D11_TESSELLATOR_MIN_ODD_TESSELLATION_FACTOR;
             upperBound = D3D11_TESSELLATOR_MAX_EVEN_TESSELLATION_FACTOR;
             break;
@@ -1041,7 +1042,7 @@ void CHWTessellator::TriProcessTessFactors( float tessFactor_Ueq0, float tessFac
     switch(m_originalPartitioning)
     {
         case D3D11_TESSELLATOR_PARTITIONING_INTEGER:
-        case D3D11_TESSELLATOR_PARTITIONING_POW2: // don’t care about pow2 distinction for validation, just treat as integer
+        case D3D11_TESSELLATOR_PARTITIONING_POW2: // donÂ’t care about pow2 distinction for validation, just treat as integer
             lowerBound = D3D11_TESSELLATOR_MIN_ODD_TESSELLATION_FACTOR;
             upperBound = D3D11_TESSELLATOR_MAX_EVEN_TESSELLATION_FACTOR;
             break;
@@ -1416,7 +1417,7 @@ void CHWTessellator::IsoLineProcessTessFactors( float TessFactor_V_LineDensity, 
     switch(m_originalPartitioning)
     {
         case D3D11_TESSELLATOR_PARTITIONING_INTEGER:
-        case D3D11_TESSELLATOR_PARTITIONING_POW2: // don’t care about pow2 distinction for validation, just treat as integer
+        case D3D11_TESSELLATOR_PARTITIONING_POW2: // donÂ’t care about pow2 distinction for validation, just treat as integer
             lowerBound = D3D11_TESSELLATOR_MIN_ODD_TESSELLATION_FACTOR;
             upperBound = D3D11_TESSELLATOR_MAX_EVEN_TESSELLATION_FACTOR;
             break;
@@ -2147,6 +2148,7 @@ void CHLSLTessellator::Init(
     {
     case D3D11_TESSELLATOR_PARTITIONING_INTEGER:
     default:
+        m_parity = TESSELLATOR_PARITY_EVEN;
         break;
     case D3D11_TESSELLATOR_PARTITIONING_FRACTIONAL_ODD:
         m_parity = TESSELLATOR_PARITY_ODD;

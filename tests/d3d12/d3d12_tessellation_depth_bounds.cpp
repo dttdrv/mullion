@@ -3,7 +3,7 @@
 // depth buffer ... is within the range", OMSetDepthBounds), and writes depth draws as one that does not. each quad
 // patch covers its own 3x3 pixels at factor 3 (d3d12_patch_ids' patches) and the pixel shader adds 1 to an R32_FLOAT
 // target (blend one + one), so every pixel reads 1: drawn directly and indexed, each in four lists, one after each
-// Reset (the room a pass's compute tessellator takes is sized at a Reset, so a first list may have none)
+// Reset
 #include "d3d12_test.hpp"
 
 static const char hlsl[] = R"hlsl(

@@ -12,6 +12,7 @@ typedef unsigned short ushort;
 typedef float half;
 // address spaces, which the host has one of
 #define object_data
+#define device
 #define threadgroup
 #define thread
 #define constant const

@@ -282,8 +282,7 @@ main(int argc, char **argv) {
                            ? 1
                            : 1 + (1u << 21) / (count * expected_points(domain, partitioning, patch).size());
           std::fill_n(factors, count, patch);
-          // every other one of each winding through ExecuteIndirect, which takes no tessellator of Metal's, and the
-          // long one directly
+          // every other one of each winding through ExecuteIndirect, and the long one directly
           bool indirect = i != std::size(alone) && (i + clockwise) % 2;
           CHECK(draw(pso.Get(), count, nullptr, indirect, times, times > 1));
           char *read_pixels;
