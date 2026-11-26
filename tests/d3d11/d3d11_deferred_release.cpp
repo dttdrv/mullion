@@ -3,6 +3,8 @@
 // (Microsoft Learn, IUnknown::Release).
 // https://learn.microsoft.com/en-us/windows/win32/api/unknwn/nf-unknwn-iunknown-release
 // a completed copy checks the list's work; replaying it without waiting leaves its queued references at teardown.
+// a deferred context holds one reference to its device, as Windows does (Wine's test_create_deferred_context), and
+// still one after FinishCommandList once the list is released: the list it records next holds none.
 #include "d3d11_test.hpp"
 #include <d3d10.h>
 #include <d3d11_1.h>
@@ -13,6 +15,29 @@ int
 main(int argc, char **argv) {
   const UINT seed = argc > 1 ? strtoul(argv[1], nullptr, 0) : 18;
   std::minstd_rand next(seed);
+  {
+    step("a deferred context's references to its device");
+    ComPtr<ID3D11Device> device;
+    const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    CHECK(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1, D3D11_SDK_VERSION, &device,
+                            nullptr, nullptr));
+    auto references = [&] {
+      device->AddRef();
+      return device->Release();
+    };
+    const ULONG before = references();
+    ComPtr<ID3D11DeviceContext> deferred;
+    CHECK(device->CreateDeferredContext(0, &deferred));
+    expect(references() == before + 1, "a new deferred context holds %lu device references, want 1",
+           references() - before);
+    ComPtr<ID3D11CommandList> list;
+    CHECK(deferred->FinishCommandList(FALSE, &list));
+    list.Reset();
+    expect(references() == before + 1, "after FinishCommandList the context holds %lu device references, want 1",
+           references() - before);
+    deferred.Reset();
+    expect(references() == before, "the released context left %lu device references", references() - before);
+  }
   for (bool ten : {false, true}) {
     for (bool flush : {false, true}) {
       step("seed %u, D3D%u, flush %u: create device and record copy", seed, ten ? 10 : 11, flush);

@@ -227,6 +227,9 @@ public:
         finalDesc.ViewDimension != D3D11_SRV_DIMENSION_BUFFEREX) {
       return E_FAIL;
     }
+    // a view of no elements is refused (Wine's test_buffer_srv and test_generate_mips)
+    if (!finalDesc.Buffer.NumElements)
+      return E_INVALIDARG;
     WMTPixelFormat view_format = WMTPixelFormatInvalid;
     uint32_t offset, size, viewElementOffset, viewElementWidth;
     if (structured) {

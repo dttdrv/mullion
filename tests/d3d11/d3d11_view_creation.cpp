@@ -823,6 +823,10 @@ RWBuffer<uint> result : register(u1);
     rtv_desc.Buffer = {srv_desc.Buffer.FirstElement, srv_desc.Buffer.NumElements};
     step("buffer views bind=%u", bind);
     creation(device.Get(), resource.Get(), &srv_desc, bind & D3D11_BIND_SHADER_RESOURCE ? &srv_desc : nullptr);
+    // a buffer view of no elements is refused (Wine's test_buffer_srv and test_generate_mips)
+    auto empty_srv = srv_desc;
+    empty_srv.Buffer.NumElements = 0;
+    creation(device.Get(), resource.Get(), &empty_srv, static_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC *>(nullptr));
     creation(device.Get(), resource.Get(), &uav_desc, bind & D3D11_BIND_UNORDERED_ACCESS ? &uav_desc : nullptr);
     creation(device.Get(), resource.Get(), &rtv_desc, bind & D3D11_BIND_RENDER_TARGET ? &rtv_desc : nullptr);
     creation(device.Get(), resource.Get(), static_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC *>(nullptr),

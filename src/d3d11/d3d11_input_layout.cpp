@@ -54,9 +54,14 @@ HRESULT ExtractMTLInputLayoutElements(
                                                        other.InstanceDataStepRate != desc.InstanceDataStepRate);
         }))
       return E_INVALIDARG;
+    // an element is aligned to its format's size or to 4 bytes, whichever is less (D3D11.3 4.4.6), and Windows refuses
+    // one that is not, whether the shader reads it or not (Wine's test_input_layout_alignment)
+    auto alignment = std::min(4u, metal_format.BytesPerTexel);
     auto aligned_byte_offset = desc.AlignedByteOffset == D3D11_APPEND_ALIGNED_ELEMENT
-                                   ? align(append_offset[desc.InputSlot], std::min(4u, metal_format.BytesPerTexel))
+                                   ? align(append_offset[desc.InputSlot], alignment)
                                    : desc.AlignedByteOffset;
+    if (aligned_byte_offset % alignment)
+      return E_INVALIDARG;
     append_offset[desc.InputSlot] = aligned_byte_offset + metal_format.BytesPerTexel;
 
     auto pSig = std::find_if(

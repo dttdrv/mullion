@@ -17,7 +17,9 @@ struct DynamicBufferAllocation {
 struct DeferredContextInternalState {
   using device_mutex_t = null_mutex;
   CommandQueue &cmd_queue;
-  Com<MTLD3D11CommandList> current_cmdlist;
+  // the list being recorded is the context's own until FinishCommandList gives it out: a private reference, which
+  // holds no reference to the device (a deferred context holds one, Wine's test_create_deferred_context)
+  Com<MTLD3D11CommandList, false> current_cmdlist;
   std::unordered_map<DynamicBuffer *, DynamicBufferAllocation> current_dynamic_buffer_allocations;
   std::unordered_map<DynamicLinearTexture *, std::pair<TextureAllocation *, uint32_t>> current_dynamic_texture_allocations;
   std::unordered_map<void *, std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> building_visibility_queries;
@@ -156,7 +158,14 @@ public:
       DeferredContextBase(pDevice, ctx_state, mutex),
       ctx_state({pDevice->GetMullionDevice().queue(), {}}),
       context_flag(ContextFlags) {
-    device->CreateCommandList((ID3D11CommandList **)&ctx_state.current_cmdlist);
+    BeginCommandList();
+  }
+
+  void
+  BeginCommandList() {
+    Com<ID3D11CommandList> list;
+    device->CreateCommandList(&list);
+    ctx_state.current_cmdlist = static_cast<MTLD3D11CommandList *>(list.ptr());
   }
 
   ULONG STDMETHODCALLTYPE
@@ -180,6 +189,13 @@ public:
     }
 
     return refCount;
+  }
+
+  // a deferred context takes no state object: Windows leaves it as it was and gives no previous one (Wine's
+  // test_deferred_context_swap_state)
+  void STDMETHODCALLTYPE
+  SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
+    InitReturnPtr(ppPreviousState);
   }
 
   void *
@@ -491,8 +507,8 @@ public:
     ctx_state.current_dynamic_buffer_allocations.clear();
     ctx_state.current_dynamic_texture_allocations.clear();
 
-    Com<MTLD3D11CommandList> list = std::move(ctx_state.current_cmdlist);
-    device->CreateCommandList((ID3D11CommandList **)&ctx_state.current_cmdlist);
+    Com<MTLD3D11CommandList, false> list = std::move(ctx_state.current_cmdlist);
+    BeginCommandList();
 
     if (RestoreDeferredContextState)
       RestoreEncodingContextState();
@@ -503,7 +519,7 @@ public:
     // test_deferred_context_rendering)
     if (!ppCommandList)
       return E_UNEXPECTED;
-    *ppCommandList = std::move(list);
+    *ppCommandList = list.ref();
     return S_OK;
   }
 

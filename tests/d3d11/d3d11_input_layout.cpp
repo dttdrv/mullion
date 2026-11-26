@@ -10,6 +10,11 @@
 // a zero-element layout covers an empty signature. InputSlotClass "must be same for all Elements at same InputSlot"
 // (D3D11.3 8.1.3), including unused elements; different slots may have different classifications.
 // InstanceDataStepRate "must be the same for all Elements at same InputSlot" and must be zero for per-vertex data.
+// "The alignment of an Element in a structure in memory must be, in bytes, the nearest power of 2 greater or equal to
+// the width of the Element's format, or 4, whichever is less" (D3D11.3 4.4.6), and a layout with an element that is
+// not is refused, whether the shader reads it or not: Wine's test_input_layout_alignment has Windows refuse R16 at 1,
+// R32 at 2 and R32G32B32A32 at 17, 18 and 19, and take R8 at 1 and R32G32B32A32 at 16 and 20. the spec's examples give
+// the rest: R11G11B10_FLOAT and R8G8B8A8 align to 4, R8G8 to 2.
 #define INITGUID
 #include "d3d11_test.hpp"
 #include <d3d10_1.h>
@@ -195,6 +200,61 @@ main() {
               device->AddRef();
               expect(device->Release() == before, "layout release did not restore the device refcount");
             }
+  }
+
+  // POSITION is the shader's, COLOR is not
+  static const char one_input[] = "float4 main(float4 p : POSITION) : SV_Position { return p; }";
+  auto aligned_code = compile(one_input, "main", "vs_4_0");
+  if (!expect(aligned_code, "the one-input shader did not compile"))
+    return verdict();
+  struct Aligned {
+    DXGI_FORMAT first, second;
+    UINT offset;
+    HRESULT hr;
+  } aligned[] = {
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R16_UINT, 2, S_OK},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R16_UINT, 1, E_INVALIDARG},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8_UINT, 1, S_OK},
+      {DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R32_UINT, 2, E_INVALIDARG},
+      {DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT, 2, E_INVALIDARG},
+      {DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, 16, S_OK},
+      {DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, 17, E_INVALIDARG},
+      {DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, 18, E_INVALIDARG},
+      {DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, 19, E_INVALIDARG},
+      {DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, 20, S_OK},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R11G11B10_FLOAT, 2, E_INVALIDARG},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R11G11B10_FLOAT, 4, S_OK},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM, 2, E_INVALIDARG},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM, 4, S_OK},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UNORM, 1, E_INVALIDARG},
+      {DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UNORM, 2, S_OK},
+  };
+  for (auto &c : aligned) {
+    // the element the shader reads is the misaligned one too
+    for (bool read : {false, true}) {
+      D3D11_INPUT_ELEMENT_DESC elements[] = {
+          {read ? "COLOR" : "POSITION", 0, c.first, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+          {read ? "POSITION" : "COLOR", 0, c.second, 0, c.offset, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+      for (bool d3d10 : {false, true}) {
+        step("D3D%u: format %u at 0, format %u at %u, %s", d3d10 ? 10 : 11, c.first, c.second, c.offset,
+             read ? "the shader reads the second" : "the shader reads the first");
+        HRESULT hr;
+        if (d3d10) {
+          D3D10_INPUT_ELEMENT_DESC elements10[std::size(elements)];
+          for (UINT i = 0; i < std::size(elements); i++)
+            elements10[i] = {elements[i].SemanticName, 0, elements[i].Format, 0, elements[i].AlignedByteOffset,
+                             D3D10_INPUT_PER_VERTEX_DATA, 0};
+          ComPtr<ID3D10InputLayout> layout;
+          hr = device10->CreateInputLayout(elements10, std::size(elements10), aligned_code->GetBufferPointer(),
+                                           aligned_code->GetBufferSize(), &layout);
+        } else {
+          ComPtr<ID3D11InputLayout> layout;
+          hr = device11->CreateInputLayout(elements, std::size(elements), aligned_code->GetBufferPointer(),
+                                           aligned_code->GetBufferSize(), &layout);
+        }
+        expect(hr == c.hr, "CreateInputLayout returned %08lx, expected %08lx", hr, c.hr);
+      }
+    }
   }
   return verdict();
 }

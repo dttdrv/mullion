@@ -1,7 +1,8 @@
 // contract: a context's state is carried by the objects Direct3D 11 carries it with.
 // - ID3D11DeviceContext1::SwapDeviceContextState makes a state object's state the context's and gives back the
 //   object that holds the state the context had: a new object holds the default state, a draw uses the state
-//   that is current, and swapping the first object back brings back what was bound.
+//   that is current, and swapping the first object back brings back what was bound. a deferred context takes no
+//   state object: it keeps its state and gives none back, as Windows does (Wine's test_deferred_context_swap_state).
 // - a deferred context executes command lists while it records: the list runs where it was executed, from the
 //   default state; with RestoreContextState the deferred context then has the state it had, and without it the
 //   default state. the list a deferred context finishes carries the lists it executed.
@@ -123,6 +124,11 @@ main() {
   inner_context->Draw(3, 0);
   CHECK(inner_context->FinishCommandList(FALSE, &inner));
   bind(outer_context.Get(), Outer);
+  ComPtr<ID3D11DeviceContext1> outer1;
+  CHECK(outer_context.As(&outer1));
+  ComPtr<ID3DDeviceContextState> none;
+  outer1->SwapDeviceContextState(other.Get(), &none);
+  expect(!none && bound(outer_context.Get()) == Outer, "a deferred context's swap", bound(outer_context.Get()), Outer);
   outer_context->ExecuteCommandList(inner.Get(), TRUE);
   expect(bound(outer_context.Get()) == Outer, "a deferred context's state after a list it restores from", bound(outer_context.Get()), Outer);
   // drawn with the state that was restored, after the list

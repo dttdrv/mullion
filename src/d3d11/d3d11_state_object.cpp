@@ -853,6 +853,10 @@ StateObjectCache<D3D11_BLEND_DESC1, IMTLD3D11BlendState>::CreateStateObject(
 
   if (!pBlendStateDesc)
     return E_INVALIDARG;
+  // a logic operation applies to every target alike: with one on the first target, IndependentBlendEnable must be
+  // FALSE (D3D11_BLEND_DESC1), and Windows refuses the state otherwise (Wine's test_logic_op)
+  if (pBlendStateDesc->RenderTarget[0].LogicOpEnable && pBlendStateDesc->IndependentBlendEnable)
+    return E_INVALIDARG;
 
   unsigned num_blend_target = pBlendStateDesc->IndependentBlendEnable ? 8 : 1;
   for (unsigned i = 0; i < num_blend_target; i++) {
