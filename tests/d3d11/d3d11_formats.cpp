@@ -50,9 +50,11 @@ main() {
         CHECK(device->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &vs));
         const D3D11_SO_DECLARATION_ENTRY entry{0, "VALUE", 0, 0, UINT8(std::tuple_size_v<Pixel>), 0};
         const UINT output_stride = sizeof(Pixel);
+        // below 11_0 stream 0 is the one rasterized, and with no pixel shader nothing is (Wine's
+        // test_fl10_stream_output_desc)
         CHECK(device->CreateGeometryShaderWithStreamOutput(
             code->GetBufferPointer(), code->GetBufferSize(), &entry, 1, &output_stride, 1,
-            D3D11_SO_NO_RASTERIZED_STREAM, nullptr, &stream
+            level < D3D_FEATURE_LEVEL_11_0 ? 0 : D3D11_SO_NO_RASTERIZED_STREAM, nullptr, &stream
         ));
         for (UINT padding : {0u, UINT(sizeof(Pixel))}) {
           const UINT stride = f.bytes + 2 * padding, offset = padding;
