@@ -34,6 +34,7 @@ env:
   WINE_ARM64EC_URL: https://github.com/3Shain/wine/releases/download/wine-11.2/wine-11.2.tar.gz
   LLVM_MINGW_VERSION: "20260908"
   LLVM_MINGW_DIR: llvm-mingw-20260908-ucrt-macos-universal
+  CCACHE_DIR: /tmp/mullion-ccache
   CCACHE_NOHASHDIR: "true"
   CCACHE_COMPRESS: "true"
   CCACHE_MAXSIZE: "1G"
@@ -384,8 +385,6 @@ jobs:
   build-gcc-release-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -459,8 +458,6 @@ jobs:
   build-clang-release-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -547,8 +544,6 @@ jobs:
   build-clang-debugoptimized-x86_64-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -635,8 +630,6 @@ jobs:
   test-host:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -767,8 +760,6 @@ jobs:
   build-clang-release-arm64ec-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -847,7 +838,6 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: macos-26
     env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache
       CCACHE_MAXSIZE: "2G"
     steps:
       - name: Checkout
