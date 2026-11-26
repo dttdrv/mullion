@@ -2,11 +2,11 @@
 # family native
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1170,7 +1170,6 @@
+@@ -1174,7 +1174,6 @@
  
    DrawCallStatus
    PreDraw(bool SkipResourceBinding = false) {
 -    TakeFuller();
-     if (!pso_graphics_)
+     if (!pso_graphics_ || pso_graphics_->failed)
        return DrawCallStatus::Invalid;
      // a draw that tests the depth bounds where the GPU cannot finds the samples that pass first, unless the pass it is
