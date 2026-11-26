@@ -7,7 +7,9 @@
 //   IDXGISurface2::GetResource traces back to its texture and index; a texture that is a surface is index 0 of itself.
 // - IDXGISurface1::GetDC draws with GDI: only on a surface created GDI compatible, with one DC at a time; without
 //   Discard the DC shows what Direct3D drew; the output merger no longer has the surface as a target; and what GDI
-//   draws is in the texture after ReleaseDC.
+//   draws is in the texture after ReleaseDC. a GDI compatible texture is in GPU memory and BGRA: Windows refuses
+//   staging ones and BGRX ones (Wine's test_getdc; D3D11_RESOURCE_MISC_GDI_COMPATIBLE: "D3D11_USAGE_DEFAULT", "one of
+//   the following types"), and a buffer (Wine's d3d10core test_create_buffer).
 // - IDXGIDevice::CreateSurface makes as many surfaces as asked, each a 2D texture bound as its usage says.
 // GDI does not write a bitmap's fourth byte, so colours are compared without alpha.
 // "This method fails if an outstanding DC has already been created by this method." (IDXGISurface1::GetDC).
@@ -15,6 +17,7 @@
 #include "d3d11_test.hpp"
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
+#include <span>
 
 int
 main() {
@@ -125,6 +128,40 @@ main() {
         differ += *(const UINT *)(rect.pBits + y * rect.Pitch + 4 * x) != texel(x, y);
     CHECK(surface->Unmap());
     expect(!differ, "the surface does not read what the texture holds");
+  }
+
+  // which resources may be GDI compatible
+  const DXGI_FORMAT bgra[] = {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_TYPELESS,
+                              DXGI_FORMAT_B8G8R8A8_UNORM_SRGB},
+                    others[] = {DXGI_FORMAT_B8G8R8X8_UNORM, DXGI_FORMAT_B8G8R8X8_TYPELESS,
+                                DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM};
+  for (auto formats : {std::span<const DXGI_FORMAT>(bgra), std::span<const DXGI_FORMAT>(others)})
+    for (DXGI_FORMAT candidate : formats)
+      for (bool staging : {false, true}) {
+        step("GDI compatible texture of format %u, %s", UINT(candidate), staging ? "staging" : "default");
+        const bool valid = formats.data() == bgra && !staging;
+        D3D11_TEXTURE2D_DESC desc{width, height, 1, 1, candidate, {1, 0}, D3D11_USAGE_DEFAULT,
+                                  D3D11_BIND_RENDER_TARGET, 0, D3D11_RESOURCE_MISC_GDI_COMPATIBLE};
+        if (staging) {
+          desc.Usage = D3D11_USAGE_STAGING;
+          desc.BindFlags = 0;
+          desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        }
+        ComPtr<ID3D11Texture2D> made;
+        HRESULT hr = device->CreateTexture2D(&desc, nullptr, &made);
+        expect(valid ? SUCCEEDED(hr) && made : FAILED(hr) && !made,
+               valid ? "a default BGRA texture is not GDI compatible" : "a staging or BGRX texture is GDI compatible");
+        desc.MiscFlags = 0;
+        made.Reset();
+        expect(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &made)),
+               "the texture is refused without the flag too");
+      }
+  {
+    step("GDI compatible buffer");
+    D3D11_BUFFER_DESC desc{1024, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0,
+                           D3D11_RESOURCE_MISC_GDI_COMPATIBLE};
+    ComPtr<ID3D11Buffer> made;
+    expect(FAILED(device->CreateBuffer(&desc, nullptr, &made)) && !made, "a buffer is GDI compatible");
   }
 
   // GDI

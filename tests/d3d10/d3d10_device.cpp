@@ -1,7 +1,8 @@
 // contract: Direct3D 10 as Direct3D 10 applications reach it: a device from D3D10CreateDevice1 (Wine's d3d10_1 onto
 // this d3d10core), whose objects are also their Direct3D 11 selves.
 // - an object answers QueryInterface for its Direct3D 11 interface and that one for the Direct3D 10 one again, and a
-//   view is gone when its one reference is released, as is then its resource.
+//   view is gone when its one reference is released, as is then its resource. a buffer is not GDI compatible
+//   (Wine's test_create_buffer: D3D10_RESOURCE_MISC_GDI_COMPATIBLE is 0x20, which in Direct3D 11 is a raw view's flag).
 // - getters of a device with nothing bound give null, whatever the pointer held (IAGetIndexBuffer, GetPredication,
 //   whose predicate pointer may be left out).
 // - ID3D10Device::CreateGeometryShaderWithStreamOutput gives a geometry shader that streams out: to one buffer at the
@@ -82,6 +83,13 @@ testing(D3D10_FEATURE_LEVEL1 level) {
     if (!ok && wrong++ < 16)
       printf("%s\n", what);
   };
+
+  {
+    D3D10_BUFFER_DESC desc{1024, D3D10_USAGE_DEFAULT, D3D10_BIND_SHADER_RESOURCE, 0,
+                           D3D10_RESOURCE_MISC_GDI_COMPATIBLE};
+    ComPtr<ID3D10Buffer> buffer;
+    expect(FAILED(device->CreateBuffer(&desc, nullptr, &buffer)) && !buffer, "a buffer is GDI compatible");
+  }
 
   // an object and its Direct3D 11 self; a view's reference
   D3D10_TEXTURE2D_DESC target_desc{count, 1, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D10_USAGE_DEFAULT, D3D10_BIND_RENDER_TARGET};
