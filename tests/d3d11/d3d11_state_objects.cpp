@@ -9,6 +9,8 @@
 // Microsoft Learn D3D11_DEPTH_STENCIL_DESC and D3D11_BLEND_DESC tables, through the SDK's default constructors.
 // enums, target counts and anisotropy bounds come from the API header. padding is deliberately initialized
 // differently on equivalent descriptions and never compared as returned data. no shaders are needed.
+// a logic operation on the first target needs it unblended and IndependentBlendEnable FALSE (D3D11_BLEND_DESC1), which
+// Windows enforces (Wine's test_logic_op).
 // COM failure contract: "All out pointer parameters must explicitly be set to NULL."
 // https://learn.microsoft.com/en-us/windows/win32/com/memory-management-rules
 // Wine's Windows state-creation witnesses above require E_INVALIDARG for null descriptions.
@@ -194,8 +196,6 @@ main() {
   for (BOOL independent : enables) {
     for (BOOL blend : enables) {
       for (BOOL logic : enables) {
-        if (independent && logic)
-          continue;
         for (UINT op = D3D11_BLEND_OP_ADD; op <= D3D11_BLEND_OP_MAX; op++) {
           step("blend variant=%u independent=%d blend=%d logic=%d op=%u", variant++, independent, blend, logic, op);
           D3D11_BLEND_DESC1 desc{};
@@ -234,8 +234,8 @@ main() {
           }
           ComPtr<ID3D11BlendState1> first, same;
           HRESULT hr = device1->CreateBlendState1(&desc, &first);
-          if (blend && logic) {
-            expect(hr == E_INVALIDARG && !first, "blending and logic operations are mutually exclusive");
+          if (logic && (blend || independent)) {
+            expect(hr == E_INVALIDARG && !first, "a logic operation goes with neither blending nor independent blend");
             continue;
           }
           if (!expect(hr == S_OK && first, "CreateBlendState1 returned %#lx", hr))
