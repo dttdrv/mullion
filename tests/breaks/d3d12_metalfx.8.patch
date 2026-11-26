@@ -1,0 +1,11 @@
+diff --git a/src/nvngx/nvngx_d3d12.cpp b/src/nvngx/nvngx_d3d12.cpp
+--- a/src/nvngx/nvngx_d3d12.cpp
++++ b/src/nvngx/nvngx_d3d12.cpp
+@@ -293,7 +293,6 @@
+     desc.InputContentWidth = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 0u);
+     desc.InputContentHeight = GetOr(parameters, NVNGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, 0u);
+     // where each input's content starts in its texture, the motion vectors' in their own pixels
+-    desc.ColorOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
+     desc.ColorOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
+     desc.DepthOffsetX = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
+     desc.DepthOffsetY = GetOr(parameters, NVNGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);

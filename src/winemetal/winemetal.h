@@ -1872,6 +1872,12 @@ struct WMTFXTemporalScalerInfo {
   // offsets of each frame (MTLFXTemporalScalerDescriptor.jitteredMotionVectorsEnabled, macOS 27): no scaler is made
   // where MetalFX lacks it
   bool jittered_motion_vectors;
+  // the format of a mask of how much each pixel takes of its current color over its history, from 0 to 1
+  // (reactiveMaskTextureEnabled, reactiveMaskTextureFormat); WMTPixelFormatInvalid for none
+  enum WMTPixelFormat reactive_mask_format;
+  // the motion vectors are at the output resolution (outputResolutionMotionVectorsEnabled, macOS 27): no scaler is
+  // made where MetalFX lacks it (WMTFXTemporalScalerSupport.output_resolution_motion_vectors)
+  bool output_resolution_motion_vectors;
 };
 
 struct WMTFXSpatialScalerInfo {
@@ -1897,11 +1903,22 @@ struct WMTFXTemporalScalerProps {
   float jitter_offset_x;
   float jitter_offset_y;
   float pre_exposure;
+  // where each input's content starts in its texture (MTLFXTemporalScalerBase colorContentOffsetX..., macOS 27): 0
+  // where MetalFX lacks them (WMTFXTemporalScalerSupport.content_offsets), which reads each from its texture's corner
+  uint32_t color_offset_x;
+  uint32_t color_offset_y;
+  uint32_t depth_offset_x;
+  uint32_t depth_offset_y;
+  uint32_t motion_offset_x;
+  uint32_t motion_offset_y;
+  uint32_t reactive_offset_x;
+  uint32_t reactive_offset_y;
 };
 
 WINEMETAL_API void MTLCommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 );
 
 WINEMETAL_API void MTLCommandBuffer_encodeSpatialScale(
@@ -1913,7 +1930,8 @@ WINEMETAL_API obj_handle_t MTLDevice_newTemporalScaler4(obj_handle_t device, con
 
 WINEMETAL_API void MTL4CommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 );
 
 /* MetalFX temporal denoised upscaling (MTLFXTemporalDenoisedScaler, macOS 26): a ray-traced frame's noisy color,
@@ -1998,6 +2016,19 @@ WINEMETAL_API bool MTLDevice_supportsFXTemporalScaler(obj_handle_t device);
 
 /* MetalFX temporal denoised upscaling, for Metal 4 command buffers or for Metal 3 ones */
 WINEMETAL_API bool MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4);
+
+/* what MetalFX's temporal scaler takes on the device: the range of output-to-input content scales a scaler can be
+ * made for (MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:, ...MaxScaleForDevice:) */
+struct WMTFXTemporalScalerSupport {
+  float input_content_min_scale;
+  float input_content_max_scale;
+  /* the inputs' content can start anywhere in their textures (WMTFXTemporalScalerProps color_offset_x..., macOS 27) */
+  bool content_offsets;
+  /* the scaler reads motion vectors at the output resolution (WMTFXTemporalScalerInfo, macOS 27) */
+  bool output_resolution_motion_vectors;
+};
+
+WINEMETAL_API void MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support);
 
 struct WMTLayerProps {
   obj_handle_t device;
@@ -2668,7 +2699,8 @@ enum { WMTUnixSampledEncoder = 167, WMTUnixDiagWrite, WMTUnixDispatchDataBytes, 
        WMTUnixComputeStaticThreadgroupMemory, WMTUnixDeviceMaxThreadgroupMemory,
        WMTUnixDeviceMaxThreadsPerThreadgroup, WMTUnixDeviceReport, WMTUnixTextureSparseTailHolds,
        WMTUnixDeviceSparseResidencyInTiles, WMTUnixDeviceNewSpecializedRenderPipeline, WMTUnixBinaryArchiveAdd,
-       WMTUnixRemoveOtherVersions, WMTUnixGetMemoryState, WMTUnixResidencySetRequestResidency, WMTUnixCallCount };
+       WMTUnixRemoveOtherVersions, WMTUnixGetMemoryState, WMTUnixResidencySetRequestResidency,
+       WMTUnixDeviceTemporalScalerSupport, WMTUnixCallCount };
 WINEMETAL_API obj_handle_t MTLCommandBuffer_sampledCommandEncoder(obj_handle_t cmdbuf, enum WMTSampledEncoder type,
                                                                   const struct WMTSampleBufferAttachmentInfo *samples,
                                                                   const struct WMTRenderPassInfo *render_info);

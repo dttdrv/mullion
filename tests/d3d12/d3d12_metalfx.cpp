@@ -10,15 +10,24 @@
 // vectors at the output resolution (DLSS without NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) are taken too: frames of one
 // color, the second not in reset, come out that color with them, and a square that moves between two frames comes out
 // the same image whether its motion is given at the input resolution or, as the same motion, at the output's.
-// motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as well: frames of
-// one color come out that color with them
+// MetalFX reads the motion vectors at the output resolution itself where it does (macOS 27), and Mullion brings them
+// to the input's elsewhere and with metalfx.outputResolutionMotionVectors off (`downscaled`): the scaler's log line
+// says which. motion vectors that hold the frames' jitter (NVSDK_NGX_DLSS_Feature_Flags_MVJittered) are taken as
+// well: frames of one color come out that color with them. the render sizes NGX's optimal settings give are ones
+// MetalFX takes: the output's size over each is within the scales MetalFX takes on the device. content that starts
+// inside its textures (DLSS's Subrect.Base), one color there and another around it, comes out that one color. a
+// reactive mask (DLSS's Bias.Current.Color.Mask) of 1 has a frame not in reset show less of the frame before than it
+// does without one
 #include "d3d12_test.hpp"
 #include "../../src/d3d12/d3d12_interfaces.hpp"
 #include "../../src/nvngx/nvngx.hpp"
+#include "../../src/winemetal/winemetal.h"
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <limits>
+#include <string>
 #include <vector>
 
 struct Texture {
@@ -41,8 +50,43 @@ using evaluate_t = NVNGX_RESULT (*)(ID3D12GraphicsCommandList *, const unsigned 
 using release_t = NVNGX_RESULT (*)(unsigned int *);
 using shutdown_t = NVNGX_RESULT (*)(ID3D12Device *);
 
+// the lines of the D3D12 log in `directory` that hold `text`
+static UINT
+logged(const char *directory, const char *text) {
+  WIN32_FIND_DATAA found;
+  auto search = FindFirstFileA((std::string(directory) + "\\*_d3d12.log").c_str(), &found);
+  if (search == INVALID_HANDLE_VALUE)
+    return 0;
+  FindClose(search);
+  UINT count = 0;
+  std::ifstream log(std::string(directory) + "\\" + found.cFileName);
+  for (std::string line; std::getline(log, line);)
+    count += line.find(text) != std::string::npos;
+  return count;
+}
+
 int
 main(int argc, char **argv) {
+  bool ngx = false, downscaled = false;
+  for (int i = 1; i < argc; i++) {
+    ngx |= !strcmp(argv[i], "ngx");
+    downscaled |= !strcmp(argv[i], "downscaled");
+  }
+  // the log says how each scaler reads motion vectors at the output resolution; `downscaled` has Mullion bring them to
+  // the input's where MetalFX would read them at the output's
+  char temporary[MAX_PATH], directory[MAX_PATH];
+  CHECK(GetTempPathA(sizeof(temporary), temporary) && GetTempFileNameA(temporary, "mfx", 0, directory) ? S_OK : E_FAIL);
+  DeleteFileA(directory);
+  CHECK(CreateDirectoryA(directory, nullptr) ? S_OK : E_FAIL);
+  SetEnvironmentVariableA("MULLION_LOG_PATH", directory);
+  if (downscaled) {
+    char config[4096] = "";
+    GetEnvironmentVariableA("MULLION_CONFIG", config, sizeof(config));
+    SetEnvironmentVariableA(
+        "MULLION_CONFIG",
+        (std::string(config) + (*config ? ";" : "") + "metalfx.outputResolutionMotionVectors=False").c_str()
+    );
+  }
   ComPtr<ID3D12Device> device;
   CHECK(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
   ComPtr<ID3D12CommandQueue> queue;
@@ -93,10 +137,12 @@ main(int argc, char **argv) {
   auto exposure = texture(DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, 1, 1, target, input);
   auto normalized = texture(DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R16G16_SNORM, width, height, target, input);
   auto packed = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, width, height, target, input);
+  // DLSS's mask of how much each pixel takes of its current color: all of it
+  auto mask = texture(DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, width, height, target, input);
   auto output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, out_width, out_height,
                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   CHECK(color.resource && depth.resource && motion.resource && exposure.resource && normalized.resource &&
-                packed.resource && output.resource && display_motion.resource
+                packed.resource && output.resource && display_motion.resource && mask.resource
             ? S_OK
             : E_FAIL);
   CHECK(list->Reset(allocator.Get(), nullptr));
@@ -132,12 +178,14 @@ main(int argc, char **argv) {
   // the input-resolution motion vectors the upscale is given, and the scale that makes their values pixels
   Texture *given = &motion;
   float given_scale[2] = {1, 1};
+  // the reactive mask the upscale is given, if any
+  Texture *reactive = nullptr;
 
   // one frame upscaled by what `record` records into the list: the color is `a` in the squares of a checkerboard of
   // `square` texels and `b` between them (one color when `square` is 0), or in the one square of `moved`; the
   // output's texels, tightly
   auto upscaled = [&](const BYTE *a, const BYTE *b, UINT square, const std::function<bool()> &record,
-                      const Moved *moved = nullptr) {
+                      const Moved *moved = nullptr, const D3D12_RECT *content = nullptr) {
     std::vector<BYTE> texels;
     if (FAILED(forget(read_back.Get())) || FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr)))
       return texels;
@@ -156,7 +204,9 @@ main(int argc, char **argv) {
       std::vector<D3D12_RECT> rects;
     };
     Clear clears[] = {{&color, fb.data(), fa.data(), squares}, {&depth, half}, {given, zero}, {&exposure, one},
-                      {&display_motion, some}};
+                      {&display_motion, some}, {&mask, one}};
+    if (content)
+      clears[0].rects = {*content};
     if (moved) {
       const D3D12_RECT at{moved->x, moved->y, moved->x + moved->side, moved->y + moved->side};
       const LONG times = scale;
@@ -214,6 +264,7 @@ main(int argc, char **argv) {
       desc.MotionVectorScaleX = at_output ? 1 : given_scale[0];
       desc.MotionVectorScaleY = at_output ? 1 : given_scale[1];
       desc.PreExposure = 1;
+      desc.ReactiveMask = reactive ? reactive->resource.Get() : nullptr;
       return SUCCEEDED(ext->TemporalUpscale(&desc, &scaler));
     };
     return upscaled(a, b, square, record, moved);
@@ -266,7 +317,20 @@ main(int argc, char **argv) {
     expect(!apart(first, reset), "%u channels of the frame in reset show the frame before", apart(first, reset));
     expect(apart(first, kept), "a frame not in reset shows nothing of the frame before: reset cannot be told apart");
   }
-  for (auto scaler : {fresh, continued, upscaler})
+  // a reactive mask of 1 everywhere has each pixel take its current color over its history (DLSS's
+  // Bias.Current.Color.Mask, MetalFX's reactiveMaskTexture): a frame not in reset shows less of the frame before
+  // with it than without
+  IMTLD3D12Upscaler *reacting = nullptr;
+  step("the same checkerboard not in reset, after its inverse, with a reactive mask of 1");
+  reactive = &mask;
+  frame(dark, light, square, TRUE, reacting);
+  auto masked = frame(light, dark, square, FALSE, reacting);
+  reactive = nullptr;
+  if (expect(!first.empty() && !kept.empty() && !masked.empty(), "no image"))
+    expect(apart(first, masked) < apart(first, kept),
+           "%u channels of the frame with a reactive mask show the frame before, %u without one", apart(first, masked),
+           apart(first, kept));
+  for (auto scaler : {fresh, continued, upscaler, reacting})
     if (scaler)
       scaler->Destroy();
 
@@ -290,6 +354,34 @@ main(int argc, char **argv) {
   }
   if (jittered)
     jittered->Destroy();
+
+  // a frame whose content starts inside its textures (DLSS's Subrect.Base): the content is one color and the rest of
+  // the color texture another, so an upscale that reads the content from the texture's corner shows the other
+  const D3D12_RECT content{48, 24, 48 + 192, 24 + 108};
+  IMTLD3D12Upscaler *offset = nullptr;
+  for (BOOL reset : {TRUE, FALSE}) {
+    step("a %ldx%ld frame of one color at %ld,%ld in its textures, %s", content.right - content.left,
+         content.bottom - content.top, content.left, content.top, reset ? "in reset" : "not in reset");
+    auto record = [&] {
+      MTL_TEMPORAL_UPSCALE_D3D12_DESC desc{};
+      desc.InReset = reset;
+      desc.Color = color.resource.Get();
+      desc.Depth = depth.resource.Get();
+      desc.MotionVector = motion.resource.Get();
+      desc.ExposureTexture = exposure.resource.Get();
+      desc.Output = output.resource.Get();
+      desc.MotionVectorScaleX = desc.MotionVectorScaleY = desc.PreExposure = 1;
+      desc.InputContentWidth = content.right - content.left;
+      desc.InputContentHeight = content.bottom - content.top;
+      desc.ColorOffsetX = desc.DepthOffsetX = desc.MotionVectorOffsetX = content.left;
+      desc.ColorOffsetY = desc.DepthOffsetY = desc.MotionVectorOffsetY = content.top;
+      return SUCCEEDED(ext->TemporalUpscale(&desc, &offset));
+    };
+    if (!uniform(upscaled(frames[0], frames[1], 0, record, nullptr, &content), frames[0]))
+      return verdict();
+  }
+  if (offset)
+    offset->Destroy();
 
   // a light square on dark moves `by` input pixels between a frame in reset and the next. its motion at the output
   // resolution is `scale` times its motion at the input's, in every output pixel of the square: the same motion, so
@@ -317,6 +409,25 @@ main(int argc, char **argv) {
            apart(at_input, at_output));
     expect(apart(at_input, other), "half the motion gives the same image: the motion vectors do not show in it");
   }
+  // MetalFX read them at the output resolution where it reads them so (macOS 27), and they were brought to the
+  // input's elsewhere and when asked to be
+  step("who reads motion vectors at the output resolution");
+  auto bridge = LoadLibraryA("winemetal.dll");
+  auto all_devices = reinterpret_cast<decltype(&WMTCopyAllDevices)>(GetProcAddress(bridge, "WMTCopyAllDevices"));
+  auto object = reinterpret_cast<decltype(&NSArray_object)>(GetProcAddress(bridge, "NSArray_object"));
+  auto takes = reinterpret_cast<decltype(&MTLDevice_temporalScalerSupport)>(
+      GetProcAddress(bridge, "MTLDevice_temporalScalerSupport")
+  );
+  if (expect(all_devices && object && takes, "Metal bridge unavailable")) {
+    WMTFXTemporalScalerSupport support{};
+    takes(object(all_devices(), 0), &support);
+    bool metalfx = support.output_resolution_motion_vectors && !downscaled;
+    UINT read = logged(directory, "motion vectors at the output resolution"),
+         brought = logged(directory, "motion vectors brought from the output resolution");
+    expect(metalfx ? read && !brought : !read && brought,
+           "MetalFX %s them at the output resolution, and %u scalers read them so, %u from the input's",
+           metalfx ? "reads" : "does not read", read, brought);
+  }
 
   // the same motion as signed normalized values in units of the input's size, which the scale makes pixels
   step("the same motion given as normalized values");
@@ -340,7 +451,7 @@ main(int argc, char **argv) {
   // DLSS through Mullion's NGX core (src/nvngx/nvngx_d3d12.cpp), called as a game's NGX library calls it, where the
   // build has it: resources set as resources or, as Streamline sets them, as plain pointers, and DLSS's defaults for
   // what a game leaves out (no exposure texture; a pre-exposure of 0, or none, for no pre-exposure)
-  if (argc < 2 || strcmp(argv[1], "ngx"))
+  if (!ngx)
     return verdict();
   step("NGX's core");
   auto core = LoadLibraryA("nvngx.dll");
@@ -369,6 +480,41 @@ main(int argc, char **argv) {
              denoising == unsigned(ext->SupportsDenoisedUpscale()),
          "Ray Reconstruction is offered as %u where the denoiser is %s", denoising,
          ext->SupportsDenoisedUpscale() ? "there" : "not");
+  // the render sizes of DLSS's optimal settings, a game's choice of render size, are ones MetalFX's scaler takes: the
+  // output's size over each is within the scales MetalFX takes on the device, as are the dynamic range's bounds
+  step("DLSS's optimal render sizes for %ux%u", out_width, out_height);
+  float min_scale = 0, max_scale = 0;
+  ext->GetTemporalUpscaleScales(&min_scale, &max_scale);
+  expect(min_scale >= 1 && max_scale >= min_scale, "MetalFX's scales are %g to %g", min_scale, max_scale);
+  NVNGX_RESULT (*optimal)(NVNGXParameter *) = nullptr;
+  if (caps)
+    caps->Get("DLSSOptimalSettingsCallback", (void **)&optimal);
+  NVNGXParameter *settings = nullptr;
+  if (expect(optimal, "no optimal settings callback") &&
+      expect(allocate(&settings) == NVNGX_RESULT_OK, "no parameters")) {
+    // a scale of the output's size over a render size, in the device's range
+    auto within = [&](UINT output_size, UINT render, const char *what, int mode) {
+      float scale = render ? float(output_size) / float(render) : 0;
+      expect(render && scale >= min_scale && scale <= max_scale, "mode %d's %s %u is a scale of %g, outside %g to %g",
+             mode, what, render, scale, min_scale, max_scale);
+    };
+    for (int mode = NVNGX_PERFQUALITY_MAXPERF; mode <= NVNGX_PERFQUALITY_DLAA; mode++) {
+      settings->Set("Width", out_width);
+      settings->Set("Height", out_height);
+      settings->Set("PerfQualityValue", mode);
+      if (!expect(optimal(settings) == NVNGX_RESULT_OK, "mode %d has no optimal settings", mode))
+        continue;
+      unsigned sizes[6] = {};
+      const char *names[6] = {"OutWidth", "OutHeight", "DLSS.Get.Dynamic.Min.Render.Width",
+                              "DLSS.Get.Dynamic.Min.Render.Height", "DLSS.Get.Dynamic.Max.Render.Width",
+                              "DLSS.Get.Dynamic.Max.Render.Height"};
+      for (int i = 0; i < 6; i++) {
+        settings->Get(names[i], &sizes[i]);
+        within(i % 2 ? out_height : out_width, sizes[i], names[i], mode);
+      }
+    }
+    destroy(settings);
+  }
   if (caps)
     destroy(caps);
   step("a DLSS feature for %ux%u to %ux%u", width, height, out_width, out_height);
@@ -411,6 +557,35 @@ main(int argc, char **argv) {
       uniform(upscaled(want, want, 0, [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; }),
               want);
     }
+    // the frame before shows less in a frame not in reset with DLSS's mask of how much each pixel takes of its
+    // current color than without
+    auto continued_frame = [&](bool masked) {
+      if (masked)
+        params->Set("DLSS.Input.Bias.Current.Color.Mask", mask.resource.Get());
+      auto run = [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; };
+      params->Set("Reset", 1);
+      upscaled(dark, light, square, run);
+      params->Set("Reset", 0);
+      auto image = upscaled(light, dark, square, run);
+      params->Set("Reset", 1);
+      params->Set("DLSS.Input.Bias.Current.Color.Mask", (ID3D12Resource *)nullptr);
+      return image;
+    };
+    step("DLSS of a checkerboard not in reset, after its inverse, without and with a bias mask of 1");
+    auto unbiased = continued_frame(false), biased = continued_frame(true);
+    if (expect(!first.empty() && !unbiased.empty() && !biased.empty(), "no image"))
+      expect(apart(first, biased) < apart(first, unbiased),
+             "%u channels of the frame with DLSS's bias mask show the frame before, %u without one",
+             apart(first, biased), apart(first, unbiased));
+    step("DLSS of a frame whose content starts inside its textures");
+    params->Set("DLSS.Render.Subrect.Dimensions.Width", unsigned(content.right - content.left));
+    params->Set("DLSS.Render.Subrect.Dimensions.Height", unsigned(content.bottom - content.top));
+    for (const char *input : {"Color.Subrect", "Depth.Subrect", "MV.Subrect"}) {
+      params->Set(("DLSS.Input." + std::string(input) + ".Base.X").c_str(), unsigned(content.left));
+      params->Set(("DLSS.Input." + std::string(input) + ".Base.Y").c_str(), unsigned(content.top));
+    }
+    auto run = [&] { return evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_OK; };
+    uniform(upscaled(frames[0], frames[1], 0, run, nullptr, &content), frames[0]);
     step("DLSS without depth");
     params->Set("Depth", (ID3D12Resource *)nullptr);
     expect(evaluate(list.Get(), feature, params, nullptr) == NVNGX_RESULT_INVALID_PARAMETER, "DLSS ran without depth");

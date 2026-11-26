@@ -6460,8 +6460,10 @@ public:
       info.output_width = scaler_entry.output_width;
       info.output_height = scaler_entry.output_height;
       info.input_content_properties_enabled = true;
-      info.input_content_min_scale = 1.0f;
-      info.input_content_max_scale =  3.0f;
+      // the scales MetalFX takes on the device, of which DLSS's optimal settings choose the render size (nvngx)
+      auto support = ctx_->device->GetMTLDevice().temporalScalerSupport();
+      info.input_content_min_scale = support.input_content_min_scale;
+      info.input_content_max_scale = support.input_content_max_scale;
       // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
       // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
       info.requires_synchronous_initialization = false;
@@ -6577,6 +6579,15 @@ public:
       if (FeatureSupportDataSize != sizeof(BOOL))
         return E_INVALIDARG;
       *reinterpret_cast<BOOL *>(pFeatureSupportData) = ctx_->device->GetMTLDevice().supportsFXTemporalScaler();
+      return S_OK;
+    }
+    case MTL_FEATURE_METALFX_TEMPORAL_SCALES: {
+      if (FeatureSupportDataSize != sizeof(MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA))
+        return E_INVALIDARG;
+      auto support = ctx_->device->GetMTLDevice().temporalScalerSupport();
+      *reinterpret_cast<MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA *>(pFeatureSupportData) = {
+          support.input_content_min_scale, support.input_content_max_scale
+      };
       return S_OK;
     }
     }

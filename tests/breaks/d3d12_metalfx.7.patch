@@ -1,0 +1,12 @@
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -2167,8 +2167,6 @@
+     id<MTLFXTemporalScalerBase> scaler = object;
+     if (![scaler respondsToSelector:@selector(setColorContentOffsetX:)])
+       return;
+-    scaler.colorContentOffsetX = props->color_offset_x;
+-    scaler.colorContentOffsetY = props->color_offset_y;
+     scaler.depthContentOffsetX = props->depth_offset_x;
+     scaler.depthContentOffsetY = props->depth_offset_y;
+     scaler.motionContentOffsetX = props->motion_offset_x;

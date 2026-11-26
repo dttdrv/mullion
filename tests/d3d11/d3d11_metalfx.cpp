@@ -13,7 +13,8 @@
 // and the next comes out the same image whether its motion is given as float pixels, as the same motion at the output
 // resolution, or as signed normalized values in units of the input's size with the scale that makes them pixels; half
 // the motion gives another image, the test's own check that the image shows the motion. the content size is 0, which is the color's. each upscale writes a new
-// output, all zero before, so one that writes nothing is seen
+// output, all zero before, so one that writes nothing is seen. the extension says the scales MetalFX takes on the
+// device: a range from 1 up
 #include "d3d11_test.hpp"
 #include "../../src/d3d11/d3d11_interfaces.hpp"
 #include <cmath>
@@ -35,6 +36,12 @@ main() {
     printf("skipped: no MetalFX temporal scaler on this device\n");
     return 77;
   }
+  // the scales MetalFX takes on the device, which DLSS's optimal settings keep render sizes within (nvngx)
+  step("MetalFX's temporal scales");
+  MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA scales{};
+  HRESULT asked = ext->CheckFeatureSupport(MTL_FEATURE_METALFX_TEMPORAL_SCALES, &scales, sizeof(scales));
+  expect(asked == S_OK && scales.MinScale >= 1 && scales.MaxScale >= scales.MinScale,
+         "the scales are %g to %g (%08lx)", scales.MinScale, scales.MaxScale, asked);
 
   const UINT width = 256, height = 144, out_width = width * 2, out_height = height * 2;
   // a texture of `format` whose texel is `inside` (`bytes` of it) in the square of `side` texels at x, y and `texel`

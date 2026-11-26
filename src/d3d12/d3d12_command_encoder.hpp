@@ -246,7 +246,7 @@ struct PredicateEncoderData : EncoderData {
 struct UpscaleEncoderData : EncoderData {
   Rc<TemporalScaler> temporal;
   Rc<DenoisedScaler> denoised;
-  WMT::Texture color, output, depth, motion, exposure;
+  WMT::Texture color, output, depth, motion, exposure, reactive;
   WMTFXTemporalScalerProps props;
   WMTFXDenoisedScaleArgs denoise;
 };

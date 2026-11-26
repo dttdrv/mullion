@@ -1,0 +1,11 @@
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -6528,6 +6528,7 @@
+       return S_OK;
+     }
+     case MTL_FEATURE_METALFX_TEMPORAL_SCALES: {
++      return E_INVALIDARG;
+       if (FeatureSupportDataSize != sizeof(MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA))
+         return E_INVALIDARG;
+       auto support = ctx_->device->GetMTLDevice().temporalScalerSupport();
