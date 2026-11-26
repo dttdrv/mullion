@@ -6091,21 +6091,20 @@ public:
         if (i >= state_.Rasterizer.NumViewports || (allow_scissor && i >= state_.Rasterizer.NumScissorRects)) {
           scissors[i] = {0, 0, 0, 0};
         } else {
-          // a viewport scissors to the pixels its floored extents hold (D3D11.3 15.6.1)
+          // a viewport scissors to the pixels its floored extents hold (D3D11.3 15.6.1), and before feature level
+          // 11_0 to the pixels whose centers it holds: Windows draws the last column of a viewport at x -0.4 there and
+          // not from 11_0 (Wine's test_negative_viewports)
           auto &viewport = state_.Rasterizer.viewports[i];
+          auto edge = [floored = floored_viewports_](float x) { return LONG(floored ? std::floor(x) : std::ceil(x - 0.5f)); };
           D3D11_RECT d3d_rect = allow_scissor ? state_.Rasterizer.scissor_rects[i]
                                               : D3D11_RECT{0, 0, LONG(render_target_width), LONG(render_target_height)};
-          LONG left =
-              std::clamp(std::max(d3d_rect.left, LONG(std::floor(viewport.TopLeftX))), (LONG)0, (LONG)render_target_width);
-          LONG top =
-              std::clamp(std::max(d3d_rect.top, LONG(std::floor(viewport.TopLeftY))), (LONG)0, (LONG)render_target_height);
+          LONG left = std::clamp(std::max(d3d_rect.left, edge(viewport.TopLeftX)), (LONG)0, (LONG)render_target_width);
+          LONG top = std::clamp(std::max(d3d_rect.top, edge(viewport.TopLeftY)), (LONG)0, (LONG)render_target_height);
           LONG right = std::clamp(
-              std::min(d3d_rect.right, LONG(std::floor(viewport.TopLeftX + viewport.Width))), left,
-              (LONG)render_target_width
+              std::min(d3d_rect.right, edge(viewport.TopLeftX + viewport.Width)), left, (LONG)render_target_width
           );
           LONG bottom = std::clamp(
-              std::min(d3d_rect.bottom, LONG(std::floor(viewport.TopLeftY + viewport.Height))), top,
-              (LONG)render_target_height
+              std::min(d3d_rect.bottom, edge(viewport.TopLeftY + viewport.Height)), top, (LONG)render_target_height
           );
           scissors[i] = {uint32_t(left), uint32_t(top), uint32_t(right - left), uint32_t(bottom - top)};
         }
@@ -6325,6 +6324,8 @@ protected:
   MTLD3D11ContextExt<ContextInternalState> ext_;
   uint64_t max_object_threadgroups_;
   uint64_t mesh_bytes_per_draw_;
+  // whether a viewport's corners are floored for its scissor, as from feature level 11_0 (PreDraw)
+  bool floored_viewports_;
 
 public:
   MTLD3D11DeviceContextImplBase(MTLD3D11Device *pDevice, ContextInternalState &ctx_state, ContextInternalState::device_mutex_t &mutex) :
@@ -6346,6 +6347,7 @@ public:
 
     max_object_threadgroups_ = m_parent->GetMullionDevice().maxObjectThreadgroups();
     mesh_bytes_per_draw_ = MeshBytesPerDraw(m_parent->GetMullionDevice().device());
+    floored_viewports_ = pDevice->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0;
   }
 };
 
