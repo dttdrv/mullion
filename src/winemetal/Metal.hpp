@@ -70,7 +70,7 @@ public:
     this->handle = copy.handle;
     this->retain();
   }
-  Reference(Reference &&move) {
+  Reference(Reference &&move) noexcept {
     this->handle = move.handle;
     move.handle = NULL_OBJECT_HANDLE;
   }
@@ -99,7 +99,7 @@ public:
     return *this;
   }
   Reference &
-  operator=(Reference &&move) {
+  operator=(Reference &&move) noexcept {
     if (this->handle != NULL_OBJECT_HANDLE)
       this->release();
     this->handle = move.handle;
