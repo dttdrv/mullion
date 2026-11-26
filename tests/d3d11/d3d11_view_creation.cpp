@@ -376,7 +376,7 @@ float4 vs(uint id : SV_VertexID) : SV_Position {
 float4 ps() : SV_Target { return 7; }
 )";
   auto cs_code = compile(hlsl, "cs", "cs"), vs_code = compile(hlsl, "vs", "vs"), ps_code = compile(hlsl, "ps", "ps");
-  auto read_code = compile(hlsl, "cs", "cs", {"READONLY=1"});
+  auto read_code = compile(hlsl, "cs", "cs", {"READONLY"});
   auto write_code = compile(hlsl, "write_only", "cs");
   const char pixel_hlsl[] = R"(
 RWTexture3D<uint> volume : register(u1);
@@ -399,7 +399,7 @@ float4 write_only() : SV_Target {
 )";
   const std::string depth_define = "DEPTH=" + std::to_string(depth + 1);
   auto pixel_code = compile(pixel_hlsl, "ps", "ps", {depth_define});
-  auto pixel_read_code = compile(pixel_hlsl, "ps", "ps", {depth_define, "READONLY=1"});
+  auto pixel_read_code = compile(pixel_hlsl, "ps", "ps", {depth_define, "READONLY"});
   auto pixel_write_code = compile(pixel_hlsl, "write_only", "ps", {depth_define});
   const char ms_hlsl[] = R"(
 #if ARRAY

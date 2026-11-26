@@ -68,7 +68,7 @@ public:
 
   Com(const Com &other) : m_ptr(other.m_ptr) { this->incRef(); }
 
-  Com(Com &&other) : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
+  Com(Com &&other) noexcept : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
 
   Com &operator=(T *object) {
     this->decRef();

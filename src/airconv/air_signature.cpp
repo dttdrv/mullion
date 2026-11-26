@@ -443,30 +443,30 @@ uint32_t FunctionSignatureBuilder::DefineInput(const FunctionInput &input) {
     if (element.value().index() == input.index()) {
       if (std::visit(
             patterns{
-              [&](const InputVertexStageIn s) {
+              [&](const InputVertexStageIn &s) {
                 return s.attribute ==
                        std::get<InputVertexStageIn>(element.value()).attribute;
               },
-              [&](const InputFragmentStageIn s) {
+              [&](const InputFragmentStageIn &s) {
                 return s.user ==
                        std::get<InputFragmentStageIn>(element.value()).user;
               },
-              [&](const ArgumentBindingBuffer s) {
+              [&](const ArgumentBindingBuffer &s) {
                 return s.location_index ==
                        std::get<ArgumentBindingBuffer>(element.value())
                          .location_index;
               },
-              [&](const ArgumentBindingSampler s) {
+              [&](const ArgumentBindingSampler &s) {
                 return s.location_index ==
                        std::get<ArgumentBindingSampler>(element.value())
                          .location_index;
               },
-              [&](const ArgumentBindingTexture s) {
+              [&](const ArgumentBindingTexture &s) {
                 return s.location_index ==
                        std::get<ArgumentBindingTexture>(element.value())
                          .location_index;
               },
-              [&](const ArgumentBindingIndirectBuffer s) {
+              [&](const ArgumentBindingIndirectBuffer &s) {
                 return s.location_index ==
                        std::get<ArgumentBindingIndirectBuffer>(element.value())
                          .location_index;

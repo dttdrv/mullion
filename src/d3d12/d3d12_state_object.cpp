@@ -564,7 +564,7 @@ class MTLD3D12StateObjectImpl : public MTLD3D12DeviceChild<MTLD3D12StateObject, 
     function->local = local_root;
     function->calls = shader.info.calls;
     auto name = function->Name();
-    auto load = [&](WMT::Reference<WMT::DispatchData> data, WMT::Reference<WMT::Error> &error) {
+    auto load = [&](const WMT::Reference<WMT::DispatchData> &data, WMT::Reference<WMT::Error> &error) {
       auto library = device_->GetMTLDevice().newLibrary(data, error);
       return library ? library.newFunction(name.c_str()) : WMT::Reference<WMT::Function>{};
     };

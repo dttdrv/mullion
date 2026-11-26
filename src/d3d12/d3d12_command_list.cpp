@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <atomic>
 #include <bit>
 #include <functional>
 #include "d3d12_command_allocator.hpp"
@@ -1526,13 +1527,12 @@ public:
       bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(words), 16), words, sizeof(words)));
       bytes.length = sizeof(words);
       bytes.index = SM50_BINDING_INDEX_DEPTH_BOUNDS;
-      if (bounds_tested) {
-        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        buffer.type = WMTRenderCommandSetFragmentBuffer;
-        buffer.buffer = depth_bounds_samples_;
-        buffer.offset = 0;
-        buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
-      }
+      // The shader declares the samples buffer even when the draw has no depth attachment.
+      auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+      buffer.type = WMTRenderCommandSetFragmentBuffer;
+      buffer.buffer = bounds_tested ? depth_bounds_samples_.handle : device_->GetNullBufferHandle();
+      buffer.offset = 0;
+      buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
     }
     // coarse shading's rates and combiners, and its image's bytes (or none, but a buffer bound)
     if (coarse) {
@@ -5523,7 +5523,18 @@ public:
     pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
     // the next compute dispatch binds its own pipeline again
     dirty_state_.set(DirtyState::ComputePipelineState);
-    BindComputeRootArguments();
+    if (rootsig_compute_) {
+      BindComputeRootArguments();
+    } else {
+      // A pipeline with only local root signatures still runs dispatch_rays with both global buffers bound.
+      for (auto index : {SM50_BINDING_INDEX_ROOT_ARGUMENTS, SM50_BINDING_INDEX_STATIC_SAMPLERS}) {
+        auto &binding = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        binding.type = WMTComputeCommandSetBuffer;
+        binding.buffer = device_->GetNullBufferHandle();
+        binding.offset = 0;
+        binding.index = index;
+      }
+    }
     auto &functions = allocator_->EncodeComputeCommand<wmtcmd_compute_setvisiblefunctiontable>();
     functions.type = WMTComputeCommandSetVisibleFunctionTable;
     functions.table = table;
@@ -5750,24 +5761,6 @@ public:
     }
   }
 
-  // the float format MetalFX reads motion vectors as: DLSS takes them as floats, held as such or, in a typeless
-  // resource, as unsigned integers. normalized or signed integer motion vectors hold no float to read
-  static WMTPixelFormat
-  MotionVectorFormat(WMTPixelFormat format) {
-    switch (format) {
-    case WMTPixelFormatRG16Uint:
-    case WMTPixelFormatRG16Float:
-      return WMTPixelFormatRG16Float;
-    case WMTPixelFormatRG32Uint:
-    case WMTPixelFormatRG32Float:
-      return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Float:
-      return WMTPixelFormatRGBA16Float;
-    default:
-      return WMTPixelFormatInvalid;
-    }
-  }
-
   // the pass, after everything before it and before everything after it
   UpscaleEncoderData *
   RecordUpscale() {
@@ -5780,6 +5773,29 @@ public:
     return pass;
   }
 
+  static bool
+  UpscaleImage(const Texture *texture) {
+    return texture && texture->textureType() == WMTTextureType2D && texture->sampleCount() == 1;
+  }
+
+  static bool
+  UpscaleSize(const Texture *texture, const Texture *reference) {
+    return UpscaleImage(texture) && texture->width() == reference->width() && texture->height() == reference->height();
+  }
+
+  static bool
+  UpscaleValues(float exposure, float scale_x, float scale_y, float jitter_x, float jitter_y) {
+    return std::isfinite(exposure) && exposure > 0 && std::isfinite(scale_x) && std::isfinite(scale_y) &&
+           std::isfinite(jitter_x) && std::isfinite(jitter_y);
+  }
+
+  static void
+  UpscaleUnusual(bool unusual, unsigned which, const char *what) {
+    static std::atomic<unsigned> logged{0};
+    if (unusual && !(logged.fetch_or(1u << which) & (1u << which)))
+      WARN("TemporalUpscale: upscaling ", what, " (logged once)");
+  }
+
   HRESULT
   TemporalUpscale(const MTL_TEMPORAL_UPSCALE_D3D12_DESC *pDesc, IMTLD3D12Upscaler **ppCache) {
     if (!pDesc || !ppCache)
@@ -5789,6 +5805,22 @@ public:
          exposure = UpscaleTexture(pDesc->ExposureTexture);
     if (!color || !output || !depth || !motion)
       return E_INVALIDARG;
+    // inputs DLSS would not be given are still upscaled, as they were before these checks: a game's ray traced
+    // frame (Minecraft's) gives one of them and came out black when the upscale was refused. each is logged once
+    const auto *motion_size = pDesc->MotionVectorInDisplayRes ? output : color;
+    UpscaleUnusual(!UpscaleImage(color) || !UpscaleImage(output), 0, "a color or output texture that is not one 2D image");
+    UpscaleUnusual(color == output, 1, "the same texture as input and output");
+    UpscaleUnusual(!UpscaleSize(depth, color), 2, "depth of another size than the color");
+    UpscaleUnusual(!UpscaleSize(motion, motion_size), 3, "motion vectors of another size than they are marked");
+    UpscaleUnusual(output->width() < color->width() || output->height() < color->height(), 4,
+                   "an output smaller than the color");
+    UpscaleUnusual(pDesc->InputContentWidth > color->width() || pDesc->InputContentHeight > color->height(), 5,
+                   "content larger than the color texture");
+    UpscaleUnusual(pDesc->ExposureTexture && (!UpscaleImage(exposure) || exposure->width() != 1 || exposure->height() != 1),
+                   6, "an exposure texture larger than one texel");
+    UpscaleUnusual(!UpscaleValues(pDesc->PreExposure, pDesc->MotionVectorScaleX, pDesc->MotionVectorScaleY,
+                                  pDesc->JitterOffsetX, pDesc->JitterOffsetY),
+                   7, "a pre-exposure, motion scale or jitter that is not a finite number (pre-exposure above 0)");
     auto motion_format = MotionVectorFormat(motion->pixelFormat());
     // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer
     // formats", DLSS Programming Guide 3.3): those in one MetalFX does not take, which a shader reads as floats, are

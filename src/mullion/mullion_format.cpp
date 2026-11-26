@@ -1465,6 +1465,23 @@ IsUnorm8RenderTargetFormat(WMTPixelFormat format) {
   return false;
 }
 
+WMTPixelFormat
+MotionVectorFormat(WMTPixelFormat format) {
+  switch (format) {
+  case WMTPixelFormatRG16Uint:
+  case WMTPixelFormatRG16Float:
+    return WMTPixelFormatRG16Float;
+  case WMTPixelFormatRG32Uint:
+  case WMTPixelFormatRG32Float:
+    return WMTPixelFormatRG32Float;
+  case WMTPixelFormatRGBA16Uint:
+  case WMTPixelFormatRGBA16Float:
+    return WMTPixelFormatRGBA16Float;
+  default:
+    return WMTPixelFormatInvalid;
+  }
+}
+
 bool
 IsIntegerFormat(WMTPixelFormat format) {
   switch (format) {

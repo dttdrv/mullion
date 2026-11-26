@@ -8,5 +8,5 @@
 -        m_iface->AddRef();
 +        m_iface->Release();
        std::memcpy(data, &m_iface, minSize);
-     } else {
-       std::memcpy(data, m_data, minSize);
+     } else if (minSize) {
+       std::memcpy(data, m_data.get(), minSize);
