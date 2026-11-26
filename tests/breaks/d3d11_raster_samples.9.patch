@@ -1,12 +1,12 @@
 # forced 1 passes keep the targets' standard sample positions
 --- a/src/d3d11/d3d11_context_impl.cpp
 +++ b/src/d3d11/d3d11_context_impl.cpp
-@@ -5634,7 +5634,7 @@
+@@ -5328,7 +5328,7 @@
        auto allocated_encoder_argbuf_size = std::make_unique<uint64_t>(0);
        allocated_encoder_argbuf_size_ = allocated_encoder_argbuf_size.get();
  
 -      bool single_raster = !uav_only && rs->ForcedSampleCount() == 1;
 +      bool single_raster = false;
-       std::shared_ptr<Prelude> prelude;
-       if (HoistsUpdates()) {
-         prelude = pass_prelude_ = std::make_shared<Prelude>();
+       EmitST([rtvs = std::move(rtvs), dsv = std::move(dsv_info), effective_render_target, uav_only, single_raster,
+             render_target_height, render_target_width, sample_count,
+             render_target_array, encoder_argbuf_size = std::move(allocated_encoder_argbuf_size)](ArgumentEncodingContext &ctx) {
