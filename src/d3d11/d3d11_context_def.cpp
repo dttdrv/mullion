@@ -22,6 +22,8 @@ struct DeferredContextInternalState {
   std::unordered_map<DynamicLinearTexture *, std::pair<TextureAllocation *, uint32_t>> current_dynamic_texture_allocations;
   std::unordered_map<void *, std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> building_visibility_queries;
   std::unordered_set<uint32_t> pending_visibility_queries;
+  // of building_visibility_queries, the occlusion ones
+  unsigned building_occlusion_queries = 0;
 };
 
 template<typename Object> Rc<Object> forward_rc(Rc<Object>& obj) {
@@ -130,6 +132,24 @@ DeferredContextBase::VisibilityQueryBoundary(bool counting) {
     InvalidateCurrentPass(true);
 }
 
+// the list's own occlusion queries: one enclosing the list's execution counts its draws in one segment
+template <>
+bool
+DeferredContextBase::OcclusionCounting() {
+  return ctx_state.building_occlusion_queries;
+}
+
+template <>
+void
+DeferredContextBase::SplitVisibility() {
+  // a query begun since the last boundary is counted there
+  bool began = !ctx_state.pending_visibility_queries.empty();
+  VisibilityQueryBoundary(true);
+  if (!began && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+    InvalidateCurrentPass(true);
+  EmitST([](ArgumentEncodingContext &enc) { enc.splitVisibilityResult(); });
+}
+
 class MTLD3D11DeferredContext : public DeferredContextBase {
 public:
   MTLD3D11DeferredContext(MTLD3D11Device *pDevice, UINT ContextFlags) :
@@ -208,19 +228,7 @@ public:
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
       if (MapType == D3D11_MAP_WRITE_DISCARD) {
-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
-          state_.InputAssembler.VertexBuffers.set_dirty();
-        }
-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.ConstantBuffers.set_dirty();
-          }
-        }
-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-          }
-        }
+        DirtyBindingsOf(GetResourceCommon(pResource), bind_flag);
 
         pMappedResource->pData = MapDynamicBuffer(dynamic);
         pMappedResource->RowPitch = buffer_length;
@@ -239,9 +247,7 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
-      for (auto &stage : state_.ShaderStages) {
-        stage.SRVs.set_dirty();
-      }
+      DirtyBindingsOf(GetResourceCommon(pResource), D3D11_BIND_SHADER_RESOURCE);
       Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
       uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
       auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
@@ -265,9 +271,7 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
-      for (auto &stage : state_.ShaderStages) {
-        stage.SRVs.set_dirty();
-      }
+      DirtyBindingsOf(GetResourceCommon(pResource), D3D11_BIND_SHADER_RESOURCE);
       pMappedResource->pData = MapDynamicBuffer(dynamic);
       pMappedResource->RowPitch = row_pitch;
       pMappedResource->DepthPitch = depth_pitch;
@@ -322,6 +326,7 @@ public:
       ctx_state.building_visibility_queries.insert(
           {(void *)pAsync, {static_cast<MTLD3D11OcclusionQuery *>(pAsync), query_id}}
       );
+      ctx_state.building_occlusion_queries += desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       if (desc.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
         auto &regions = ctx_state.current_cmdlist->regions;
         regions.back().pipeline_query = static_cast<MTLD3D11OcclusionQuery *>(pAsync);
@@ -405,6 +410,7 @@ public:
       });
       ctx_state.pending_visibility_queries.erase(query_id);
       ctx_state.building_visibility_queries.erase(building_query);
+      ctx_state.building_occlusion_queries -= desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       if (desc.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
         auto &regions = ctx_state.current_cmdlist->regions;
         regions.back().pipeline_query = static_cast<MTLD3D11OcclusionQuery *>(pAsync);

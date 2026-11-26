@@ -9,7 +9,8 @@
 // a rate with its high and low bits set distinguishes full UINT storage from truncation to 31 bits.
 // IAGetVertexBuffers: "Any returned interfaces will have their reference count incremented by one."
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-iagetvertexbuffers
-// getters expose the selected bindings; ClearState restores NULL buffers/layout and undefined topology (21.1.1).
+// getters expose the selected bindings, an index buffer bound again at another offset included; ClearState restores
+// NULL buffers/layout and undefined topology (21.1.1).
 #include "d3d11_test.hpp"
 #include "../assembly.hpp"
 #include <d3d10_1.h>
@@ -209,10 +210,14 @@ main() {
               if (device10)
                 CHECK(ib.As(&ib10));
               const UINT index_start = indexed ? 1 : first, index_offset = 2 * index_size;
-              if (device10)
+              // bound at offset 0 first, then again at its offset: the second binding differs in the offset alone
+              if (device10) {
+                device10->IASetIndexBuffer(ib10.Get(), format, 0);
                 device10->IASetIndexBuffer(ib10.Get(), format, index_offset);
-              else
+              } else {
+                context->IASetIndexBuffer(ib.Get(), format, 0);
                 context->IASetIndexBuffer(ib.Get(), format, index_offset);
+              }
               ComPtr<ID3D11Buffer> returned_ib;
               ComPtr<ID3D10Buffer> returned_ib10;
               DXGI_FORMAT returned_format = DXGI_FORMAT_UNKNOWN;

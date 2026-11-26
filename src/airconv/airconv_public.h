@@ -146,6 +146,10 @@ struct MTL_GEOMETRY_SHADER_REFLECTION {
      its maxvertexcount: stream output then knows each invocation's primitives before it runs
      (SM50_SHADER_STREAM_OUTPUT_DATA's single_pass) */
   uint32_t FixedEmits;
+  /* the invocations a mesh threadgroup of the geometry pipeline runs, one a thread, where it rasterizes what the
+     shader emits as it is (neither conservative nor streaming output): as many as fit a Metal mesh, at least one.
+     SM50GeometryMeshInvocations gives a pipeline's */
+  uint32_t MeshInvocations;
 };
 
 struct MTL_POST_TESSELLATOR_REFLECTION {
@@ -741,7 +745,7 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA {
 
 /* a geometry pipeline's object threadgroup takes a warp of the draw's vertices: as many whole input primitives as
    its threads, no more than a SIMD group's, and its payload hold. the payload has four words, then the vertices'
-   output registers, and nine words at its end (dxbc_converter_gs.cpp) */
+   output registers, and nine words at its end (dxbc_converter_gs.cpp), SM50_GEOMETRY_PAYLOAD_SIZE bytes at most */
 enum {
   SM50_GEOMETRY_PAYLOAD_SIZE = 16256,
   SM50_GEOMETRY_WARP_THREADS = 32,
@@ -751,11 +755,24 @@ struct SM50_GEOMETRY_WARP {
   uint32_t vertices;   /* how far on the next threadgroup starts */
   uint32_t primitives; /* whole primitives, each a mesh threadgroup; none when not one fits */
 };
+/* the most vertices an object threadgroup reads, of any primitive, from a vertex shader with `registers` output
+   registers */
+static inline uint32_t
+SM50GeometryWarpThreads(uint32_t registers) {
+  uint32_t room = (SM50_GEOMETRY_PAYLOAD_SIZE / 4 - 4 - 9) / (4 * (registers ? registers : 1));
+  return room < SM50_GEOMETRY_WARP_THREADS ? room : SM50_GEOMETRY_WARP_THREADS;
+}
+/* the bytes of the payload of a geometry pipeline whose vertex shader has `registers` output registers, the
+   pipeline's payload_memory_length: room for SM50GeometryWarpThreads vertices whatever the topology, rounded up to
+   16 bytes as Metal Shader Converter pads its payload, which also keeps the 64-bit words at its end aligned */
+static inline uint32_t
+SM50GeometryPayloadSize(uint32_t registers) {
+  return ((4 + SM50GeometryWarpThreads(registers) * 4 * registers + 9) * 4 + 15) & ~15u;
+}
 /* for input primitives of `per_primitive` vertices, from a vertex shader with `registers` output registers */
 static inline struct SM50_GEOMETRY_WARP
 SM50GeometryWarp(uint32_t per_primitive, bool strip, uint32_t registers) {
-  uint32_t room = (SM50_GEOMETRY_PAYLOAD_SIZE / 4 - 4 - 9) / (4 * (registers ? registers : 1));
-  uint32_t threads = room < SM50_GEOMETRY_WARP_THREADS ? room : SM50_GEOMETRY_WARP_THREADS;
+  uint32_t threads = SM50GeometryWarpThreads(registers);
   struct SM50_GEOMETRY_WARP warp = {0, 0, 0};
   if (threads < per_primitive)
     return warp;
@@ -770,6 +787,15 @@ SM50GeometryWarp(uint32_t per_primitive, bool strip, uint32_t registers) {
     warp.vertices = strip ? warp.primitives * 2 : warp.threads;
   }
   return warp;
+}
+
+/* the geometry shader invocations each mesh threadgroup of a geometry pipeline runs, one a thread, from the shader's
+   MeshInvocations: a conservative pipeline's and one that streams output run one each, as a mesh threadgroup after a
+   tessellator does (its threads are the domain stage's). a draw's mesh threadgroups have this many threads, and the
+   object stage starts one for each of that many of its primitives (rounded up), for each instance */
+static inline uint32_t
+SM50GeometryMeshInvocations(uint32_t mesh_invocations, bool conservative, bool stream_output) {
+  return conservative || stream_output || !mesh_invocations ? 1 : mesh_invocations;
 }
 
 /* the 64-bit counts a draw's shaders add to at SM50_BINDING_INDEX_PIPELINE_STATISTICS, in its words' order: a pixel

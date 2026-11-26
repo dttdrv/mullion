@@ -24,6 +24,7 @@
 #include "mullion_sampler.hpp"
 #include "airconv_public.h"
 #include "log/log.hpp"
+#include "config/config.hpp"
 #include "../d3d10/d3d10_state_object.hpp"
 #include <bit>
 
@@ -253,6 +254,42 @@ public:
          desc_.RenderTarget[0].SrcBlendAlpha >= D3D11_BLEND_SRC1_COLOR ||
          desc_.RenderTarget[0].DestBlendAlpha >= D3D11_BLEND_SRC1_COLOR ||
          desc_.RenderTarget[0].DestBlend >= D3D11_BLEND_SRC1_COLOR);
+    // each target's fields a pipeline compares, those of blending only where it blends and the logic op only where
+    // it has one: two targets blend alike exactly where their words are equal
+    for (unsigned i = 0; i < 8; i++) {
+      auto &t = desc_.RenderTarget[i];
+      uint64_t word = uint64_t(t.RenderTargetWriteMask) | uint64_t(!!t.BlendEnable) << 8 |
+                      uint64_t(!!t.LogicOpEnable) << 9;
+      if (t.BlendEnable)
+        word |= uint64_t(t.BlendOp) << 10 | uint64_t(t.BlendOpAlpha) << 16 | uint64_t(t.SrcBlend) << 22 |
+                uint64_t(t.SrcBlendAlpha) << 30 | uint64_t(t.DestBlend) << 38 | uint64_t(t.DestBlendAlpha) << 46;
+      if (t.LogicOpEnable)
+        word |= uint64_t(t.LogicOp) << 54;
+      target_words_[i] = word;
+    }
+    flags_word_ = uint64_t(!!desc_.IndependentBlendEnable) | uint64_t(!!desc_.AlphaToCoverageEnable) << 1;
+  }
+
+  uint64_t
+  PipelineHash(uint32_t num_rt) final {
+    HashState state;
+    state.add(flags_word_);
+    for (uint32_t i = 0, n = desc_.IndependentBlendEnable ? std::min(num_rt, 8u) : 1; i < n; i++)
+      state.add(target_words_[i]);
+    return state;
+  }
+
+  bool
+  PipelineEqual(IMTLD3D11BlendState *other, uint32_t num_rt) final {
+    auto that = static_cast<MTLD3D11BlendState *>(other);
+    if (that == this)
+      return true;
+    if (that->flags_word_ != flags_word_)
+      return false;
+    for (uint32_t i = 0, n = desc_.IndependentBlendEnable ? std::min(num_rt, 8u) : 1; i < n; i++)
+      if (that->target_words_[i] != target_words_[i])
+        return false;
+    return true;
   }
   ~MTLD3D11BlendState() {}
 
@@ -354,6 +391,8 @@ public:
 private:
   const D3D11_BLEND_DESC1 desc_;
   bool dual_source_blending_;
+  uint64_t target_words_[8]{};
+  uint64_t flags_word_ = 0;
   MTLD3D10BlendState d3d10_;
 };
 
@@ -781,8 +820,13 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
 
   // a minimum or maximum filter reduces the texels its filter weights above zero (D3D11.3 5.9.4.5.6)
   auto reduction = D3D11_DECODE_FILTER_REDUCTION(desc.Filter);
+  // d3d11.samplerLodBias (mullion.conf, DXVK's name) is added to each sampler's own bias, within the range a bias has
+  // (D3D11_MIP_LOD_BIAS_MIN and _MAX, -16 and 15.99, which the toolchain's d3d11.h lacks); the description GetDesc
+  // gives is the application's
+  static const float lod_bias = Config::getInstance().getOption<float>("d3d11.samplerLodBias", 0.0f);
   auto sampler = Sampler::createSampler(
-      device->GetMTLDevice(), info, desc.MipLODBias, nullptr,
+      device->GetMTLDevice(), info, lod_bias ? std::clamp(desc.MipLODBias + lod_bias, -16.0f, 15.99f) : desc.MipLODBias,
+      nullptr,
       reduction == D3D11_FILTER_REDUCTION_TYPE_MINIMUM   ? SM50_SAMPLER_REDUCTION_MINIMUM
       : reduction == D3D11_FILTER_REDUCTION_TYPE_MAXIMUM ? SM50_SAMPLER_REDUCTION_MAXIMUM
                                                          : SM50_SAMPLER_REDUCTION_NONE

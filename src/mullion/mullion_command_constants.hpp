@@ -14,6 +14,7 @@ constexpr CONSTANT auto kCustomBufferArgumentIndex0 = 30;
 constexpr CONSTANT auto kCustomBufferArgumentIndex1 = 29;
 constexpr CONSTANT auto kSparseBufferArgumentIndex = kCustomBufferArgumentIndex1 - 1;
 
+constexpr CONSTANT uint32_t kDepthReadbackThreadgroup[3] = {8, 4, 1};
 // D3D11.3 19.1.3.1 defines D24_UNORM_S8_UINT with 24 normalized depth bits.
 constexpr CONSTANT auto kD24UnormMax = (1u << 24) - 1;
 

@@ -18,6 +18,8 @@
 
 #include "Metal.hpp"
 #include "mullion_resource_initializer.hpp"
+#include <cstring>
+#include <vector>
 #include "mullion_format.hpp"
 #include "util_math.hpp"
 #include <cstdint>
@@ -344,24 +346,31 @@ ResourceInitializer::initDepthStencilWithData(
     ALLOC_GPU(depth_buf, depth_bytes_per_image);
     ALLOC_GPU(stencil_buf, stencil_bytes_per_image);
 
+    // the planes are split here, in loops the compiler vectorizes (NEON on ARM64EC), and each is written to its
+    // buffer at once: a write is a call into the Metal side, which two for each texel made seconds of a 1080p depth
+    // buffer's initial data
+    std::vector<float> depth_plane(width_sub * height_sub);
+    std::vector<uint8_t> stencil_plane(stencil_bytes_per_image);
     for (auto row = 0u; row < height_sub; row++) {
-      auto src_data = ptr_add(data, row * row_pitch);
-
+      auto src_data = static_cast<const uint8_t *>(ptr_add(data, row * row_pitch));
+      float *depth_row = depth_plane.data() + row * width_sub;
+      uint8_t *stencil_row = stencil_plane.data() + row * stencil_bytes_per_row;
       if (is_d24s8) {
         for (auto x = 0u; x < width_sub; x++) {
-          uint32_t packed = *(const uint32_t *)((const char *)src_data + x * 4);
-          float depth_val = (float)(packed & 0xFFFFFF) / (float)(0xFFFFFF);
-          uint8_t stencil_val = (uint8_t)(packed >> 24);
-          depth_buf.updateContents(depth_buf_offset + row * depth_bytes_per_row + x * 4, &depth_val, 4);
-          stencil_buf.updateContents(stencil_buf_offset + row * stencil_bytes_per_row + x, &stencil_val, 1);
+          uint32_t packed;
+          memcpy(&packed, src_data + x * 4, 4);
+          depth_row[x] = (float)(packed & 0xFFFFFF) / (float)(0xFFFFFF);
+          stencil_row[x] = (uint8_t)(packed >> 24);
         }
       } else {
         for (auto x = 0u; x < width_sub; x++) {
-          depth_buf.updateContents(depth_buf_offset + row * depth_bytes_per_row + x * 4, (const char *)src_data + x * 8, 4);
-          stencil_buf.updateContents(stencil_buf_offset + row * stencil_bytes_per_row + x, (const uint8_t *)src_data + x * 8 + 4, 1);
+          memcpy(depth_row + x, src_data + x * 8, 4);
+          stencil_row[x] = src_data[x * 8 + 4];
         }
       }
     }
+    depth_buf.updateContents(depth_buf_offset, depth_plane.data(), depth_bytes_per_image);
+    stencil_buf.updateContents(stencil_buf_offset, stencil_plane.data(), stencil_bytes_per_image);
 
     depth_copy->type = WMTBlitCommandCopyFromBufferToTextureWithBlitOption;
     depth_copy->src = depth_buf;

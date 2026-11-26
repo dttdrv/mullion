@@ -250,6 +250,8 @@ struct RenderEncoderData : EncoderData {
   uint32_t so_geometry_instances = 1;
   // the bound geometry pipeline's mesh threadgroups per object threadgroup and primitive (MeshInstances)
   uint32_t geometry_mesh_instances = 0;
+  // and the geometry shader invocations each of them runs (MeshInvocations)
+  uint32_t geometry_mesh_invocations = 1;
   WMT::Buffer so_targets = {};
   // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
   WMT::Buffer so_scratch = {};
@@ -907,6 +909,8 @@ public:
   void bumpVisibilityResultOffset();
   void beginVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
   void endVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
+  // the next draw counts in a segment of its own, not in the one the draws before it counted in
+  void splitVisibilityResult();
   bool pipelineStatisticsActive() const { return !pipeline_queries_.empty(); }
   void countPipelineStatistics(PipelineStatisticsDraw draw);
   void countComputePipelineStatistics(WMTSize groups, WMT::Buffer arguments = {}, uint64_t arguments_offset = 0);

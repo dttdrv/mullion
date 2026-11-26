@@ -190,6 +190,12 @@ CreateComputePipelineState(
   if (cached)
     pso->cached_shaders = *cached;
   HRESULT hr = pso->Initialize(&desc);
+  // with d3d12.ignoreFailedPipelines, a pipeline that could not be made is one of nothing, whose dispatches are dropped
+  if (FAILED(hr) && hr != E_OUTOFMEMORY && pDevice->ignore_failed_pipelines) {
+    WARN("CreateComputePipelineState: the pipeline could not be made; its dispatches are dropped (d3d12.ignoreFailedPipelines)");
+    pso = Com(new MTLD3D12ComputePipelineStateImpl(pDevice));
+    hr = S_OK;
+  }
   if (FAILED(hr))
     return hr;
   return pso->QueryInterface(riid, ppPipelineState);

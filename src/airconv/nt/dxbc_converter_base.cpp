@@ -4225,9 +4225,10 @@ Converter::UseFastMath(bool OptOut) {
 
   /**
   TODO(airconv): provides option to allow NaN/INF
-  TODO(invariance-analysis): for now fp contraction&refactoring is simply disabled for pre-raster stage to reduce the
-  chance of depth prepass z-fighting. However if the game (e.g. SotTR) uses two versions of expression (mul+add vs. fma)
-  this is not handled yet (need further investigation, probably need a pass for un-fuse/re-fuse)
+  a stage before the rasterizer computes each operation as written, so that two shaders that compute a position with
+  the same expression give the same depth (a depth prepass's); ContractOutsidePosition (airconv_context.cpp) frees
+  what the position, clip and cull distances do not depend on once the module is optimized. two versions of an
+  expression (mul+add in one shader, mad in another, e.g. SotTR) still round differently
   */
   if (ctx.shader_type == microsoft::D3D11_SB_COMPUTE_SHADER || ctx.shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
     FMF.setAllowContract();

@@ -6,23 +6,50 @@
 #include "nvngx_parameter.hpp"
 #include "../d3d11/d3d11_interfaces.hpp"
 #include "../dxgi/dxgi_interfaces.h"
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace mullion {
 Logger Logger::s_instance("nvngx.log");
 
+// MetalFX's scales on the device NGX started with: 1 to 3, the range of DLSS's modes, until a device says
+static std::atomic<float> min_scale = 1.0f, max_scale = 3.0f;
+
+void
+SetTemporalScales(float min, float max) {
+  if (!(min >= 1.0f && max >= min))
+    return;
+  min_scale = min;
+  max_scale = max;
+}
+
+// the scales of the device's context, where it has Mullion's extension (NGX starts as it did without one)
+static NVNGX_RESULT
+Start(ID3D11Device *device) {
+  Com<ID3D11DeviceContext> context;
+  Com<IMTLD3D11ContextExt1> ext;
+  MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA scales{};
+  if (device)
+    device->GetImmediateContext(&context);
+  if (context && SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&ext))) &&
+      SUCCEEDED(ext->CheckFeatureSupport(MTL_FEATURE_METALFX_TEMPORAL_SCALES, &scales, sizeof(scales))))
+    SetTemporalScales(scales.MinScale, scales.MaxScale);
+  return NVNGX_RESULT_OK;
+}
+
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D11_Init_Ext(
     unsigned long long id, const wchar_t *path, ID3D11Device *device, unsigned int sdk_version, const void *feature_info
 ) {
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
 NVSDK_NGX_D3D11_Init(
     unsigned long long id, const wchar_t *path, ID3D11Device *device, const void *feature_info, unsigned int sdk_version
 ) {
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -30,7 +57,7 @@ NVSDK_NGX_D3D11_Init_ProjectID(
     const char *project, unsigned int engine_type, const char *engine_version, const wchar_t *path,
     ID3D11Device *device, unsigned int sdk_version, const void *feature_info
 ) {
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -38,7 +65,7 @@ NVSDK_NGX_D3D11_Init_with_ProjectID(
     const char *project, unsigned int engine_type, const char *engine_version, const wchar_t *path,
     ID3D11Device *device, const void *feature_info, unsigned int sdk_version
 ) {
-  return NVNGX_RESULT_OK;
+  return Start(device);
 }
 
 NVNGX_API NVNGX_RESULT
@@ -237,6 +264,9 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
     scale = 58.0f / 100.0f;
     break;
   }
+  // a render size MetalFX upscales from: the mode's, within the scales the device takes
+  const float min = min_scale, max = max_scale;
+  scale = std::clamp(scale, 1.0f / max, 1.0f / min);
 
   out_width = std::ceil(width * scale);
   out_height = std::ceil(height * scale);
@@ -247,11 +277,13 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
   params->Set(NVNGX_Parameter_OutHeight, out_height);
   params->Set(NVNGX_Parameter_Sharpness, 0.0f);
 
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, (unsigned int)std::ceil(width / 3));
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height, (unsigned int)std::ceil(height / 3));
+  // the sizes a dynamic resolution may take: none smaller than the output at the largest scale, rounded up, nor larger
+  // than at the smallest, rounded down
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, (unsigned int)std::ceil(width / max));
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height, (unsigned int)std::ceil(height / max));
 
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, width);
-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height, height);
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, (unsigned int)std::floor(width / min));
+  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height, (unsigned int)std::floor(height / min));
 
   params->Set("DLSSMode", 1);
 
@@ -265,9 +297,23 @@ NVNGX_DLSS_GetOptimalSettingsCallback(NVNGXParameter *params) {
   return NVNGX_RESULT_OK;
 }
 
+// the memory DLSS takes for a feature of the parameters' sizes, MetalFX's temporal scaler's: 23 bytes for each render
+// pixel and 30 for each output pixel, within 1% of what the device's allocated size grows by when one is made, at 540p
+// to 2160p (an M6, macOS 27.3; d3d12_ngx_stats). CreateFeature takes the render size as Width and Height and the
+// output's as OutWidth and OutHeight, which the optimal settings callback writes the other way round: the smaller is
+// the render size. without the sizes there is no feature to count
 inline static NVNGX_RESULT
 NVNGX_DLSS_GetStatsCallback(NVNGXParameter *params) {
-  params->Set("SizeInBytes", 0ull);
+  unsigned int width = 0, height = 0, out_width = 0, out_height = 0;
+  unsigned long long bytes = 0;
+  if (params->Get(NVNGX_Parameter_Width, &width) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_Height, &height) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_OutWidth, &out_width) == NVNGX_RESULT_OK &&
+      params->Get(NVNGX_Parameter_OutHeight, &out_height) == NVNGX_RESULT_OK) {
+    unsigned long long a = 1ull * width * height, b = 1ull * out_width * out_height;
+    bytes = a < b ? 23 * a + 30 * b : 30 * a + 23 * b;
+  }
+  params->Set("SizeInBytes", bytes);
   return NVNGX_RESULT_OK;
 }
 

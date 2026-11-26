@@ -6,6 +6,10 @@ class IMTLD3D12Upscaler;
 
 namespace mullion {
 
+// the ratios of the output's size to the render size that MetalFX's temporal scaler takes on the device NGX started
+// with, within which DLSS's optimal settings keep the render sizes they give (nvngx.cpp)
+void SetTemporalScales(float min_scale, float max_scale);
+
 struct CommonFeature {
   unsigned int handle;
   NVNGX_FEATURE feature;

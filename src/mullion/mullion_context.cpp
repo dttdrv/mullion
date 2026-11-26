@@ -944,6 +944,10 @@ ArgumentEncodingContext::endVisibilityResultQuery(Rc<VisibilityResultQuery> &&qu
   assert(active_visibility_query_count_);
   active_visibility_query_count_--;
 }
+void
+ArgumentEncodingContext::splitVisibilityResult() {
+  vro_state_.getNextReadOffset();
+}
 
 void ArgumentEncodingContext::countPipelineStatistics(uint64_t vertices, uint64_t instances,
                                                       std::pair<uint32_t, uint32_t> topology, uint32_t index_stride,
@@ -1638,7 +1642,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       begin_scaler.endEncoding();
 
       cmdbuf.encodeTemporalScale(
-          data->scaler->scaler(), data->input, data->output, data->depth, data->motion_vector, data->exposure,
+          data->scaler->scaler(), data->input, data->output, data->depth, data->motion_vector, data->exposure, {},
           data->scaler->fence(), data->props
       );
 

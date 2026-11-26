@@ -1,0 +1,13 @@
+# a rename by a map marks only the vertex stage's bindings of the resource: the other stages' draws read the allocation before it
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3834,7 +3834,7 @@
+       for (const auto &[slot, entry] : state_.InputAssembler.VertexBuffers)
+         if (entry.Buffer.ptr() == resource)
+           state_.InputAssembler.VertexBuffers.set_dirty(slot);
+-    for (auto &stage : state_.ShaderStages) {
++    for (auto &stage : std::span(state_.ShaderStages.data(), 1)) {
+       if (bind_flags & D3D11_BIND_CONSTANT_BUFFER)
+         for (const auto &[slot, entry] : stage.ConstantBuffers)
+           if (entry.Buffer.ptr() == resource)

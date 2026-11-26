@@ -1795,7 +1795,7 @@ public:
           if (data->temporal) {
             cmdbuf.encodeTemporalScale(
                 data->temporal->scaler(), data->color, data->output, data->depth, data->motion, data->exposure,
-                scaler_fence, data->props
+                data->reactive, scaler_fence, data->props
             );
           } else {
             auto args = data->denoise;

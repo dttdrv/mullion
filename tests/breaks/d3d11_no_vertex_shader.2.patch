@@ -1,0 +1,14 @@
+# a stage cleared of the shader it has keeps it: the draws after it run that shader
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -4369,7 +4369,7 @@
+     } else {
+       // a stage cleared that has no shader changes no pipeline: a state manager clears the hull, domain and
+       // geometry stages before every draw
+-      if (!ShaderStage.Shader)
++      if (ShaderStage.Shader)
+         return;
+       ShaderStage.Shader = nullptr;
+     }
+

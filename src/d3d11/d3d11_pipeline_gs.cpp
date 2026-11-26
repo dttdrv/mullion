@@ -54,6 +54,12 @@ public:
     auto owner = pDesc->GeometryShader ? pDesc->GeometryShader : pDesc->VertexShader;
     GeometryInstances = pDesc->GeometryShader ? pDesc->GeometryShader->reflection().GeometryShader.InstanceCount : 1;
     MeshInstances = pDesc->GeometryShader ? GeometryInstances : pDesc->PassThrough;
+    // a geometry shader's invocations share mesh threadgroups where its pipeline rasterizes them as they are
+    MeshInvocations = pDesc->GeometryShader ? SM50GeometryMeshInvocations(
+                                                  pDesc->GeometryShader->reflection().GeometryShader.MeshInvocations,
+                                                  false, pDesc->SOLayout != nullptr
+                                              )
+                                            : 1;
     RasterizationEnabled = RasterizationEnabled && (pDesc->GeometryShader || pDesc->PassThrough);
     for (bool counting : {false, true}) {
       if (counting && !pDesc->SOLayout)
@@ -92,7 +98,7 @@ public:
       return pipeline->GetPipeline(pPipeline);
     }
     ready_.wait(false, std::memory_order_acquire);
-    *pPipeline = {state_mesh_[0], state_mesh_[1], GeometryInstances, MeshInstances};
+    *pPipeline = {state_mesh_[0], state_mesh_[1], GeometryInstances, MeshInstances, MeshInvocations};
   }
 
   ThreadpoolWork *RunThreadpoolWork() {
@@ -131,7 +137,7 @@ public:
 
     info.object_function = vs[0].Function;
     info.mesh_function = gs[0].Function;
-    info.payload_memory_length = SM50_GEOMETRY_PAYLOAD_SIZE;
+    info.payload_memory_length = SM50GeometryPayloadSize(description->VertexShader->reflection().NumOutputElement);
 
     info.immutable_object_buffers = (1 << 16)  | (1 << 21) | (1 << 29) | (1 << 30);
     info.immutable_mesh_buffers = (1 << 29) | (1 << 30);
@@ -204,6 +210,7 @@ private:
   UINT SampleCount;
   uint32_t GeometryInstances;
   uint32_t MeshInstances;
+  uint32_t MeshInvocations;
 
   CompiledShader *VertexShader[2] = {};
   CompiledShader *PixelShader;

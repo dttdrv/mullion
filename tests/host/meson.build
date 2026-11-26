@@ -8,6 +8,8 @@ test('host_format', executable('host_format', 'format.cpp', include_directories 
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_rc_self_move', executable('host_rc_self_move', 'rc.cpp',
                                     override_options : ['cpp_std=c++20'], native : true), suite : 'host')
+test('host_metal_reference', executable('host_metal_reference', 'metal_reference.cpp',
+                                       override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_private_data', executable('host_private_data', ['private_data.cpp', '../../src/util/com/com_private_data.cpp'],
      include_directories : [mullion_native_include_path, include_directories('../../src/util')],
      override_options : ['cpp_std=c++20'], native : true), suite : 'host')
@@ -51,6 +53,33 @@ test('host_pixel_input_declarations',
                 dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
      suite : 'host', timeout : 120)
+test('host_geometry_payload',
+     executable('host_geometry_payload', 'geometry_payload.cpp',
+                include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
+test('host_geometry_packing',
+     executable('host_geometry_packing', 'geometry_packing.cpp',
+                include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
+test('host_dxil_header',
+     executable('host_dxil_header', 'dxil_header.cpp', dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
+test('host_position_invariance',
+     executable('host_position_invariance', 'position_invariance.cpp',
+                include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
+test('host_metallib_header',
+     executable('host_metallib_header', 'metallib_header.cpp', include_directories : llvm_include_path_darwin,
+                dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
+                cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
+     suite : 'host', timeout : 120)
 # which DXIL operations shaders use, for tests/coverage.py; it reads DXIL with the LLVM the converter is built with
 executable('dxilops', ['dxilops.cpp'], include_directories : llvm_include_path_darwin,
            link_args : [ llvm_ld_flags_darwin, llvm_deps ], cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true)
@@ -80,6 +109,8 @@ test('host_diag_profile', find_program('python3', native : true), args : files('
 test('host_mutate', find_program('python3', native : true), args : files('mutate.py'), suite : 'host')
 test('host_install', find_program('python3', native : true),
      args : files('install.py') + [meson.project_source_root() / 'install.sh'], suite : 'host')
+test('host_compiler_install', find_program('python3', native : true),
+     args : files('compiler_install.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_lock', find_program('python3', native : true),
      args : files('lock.py') + [meson.project_source_root() / 'tests/run.py'], suite : 'host')
 test('host_admission', find_program('python3', native : true),

@@ -294,6 +294,19 @@ public:
       break;
     }
   };
+
+  // a depth stencil or multisampled texture, which the runtime copies only whole
+  bool
+  WholeOnly() const {
+    switch (Dimension) {
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+      return Texture1DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+      return (Texture2DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) || Texture2DDesc.SampleDesc.Count > 1;
+    default:
+      return false;
+    }
+  }
 };
 
 class TextureCopyCommand {
@@ -1266,6 +1279,10 @@ public:
       break;
     }
     default:
+      // the runtime passes a copy with a depth stencil or multisampled texture to a driver only with no box and no
+      // offsets (PFND3D11_1DDI_RESOURCECOPYREGION), and drops any other
+      if ((pSrcBox || DstX || DstY || DstZ) && (Dst.WholeOnly() || Src.WholeOnly()))
+        return;
       CopyTexture(TextureCopyCommand(Dst, DstSubresource, DstX, DstY, DstZ, Src, SrcSubresource, pSrcBox));
       break;
     }
@@ -1771,7 +1788,7 @@ public:
           warp_count, InstanceCount,
           get_gs_max_object_threadgroups(
               topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
-              mesh_budget
+              mesh_budget, enc.currentRenderEncoder()->geometry_mesh_invocations
           )
       );
       if (!parts)
@@ -1789,7 +1806,8 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
-        cmd.mesh_threads = 1;
+        // a geometry shader invocation a thread
+        cmd.mesh_threads = enc.currentRenderEncoder()->geometry_mesh_invocations;
       };
       auto encoder = enc.currentRenderEncoder();
       if (encoder->so_count_pso)
@@ -1828,7 +1846,7 @@ public:
           warp_count, InstanceCount,
           get_gs_max_object_threadgroups(
               topo, vertex_registers, enc.currentRenderEncoder()->geometry_mesh_instances, max_object_threadgroups,
-              mesh_budget
+              mesh_budget, enc.currentRenderEncoder()->geometry_mesh_invocations
           )
       );
       if (!parts)
@@ -1847,7 +1865,8 @@ public:
         cmd.warp_count = warp_count;
         cmd.vertex_per_warp = vertex_per_warp;
         cmd.max_object_threadgroups = *parts;
-        cmd.mesh_threads = 1;
+        // a geometry shader invocation a thread
+        cmd.mesh_threads = enc.currentRenderEncoder()->geometry_mesh_invocations;
         cmd.index_buffer = index_buffer;
         cmd.index_buffer_offset = index_buffer_offset;
       };
@@ -1975,7 +1994,8 @@ public:
         );
         auto encoder = enc.currentRenderEncoder();
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo, vertex_registers);
         uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
@@ -2001,6 +2021,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch_arg.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = buffer->buffer();
           cmd.indirect_args_offset = buffer_offset + AlignedByteOffsetForArgs;
           cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
@@ -2037,7 +2058,8 @@ public:
         );
         auto encoder = enc.currentRenderEncoder();
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo, vertex_registers);
         uint32_t invocations = vertex_per_warp * encoder->so_geometry_instances;
@@ -2064,6 +2086,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch_arg.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = buffer->buffer();
           cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
           cmd.index_buffer = index_buffer;
@@ -2237,7 +2260,8 @@ public:
         uint32_t max_vertices = offset < vertices->length() ? (vertices->length() - offset) / stride : 0;
         uint32_t max_warps = max_vertices / vertex_increment_per_warp + (max_vertices % vertex_increment_per_warp != 0);
         auto max_part = get_gs_max_object_threadgroups(
-            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget
+            topo, vertex_registers, encoder->geometry_mesh_instances, max_object_threadgroups, mesh_budget,
+            encoder->geometry_mesh_invocations
         );
         // each part's origin (8 bytes), then each part's grid
         auto parts = indirect_geometry_parts(max_part, std::max(max_warps, 1u));
@@ -2256,6 +2280,7 @@ public:
           cmd.vertex_per_warp = vertex_per_warp;
           cmd.parts = parts;
           cmd.origins_offset = dispatch.offset;
+          cmd.mesh_threads = encoder->geometry_mesh_invocations;
           cmd.indirect_args_buffer = arguments.gpu_buffer;
           cmd.indirect_args_offset = arguments.offset;
           cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
@@ -2412,11 +2437,11 @@ public:
   IASetInputLayout(ID3D11InputLayout *pInputLayout) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
-      state_.InputAssembler.InputLayout = expected.ptr();
-    } else {
-      state_.InputAssembler.InputLayout = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout);
+    // the layout the context has changes no pipeline
+    if (state_.InputAssembler.InputLayout.ptr() == expected.ptr())
+      return;
+    state_.InputAssembler.InputLayout = expected.ptr();
     InvalidateRenderPipeline();
   }
   void
@@ -2458,6 +2483,10 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     auto pBuffer = GetResourceCommon(pIndexBuffer);
+    // the buffer, format and offset the context has are bound already
+    if (pBuffer && state_.InputAssembler.IndexBuffer.ptr() == pBuffer &&
+        state_.InputAssembler.IndexBufferFormat == Format && state_.InputAssembler.IndexBufferOffset == Offset)
+      return;
     if (pBuffer && (pBuffer->bindFlags() & D3D11_BIND_INDEX_BUFFER) && ValidateIAHazard(pBuffer)) {
       state_.InputAssembler.IndexBuffer = pBuffer;
       EmitST([buffer = state_.InputAssembler.IndexBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
@@ -2773,8 +2802,8 @@ public:
             enc.queue().counter_pool.updateCounter(filled, offset);
           enc.bindStreamOutputBuffer(slot, forward_rc(buffer), forward_rc(filled));
         });
-      } else {
-        state_.StreamOutput.Targets.unbind(slot);
+      } else if (state_.StreamOutput.Targets.unbind(slot)) {
+        // a slot with no target has none to unbind, as a shader resource slot has none
         EmitST([=](ArgumentEncodingContext &enc) mutable {
           enc.bindStreamOutputBuffer(slot, {}, {});
         });
@@ -3497,13 +3526,13 @@ public:
         should_invalidate_pipeline = true;
       }
     }
-    if (BlendFactor) {
-      memcpy(state_.OutputMerger.BlendFactor, BlendFactor, sizeof(float[4]));
-    } else {
-      state_.OutputMerger.BlendFactor[0] = 1.0f;
-      state_.OutputMerger.BlendFactor[1] = 1.0f;
-      state_.OutputMerger.BlendFactor[2] = 1.0f;
-      state_.OutputMerger.BlendFactor[3] = 1.0f;
+    // the factor is encoded again only when it changes: a state set with the factor it had sets no blend color, and
+    // the stencil reference goes with the depth-stencil state, which OMSetDepthStencilState marks
+    const float ones[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float *factor = BlendFactor ? BlendFactor : ones;
+    if (memcmp(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]))) {
+      memcpy(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]));
+      dirty_state.set(DirtyState::BlendFactorAndStencilRef);
     }
     if (state_.OutputMerger.SampleMask != SampleMask) {
       state_.OutputMerger.SampleMask = SampleMask;
@@ -3512,7 +3541,6 @@ public:
     if (should_invalidate_pipeline) {
       InvalidateRenderPipeline();
     }
-    dirty_state.set(DirtyState::BlendFactorAndStencilRef);
   }
   void
   STDMETHODCALLTYPE
@@ -3539,11 +3567,12 @@ public:
   OMSetDepthStencilState(ID3D11DepthStencilState *pDepthStencilState, UINT StencilRef) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState)) {
-      state_.OutputMerger.DepthStencilState = expected.ptr();
-    } else {
-      state_.OutputMerger.DepthStencilState = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState);
+    // the state and reference the context has are encoded already, as RSSetState's are: every pass starts with them
+    // marked
+    if (state_.OutputMerger.DepthStencilState == expected.ptr() && state_.OutputMerger.StencilRef == StencilRef)
+      return;
+    state_.OutputMerger.DepthStencilState = expected.ptr();
     state_.OutputMerger.StencilRef = StencilRef;
     dirty_state.set(DirtyState::DepthStencilState);
   }
@@ -3594,7 +3623,10 @@ public:
         ERR("RSSetState: invalid ID3D11RasterizerState object.");
       }
     } else {
-      if (state_.Rasterizer.RasterizerState) {
+      // the default state the context has is encoded already, as a state it was set to is
+      if (!state_.Rasterizer.RasterizerState)
+        return;
+      {
         if (state_.Rasterizer.RasterizerState->IsScissorEnabled() != default_rasterizer_state->IsScissorEnabled()) {
           dirty_state.set(DirtyState::Scissors);
         }
@@ -3795,6 +3827,28 @@ public:
 #pragma endregion
 
 #pragma region Internal
+
+  // the bindings a rename of `resource` changes, each where it is bound: the next draw encodes again the tables of the
+  // stages it is bound to, and only those. `bind_flags` are what it may be bound as (a constant buffer, a vertex
+  // buffer, a shader resource); a stage table encodes whole when any of its slots is marked, so marking every stage's
+  // had each draw after a map of one buffer encode and track every stage's constant buffers again
+  void
+  DirtyBindingsOf(D3D11ResourceCommon *resource, UINT bind_flags) {
+    if (bind_flags & D3D11_BIND_VERTEX_BUFFER)
+      for (const auto &[slot, entry] : state_.InputAssembler.VertexBuffers)
+        if (entry.Buffer.ptr() == resource)
+          state_.InputAssembler.VertexBuffers.set_dirty(slot);
+    for (auto &stage : state_.ShaderStages) {
+      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER)
+        for (const auto &[slot, entry] : stage.ConstantBuffers)
+          if (entry.Buffer.ptr() == resource)
+            stage.ConstantBuffers.set_dirty(slot);
+      if (bind_flags & D3D11_BIND_SHADER_RESOURCE)
+        for (const auto &[slot, entry] : stage.SRVs)
+          if (entry.SRV->resource_.ptr() == resource)
+            stage.SRVs.set_dirty(slot);
+    }
+  }
 
   // UpdateSubresource1 can rename DEFAULT buffers without granting CPU access (D3D11.3 5.6.9).
   virtual HRESULT MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
@@ -4073,6 +4127,10 @@ public:
         D3D11_ASSERT(0 && "unexpected shader object");
       }
     } else {
+      // a stage cleared that has no shader changes no pipeline: a state manager clears the hull, domain and
+      // geometry stages before every draw
+      if (!ShaderStage.Shader)
+        return;
       ShaderStage.Shader = nullptr;
     }
 
@@ -4412,14 +4470,20 @@ public:
         bool replaced = false;
         auto &entry = VertexBuffers.bind(slot, {pVertexBuffer}, replaced, !pVertexBuffer->hazardsFree());
         if (!replaced) {
+          bool changed = false;
           if (pStrides && pStrides[slot - StartSlot] != entry.Stride) {
             VertexBuffers.set_dirty(slot);
             entry.Stride = pStrides[slot - StartSlot];
+            changed = true;
           }
           if (pOffsets && pOffsets[slot - StartSlot] != entry.Offset) {
             VertexBuffers.set_dirty(slot);
             entry.Offset = pOffsets[slot - StartSlot];
+            changed = true;
           }
+          // the buffer at the offset and stride it has is bound already
+          if (!changed)
+            continue;
           EmitST([=, offset = entry.Offset,
                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
             enc.bindVertexBufferOffset(slot, offset, stride);
@@ -5156,6 +5220,8 @@ public:
 
   bool promote_flush = false;
   unsigned active_visibility_queries_ = 0;
+  // of those, the occlusion ones: a pipeline statistics query reads no visibility count
+  unsigned active_occlusion_queries_ = 0;
   // the pipeline statistics of every draw so far, but the pixel shader's, which queries count on the GPU
   D3D11_QUERY_DATA_PIPELINE_STATISTICS pipeline_counts_{};
   D3D11_QUERY_DATA_PIPELINE_STATISTICS &PipelineCounts();
@@ -5195,6 +5261,18 @@ public:
         ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments)
       InvalidateCurrentPass(true);
     dirty_state.set(DirtyState::VisibilityQuery);
+  }
+
+  // Metal counts a segment's samples in 32 bits (tests/native/visibility_width.swift): while an occlusion query
+  // counts, a draw after another in a segment takes one of its own, and only a draw of 2^32 samples alone wraps
+  bool
+  OcclusionCounting() {
+    return active_occlusion_queries_;
+  }
+  void
+  SplitVisibility() {
+    VisibilityQueryBoundary(true);
+    EmitST([](ArgumentEncodingContext &enc) { enc.splitVisibilityResult(); });
   }
 
   /**
@@ -5748,6 +5826,28 @@ public:
     return SM50_INDEX_BUFFER_FORMAT_NONE;
   }
 
+  // the pipelines the context took last, by their description's hash, in front of the device's cache: a draw that
+  // changes shaders or states among a few finds its pipeline without the cache's lock and table. the device keeps
+  // every pipeline it makes, and its description, for as long as it lives
+  struct RecentPipeline {
+    size_t hash = 0;
+    MTLCompiledGraphicsPipeline *pipeline = nullptr;
+  };
+  std::array<RecentPipeline, 64> recent_pipelines_{};
+
+  MTLCompiledGraphicsPipeline *
+  RecentGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC &desc) {
+    size_t hash = std::hash<MTL_GRAPHICS_PIPELINE_DESC>{}(desc);
+    auto &recent = recent_pipelines_[hash % recent_pipelines_.size()];
+    if (recent.pipeline && recent.hash == hash &&
+        std::equal_to<MTL_GRAPHICS_PIPELINE_DESC>{}(*recent.pipeline->description, desc))
+      return recent.pipeline;
+    MTLCompiledGraphicsPipeline *pipeline;
+    device->CreateGraphicsPipeline(&desc, &pipeline);
+    recent = {hash, pipeline};
+    return pipeline;
+  }
+
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeTessellationRenderPipeline() {
@@ -5842,6 +5942,7 @@ public:
       render_encoder->so_count_pso = GraphicsPipeline.StreamOutputCount;
       render_encoder->so_geometry_instances = GraphicsPipeline.GeometryInstances;
       render_encoder->geometry_mesh_instances = GraphicsPipeline.MeshInstances;
+      render_encoder->geometry_mesh_invocations = GraphicsPipeline.MeshInvocations ? GraphicsPipeline.MeshInvocations : 1;
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
@@ -5892,12 +5993,10 @@ public:
       return DrawCallStatus::Invalid;
     }
 
-    MTLCompiledGraphicsPipeline *pipeline;
-
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
 
-    device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
+    MTLCompiledGraphicsPipeline *pipeline = RecentGraphicsPipeline(pipelineDesc);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext &enc) {
       if (enc.pipelineStatisticsActive())
         enc.currentRenderEncoder()->statistics_separate_rasterization = false;
@@ -5926,6 +6025,9 @@ public:
   DrawCallStatus
   PreDraw() {
     PrepareShaderTextureUse(false);
+    // no boundary since the last draw: this one would count in its segment
+    if (OcclusionCounting() && !dirty_state.any(DirtyState::VisibilityQuery))
+      SplitVisibility();
     // a draw whose scissors or viewports the pass has no room for starts the next pass
     const UINT rectangles = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     if ((dirty_state.any(DirtyState::Scissors) && pass_scissors_ + rectangles > WMT::kPassRectangles) ||
@@ -6062,21 +6164,20 @@ public:
         if (i >= state_.Rasterizer.NumViewports || (allow_scissor && i >= state_.Rasterizer.NumScissorRects)) {
           scissors[i] = {0, 0, 0, 0};
         } else {
-          // a viewport scissors to the pixels its floored extents hold (D3D11.3 15.6.1)
+          // a viewport scissors to the pixels its floored extents hold (D3D11.3 15.6.1), and before feature level
+          // 11_0 to the pixels whose centers it holds: Windows draws the last column of a viewport at x -0.4 there and
+          // not from 11_0 (Wine's test_negative_viewports)
           auto &viewport = state_.Rasterizer.viewports[i];
+          auto edge = [floored = floored_viewports_](float x) { return LONG(floored ? std::floor(x) : std::ceil(x - 0.5f)); };
           D3D11_RECT d3d_rect = allow_scissor ? state_.Rasterizer.scissor_rects[i]
                                               : D3D11_RECT{0, 0, LONG(render_target_width), LONG(render_target_height)};
-          LONG left =
-              std::clamp(std::max(d3d_rect.left, LONG(std::floor(viewport.TopLeftX))), (LONG)0, (LONG)render_target_width);
-          LONG top =
-              std::clamp(std::max(d3d_rect.top, LONG(std::floor(viewport.TopLeftY))), (LONG)0, (LONG)render_target_height);
+          LONG left = std::clamp(std::max(d3d_rect.left, edge(viewport.TopLeftX)), (LONG)0, (LONG)render_target_width);
+          LONG top = std::clamp(std::max(d3d_rect.top, edge(viewport.TopLeftY)), (LONG)0, (LONG)render_target_height);
           LONG right = std::clamp(
-              std::min(d3d_rect.right, LONG(std::floor(viewport.TopLeftX + viewport.Width))), left,
-              (LONG)render_target_width
+              std::min(d3d_rect.right, edge(viewport.TopLeftX + viewport.Width)), left, (LONG)render_target_width
           );
           LONG bottom = std::clamp(
-              std::min(d3d_rect.bottom, LONG(std::floor(viewport.TopLeftY + viewport.Height))), top,
-              (LONG)render_target_height
+              std::min(d3d_rect.bottom, edge(viewport.TopLeftY + viewport.Height)), top, (LONG)render_target_height
           );
           scissors[i] = {uint32_t(left), uint32_t(top), uint32_t(right - left), uint32_t(bottom - top)};
         }
@@ -6296,6 +6397,8 @@ protected:
   MTLD3D11ContextExt<ContextInternalState> ext_;
   uint64_t max_object_threadgroups_;
   uint64_t mesh_bytes_per_draw_;
+  // whether a viewport's corners are floored for its scissor, as from feature level 11_0 (PreDraw)
+  bool floored_viewports_;
 
 public:
   MTLD3D11DeviceContextImplBase(MTLD3D11Device *pDevice, ContextInternalState &ctx_state, ContextInternalState::device_mutex_t &mutex) :
@@ -6317,6 +6420,7 @@ public:
 
     max_object_threadgroups_ = m_parent->GetMullionDevice().maxObjectThreadgroups();
     mesh_bytes_per_draw_ = MeshBytesPerDraw(m_parent->GetMullionDevice().device());
+    floored_viewports_ = pDevice->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0;
   }
 };
 
@@ -6334,6 +6438,8 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
     uint32_t input_height;
     uint32_t output_width;
     uint32_t output_height;
+    uint32_t pass_width;
+    uint32_t pass_height;
     Rc<TemporalScaler> scaler;
     Rc<Texture> mv_downscaled;
   };
@@ -6362,11 +6468,23 @@ public:
     if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
       return;
 
-    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_vector->pixelFormat());
-    if (motion_vector_format == WMTPixelFormatInvalid) {
-      ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
+    auto motion_pixel = motion_vector->pixelFormat();
+    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_pixel);
+    // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer
+    // formats", DLSS Programming Guide 3.3): those in one MetalFX does not take, which a shader reads as floats, are
+    // read so by the pass below, as Direct3D 12's upscale reads them
+    bool formatted = motion_vector_format == WMTPixelFormatInvalid && !IsIntegerFormat(motion_pixel) &&
+                     !DepthStencilPlanarFlags(motion_pixel);
+    if (motion_vector_format == WMTPixelFormatInvalid && !formatted) {
+      ERR("TemporalUpscale: motion vectors of format ", motion_pixel, " are not supported");
       return;
     }
+    // the pass writes the scaler's motion vectors as 32-bit floats in pixels: at the input resolution from those at the
+    // output's, or as many as it reads where they are at the input's already
+    bool motion_pass = pDesc->MotionVectorInDisplayRes || formatted;
+    WMTPixelFormat scaler_motion_format = motion_pass ? WMTPixelFormatRG32Float : motion_vector_format;
+    uint32_t pass_width = !motion_pass ? 0 : pDesc->MotionVectorInDisplayRes ? input->width() : motion_vector->width(),
+             pass_height = !motion_pass ? 0 : pDesc->MotionVectorInDisplayRes ? input->height() : motion_vector->height();
 
     Rc<TemporalScaler> scaler;
     Rc<Texture> mv_downscaled;
@@ -6381,7 +6499,8 @@ public:
       if(input->pixelFormat() != entry.color_pixel_format) continue;
       if(output->pixelFormat() != entry.output_pixel_format) continue;
       if(depth->pixelFormat() != entry.depth_pixel_format) continue;
-      if(motion_vector_format != entry.motion_vector_pixel_format) continue;
+      if(scaler_motion_format != entry.motion_vector_pixel_format) continue;
+      if(pass_width != entry.pass_width || pass_height != entry.pass_height) continue;
 
       scaler = entry.scaler;
       mv_downscaled = entry.mv_downscaled;
@@ -6393,12 +6512,14 @@ public:
       scaler_entry.color_pixel_format = input->pixelFormat();
       scaler_entry.output_pixel_format = output->pixelFormat();
       scaler_entry.depth_pixel_format = depth->pixelFormat();
-      scaler_entry.motion_vector_pixel_format = motion_vector_format;
+      scaler_entry.motion_vector_pixel_format = scaler_motion_format;
+      scaler_entry.pass_width = pass_width;
+      scaler_entry.pass_height = pass_height;
       WMTFXTemporalScalerInfo info{};
       info.color_format = scaler_entry.color_pixel_format;
       info.output_format = scaler_entry.output_pixel_format;
       info.depth_format = scaler_entry.depth_pixel_format;
-      info.motion_format = motion_vector_format;
+      info.motion_format = scaler_motion_format;
       scaler_entry.auto_exposure = pDesc->AutoExposure;
       scaler_entry.jittered = pDesc->MotionVectorJittered;
       info.jittered_motion_vectors = scaler_entry.jittered;
@@ -6412,16 +6533,18 @@ public:
       info.output_width = scaler_entry.output_width;
       info.output_height = scaler_entry.output_height;
       info.input_content_properties_enabled = true;
-      info.input_content_min_scale = 1.0f;
-      info.input_content_max_scale =  3.0f;
+      // the scales MetalFX takes on the device, of which DLSS's optimal settings choose the render size (nvngx)
+      auto support = ctx_->device->GetMTLDevice().temporalScalerSupport();
+      info.input_content_min_scale = support.input_content_min_scale;
+      info.input_content_max_scale = support.input_content_max_scale;
       // the scaler is returned before MetalFX has compiled its pipelines, and upscales more slowly until it has, to
       // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
       info.requires_synchronous_initialization = false;
       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
-      if (pDesc->MotionVectorInDisplayRes) {
+      if (motion_pass) {
         WMTTextureInfo tex_info{};
-        tex_info.width = scaler_entry.input_width;
-        tex_info.height = scaler_entry.input_height;
+        tex_info.width = pass_width;
+        tex_info.height = pass_height;
         tex_info.depth = 1;
         tex_info.array_length = 1;
         tex_info.mipmap_level_count = 1;
@@ -6443,12 +6566,13 @@ public:
     }
 
     // made before the textures' use, which moves a texture the view casts (Texture::deferFormatView)
-    if (!ctx_->device->PrepareFormatView(motion_vector.ptr(), motion_vector_format)) {
-      ERR("TemporalUpscale: out of memory for a motion vector view of ", motion_vector_format);
+    auto view_format = formatted ? motion_pixel : motion_vector_format;
+    if (!ctx_->device->PrepareFormatView(motion_vector.ptr(), view_format)) {
+      ERR("TemporalUpscale: out of memory for a motion vector view of ", view_format);
       return;
     }
     auto mv_view = motion_vector->createView(
-        {.format = motion_vector_format,
+        {.format = view_format,
          .type = WMTTextureType2D,
          .firstMiplevel = 0,
          .miplevelCount = 1,
@@ -6481,7 +6605,7 @@ public:
                           pDesc->JitterOffsetY,
                           pDesc->PreExposure,
                       },
-                  mv_view, mv_downscaled = std::move(mv_downscaled)
+                  mv_view, mv_downscaled = std::move(mv_downscaled), display = bool(pDesc->MotionVectorInDisplayRes)
                 ](ArgumentEncodingContext &enc) mutable {
       auto &scaler_info = enc.currentFrameStatistics().last_scaler_info;
       scaler_info.type = ScalerType::Temporal;
@@ -6491,16 +6615,16 @@ public:
       scaler_info.output_width = output->width();
       scaler_info.output_height = output->height();
 
-      scaler_info.motion_vector_highres = mv_downscaled != nullptr;
+      scaler_info.motion_vector_highres = display;
 
-      if (scaler_info.motion_vector_highres) {
+      if (mv_downscaled) {
         enc.mv_scale_cmd.dispatch(
-            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y
+            motion_vector, mv_view, mv_downscaled, mv_downscaled->fullView, props.motion_vector_scale_x, props.motion_vector_scale_y
         );
         WMTFXTemporalScalerProps new_props = props;
         new_props.motion_vector_scale_x = 1.0;
         new_props.motion_vector_scale_y = 1.0;
-        enc.upscaleTemporal(input, output, depth, mv_downscaled, 0, exposure, scaler, new_props);
+        enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
       } else {
         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
       }
@@ -6528,6 +6652,15 @@ public:
       if (FeatureSupportDataSize != sizeof(BOOL))
         return E_INVALIDARG;
       *reinterpret_cast<BOOL *>(pFeatureSupportData) = ctx_->device->GetMTLDevice().supportsFXTemporalScaler();
+      return S_OK;
+    }
+    case MTL_FEATURE_METALFX_TEMPORAL_SCALES: {
+      if (FeatureSupportDataSize != sizeof(MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA))
+        return E_INVALIDARG;
+      auto support = ctx_->device->GetMTLDevice().temporalScalerSupport();
+      *reinterpret_cast<MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA *>(pFeatureSupportData) = {
+          support.input_content_min_scale, support.input_content_max_scale
+      };
       return S_OK;
     }
     }

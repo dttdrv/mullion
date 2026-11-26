@@ -1803,6 +1803,13 @@ static int SM50InitializeUncached(
     return 1;
   }
 
+  // a DXIL part is read only within its size
+  if (dxilBlobIdx != DXBC_BLOB_NOT_FOUND &&
+      !dxil_program_valid(DXBCParser.GetBlob(dxilBlobIdx), DXBCParser.GetBlobSize(dxilBlobIdx))) {
+    errorOut << "Invalid DXIL program header\0";
+    *ppError = (sm50_error_t)errorObj.release();
+    return 1;
+  }
   // DxilProgramHeader's version word has the shader's kind: a library has no signatures, only functions
   bool library = dxilBlobIdx != DXBC_BLOB_NOT_FOUND &&
                  *(const uint32_t *)DXBCParser.GetBlob(dxilBlobIdx) >> 16 == kShaderLibrary;
@@ -2175,6 +2182,7 @@ static int SM50InitializeUncached(
           3 * triangles <= 256 && triangles <= 512 &&
           mullion::dxbc::mesh_size(3 * triangles, vertex_size, triangles * 4) <= mullion::dxbc::mesh_size_limit;
       pRefl->GeometryShader.FixedEmits = mullion::dxbc::fixed_stream_primitives(sm50_shader).has_value();
+      pRefl->GeometryShader.MeshInvocations = mullion::dxbc::geometry_mesh_invocations(sm50_shader);
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader = {sm50_shader->pso_valid_output_reg_mask, sm50_shader->ps_has_coverage_output, 0, 0,
@@ -2697,7 +2705,9 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
                                       (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName, context, *pModule,
                                       pGeometryShaderArgs
                                   )
-                                : mullion::dxbc::convert_null_geometry_shader(FunctionName, context, *pModule, direct)) {
+                                : mullion::dxbc::convert_null_geometry_shader(
+                                      (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName, context, *pModule, direct
+                                  )) {
     errorOut << llvm::toString(std::move(err));
     *ppError = (sm50_error_t)errorObj.release();
     return 1;

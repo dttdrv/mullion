@@ -2,7 +2,9 @@
 // Set Tables, footnote 10: "Mesh shaders can use up to 4 GB of payload and mesh geometry per draw for devices in
 // the Apple7 and Apple8 GPU families." WWDC22 10162, 8:50: "payload size can't exceed the limit of 16 kilobytes."
 // and 11:54: "The total size of metal::mesh cannot exceed 16 kilobytes." each object reserves one payload and a
-// mesh for each primitive and geometry instance; if that allocation fits once, at least one group must fit.
+// mesh for each geometry instance and each of the primitives a mesh threadgroup takes (one, or the several of a
+// pipeline whose mesh threadgroups run several geometry shader invocations); if that allocation fits once, at least
+// one group must fit.
 #include "../../src/mullion/mullion_geometry.hpp"
 #include <cstdio>
 #include <vector>
@@ -23,18 +25,22 @@ main() {
   for (auto topology : topologies)
     // all register counts through a payload full of float4s cross every warp sizing boundary, including no room
     for (uint32_t registers = 0; registers <= SM50_GEOMETRY_PAYLOAD_SIZE / sizeof(float[4]) + 1; registers++)
-      for (uint32_t instances : {0u, 1u, 32u}) {
+      for (uint32_t instances : {0u, 1u, 32u})
+      for (uint32_t invocations : {1u, 2u, 3u, 32u}) {
         auto warp = mullion::get_gs_warp(topology, registers);
-        uint64_t allocation = payload_bytes + uint64_t(warp.primitives) * instances * mesh_bytes;
+        uint64_t meshes = (uint64_t(warp.primitives) + invocations - 1) / invocations;
+        uint64_t allocation = payload_bytes + meshes * instances * mesh_bytes;
         for (uint64_t budget : {uint64_t(0), allocation - 1, allocation, allocation + 1, draw_bytes})
           for (uint64_t grid : {uint64_t(1), uint64_t(UINT32_MAX)}) {
-            auto groups = mullion::get_gs_max_object_threadgroups(topology, registers, instances, grid, budget);
+            auto groups =
+                mullion::get_gs_max_object_threadgroups(topology, registers, instances, grid, budget, invocations);
             checked++;
             if (groups > grid || groups * allocation > budget || (budget >= allocation && !groups)) {
               if (wrong++ < 16)
-                printf("wrong: topology=%u registers=%u instances=%u grid=%llu budget=%llu "
+                printf("wrong: topology=%u registers=%u instances=%u invocations=%u grid=%llu budget=%llu "
                        "allocation=%llu groups=%llu\n",
-                       unsigned(topology), registers, instances, (unsigned long long)grid, (unsigned long long)budget,
+                       unsigned(topology), registers, instances, invocations, (unsigned long long)grid,
+                       (unsigned long long)budget,
                        (unsigned long long)allocation, (unsigned long long)groups);
             }
           }

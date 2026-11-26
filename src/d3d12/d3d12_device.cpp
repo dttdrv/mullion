@@ -288,6 +288,49 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   std::map<std::array<uint64_t, 7>, std::pair<bool, std::pair<uint64_t, uint64_t>>> sparse_tails_;
   // allocations were added or removed since the set was last committed (CommitResidency)
   bool residency_dirty_ = false;
+  // the allocations added to the set since it was last committed, each kept until then: making a resource takes only
+  // this lock, never residency_lock_, which a queue holds across the set's commit (a kernel call that makes the new
+  // memory resident, about 1 ms for 64 MiB), so that a thread streaming textures in waits for no queue. a removal
+  // takes back an addition still listed, or leaves the set at once: nothing released is kept for a later commit
+  mullion::mutex residency_changes_lock_;
+  std::vector<WMT::Reference<WMT::Allocation>> residency_additions_;
+
+  void
+  AddResidency(WMT::Allocation allocation) {
+    std::unique_lock<mullion::mutex> lock(residency_changes_lock_);
+    residency_additions_.emplace_back(allocation);
+  }
+
+  void
+  RemoveResidency(WMT::Allocation allocation) {
+    {
+      std::unique_lock<mullion::mutex> lock(residency_changes_lock_);
+      auto listed = std::find_if(residency_additions_.begin(), residency_additions_.end(),
+                                 [&](auto &added) { return added.handle == allocation.handle; });
+      if (listed != residency_additions_.end()) {
+        residency_additions_.erase(listed);
+        return;
+      }
+    }
+    std::unique_lock<mullion::mutex> lock(residency_lock_);
+    residency_set_.removeAllocations(&allocation, 1);
+    residency_dirty_ = true;
+  }
+
+  // the additions listed since, under residency_lock_
+  void
+  ApplyResidencyChanges() {
+    std::vector<WMT::Reference<WMT::Allocation>> additions;
+    {
+      std::unique_lock<mullion::mutex> lock(residency_changes_lock_);
+      additions.swap(residency_additions_);
+    }
+    if (additions.empty())
+      return;
+    std::vector<WMT::Allocation> run(additions.begin(), additions.end());
+    residency_set_.addAllocations(run.data(), run.size());
+    residency_dirty_ = true;
+  }
   // the buffers by GPU address and the sparse ones' mapped tiles, under a lock of their own: every index buffer, root
   // view and immediate write looks an address up, and none of them should wait on residency_lock_, which a queue holds
   // across the residency set's commit (a kernel call)
@@ -390,6 +433,7 @@ public:
     }
     heartbeat_ = heartbeat::Watch([this] {
       std::unique_lock<mullion::mutex> lock(residency_lock_);
+      ApplyResidencyChanges();
       if (std::exchange(residency_dirty_, false))
         residency_set_.commit();
       residency_set_.requestResidency();
@@ -399,6 +443,7 @@ public:
     emulate_depth_bounds = Config::getInstance().getOption<bool>("d3d12.emulateDepthBounds", true);
     timestamp_queries = Config::getInstance().getOption<bool>("d3d12.timestampQueries", true);
     immediate_markers = Config::getInstance().getOption<bool>("d3d12.immediateMarkers", false);
+    ignore_failed_pipelines = Config::getInstance().getOption<bool>("d3d12.ignoreFailedPipelines", false);
     report_emulated_features = Config::getInstance().getOption<bool>("d3d12.reportEmulatedFeatures", false);
     
     WMTDepthStencilInfo info{};
@@ -1018,7 +1063,9 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
-      out->HighestShaderModel = std::min(out->HighestShaderModel, D3D_SHADER_MODEL_6_7);
+      // shader model 6.8: wave size ranges, SampleCmpBias and SampleCmpGrad, SV_StartVertexLocation and
+      // SV_StartInstanceLocation, and Barrier of separate memory and semantics (work graphs are optional and absent)
+      out->HighestShaderModel = std::min(out->HighestShaderModel, D3D_SHADER_MODEL(0x68));
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS: {
@@ -1354,9 +1401,10 @@ public:
     case sdk::D3D12_FEATURE_D3D12_OPTIONS21: {
       if (DataSize != sizeof(sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS21))
         return FAIL(E_INVALIDARG);
-      // no work graphs, and command signatures have tier 1.0's arguments (no incrementing constant)
+      // no work graphs, and command signatures have tier 1.0's arguments (no incrementing constant); shader model
+      // 6.8's comparison sampling at a bias or gradient, and its start vertex and instance locations
       *reinterpret_cast<sdk::D3D12_FEATURE_DATA_D3D12_OPTIONS21 *>(pFeatureData) = {
-          0, sdk::D3D12_EXECUTE_INDIRECT_TIER_1_0, FALSE, FALSE
+          0, sdk::D3D12_EXECUTE_INDIRECT_TIER_1_0, TRUE, TRUE
       };
       return S_OK;
     }
@@ -2616,6 +2664,7 @@ public:
   CommitResidency() final {
     heartbeat::Submitted();
     std::unique_lock<mullion::mutex> lock(residency_lock_);
+    ApplyResidencyChanges();
     if (std::exchange(residency_dirty_, false))
       residency_set_.commit();
   }
@@ -2695,17 +2744,13 @@ public:
 
   HRESULT
   RegisterResidency(WMT::Allocation allocation) {
-    std::unique_lock<mullion::mutex> lock(residency_lock_);
-    residency_set_.addAllocations(&allocation, 1);
-    residency_dirty_ = true;
+    AddResidency(allocation);
     return S_OK;
   }
 
   HRESULT
   UnregisterResidency(WMT::Allocation allocation) {
-    std::unique_lock<mullion::mutex> lock(residency_lock_);
-    residency_set_.removeAllocations(&allocation, 1);
-    residency_dirty_ = true;
+    RemoveResidency(allocation);
     return S_OK;
   }
 
@@ -2721,10 +2766,7 @@ public:
     }
     if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
       return S_OK;
-    std::unique_lock<mullion::mutex> lock(residency_lock_);
-    auto buffer = allocation->buffer();
-    residency_set_.addAllocations(&buffer, 1);
-    residency_dirty_ = true;
+    AddResidency(allocation->buffer());
     return S_OK;
   }
 
@@ -2901,9 +2943,7 @@ public:
       info.size = GetMTLDevice().sparseTileSizeInBytes(info.sparse_page_size);
       info.type = WMTHeapTypePlacement;
       spare_tile_ = GetMTLDevice().newHeap(info);
-      WMT::Allocation tile = spare_tile_;
-      residency_set_.addAllocations(&tile, 1);
-      residency_dirty_ = true;
+      AddResidency(spare_tile_);
     }
     return spare_tile_;
   }
