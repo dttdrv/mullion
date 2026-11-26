@@ -25,12 +25,14 @@
 #include "d3d11_resource.hpp"
 #include "d3d11_enumerable.hpp"
 #include "dxgi_object.hpp"
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <d3d11sdklayers.h>
 #include <deque>
 #include <mutex>
 #include <set>
+#include <span>
 #include "d3d11_4.h"
 #include "util_win32_compat.h"
 
@@ -654,10 +656,23 @@ public:
       WARN("Class linkage not supported");
 
     // no declaration is a geometry shader alone, which a count of none with a declaration is not, nor a stream past
-    // the last (Wine's test_stream_output has both from Windows)
-    if ((pSODeclaration && !NumEntries) ||
+    // the last (Wine's test_stream_output has both from Windows); entries and strides need their arrays, and there are
+    // at most D3D11_SO_BUFFER_SLOT_COUNT strides
+    if (!pSODeclaration != !NumEntries || (NumStrides && !pBufferStrides) || NumStrides > D3D11_SO_BUFFER_SLOT_COUNT ||
         (RasterizedStream >= D3D11_SO_STREAM_COUNT && RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM))
       return E_INVALIDARG;
+    // below 11_0 a declaration has Direct3D 10's limits: stream 0 is rasterized, there is one stride and only with
+    // entries, and each of several slots takes one entry ("Stream-Output Stage"; Wine's test_fl10_stream_output_desc,
+    // and its own check of the stride count)
+    if (GetFeatureLevel() < D3D_FEATURE_LEVEL_11_0) {
+      UINT per_slot[D3D11_SO_BUFFER_SLOT_COUNT] = {};
+      for (auto &entry : std::span(pSODeclaration, NumEntries))
+        if (entry.OutputSlot < std::size(per_slot))
+          per_slot[entry.OutputSlot]++;
+      if (RasterizedStream || NumStrides > 1 || (!NumEntries && NumStrides) ||
+          (per_slot[0] != NumEntries && std::ranges::any_of(per_slot, [](UINT count) { return count > 1; })))
+        return E_INVALIDARG;
+    }
     if (!NumEntries)
       return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
 
