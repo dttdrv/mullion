@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
-  # every pull request builds each variant, runs the host tests and leaves its archive as an artifact. the GPU tests
-  # do not run for one: GitHub's Macs have no GPU Mullion runs on, and a self-hosted one must not run a fork's code
+  # every pull request builds each variant, runs the host tests (including ASan+UBSan) and leaves its archive as an
+  # artifact. the GPU tests do not run for one: GitHub's Macs have no GPU Mullion runs on, and a self-hosted one must
+  # not run a fork's code
   pull_request:
     paths-ignore: ['**.md', 'docs/**', '.github/ISSUE_TEMPLATE/**', '.github/DISCUSSION_TEMPLATE/**']
   # GitHub removes a cache nothing has read for 7 days, and a tag's run reads only the caches of the default branch:
@@ -33,9 +34,18 @@ env:
   WINE_ARM64EC_URL: https://github.com/3Shain/wine/releases/download/wine-11.2/wine-11.2.tar.gz
   LLVM_MINGW_VERSION: "20260908"
   LLVM_MINGW_DIR: llvm-mingw-20260908-ucrt-macos-universal
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_COMPRESS: "true"
+  CCACHE_MAXSIZE: "1G"
+  CCACHE_COMPILERCHECK: "%compiler% -v"
+  CCACHE_SLOPPINESS: "time_macros,include_file_mtime,pch_defines"
 
 jobs:
+  # Toolchain cache population and 5-day keepalive: only runs on schedule or manual dispatch, so PRs do not burn 7
+  # macOS runner slots on cache lookups before builds can start.
   setup-wine:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     steps:
       - name: Cache Wine
@@ -51,11 +61,8 @@ jobs:
       - name: Install Wine
         if: steps.cache-wine.outputs.cache-hit != 'true'
         run: |
-          mkdir -p ./toolchains
-          curl -SL ${{ env.WINE_URL }} > ./wine.tar.gz
           mkdir -p ./toolchains/wine
-          tar -zvxf ./wine.tar.gz -C ./toolchains/wine
-          rm ./wine.tar.gz
+          curl -fsSL ${{ env.WINE_URL }} | tar -zxf - -C ./toolchains/wine
 
       - name: Save Cache
         if: steps.cache-wine.outputs.cache-hit != 'true'
@@ -65,6 +72,7 @@ jobs:
           path: ./toolchains/wine
 
   setup-wine-arm64ec:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     steps:
       - name: Cache Wine (ARM64EC)
@@ -80,11 +88,8 @@ jobs:
       - name: Install Wine (ARM64EC)
         if: steps.cache-wine-arm64ec.outputs.cache-hit != 'true'
         run: |
-          mkdir -p ./toolchains
-          curl -SL ${{ env.WINE_ARM64EC_URL }} > ./wine.tar.gz
           mkdir -p ./toolchains/wine
-          tar -zvxf ./wine.tar.gz --strip-components 2 -C ./toolchains/wine
-          rm ./wine.tar.gz
+          curl -fsSL ${{ env.WINE_ARM64EC_URL }} | tar -zxf - --strip-components 2 -C ./toolchains/wine
 
       - name: Save Cache
         if: steps.cache-wine-arm64ec.outputs.cache-hit != 'true'
@@ -94,6 +99,7 @@ jobs:
           path: ./toolchains/wine
 
   setup-llvm-mingw:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     steps:
       - name: Cache LLVM-MinGW
@@ -109,10 +115,8 @@ jobs:
       - name: Install LLVM-MinGW
         if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
         run: |
-          curl -SL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz > ./llvm.tar.xz
           mkdir -p ./toolchains
-          tar -zvxf ./llvm.tar.xz -C ./toolchains
-          rm ./llvm.tar.xz
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
 
       - name: Save Cache
         if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
@@ -122,6 +126,7 @@ jobs:
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
   setup-llvm-project:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     steps:
       - name: Cache LLVM Project
@@ -147,6 +152,7 @@ jobs:
           path: ./toolchains/llvm-project
 
   setup-llvm-darwin:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     needs: setup-llvm-project
     steps:
@@ -195,7 +201,7 @@ jobs:
           path: ./toolchains/llvm-darwin
 
   setup-llvm-win:
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     needs: [setup-llvm-project, setup-llvm-mingw]
     steps:
@@ -223,9 +229,6 @@ jobs:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
-      # LLVM 15 uses std::is_pod without including <type_traits> (ItaniumDemangle.h), which the libc++ of llvm-mingw
-      # 20260908 no longer brings in with <algorithm> or <utility>. its benchmark library, which nothing here uses,
-      # is built with -Werror and that compiler warns of its __COUNTER__
       - name: Build LLVM for Windows
         if: steps.cache-llvm-win.outputs.cache-hit != 'true'
         run: |
@@ -257,6 +260,7 @@ jobs:
           path: ./toolchains/llvm
 
   setup-llvm-darwin-arm64:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     needs: setup-llvm-project
     steps:
@@ -308,7 +312,7 @@ jobs:
   keep-toolchains:
     if: github.event_name == 'schedule'
     runs-on: macos-26
-    needs: [setup-wine, setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin, setup-llvm-darwin-arm64]
+    needs: [setup-wine, setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin, setup-llvm-win, setup-llvm-darwin-arm64]
     steps:
       - uses: actions/cache/restore@v5
         with:
@@ -332,13 +336,57 @@ jobs:
           path: ./toolchains/llvm-darwin
       - uses: actions/cache/restore@v5
         with:
+          key: llvm-win-${{ env.LLVM_VERSION }}-x86_64-w64-mingw32-macos
+          path: ./toolchains/llvm
+      - uses: actions/cache/restore@v5
+        with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
           path: ./toolchains/llvm-darwin-arm64
 
-  build-gcc-release-x86_64-windows-cross:
+  # Fast Linux checks: Python syntax, conformance JSON validity, and fault patches touched by the PR.
+  checks:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check Python scripts and conformance JSON
+        run: |
+          python3 -m py_compile tests/*.py tests/host/*.py tools/*.py .github/*.py
+          python3 -c '
+          import glob, json
+          for p in sorted(glob.glob("tests/conformance/*.json")):
+              json.load(open(p))
+          print("conformance JSONs valid")
+          '
+
+      - name: Check fault patches touched by PR
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          changed=$(git diff --name-only --diff-filter=AM FETCH_HEAD...HEAD -- 'tests/breaks/*.patch')
+          if [ -z "$changed" ]; then
+            echo "No fault patches added or modified."
+            exit 0
+          fi
+          fail=0
+          for p in $changed; do
+            if ! git apply --check "$p"; then
+              echo "::error file=$p::Fault patch does not apply cleanly"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  # Builds both x86_64 and x86 (WoW64) GCC release in one macOS runner slot.
+  build-gcc-release-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    needs: [setup-wine, setup-llvm-darwin]
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -346,21 +394,37 @@ jobs:
           submodules: true
 
       - name: Restore Wine Cache
+        id: wine
         uses: actions/cache/restore@v5
         with:
           key: wine-x86_64-${{ env.WINE_VERSION }}-macos
           path: ./toolchains/wine
 
-      - name: Install mingw-w64
-        uses: tecolicom/actions-use-homebrew-tools@v1
-        with:
-          tools: mingw-w64
+      - name: Download Wine (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_URL }} | tar -zxf - -C ./toolchains/wine
 
       - name: Restore LLVM Darwin Cache
         uses: actions/cache/restore@v5
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm-darwin
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-gcc-release-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-gcc-release-
+
+      - name: Install mingw-w64 and ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: mingw-w64 ccache
 
       - name: Select Xcode Version
         run: .github/select-xcode.sh
@@ -368,61 +432,35 @@ jobs:
       - name: Install Meson
         run: pip3 install meson==1.10.0 --break-system-packages
 
-      - name: Build
+      - name: Build Win64 and WoW64
         run: |
-          meson setup --cross-file build-win64.txt -Denable_nvapi=true -Denable_nvngx=true -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
-          meson compile -C build
-          meson install -C build
+          ccache -z
+          meson setup --cross-file build-win64.txt -Denable_nvapi=true -Denable_nvngx=true -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build64 --buildtype release --prefix $(pwd)/install64 --strip
+          meson compile -C build64
+          meson install -C build64
+          meson setup --cross-file build-win32.txt -Dwine_install_path=toolchains/wine build32 --buildtype release --prefix $(pwd)/install32 --strip
+          meson compile -C build32
+          meson install -C build32
+          ccache -s
 
-      - name: Upload
+      - name: Upload Win64
         uses: actions/upload-artifact@v6
         with:
           name: gcc-release-x86_64-windows-cross
-          path: install
-
-  build-gcc-release-x86-windows-cross:
-    if: github.event_name != 'schedule'
-    runs-on: macos-26
-    needs: [setup-wine]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Restore Wine Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
-          path: ./toolchains/wine
-
-      - name: Install mingw-w64
-        uses: tecolicom/actions-use-homebrew-tools@v1
-        with:
-          tools: mingw-w64
-
-      - name: Select Xcode Version
-        run: .github/select-xcode.sh
-
-      - name: Install Meson
-        run: pip3 install meson==1.10.0 --break-system-packages
-
-      - name: Build WoW64
-        run: |
-          meson setup --cross-file build-win32.txt -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
-          meson compile -C build
-          meson install -C build
+          path: install64
 
       - name: Upload WoW64
         uses: actions/upload-artifact@v6
         with:
           name: gcc-release-x86-windows-cross
-          path: install
+          path: install32
 
-  build-clang-debugoptimized-x86_64-windows-cross:
+  # Builds both x86_64 and x86 (WoW64) Clang release in one macOS runner slot.
+  build-clang-release-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin, setup-llvm-win]
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -430,28 +468,144 @@ jobs:
           submodules: true
 
       - name: Restore Wine Cache
+        id: wine
         uses: actions/cache/restore@v5
         with:
           key: wine-x86_64-${{ env.WINE_VERSION }}-macos
           path: ./toolchains/wine
 
+      - name: Download Wine (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_URL }} | tar -zxf - -C ./toolchains/wine
+
       - name: Restore LLVM-MinGW Cache
+        id: llvm-mingw
         uses: actions/cache/restore@v5
         with:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
+      - name: Download LLVM-MinGW (cache miss fallback)
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
+
       - name: Restore LLVM Darwin Cache
         uses: actions/cache/restore@v5
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          fail-on-cache-miss: true
+          path: ./toolchains/llvm-darwin
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-clang-release-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-clang-release-
+
+      - name: Install ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: ccache
+
+      - name: Select Xcode Version
+        run: .github/select-xcode.sh
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 --break-system-packages
+
+      - name: Build Win64 and WoW64
+        run: |
+          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          ccache -z
+          meson setup --cross-file build-win64.txt -Denable_nvapi=true -Denable_nvngx=true -Denable_d3d12=true -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build64 --buildtype release --prefix $(pwd)/install64 --strip
+          meson compile -C build64
+          meson install -C build64
+          meson setup --cross-file build-win32.txt -Dwine_install_path=toolchains/wine build32 --buildtype release --prefix $(pwd)/install32 --strip
+          meson compile -C build32
+          meson install -C build32
+          ccache -s
+
+      - name: Upload Win64
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-release-x86_64-windows-cross
+          path: install64
+
+      - name: Upload WoW64
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-release-x86-windows-cross
+          path: install32
+
+  build-clang-debugoptimized-x86_64-windows-cross:
+    if: github.event_name != 'schedule'
+    runs-on: macos-26
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Restore Wine Cache
+        id: wine
+        uses: actions/cache/restore@v5
+        with:
+          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
+          path: ./toolchains/wine
+
+      - name: Download Wine (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_URL }} | tar -zxf - -C ./toolchains/wine
+
+      - name: Restore LLVM-MinGW Cache
+        id: llvm-mingw
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
+
+      - name: Download LLVM-MinGW (cache miss fallback)
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
+
+      - name: Restore LLVM Darwin Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm-darwin
 
       - name: Restore LLVM Windows Cache
         uses: actions/cache/restore@v5
         with:
           key: llvm-win-${{ env.LLVM_VERSION }}-x86_64-w64-mingw32-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-clang-dbgopt-x64-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-clang-dbgopt-x64-
+
+      - name: Install ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: ccache
 
       - name: Select Xcode Version
         run: .github/select-xcode.sh
@@ -462,9 +616,11 @@ jobs:
       - name: Build
         run: |
           export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          ccache -z
           meson setup --cross-file build-win64.txt -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine -Dbuild_airconv_for_windows=true -Denable_nvapi=true -Denable_nvngx=true -Denable_d3d12=true build --buildtype debugoptimized --prefix $(pwd)/install
           meson compile -C build
           meson install -C build
+          ccache -s
 
       - name: Upload
         uses: actions/upload-artifact@v6
@@ -472,60 +628,13 @@ jobs:
           name: clang-debugoptimized-x86_64-windows-cross
           path: install
 
-  build-clang-release-x86_64-windows-cross:
-    if: github.event_name != 'schedule'
-    runs-on: macos-26
-    needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Restore Wine Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
-          path: ./toolchains/wine
-
-      - name: Restore LLVM-MinGW Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
-          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
-
-      - name: Restore LLVM Darwin Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
-          path: ./toolchains/llvm-darwin
-
-      - name: Select Xcode Version
-        run: .github/select-xcode.sh
-
-      - name: Install Meson
-        run: pip3 install meson==1.10.0 --break-system-packages
-
-      - name: Build
-        run: |
-          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
-          meson setup --cross-file build-win64.txt -Denable_nvapi=true -Denable_nvngx=true -Denable_d3d12=true -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
-          meson compile -C build
-          meson install -C build
-
-      - name: Upload
-        uses: actions/upload-artifact@v6
-        with:
-          name: clang-release-x86_64-windows-cross
-          path: install
-
-  # Mullion's tests. the host's run here. the ones that draw need an Apple GPU, which these runners do not have: they
-  # run on a self-hosted Mac, once the repository's variables name its Wine (MULLION_WINE, an installation with
-  # bin/wine), its LLVM 15 (MULLION_LLVM) and a prefix with the shader compilers (MULLION_PREFIX)
+  # Mullion's host tests: compiles ONLY the host suite targets (skipping 300+ GPU test exes), runs them with assertions
+  # enabled, then runs the native C/C++ host tests a second time under ASan + UBSan.
   test-host:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    needs: [setup-wine, setup-llvm-mingw, setup-llvm-darwin]
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -533,22 +642,50 @@ jobs:
           submodules: true
 
       - name: Restore Wine Cache
+        id: wine
         uses: actions/cache/restore@v5
         with:
           key: wine-x86_64-${{ env.WINE_VERSION }}-macos
           path: ./toolchains/wine
 
+      - name: Download Wine (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_URL }} | tar -zxf - -C ./toolchains/wine
+
       - name: Restore LLVM-MinGW Cache
+        id: llvm-mingw
         uses: actions/cache/restore@v5
         with:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
+      - name: Download LLVM-MinGW (cache miss fallback)
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
+
       - name: Restore LLVM Darwin Cache
         uses: actions/cache/restore@v5
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm-darwin
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-test-host-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-test-host-
+
+      - name: Install ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: ccache
 
       - name: Select Xcode Version
         run: .github/select-xcode.sh
@@ -556,17 +693,38 @@ jobs:
       - name: Install Meson
         run: pip3 install meson==1.10.0 --break-system-packages
 
-      - name: Build with tests
+      - name: Build and run host tests (assertions on)
         run: |
           export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          ccache -z
           meson setup --cross-file build-win64.txt -Denable_tests=true -Db_ndebug=false -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build --buildtype release
-          meson compile -C build
+          python3 .github/compile-host-tests.py build
+          meson test -C build --suite host --no-rebuild --print-errorlogs
+          ccache -s
 
-      # a host test of a Windows library (host_metal_target) has meson relink it first, with the cross tools
-      - name: Host tests
+      - name: Build and run host tests under ASan + UBSan
+        env:
+          ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
         run: |
           export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
-          meson test -C build --suite host --print-errorlogs
+          meson setup --cross-file build-win64.txt -Denable_tests=true -Db_ndebug=false \
+            -Dbuild.c_args="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -Dbuild.cpp_args="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -Dbuild.c_link_args="-fsanitize=address,undefined" \
+            -Dbuild.cpp_link_args="-fsanitize=address,undefined" \
+            -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build-san --buildtype debugoptimized
+          python3 .github/compile-host-tests.py build-san
+          # Run every host test under ASan+UBSan except host_tessellator (4+ min exhaustive math, already verified above)
+          # and host_metal_target (inspects the cross-compiled Windows DLL).
+          meson test -C build-san --suite host --no-rebuild --print-errorlogs \
+            $(python3 -c '
+          import json, subprocess
+          tests = json.loads(subprocess.check_output(["meson", "introspect", "--tests", "build-san"], text=True))
+          skip = {"host_tessellator", "host_metal_target"}
+          print(" ".join(t["name"] for t in tests if "host" in t.get("suite", []) and t["name"] not in skip))
+          ')
+          ccache -s
 
   test-gpu:
     if: vars.MULLION_WINE != '' && github.event_name != 'schedule' && github.event_name != 'pull_request'
@@ -602,98 +760,11 @@ jobs:
             build/meson-logs/tests
             build/meson-logs/benchmarks
 
-  build-clang-release-x86-windows-cross:
-    if: github.event_name != 'schedule'
-    runs-on: macos-26
-    needs: [setup-wine, setup-llvm-mingw]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Restore Wine Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: wine-x86_64-${{ env.WINE_VERSION }}-macos
-          path: ./toolchains/wine
-
-      - name: Restore LLVM-MinGW Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
-          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
-
-      - name: Select Xcode Version
-        run: .github/select-xcode.sh
-
-      - name: Install Meson
-        run: pip3 install meson==1.10.0 --break-system-packages
-
-      - name: Build WoW64
-        run: |
-          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
-          meson setup --cross-file build-win32.txt -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
-          meson compile -C build
-          meson install -C build
-
-      - name: Upload WoW64
-        uses: actions/upload-artifact@v6
-        with:
-          name: clang-release-x86-windows-cross
-          path: install
-
-  build-clang-debugoptimized-arm64ec-windows-cross:
-    if: github.event_name != 'schedule'
-    runs-on: macos-26
-    needs: [setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin-arm64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: true
-
-      - name: Restore Wine Cache (ARM64EC)
-        uses: actions/cache/restore@v5
-        with:
-          key: wine-arm64ec-${{ env.WINE_ARM64EC_VERSION }}-macos
-          path: ./toolchains/wine
-
-      - name: Restore LLVM-MinGW Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
-          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
-
-      - name: Restore LLVM Darwin ARM64 Cache
-        uses: actions/cache/restore@v5
-        with:
-          key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
-          path: ./toolchains/llvm-darwin-arm64
-
-      - name: Select Xcode Version
-        run: .github/select-xcode.sh
-
-      - name: Install Meson
-        run: pip3 install meson==1.10.0 --break-system-packages
-
-      - name: Build
-        run: |
-          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
-          meson setup --cross-file build-arm64ec.txt -Denable_tests=true -Dnative_llvm_path=toolchains/llvm-darwin-arm64 -Dwine_install_path=toolchains/wine build --buildtype debugoptimized --prefix $(pwd)/install
-          meson compile -C build
-          meson install -C build
-
-      - name: Upload
-        uses: actions/upload-artifact@v6
-        with:
-          name: clang-debugoptimized-arm64ec-windows-cross
-          path: install
-
   build-clang-release-arm64ec-windows-cross:
     if: github.event_name != 'schedule'
     runs-on: macos-26
-    needs: [setup-wine-arm64ec, setup-llvm-mingw, setup-llvm-darwin-arm64]
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -701,22 +772,50 @@ jobs:
           submodules: true
 
       - name: Restore Wine Cache (ARM64EC)
+        id: wine
         uses: actions/cache/restore@v5
         with:
           key: wine-arm64ec-${{ env.WINE_ARM64EC_VERSION }}-macos
           path: ./toolchains/wine
 
+      - name: Download Wine ARM64EC (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_ARM64EC_URL }} | tar -zxf - --strip-components 2 -C ./toolchains/wine
+
       - name: Restore LLVM-MinGW Cache
+        id: llvm-mingw
         uses: actions/cache/restore@v5
         with:
           key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
           path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
 
+      - name: Download LLVM-MinGW (cache miss fallback)
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
+
       - name: Restore LLVM Darwin ARM64 Cache
         uses: actions/cache/restore@v5
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm-darwin-arm64
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-clang-release-arm64ec-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-clang-release-arm64ec-
+
+      - name: Install ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: ccache
 
       - name: Select Xcode Version
         run: .github/select-xcode.sh
@@ -727,9 +826,11 @@ jobs:
       - name: Build
         run: |
           export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          ccache -z
           meson setup --cross-file build-arm64ec.txt -Denable_nvapi=true -Denable_nvngx=true -Dnative_llvm_path=toolchains/llvm-darwin-arm64 -Dwine_install_path=toolchains/wine build --buildtype release --prefix $(pwd)/install --strip
           meson compile -C build
           meson install -C build
+          ccache -s
 
       - name: Upload
         uses: actions/upload-artifact@v6
@@ -737,12 +838,90 @@ jobs:
           name: clang-release-arm64ec-windows-cross
           path: install
 
+  build-clang-debugoptimized-arm64ec-windows-cross:
+    if: github.event_name != 'schedule'
+    runs-on: macos-26
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ccache
+      CCACHE_MAXSIZE: "2G"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Restore Wine Cache (ARM64EC)
+        id: wine
+        uses: actions/cache/restore@v5
+        with:
+          key: wine-arm64ec-${{ env.WINE_ARM64EC_VERSION }}-macos
+          path: ./toolchains/wine
+
+      - name: Download Wine ARM64EC (cache miss fallback)
+        if: steps.wine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains/wine
+          curl -fsSL ${{ env.WINE_ARM64EC_URL }} | tar -zxf - --strip-components 2 -C ./toolchains/wine
+
+      - name: Restore LLVM-MinGW Cache
+        id: llvm-mingw
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: ./toolchains/${{ env.LLVM_MINGW_DIR }}
+
+      - name: Download LLVM-MinGW (cache miss fallback)
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ./toolchains
+          curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VERSION }}/${{ env.LLVM_MINGW_DIR }}.tar.xz | tar -Jxf - -C ./toolchains
+
+      - name: Restore LLVM Darwin ARM64 Cache
+        uses: actions/cache/restore@v5
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
+          fail-on-cache-miss: true
+          path: ./toolchains/llvm-darwin-arm64
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-clang-dbgopt-arm64ec-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-clang-dbgopt-arm64ec-
+
+      - name: Install ccache
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: ccache
+
+      - name: Select Xcode Version
+        run: .github/select-xcode.sh
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 --break-system-packages
+
+      - name: Build
+        run: |
+          export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
+          ccache -z
+          meson setup --cross-file build-arm64ec.txt -Denable_tests=true -Dnative_llvm_path=toolchains/llvm-darwin-arm64 -Dwine_install_path=toolchains/wine build --buildtype debugoptimized --prefix $(pwd)/install
+          meson compile -C build
+          meson install -C build
+          ccache -s
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-debugoptimized-arm64ec-windows-cross
+          path: install
+
   # not for a pull request: the native library does not build yet (src/mullion uses Windows' clock and thread calls),
   # and a check that always fails teaches nobody anything
   build-clang-release-arm64-macos:
     if: github.event_name != 'schedule' && github.event_name != 'pull_request'
     runs-on: macos-26
-    needs: setup-llvm-darwin-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -753,6 +932,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-arm64-macos
+          fail-on-cache-miss: true
           path: ./toolchains/llvm-darwin-arm64
 
       - name: Select Xcode Version
@@ -774,11 +954,12 @@ jobs:
           path: install
 
   # the release archive: x86_64 for Wine and CrossOver on Rosetta with the 32-bit Direct3D 10 and 11 for their 32-bit
-  # programs, and ARM64X for arm64 Wine, whose x86_64 programs load it as ARM64EC. a v tag makes a draft release with
-  # it, for its notes to be written
+  # programs, and ARM64X for arm64 Wine, whose x86_64 programs load it as ARM64EC. runs on ubuntu-latest so it consumes
+  # zero macOS runner slots.
   package:
-    runs-on: macos-26
-    needs: [build-gcc-release-x86_64-windows-cross, build-gcc-release-x86-windows-cross, build-clang-release-arm64ec-windows-cross]
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    needs: [build-gcc-release-windows-cross, build-clang-release-arm64ec-windows-cross]
     env:
       PACKAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
     steps:
@@ -803,8 +984,20 @@ jobs:
           name: clang-release-arm64ec-windows-cross
           path: ./combined/${{ env.PACKAGE_TAG }}
 
-      - name: Check ARM64X
-        run: python3 .github/check-arm64x.py ./combined/${{ env.PACKAGE_TAG }}/aarch64-windows/*.dll
+      - name: Check ARM64X and archive contents
+        run: |
+          dir=./combined/${{ env.PACKAGE_TAG }}
+          python3 .github/check-arm64x.py "$dir"/aarch64-windows/*.dll
+          for f in \
+            x86_64-windows/d3d10core.dll x86_64-windows/d3d11.dll x86_64-windows/d3d12.dll \
+            x86_64-windows/dxgi.dll x86_64-windows/nvapi64.dll x86_64-windows/nvngx.dll \
+            x86_64-unix/winemetal.so \
+            i386-windows/d3d10core.dll i386-windows/d3d11.dll i386-windows/dxgi.dll \
+            aarch64-windows/d3d10core.dll aarch64-windows/d3d11.dll aarch64-windows/d3d12.dll \
+            aarch64-windows/dxgi.dll aarch64-windows/nvapi64.dll aarch64-windows/nvngx.dll \
+            aarch64-unix/winemetal.so; do
+            test -f "$dir/$f" || { echo "::error::missing $f in package"; exit 1; }
+          done
 
       # NGX loads only a core whose signature chains to a trusted root: nvngx.dll is signed with Mullion's NGX key
       # (src/nvngx/signing), whose certificate DXGI trusts in the prefix with MULLION_ENABLE_NVEXT=1. Without the
@@ -817,7 +1010,7 @@ jobs:
             echo "::warning::MULLION_NGX_SIGNING_KEY is not set: nvngx.dll stays unsigned, and NGX will not load it"
             exit 0
           fi
-          brew install osslsigncode
+          sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode
           key=$(mktemp)
           printf '%s\n' "$MULLION_NGX_SIGNING_KEY" > "$key"
           for dll in ./combined/${{ env.PACKAGE_TAG }}/*-windows/nvngx.dll; do
