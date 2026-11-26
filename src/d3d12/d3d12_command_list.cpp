@@ -5761,24 +5761,6 @@ public:
     }
   }
 
-  // the float format MetalFX reads motion vectors as: DLSS takes them as floats, held as such or, in a typeless
-  // resource, as unsigned integers. normalized or signed integer motion vectors hold no float to read
-  static WMTPixelFormat
-  MotionVectorFormat(WMTPixelFormat format) {
-    switch (format) {
-    case WMTPixelFormatRG16Uint:
-    case WMTPixelFormatRG16Float:
-      return WMTPixelFormatRG16Float;
-    case WMTPixelFormatRG32Uint:
-    case WMTPixelFormatRG32Float:
-      return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Float:
-      return WMTPixelFormatRGBA16Float;
-    default:
-      return WMTPixelFormatInvalid;
-    }
-  }
-
   // the pass, after everything before it and before everything after it
   UpscaleEncoderData *
   RecordUpscale() {
