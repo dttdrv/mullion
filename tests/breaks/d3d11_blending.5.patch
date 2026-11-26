@@ -1,0 +1,13 @@
+# a blend factor set in a render pass is not encoded: the pass's later draws blend with the one before
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3524,7 +3524,6 @@
+     const float *factor = BlendFactor ? BlendFactor : ones;
+     if (memcmp(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]))) {
+       memcpy(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]));
+-      dirty_state.set(DirtyState::BlendFactorAndStencilRef);
+     }
+     if (state_.OutputMerger.SampleMask != SampleMask) {
+       state_.OutputMerger.SampleMask = SampleMask;
+

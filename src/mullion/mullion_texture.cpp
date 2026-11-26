@@ -118,6 +118,26 @@ TextureAllocation::free(){
 // D3D12 makes views on any thread ("All methods for creating descriptors are free-threaded", Creating descriptors)
 // while others record with the texture: an allocation's views are added under the texture's lock, its version checked
 // again there, so two threads never add one twice
+// under the texture's lock: the views added since are counted for Texture::view's readers
+void
+TextureAllocation::publishViews() {
+  uint32_t count = cached_view_.size(), published = published_count_.load(std::memory_order_relaxed);
+  if (count == published)
+    return;
+  if (count > published_capacity_) {
+    published_capacity_ = std::max<uint32_t>(8, count * 2);
+    auto array = std::make_unique<TextureView *[]>(published_capacity_);
+    for (uint32_t i = 0; i < published; i++)
+      array[i] = cached_view_[i].ptr();
+    published_views_.store(array.get(), std::memory_order_release);
+    published_arrays_.push_back(std::move(array));
+  }
+  auto array = const_cast<TextureView **>(published_views_.load(std::memory_order_relaxed));
+  for (uint32_t i = published; i < count; i++)
+    array[i] = cached_view_[i].ptr();
+  published_count_.store(count, std::memory_order_release);
+}
+
 void
 Texture::prepareAllocationViews(TextureAllocation *allocation) {
   std::unique_lock<mullion::shared_mutex> lock(mutex_);
@@ -134,6 +154,7 @@ Texture::prepareAllocationViews(TextureAllocation *allocation) {
     );
   }
   allocation->version_ = version_;
+  allocation->publishViews();
 }
 
 // a view's fields, which fill 64 bits between them
@@ -299,6 +320,12 @@ Texture::view(TextureViewKey key) {
 
 TextureView &
 Texture::view(TextureViewKey key, TextureAllocation* allocation) {
+  // a view the allocation has is read without the lock (TextureAllocation::publishViews)
+  if (likely(key.index < allocation->published_count_.load(std::memory_order_acquire))) {
+    auto &view = *allocation->published_views_.load(std::memory_order_acquire)[key.index];
+    assert(!view.awaitsMove && "a view in another layout used before its texture moved to Metal's format view");
+    return view;
+  }
   // read under the lock too: adding a view may move the list, though not the views it points to
   std::shared_lock<mullion::shared_mutex> lock(mutex_);
   if (unlikely(allocation->version_ != version_)) {
@@ -419,6 +446,7 @@ Texture::rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRe
   for (auto &view : newAllocation->cached_view_)
     retiredViews.push_back(std::move(view));
   newAllocation->cached_view_.clear();
+  newAllocation->published_count_.store(0, std::memory_order_release);
   newAllocation->version_ = 0;
   newAllocation->descriptor = this;
   return rename(std::move(newAllocation));

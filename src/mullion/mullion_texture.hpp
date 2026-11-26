@@ -179,6 +179,16 @@ private:
   uint32_t version_ = 0;
   Flags<TextureAllocationFlag> flags_;
   small_vector<TextureViewRef, 4> cached_view_;
+  // cached_view_'s views as an array Texture::view reads without the texture's lock: every view an encoder looks up
+  // took a shared lock (two calls into ntdll), 15% of the encoding thread's time for a draw a texture. a view is added
+  // under the lock, written past the count readers use and then counted; a longer array is made by doubling, and the
+  // ones before it are kept until the allocation goes, so a reader never reads freed memory
+  std::atomic<TextureView *const *> published_views_{nullptr};
+  std::atomic<uint32_t> published_count_{0};
+  uint32_t published_capacity_ = 0;
+  std::vector<std::unique_ptr<TextureView *[]>> published_arrays_;
+
+  void publishViews();
   bool kept_ = false; // in the residency heartbeat's set
 };
 

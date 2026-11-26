@@ -2427,6 +2427,14 @@ CreateGraphicsPipelineState(
   // depth attachment for each range, and what it drops is shading an application culls, not what it draws
   pso->depth_bounds_emulated = depth_bounds && !pso->depth_bounds && pDevice->emulate_depth_bounds;
   HRESULT hr = pso->Initialize(&desc, AS, MS, depth_stencil2);
+  // a pipeline that could not be made is, with d3d12.ignoreFailedPipelines, one of nothing: its Metal pipeline is
+  // null, so its draws are dropped. what runs out of memory still fails, as a cached blob of another build did above
+  if (FAILED(hr) && hr != E_OUTOFMEMORY && pDevice->ignore_failed_pipelines) {
+    WARN("CreateGraphicsPipelineState: the pipeline could not be made; its draws are dropped (d3d12.ignoreFailedPipelines)");
+    pso = Com(new MTLD3D12GraphicsPipelineStateImpl(pDevice));
+    pso->failed = true;
+    hr = S_OK;
+  }
   if (FAILED(hr))
     return hr;
   return pso->QueryInterface(riid, ppPipelineState);

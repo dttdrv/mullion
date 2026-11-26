@@ -238,6 +238,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
 
   EncoderData *encoder_last;
   EncoderData *encoder_current;
+  // the open render pass that a Settle follows once it ends (SettleAround)
+  EncoderData *settle_after_ = nullptr;
   size_t encoder_count_;
 public:
   // the recording list's open events, which the passes it begins carry
@@ -368,9 +370,21 @@ public:
       FinishTessellation(static_cast<RenderEncoderData *>(encoder_current));
     encoder_last->next = encoder_current;
     encoder_last = encoder_current;
-
-    encoder_current = nullptr;
     encoder_count_++;
+    if (std::exchange(settle_after_, nullptr) == encoder_current)
+      Link(EncoderType::Settle);
+    encoder_current = nullptr;
+  }
+
+  // the open render pass keeps going past an aliasing barrier while a reserved buffer exists: what the queue encodes
+  // for one (EncoderType::Settle) goes before the pass, ordering the work before it before all of its draws, and after
+  // it, ordering what it stores before the work after it
+  void
+  SettleAround() {
+    if (settle_after_ == encoder_current)
+      return;
+    Link(EncoderType::Settle);
+    settle_after_ = encoder_current;
   }
 
   HRESULT
@@ -381,6 +395,7 @@ public:
     // a list's start orders nothing: the lists of one ExecuteCommandLists may overlap, each call's work follows all of
     // the call before (MTLD3D12CommandQueue's Commit), and a list ends with what orders the next where it must (Close)
     encoder_last->overlap = PassOverlap::Independent;
+    settle_after_ = nullptr;
     so_scratch_size_ = 0;
     event = nullptr;
     return S_OK;
@@ -454,6 +469,18 @@ public:
 
   // what logs call a pass: one count for every kind, as a profile's target names its pass by it
   static inline std::atomic<uint64_t> passes_;
+
+  // a pass of no commands of `type` after the last, before the open pass
+  void
+  Link(EncoderType type) {
+    auto p = new (AllocateCPUHeap(sizeof(EncoderData), alignof(EncoderData))) EncoderData();
+    p->type = type;
+    p->id = ++passes_;
+    p->event_path = event;
+    encoder_last->next = p;
+    encoder_last = p;
+    encoder_count_++;
+  }
 
   template <typename T>
   T *

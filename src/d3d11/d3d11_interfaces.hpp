@@ -33,7 +33,16 @@ DEFINE_COM_INTERFACE("43ace3ce-1956-448b-a4eb-aee68bdeb283",
 
 typedef enum MTL_FEATURE {
   MTL_FEATURE_METALFX_TEMPORAL_SCALER = 0,
+  // MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA
+  MTL_FEATURE_METALFX_TEMPORAL_SCALES = 1,
 } MTL_FEATURE;
+
+// the ratios of the output's size to the input content's that MetalFX's temporal scaler takes on the device
+// (MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:, ...MaxScaleForDevice:)
+typedef struct MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA {
+  FLOAT MinScale;
+  FLOAT MaxScale;
+} MTL_FEATURE_METALFX_TEMPORAL_SCALES_DATA;
 
 DEFINE_COM_INTERFACE("19a8e35a-38be-418f-94e3-9f7323936870", IMTLD3D11ContextExt1) : public IMTLD3D11ContextExt {
   virtual HRESULT STDMETHODCALLTYPE CheckFeatureSupport(

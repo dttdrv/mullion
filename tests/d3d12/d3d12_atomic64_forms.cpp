@@ -345,11 +345,11 @@ main(int argc, char **argv) {
           );
           D3D12_COMPUTE_PIPELINE_STATE_DESC desc{rs.Get(), bytecode(shaders[sign][dynamic][kind])};
           ComPtr<ID3D12PipelineState> pso;
-          CHECK(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
           step(
               "%s %s atomics, binding=%u, indirect=%d", sign ? "signed" : "unsigned", names[kind], binding,
               indirect_path
           );
+          CHECK(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
           CHECK(forget(readback.Get()));
           CHECK(allocator->Reset());
           CHECK(list->Reset(allocator.Get(), pso.Get()));

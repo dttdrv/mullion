@@ -1,0 +1,13 @@
+# a D32S8 texture's initial stencil is read from the byte after the one it is in
+# family native
+--- a/src/mullion/mullion_resource_initializer.cpp
++++ b/src/mullion/mullion_resource_initializer.cpp
+@@ -365,7 +365,7 @@
+       } else {
+         for (auto x = 0u; x < width_sub; x++) {
+           memcpy(depth_row + x, src_data + x * 8, 4);
+-          stencil_row[x] = src_data[x * 8 + 4];
++          stencil_row[x] = src_data[x * 8 + 5];
+         }
+       }
+     }

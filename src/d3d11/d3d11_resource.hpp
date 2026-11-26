@@ -30,33 +30,6 @@ DEFINE_COM_INTERFACE("9a6f6549-d4b1-45ea-8794-8503d190d3d1",
 
 namespace mullion {
 
-// the float format TemporalUpscale views motion vectors in for MetalFX's temporal scaler, or Invalid for one it takes
-// none of. a texture of another format needs Metal's format view for it (CreateMTLTextureDescriptor)
-inline WMTPixelFormat
-MotionVectorFormat(WMTPixelFormat format) {
-  switch (format) {
-  case WMTPixelFormatRG16Uint:
-  case WMTPixelFormatRG16Float:
-  case WMTPixelFormatRG16Sint:
-  case WMTPixelFormatRG16Snorm:
-  case WMTPixelFormatRG16Unorm:
-    return WMTPixelFormatRG16Float;
-  case WMTPixelFormatRG32Uint:
-  case WMTPixelFormatRG32Float:
-  case WMTPixelFormatRG32Sint:
-    return WMTPixelFormatRG32Float;
-  case WMTPixelFormatRGBA16Sint:
-  case WMTPixelFormatRGBA16Snorm:
-  case WMTPixelFormatRGBA16Uint:
-  case WMTPixelFormatRGBA16Unorm:
-  case WMTPixelFormatRGBA16Float:
-    return WMTPixelFormatRGBA16Float;
-  default:
-    break;
-  }
-  return WMTPixelFormatInvalid;
-}
-
 template <typename RESOURCE_DESC>
 void UpgradeResourceDescription(const RESOURCE_DESC *pSrc, RESOURCE_DESC &dst) {
   dst = *pSrc;

@@ -19,6 +19,8 @@
 #include "Metal.hpp"
 #include "d3d12_device.hpp"
 #include "util_env.hpp"
+#include "config/config.hpp"
+#include <algorithm>
 #include <shared_mutex>
 
 namespace mullion {
@@ -182,8 +184,14 @@ GetSampler(MTLD3D12Device *pDevice, const D3D12_SAMPLER_DESC &Desc, MTLD3D12Cach
   static const bool borders = env::getEnvVar("MULLION_AIRCONV_SKIP").find("custom-border") == std::string::npos;
   if (custom && borders)
     made.emulations |= SM50_SHADER_FLAG_NO_CUSTOM_BORDER;
+  // d3d12.samplerLodBias (mullion.conf) is added to each sampler's own bias, a static sampler's too, within the range a
+  // bias has (D3D12_MIP_LOD_BIAS_MIN, _MAX)
+  static const float lod_bias = Config::getInstance().getOption<float>("d3d12.samplerLodBias", 0.0f);
   made.sampler = Sampler::createSampler(
-      pDevice->GetMTLDevice(), info, Desc.MipLODBias, custom ? Desc.BorderColor : nullptr, SamplerReduction(Desc.Filter)
+      pDevice->GetMTLDevice(), info,
+      lod_bias ? std::clamp(Desc.MipLODBias + lod_bias, D3D12_MIP_LOD_BIAS_MIN, D3D12_MIP_LOD_BIAS_MAX)
+               : Desc.MipLODBias,
+      custom ? Desc.BorderColor : nullptr, SamplerReduction(Desc.Filter)
   );
   if (made.sampler == nullptr)
     return FAIL(E_OUTOFMEMORY);

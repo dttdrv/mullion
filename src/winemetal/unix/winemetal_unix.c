@@ -2089,10 +2089,24 @@ temporal_scaler_motion(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTe
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
   if (@available(macOS 27.0, *)) {
     desc.jitteredMotionVectorsEnabled = info->jittered_motion_vectors;
+    if (info->output_resolution_motion_vectors) {
+      if (![desc respondsToSelector:@selector(setOutputResolutionMotionVectorsEnabled:)])
+        return false;
+      desc.outputResolutionMotionVectorsEnabled = YES;
+    }
     return true;
   }
 #endif
-  return !info->jittered_motion_vectors;
+  return !info->jittered_motion_vectors && !info->output_resolution_motion_vectors;
+}
+
+// a mask of how much each pixel takes of its current color, where the info has one (macOS 14.4)
+static void
+temporal_scaler_reactive(MTLFXTemporalScalerDescriptor *desc, const struct WMTFXTemporalScalerInfo *info) {
+  if (info->reactive_mask_format == WMTPixelFormatInvalid)
+    return;
+  desc.reactiveMaskTextureEnabled = YES;
+  desc.reactiveMaskTextureFormat = to_metal_pixel_format(info->reactive_mask_format);
 }
 
 static NTSTATUS
@@ -2122,6 +2136,7 @@ CREATES(_MTLDevice_newTemporalScaler)(void *obj) {
   }
   #endif
   desc.autoExposureEnabled = info->auto_exposure;
+  temporal_scaler_reactive(desc, info);
 
   struct sigaction old_action[sizeof(SIGNALS) / sizeof(int)], new_action;
   if (@available(macOS 16, *)) {} else {
@@ -2159,6 +2174,26 @@ CREATES(_MTLDevice_newSpatialScaler)(void *obj) {
   return STATUS_SUCCESS;
 }
 
+// where each input's content starts in its texture, where MetalFX takes it (macOS 27)
+static void
+temporal_scaler_offsets(id object, const struct WMTFXTemporalScalerProps *props) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *)) {
+    id<MTLFXTemporalScalerBase> scaler = object;
+    if (![scaler respondsToSelector:@selector(setColorContentOffsetX:)])
+      return;
+    scaler.colorContentOffsetX = props->color_offset_x;
+    scaler.colorContentOffsetY = props->color_offset_y;
+    scaler.depthContentOffsetX = props->depth_offset_x;
+    scaler.depthContentOffsetY = props->depth_offset_y;
+    scaler.motionContentOffsetX = props->motion_offset_x;
+    scaler.motionContentOffsetY = props->motion_offset_y;
+    scaler.reactiveMaskContentOffsetX = props->reactive_offset_x;
+    scaler.reactiveMaskContentOffsetY = props->reactive_offset_y;
+  }
+#endif
+}
+
 static NTSTATUS
 _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   struct unixcall_mtlcommandbuffer_temporal_scale *params = obj;
@@ -2169,6 +2204,7 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   scaler.depthTexture = (id<MTLTexture>)params->depth;
   scaler.motionTexture = (id<MTLTexture>)params->motion;
   scaler.exposureTexture = (id<MTLTexture>)params->exposure;
+  scaler.reactiveMaskTexture = (id<MTLTexture>)params->reactive;
   scaler.fence = (id<MTLFence>)params->fence;
   const struct WMTFXTemporalScalerProps *props = params->props.ptr;
   scaler.inputContentWidth = props->input_content_width;
@@ -2180,6 +2216,7 @@ _MTLCommandBuffer_encodeTemporalScale(void *obj) {
   scaler.jitterOffsetX = props->jitter_offset_x;
   scaler.jitterOffsetY = props->jitter_offset_y;
   scaler.preExposure = props->pre_exposure;
+  temporal_scaler_offsets(scaler, props);
   [scaler encodeToCommandBuffer:cmdbuf];
   return STATUS_SUCCESS;
 }
@@ -2266,6 +2303,7 @@ CREATES(_MTLDevice_newTemporalScaler4)(void *obj) {
     desc.inputContentPropertiesEnabled = info->input_content_properties_enabled;
     desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
     desc.autoExposureEnabled = info->auto_exposure;
+    temporal_scaler_reactive(desc, info);
     if (temporal_scaler_motion(desc, info))
       params->ret = (obj_handle_t)[desc newTemporalScalerWithDevice:device compiler:compiler];
     [desc release];
@@ -2432,6 +2470,29 @@ _MTLDevice_supportsFXDenoisedScaler(void *obj) {
   if (@available(macOS 26.0, *))
     params->ret = family_has(9) && (params->arg ? [MTLFXTemporalDenoisedScalerDescriptor supportsMetal4FX:device]
                                                 : [MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device]);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLDevice_temporalScalerSupport(void *obj) {
+  struct unixcall_mtldevice_fxtemporalscalersupport *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->device;
+  // no scale but the output's size where MetalFX does not say (macOS 14)
+  params->support.input_content_min_scale = params->support.input_content_max_scale = 1.0f;
+  if (@available(macOS 14.0, *)) {
+    params->support.input_content_min_scale =
+        [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:device];
+    params->support.input_content_max_scale =
+        [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
+  }
+  params->support.content_offsets = params->support.output_resolution_motion_vectors = false;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+  if (@available(macOS 27.0, *)) {
+    params->support.content_offsets = true;
+    params->support.output_resolution_motion_vectors =
+        [MTLFXTemporalScalerDescriptor instancesRespondToSelector:@selector(setOutputResolutionMotionVectorsEnabled:)];
+  }
+#endif
   return STATUS_SUCCESS;
 }
 
@@ -5032,9 +5093,10 @@ acceleration_structure_descriptor(const struct WMTAccelerationStructureInfo *inf
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = (id<MTLBuffer>)g->transform_buffer;
       triangles.transformationMatrixBufferOffset = g->transform_offset;
-      if (g->transform_buffer && !g->transform_column_major)
+      if (g->transform_buffer && !g->transform_column_major) {
         family_needs(9, "acceleration structures containing row-major matrices");
-      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
+        triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      }
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -6481,11 +6543,13 @@ _MTL4CommandBuffer_encodeTemporalScale(void *obj) {
     metal4_resident(state, (id<MTLTexture>)params->depth);
     metal4_resident(state, (id<MTLTexture>)params->motion);
     metal4_resident(state, (id<MTLTexture>)params->exposure);
+    metal4_resident(state, (id<MTLTexture>)params->reactive);
     scaler.colorTexture = (id<MTLTexture>)params->color;
     scaler.outputTexture = (id<MTLTexture>)params->output;
     scaler.depthTexture = (id<MTLTexture>)params->depth;
     scaler.motionTexture = (id<MTLTexture>)params->motion;
     scaler.exposureTexture = (id<MTLTexture>)params->exposure;
+    scaler.reactiveMaskTexture = (id<MTLTexture>)params->reactive;
     scaler.fence = (id<MTLFence>)params->fence;
     scaler.inputContentWidth = props->input_content_width;
     scaler.inputContentHeight = props->input_content_height;
@@ -6496,6 +6560,7 @@ _MTL4CommandBuffer_encodeTemporalScale(void *obj) {
     scaler.jitterOffsetX = props->jitter_offset_x;
     scaler.jitterOffsetY = props->jitter_offset_y;
     scaler.preExposure = props->pre_exposure;
+    temporal_scaler_offsets(scaler, props);
     [scaler encodeToCommandBuffer:state->buffer];
   }
   return STATUS_SUCCESS;
@@ -7316,9 +7381,10 @@ API_AVAILABLE(macos(26.0)) metal4_structure_descriptor(
       triangles.indexType = (MTLIndexType)g->index_type;
       triangles.triangleCount = g->count;
       triangles.transformationMatrixBuffer = metal4_range(state, g->transform_buffer, g->transform_offset);
-      if (g->transform_buffer && !g->transform_column_major)
+      if (g->transform_buffer && !g->transform_column_major) {
         family_needs(9, "acceleration structures containing row-major matrices");
-      triangles.transformationMatrixLayout = g->transform_column_major ? MTLMatrixLayoutColumnMajor : MTLMatrixLayoutRowMajor;
+        triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
+      }
       geometry = triangles;
     }
     geometry.opaque = g->opaque;
@@ -7645,6 +7711,7 @@ const void *__wine_unix_call_funcs[] = {
     &_WMTRemoveOtherVersions,
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
+    &_MTLDevice_temporalScalerSupport,
 };
 
 #ifndef MULLION_NATIVE
@@ -7866,6 +7933,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_WMTRemoveOtherVersions,
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
+    &_MTLDevice_temporalScalerSupport,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");
