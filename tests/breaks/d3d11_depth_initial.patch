@@ -1,0 +1,13 @@
+# a D24S8 texture's initial depth is scaled by 2^24 - 2 where it is 2^24 - 1: some depths read back one step off
+# family native
+--- a/src/mullion/mullion_resource_initializer.cpp
++++ b/src/mullion/mullion_resource_initializer.cpp
+@@ -359,7 +359,7 @@
+         for (auto x = 0u; x < width_sub; x++) {
+           uint32_t packed;
+           memcpy(&packed, src_data + x * 4, 4);
+-          depth_row[x] = (float)(packed & 0xFFFFFF) / (float)(0xFFFFFF);
++          depth_row[x] = (float)(packed & 0xFFFFFF) / (float)(0xFFFFFE);
+           stencil_row[x] = (uint8_t)(packed >> 24);
+         }
+       } else {

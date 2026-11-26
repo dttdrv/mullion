@@ -1,0 +1,16 @@
+# the context's recent pipeline cache takes the pipeline it holds for any description: draws after a change keep the pipeline before it
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -6214,9 +6214,8 @@
+   MTLCompiledGraphicsPipeline *
+   RecentGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC &desc) {
+     size_t hash = std::hash<MTL_GRAPHICS_PIPELINE_DESC>{}(desc);
+-    auto &recent = recent_pipelines_[hash % recent_pipelines_.size()];
+-    if (recent.pipeline && recent.hash == hash &&
+-        std::equal_to<MTL_GRAPHICS_PIPELINE_DESC>{}(*recent.pipeline->description, desc))
++    auto &recent = recent_pipelines_[0];
++    if (recent.pipeline)
+       return recent.pipeline;
+     MTLCompiledGraphicsPipeline *pipeline;
+     device->CreateGraphicsPipeline(&desc, &pipeline);

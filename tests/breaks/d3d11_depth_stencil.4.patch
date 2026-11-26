@@ -1,0 +1,14 @@
+# a stencil reference set again with the same depth-stencil state is not encoded: the draws after it test the one before
+# family native
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -3562,7 +3562,7 @@
+     auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState);
+     // the state and reference the context has are encoded already, as RSSetState's are: every pass starts with them
+     // marked
+-    if (state_.OutputMerger.DepthStencilState == expected.ptr() && state_.OutputMerger.StencilRef == StencilRef)
++    if (state_.OutputMerger.DepthStencilState == expected.ptr())
+       return;
+     state_.OutputMerger.DepthStencilState = expected.ptr();
+     state_.OutputMerger.StencilRef = StencilRef;
+

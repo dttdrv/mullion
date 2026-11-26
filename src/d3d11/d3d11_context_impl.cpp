@@ -2424,11 +2424,11 @@ public:
   IASetInputLayout(ID3D11InputLayout *pInputLayout) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
-      state_.InputAssembler.InputLayout = expected.ptr();
-    } else {
-      state_.InputAssembler.InputLayout = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout);
+    // the layout the context has changes no pipeline
+    if (state_.InputAssembler.InputLayout.ptr() == expected.ptr())
+      return;
+    state_.InputAssembler.InputLayout = expected.ptr();
     InvalidateRenderPipeline();
   }
   void
@@ -2470,6 +2470,10 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     auto pBuffer = GetResourceCommon(pIndexBuffer);
+    // the buffer, format and offset the context has are bound already
+    if (pBuffer && state_.InputAssembler.IndexBuffer.ptr() == pBuffer &&
+        state_.InputAssembler.IndexBufferFormat == Format && state_.InputAssembler.IndexBufferOffset == Offset)
+      return;
     if (pBuffer && (pBuffer->bindFlags() & D3D11_BIND_INDEX_BUFFER) && ValidateIAHazard(pBuffer)) {
       state_.InputAssembler.IndexBuffer = pBuffer;
       EmitST([buffer = state_.InputAssembler.IndexBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
@@ -2785,8 +2789,8 @@ public:
             enc.queue().counter_pool.updateCounter(filled, offset);
           enc.bindStreamOutputBuffer(slot, forward_rc(buffer), forward_rc(filled));
         });
-      } else {
-        state_.StreamOutput.Targets.unbind(slot);
+      } else if (state_.StreamOutput.Targets.unbind(slot)) {
+        // a slot with no target has none to unbind, as a shader resource slot has none
         EmitST([=](ArgumentEncodingContext &enc) mutable {
           enc.bindStreamOutputBuffer(slot, {}, {});
         });
@@ -3509,13 +3513,13 @@ public:
         should_invalidate_pipeline = true;
       }
     }
-    if (BlendFactor) {
-      memcpy(state_.OutputMerger.BlendFactor, BlendFactor, sizeof(float[4]));
-    } else {
-      state_.OutputMerger.BlendFactor[0] = 1.0f;
-      state_.OutputMerger.BlendFactor[1] = 1.0f;
-      state_.OutputMerger.BlendFactor[2] = 1.0f;
-      state_.OutputMerger.BlendFactor[3] = 1.0f;
+    // the factor is encoded again only when it changes: a state set with the factor it had sets no blend color, and
+    // the stencil reference goes with the depth-stencil state, which OMSetDepthStencilState marks
+    const float ones[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float *factor = BlendFactor ? BlendFactor : ones;
+    if (memcmp(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]))) {
+      memcpy(state_.OutputMerger.BlendFactor, factor, sizeof(float[4]));
+      dirty_state.set(DirtyState::BlendFactorAndStencilRef);
     }
     if (state_.OutputMerger.SampleMask != SampleMask) {
       state_.OutputMerger.SampleMask = SampleMask;
@@ -3524,7 +3528,6 @@ public:
     if (should_invalidate_pipeline) {
       InvalidateRenderPipeline();
     }
-    dirty_state.set(DirtyState::BlendFactorAndStencilRef);
   }
   void
   STDMETHODCALLTYPE
@@ -3551,11 +3554,12 @@ public:
   OMSetDepthStencilState(ID3D11DepthStencilState *pDepthStencilState, UINT StencilRef) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState)) {
-      state_.OutputMerger.DepthStencilState = expected.ptr();
-    } else {
-      state_.OutputMerger.DepthStencilState = nullptr;
-    }
+    auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState);
+    // the state and reference the context has are encoded already, as RSSetState's are: every pass starts with them
+    // marked
+    if (state_.OutputMerger.DepthStencilState == expected.ptr() && state_.OutputMerger.StencilRef == StencilRef)
+      return;
+    state_.OutputMerger.DepthStencilState = expected.ptr();
     state_.OutputMerger.StencilRef = StencilRef;
     dirty_state.set(DirtyState::DepthStencilState);
   }
@@ -3606,7 +3610,10 @@ public:
         ERR("RSSetState: invalid ID3D11RasterizerState object.");
       }
     } else {
-      if (state_.Rasterizer.RasterizerState) {
+      // the default state the context has is encoded already, as a state it was set to is
+      if (!state_.Rasterizer.RasterizerState)
+        return;
+      {
         if (state_.Rasterizer.RasterizerState->IsScissorEnabled() != default_rasterizer_state->IsScissorEnabled()) {
           dirty_state.set(DirtyState::Scissors);
         }
@@ -3807,6 +3814,28 @@ public:
 #pragma endregion
 
 #pragma region Internal
+
+  // the bindings a rename of `resource` changes, each where it is bound: the next draw encodes again the tables of the
+  // stages it is bound to, and only those. `bind_flags` are what it may be bound as (a constant buffer, a vertex
+  // buffer, a shader resource); a stage table encodes whole when any of its slots is marked, so marking every stage's
+  // had each draw after a map of one buffer encode and track every stage's constant buffers again
+  void
+  DirtyBindingsOf(D3D11ResourceCommon *resource, UINT bind_flags) {
+    if (bind_flags & D3D11_BIND_VERTEX_BUFFER)
+      for (const auto &[slot, entry] : state_.InputAssembler.VertexBuffers)
+        if (entry.Buffer.ptr() == resource)
+          state_.InputAssembler.VertexBuffers.set_dirty(slot);
+    for (auto &stage : state_.ShaderStages) {
+      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER)
+        for (const auto &[slot, entry] : stage.ConstantBuffers)
+          if (entry.Buffer.ptr() == resource)
+            stage.ConstantBuffers.set_dirty(slot);
+      if (bind_flags & D3D11_BIND_SHADER_RESOURCE)
+        for (const auto &[slot, entry] : stage.SRVs)
+          if (entry.SRV->resource_.ptr() == resource)
+            stage.SRVs.set_dirty(slot);
+    }
+  }
 
   // UpdateSubresource1 can rename DEFAULT buffers without granting CPU access (D3D11.3 5.6.9).
   virtual HRESULT MapResource(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
@@ -4085,6 +4114,10 @@ public:
         D3D11_ASSERT(0 && "unexpected shader object");
       }
     } else {
+      // a stage cleared that has no shader changes no pipeline: a state manager clears the hull, domain and
+      // geometry stages before every draw
+      if (!ShaderStage.Shader)
+        return;
       ShaderStage.Shader = nullptr;
     }
 
@@ -4424,14 +4457,20 @@ public:
         bool replaced = false;
         auto &entry = VertexBuffers.bind(slot, {pVertexBuffer}, replaced, !pVertexBuffer->hazardsFree());
         if (!replaced) {
+          bool changed = false;
           if (pStrides && pStrides[slot - StartSlot] != entry.Stride) {
             VertexBuffers.set_dirty(slot);
             entry.Stride = pStrides[slot - StartSlot];
+            changed = true;
           }
           if (pOffsets && pOffsets[slot - StartSlot] != entry.Offset) {
             VertexBuffers.set_dirty(slot);
             entry.Offset = pOffsets[slot - StartSlot];
+            changed = true;
           }
+          // the buffer at the offset and stride it has is bound already
+          if (!changed)
+            continue;
           EmitST([=, offset = entry.Offset,
                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
             enc.bindVertexBufferOffset(slot, offset, stride);
@@ -5774,6 +5813,28 @@ public:
     return SM50_INDEX_BUFFER_FORMAT_NONE;
   }
 
+  // the pipelines the context took last, by their description's hash, in front of the device's cache: a draw that
+  // changes shaders or states among a few finds its pipeline without the cache's lock and table. the device keeps
+  // every pipeline it makes, and its description, for as long as it lives
+  struct RecentPipeline {
+    size_t hash = 0;
+    MTLCompiledGraphicsPipeline *pipeline = nullptr;
+  };
+  std::array<RecentPipeline, 64> recent_pipelines_{};
+
+  MTLCompiledGraphicsPipeline *
+  RecentGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC &desc) {
+    size_t hash = std::hash<MTL_GRAPHICS_PIPELINE_DESC>{}(desc);
+    auto &recent = recent_pipelines_[hash % recent_pipelines_.size()];
+    if (recent.pipeline && recent.hash == hash &&
+        std::equal_to<MTL_GRAPHICS_PIPELINE_DESC>{}(*recent.pipeline->description, desc))
+      return recent.pipeline;
+    MTLCompiledGraphicsPipeline *pipeline;
+    device->CreateGraphicsPipeline(&desc, &pipeline);
+    recent = {hash, pipeline};
+    return pipeline;
+  }
+
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeTessellationRenderPipeline() {
@@ -5918,12 +5979,10 @@ public:
       return DrawCallStatus::Invalid;
     }
 
-    MTLCompiledGraphicsPipeline *pipeline;
-
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
 
-    device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
+    MTLCompiledGraphicsPipeline *pipeline = RecentGraphicsPipeline(pipelineDesc);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext &enc) {
       if (enc.pipelineStatisticsActive())
         enc.currentRenderEncoder()->statistics_separate_rasterization = false;

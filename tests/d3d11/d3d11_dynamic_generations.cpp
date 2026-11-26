@@ -13,7 +13,8 @@
 // a recorded map belongs to its list: "After generation, a Command List can be used multiple times; but cannot be
 // altered by the application explicitly" (6.3.1); execution "inherits and can change the global state of objects,
 // such as texture data, constant buffer data, and query data" (6.3.5).
-// each case changes only one buffer. the shader copies its VB/CB/SRV values into separate integer channels; expected
+// each case changes only one buffer. the shaders copy its VB/CB/SRV values into separate integer channels, the
+// constant buffer's read by the pixel shader too, which binds it as the vertex shader does; expected
 // pixels come from the supplied data. bindings stay set through all maps. row 0 is drawn before and after an append,
 // then the middle and last rows; row 1 remains unused for an immediate append after list execution. sizes double
 // across the allocator's minimum, then straddle MULLION_PAGE_SIZE (meson.build). page / buffer size + 2 discards exceed
@@ -29,15 +30,17 @@ using Row = std::array<UINT, 4>;
 static const char hlsl[] = R"hlsl(
 cbuffer Constants : register(b0) { uint4 rows[CONSTANTS]; };
 Buffer<uint4> source : register(t0);
-struct V { float4 position : SV_Position; nointerpolation uint4 value : VALUE; };
+struct V { float4 position : SV_Position; nointerpolation uint4 value : VALUE; nointerpolation uint row : ROW; };
 V vs(uint4 data : DATA) {
   uint4 cb = rows[data.w], srv = source.Load(data.w);
   V v;
   v.position = float4(0, 0, 0, 1);
   v.value = uint4(data.x, cb.y, srv.z, data.y ^ cb.z ^ srv.x);
+  v.row = data.w;
   return v;
 }
-uint4 ps(V v) : SV_Target { return v.value; }
+// the pixel shader reads the constant buffer's y itself: both stages bind it
+uint4 ps(V v) : SV_Target { return uint4(v.value.x, rows[v.row].y, v.value.zw); }
 )hlsl";
 
 int
@@ -122,6 +125,7 @@ main() {
           context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
           context->IASetVertexBuffers(0, 1, inputs[0].GetAddressOf(), &stride, &offset);
           context->VSSetConstantBuffers(0, 1, inputs[1].GetAddressOf());
+          context->PSSetConstantBuffers(0, 1, inputs[1].GetAddressOf());
           context->VSSetShaderResources(0, 1, srv.GetAddressOf());
           context->VSSetShader(vs.Get(), nullptr, 0);
           context->PSSetShader(ps.Get(), nullptr, 0);
