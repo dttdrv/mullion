@@ -902,6 +902,8 @@ public:
   void bumpVisibilityResultOffset();
   void beginVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
   void endVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
+  // the next draw counts in a segment of its own, not in the one the draws before it counted in
+  void splitVisibilityResult();
   bool pipelineStatisticsActive() const { return !pipeline_queries_.empty(); }
   void countPipelineStatistics(PipelineStatisticsDraw draw);
   void countComputePipelineStatistics(WMTSize groups, WMT::Buffer arguments = {}, uint64_t arguments_offset = 0);

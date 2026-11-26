@@ -1134,8 +1134,8 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
     cmd.type = WMTComputeCommandMemoryBarrier;
     cmd.scope = WMTBarrierScope(WMTBarrierScopeBuffers | (aliases ? WMTBarrierScopeAliases : 0));
   };
-  auto kernel = [&](const char *name, uint32_t threads) {
-    auto pipeline = device_->GetLib().ComputePipeline(name);
+  auto &library = device_->GetLib();
+  auto kernel = [&](WMT::ComputePipelineState pipeline, uint64_t threads) {
     auto &set = EncodeBeforeRender<wmtcmd_compute_setpso>();
     set.type = WMTComputeCommandSetPSO;
     set.pso = pipeline;
@@ -1149,17 +1149,21 @@ MTLD3D12CommandAllocatorImpl::FinishTessellation(RenderEncoderData *Render) {
     }
   };
   barrier(aliased);
-  kernel("tessellation_count", kTessellationThreads);
+  kernel(library.ComputePipeline("tessellation_count"), kTessellationThreads);
   auto &count = EncodeBeforeRender<wmtcmd_compute_dispatch>();
   count.type = WMTComputeCommandDispatchThreads;
   count.size = {batch->patches, 1, 1};
   barrier();
-  kernel("tessellation_scan", 1024);
+  auto scan_pipeline = library.ComputePipeline("tessellation_scan");
+  // The scan stores one sum per complete SIMD group in sums[32].
+  auto width = device_->GetSIMDWidth();
+  auto groups = std::min<uint64_t>(32, scan_pipeline.maxTotalThreadsPerThreadgroup() / width);
+  kernel(scan_pipeline, groups * width);
   auto &scan = EncodeBeforeRender<wmtcmd_compute_dispatch>();
   scan.type = WMTComputeCommandDispatch;
   scan.size = {1, 1, 1};
   barrier();
-  kernel("tessellation_emit", kTessellationThreads);
+  kernel(library.ComputePipeline("tessellation_emit"), kTessellationThreads);
   auto &emit = EncodeBeforeRender<wmtcmd_compute_dispatch_indirect>();
   emit.type = WMTComputeCommandDispatchIndirect;
   emit.indirect_args_buffer = gpu_heap_buffer_;

@@ -7,6 +7,9 @@ test('dxgi_adapter_vendor', dxgi_adapter, args : ['-', '106b'], timeout : 300)
 # and over a configuration file whose last section is another executable's
 test('dxgi_adapter_vendor_file', dxgi_adapter, args : ['-', '106b', '-'], timeout : 300)
 test('dxgi_adapter_memory', dxgi_adapter, args : ['-', '1002', 'no-file', '256'], timeout : 300)
+# the vendor, device, subsystem and revision, by default and from the configuration
+test('dxgi_adapter_identity', executable('dxgi_adapter_identity', ['dxgi_adapter_identity.cpp'], dependencies : dxgi_test_deps),
+     timeout : 300)
 # times its calls against the display's refresh, so it runs alone
 test('dxgi_vblank', executable('dxgi_vblank', ['dxgi_vblank.cpp'], dependencies : dxgi_test_deps),
      suite : 'timing', is_parallel : false, timeout : 300)

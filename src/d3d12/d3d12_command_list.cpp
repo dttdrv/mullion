@@ -429,6 +429,8 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   };
   std::vector<ActiveQuery> active_queries_;
   std::vector<uint64_t> visibility_slots_;
+  // whether a draw counted in the last slot
+  bool visibility_drawn_ = false;
   std::vector<std::pair<MTLD3D12QueryHeap *, OcclusionSum>> occlusion_sums_;
 
   // running and ended queries retain their GPU draw counts and indirect dispatches until summed into the heap
@@ -548,6 +550,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
                       : nullptr;
     if (!render)
       return;
+    visibility_drawn_ = false;
     auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
     cmd.type = WMTRenderCommandSetVisibilityMode;
     cmd.mode = WMTVisibilityResultModeDisabled;
@@ -1207,6 +1210,10 @@ public:
          (dirty_state_.test(DirtyState::Viewport) && pass->viewports + count > WMT::kPassRectangles) ||
          (pass->rasterless && !pso_graphics_->rasterless)))
       allocator_->InvalidateCurrentPass();
+    // Metal counts a slot's samples in 32 bits (tests/native/visibility_width.swift): a draw an occlusion query counts
+    // after another in its slot takes one of its own, and only a draw of 2^32 samples alone wraps
+    if (visibility_drawn_ && !active_queries_.empty())
+      CountVisibility();
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
       allocator_->InvalidateCurrentPass();
@@ -1312,6 +1319,7 @@ public:
       // a draw whose vertices may read what the pass's own work since it began did not
       allocator_->encoder_current->late = false;
     }
+    visibility_drawn_ = !active_queries_.empty();
 
     // the conservative rasterizer's viewports and state, bound again when they or the pipeline change
     bool conservative_dirty = dirty_state_.test(DirtyState::GraphicsPipelineState) || dirty_state_.test(DirtyState::Viewport);
@@ -1528,13 +1536,12 @@ public:
       bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(words), 16), words, sizeof(words)));
       bytes.length = sizeof(words);
       bytes.index = SM50_BINDING_INDEX_DEPTH_BOUNDS;
-      if (bounds_tested) {
-        auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        buffer.type = WMTRenderCommandSetFragmentBuffer;
-        buffer.buffer = depth_bounds_samples_;
-        buffer.offset = 0;
-        buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
-      }
+      // The shader declares the samples buffer even when the draw has no depth attachment.
+      auto &buffer = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+      buffer.type = WMTRenderCommandSetFragmentBuffer;
+      buffer.buffer = bounds_tested ? depth_bounds_samples_.handle : device_->GetNullBufferHandle();
+      buffer.offset = 0;
+      buffer.index = SM50_BINDING_INDEX_DEPTH_BOUNDS_SAMPLES;
     }
     // coarse shading's rates and combiners, and its image's bytes (or none, but a buffer bound)
     if (coarse) {
@@ -5525,7 +5532,18 @@ public:
     pso.threadgroup_size = {device_->GetSIMDWidth(), 1, 1};
     // the next compute dispatch binds its own pipeline again
     dirty_state_.set(DirtyState::ComputePipelineState);
-    BindComputeRootArguments();
+    if (rootsig_compute_) {
+      BindComputeRootArguments();
+    } else {
+      // A pipeline with only local root signatures still runs dispatch_rays with both global buffers bound.
+      for (auto index : {SM50_BINDING_INDEX_ROOT_ARGUMENTS, SM50_BINDING_INDEX_STATIC_SAMPLERS}) {
+        auto &binding = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+        binding.type = WMTComputeCommandSetBuffer;
+        binding.buffer = device_->GetNullBufferHandle();
+        binding.offset = 0;
+        binding.index = index;
+      }
+    }
     auto &functions = allocator_->EncodeComputeCommand<wmtcmd_compute_setvisiblefunctiontable>();
     functions.type = WMTComputeCommandSetVisibleFunctionTable;
     functions.table = table;
@@ -5764,24 +5782,6 @@ public:
   static WMTPixelFormat
   ReactiveMaskFormat(WMTPixelFormat format) {
     return format == WMTPixelFormatR8Uint ? WMTPixelFormatR8Unorm : ScalarFloatFormat(format);
-  }
-
-  // the float format MetalFX reads motion vectors as: DLSS takes them as floats, held as such or, in a typeless
-  // resource, as unsigned integers. normalized or signed integer motion vectors hold no float to read
-  static WMTPixelFormat
-  MotionVectorFormat(WMTPixelFormat format) {
-    switch (format) {
-    case WMTPixelFormatRG16Uint:
-    case WMTPixelFormatRG16Float:
-      return WMTPixelFormatRG16Float;
-    case WMTPixelFormatRG32Uint:
-    case WMTPixelFormatRG32Float:
-      return WMTPixelFormatRG32Float;
-    case WMTPixelFormatRGBA16Float:
-      return WMTPixelFormatRGBA16Float;
-    default:
-      return WMTPixelFormatInvalid;
-    }
   }
 
   // the pass, after everything before it and before everything after it

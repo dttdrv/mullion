@@ -916,6 +916,10 @@ ArgumentEncodingContext::endVisibilityResultQuery(Rc<VisibilityResultQuery> &&qu
   assert(active_visibility_query_count_);
   active_visibility_query_count_--;
 }
+void
+ArgumentEncodingContext::splitVisibilityResult() {
+  vro_state_.getNextReadOffset();
+}
 
 void ArgumentEncodingContext::countPipelineStatistics(uint64_t vertices, uint64_t instances,
                                                       std::pair<uint32_t, uint32_t> topology, uint32_t index_stride,
