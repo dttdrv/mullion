@@ -6,7 +6,9 @@
 // shows where the tables and the GPU differ.
 // three answers the tables leave to the device before a family ("some GPU devices in the Apple7 and Apple8 families"
 // have BC formats and the filtering and resolve of 32-bit float formats, some in Apple7 placement sparse resources)
-// are held from that family on, and printed before it.
+// are held from that family on, and printed before it. so is MetalFX's denoised upscaling, which the tables have from
+// Apple9 and an M1 Pro (Apple7) on macOS 27 has (dttdrv/mullion#72: MTLFXTemporalDenoisedScalerDescriptor's
+// supportsDevice: and supportsMetal4FX: both say so there).
 // what a stage reaches of samplers through argument buffers is 1024 before Apple9 as an M1 Pro reports it
 // (winemetal_unix.c); the tables have 996 there.
 #include "d3d11_test.hpp"
@@ -42,8 +44,8 @@ static const Row rows[] = {
     // MetalFX spatial, temporal and denoised upscaling
     {"supportsFXSpatialScaler", 7},
     {"supportsFXTemporalScaler", 7},
-    {"supportsFXDenoisedScaler.metal3", 9, 26},
-    {"supportsFXDenoisedScaler.metal4", 9, 26},
+    {"supportsFXDenoisedScaler.metal3", 9, 26, true},
+    {"supportsFXDenoisedScaler.metal4", 9, 26, true},
     // BC pixel formats, 32-bit float formats' Filter and Resolve, placement sparse textures
     {"supportsBCTextureCompression", 9, 0, true},
     {"supports32BitFloatFiltering", 9, 0, true},

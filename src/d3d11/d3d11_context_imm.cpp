@@ -360,6 +360,7 @@ public:
       static_cast<MTLD3D11OcclusionQuery *>(pAsync)->begun = pipeline_counts_;
       auto query = static_cast<MTLD3D11OcclusionQuery *>(pAsync)->Begin();
       VisibilityQueryBoundary(active_visibility_queries_++ != 0);
+      active_occlusion_queries_ += desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
         enc.beginVisibilityResultQuery(std::move(query));
       });
@@ -431,6 +432,7 @@ public:
       occlusion->counts = PipelineCountsSince(occlusion->begun);
       auto query = occlusion->End();
       VisibilityQueryBoundary(active_visibility_queries_-- != 0);
+      active_occlusion_queries_ -= desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       EmitST([query = Rc(query)](ArgumentEncodingContext &enc) mutable {
         enc.endVisibilityResultQuery(std::move(query));
       });

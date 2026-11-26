@@ -24,6 +24,7 @@
 #include "mullion_sampler.hpp"
 #include "airconv_public.h"
 #include "log/log.hpp"
+#include "config/config.hpp"
 #include "../d3d10/d3d10_state_object.hpp"
 #include <bit>
 
@@ -819,8 +820,13 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
 
   // a minimum or maximum filter reduces the texels its filter weights above zero (D3D11.3 5.9.4.5.6)
   auto reduction = D3D11_DECODE_FILTER_REDUCTION(desc.Filter);
+  // d3d11.samplerLodBias (mullion.conf, DXVK's name) is added to each sampler's own bias, within the range a bias has
+  // (D3D11_MIP_LOD_BIAS_MIN and _MAX, -16 and 15.99, which the toolchain's d3d11.h lacks); the description GetDesc
+  // gives is the application's
+  static const float lod_bias = Config::getInstance().getOption<float>("d3d11.samplerLodBias", 0.0f);
   auto sampler = Sampler::createSampler(
-      device->GetMTLDevice(), info, desc.MipLODBias, nullptr,
+      device->GetMTLDevice(), info, lod_bias ? std::clamp(desc.MipLODBias + lod_bias, -16.0f, 15.99f) : desc.MipLODBias,
+      nullptr,
       reduction == D3D11_FILTER_REDUCTION_TYPE_MINIMUM   ? SM50_SAMPLER_REDUCTION_MINIMUM
       : reduction == D3D11_FILTER_REDUCTION_TYPE_MAXIMUM ? SM50_SAMPLER_REDUCTION_MAXIMUM
                                                          : SM50_SAMPLER_REDUCTION_NONE

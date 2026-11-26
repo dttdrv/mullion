@@ -1,0 +1,12 @@
+# a queue's commit of the residency set leaves out the allocations added since it was last committed: a tiled texture's heap is not resident when its tiles are first drawn from
+# family native
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -2703,7 +2703,6 @@
+   CommitResidency() final {
+     heartbeat::Submitted();
+     std::unique_lock<mullion::mutex> lock(residency_lock_);
+-    ApplyResidencyChanges();
+     if (std::exchange(residency_dirty_, false))
+       residency_set_.commit();
+   }

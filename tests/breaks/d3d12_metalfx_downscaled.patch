@@ -1,0 +1,12 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -5848,7 +5848,7 @@
+         Config::getInstance().getOption<bool>("metalfx.outputResolutionMotionVectors", true);
+     bool at_output = pDesc->MotionVectorInDisplayRes &&
+                      (motion->width() != color->width() || motion->height() != color->height());
+-    bool native_motion = at_output && output_motion && cache->support.output_resolution_motion_vectors &&
++    bool native_motion = at_output && cache->support.output_resolution_motion_vectors &&
+                          motion_format != WMTPixelFormatInvalid && motion->width() == output->width() &&
+                          motion->height() == output->height();
+     bool display_motion = at_output && !native_motion && device_->downscale_motion;

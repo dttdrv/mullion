@@ -317,22 +317,48 @@ MTLD3D10Device::RSSetScissorRects(UINT NumRects, const D3D10_RECT *pRects) {
   d3d11_context_->RSSetScissorRects(NumRects, pRects);
 }
 
+// whether a copy may write the resource: before Direct3D 10.1 a depth stencil resource is no copy's destination
+// (ID3D10Device::CopyResource), and Windows leaves one as it was on a device of feature level 10_0 (Wine's d3d10core
+// test_format_compatibility)
+static bool
+CopiesInto(D3D10_FEATURE_LEVEL1 level, ID3D11Resource *pResource) {
+  if (!pResource || level >= D3D10_FEATURE_LEVEL_10_1)
+    return true;
+  D3D11_RESOURCE_DIMENSION dimension;
+  pResource->GetType(&dimension);
+  UINT bind = 0;
+  if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
+    D3D11_TEXTURE1D_DESC desc;
+    static_cast<ID3D11Texture1D *>(pResource)->GetDesc(&desc);
+    bind = desc.BindFlags;
+  } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+    D3D11_TEXTURE2D_DESC desc;
+    static_cast<ID3D11Texture2D *>(pResource)->GetDesc(&desc);
+    bind = desc.BindFlags;
+  }
+  return !(bind & D3D11_BIND_DEPTH_STENCIL);
+}
+
 void STDMETHODCALLTYPE
 MTLD3D10Device::CopySubresourceRegion(
     ID3D10Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ, ID3D10Resource *pSrcResource,
     UINT SrcSubresource, const D3D10_BOX *pSrcBox
 ) {
+  auto dst = GetD3D11Interface<MTLD3D10Buffer>(pDstResource);
+  if (!CopiesInto(GetFeatureLevel(), dst))
+    return;
   d3d11_context_->CopySubresourceRegion(
-      GetD3D11Interface<MTLD3D10Buffer>(pDstResource), DstSubresource, DstX, DstY, DstZ,
-      GetD3D11Interface<MTLD3D10Buffer>(pSrcResource), SrcSubresource, reinterpret_cast<const D3D11_BOX *>(pSrcBox)
+      dst, DstSubresource, DstX, DstY, DstZ, GetD3D11Interface<MTLD3D10Buffer>(pSrcResource), SrcSubresource,
+      reinterpret_cast<const D3D11_BOX *>(pSrcBox)
   );
 }
 
 void STDMETHODCALLTYPE
 MTLD3D10Device::CopyResource(ID3D10Resource *pDstResource, ID3D10Resource *pSrcResource) {
-  d3d11_context_->CopyResource(
-      GetD3D11Interface<MTLD3D10Buffer>(pDstResource), GetD3D11Interface<MTLD3D10Buffer>(pSrcResource)
-  );
+  auto dst = GetD3D11Interface<MTLD3D10Buffer>(pDstResource);
+  if (!CopiesInto(GetFeatureLevel(), dst))
+    return;
+  d3d11_context_->CopyResource(dst, GetD3D11Interface<MTLD3D10Buffer>(pSrcResource));
 }
 
 void STDMETHODCALLTYPE

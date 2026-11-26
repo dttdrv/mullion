@@ -1,0 +1,9 @@
+one segment's count, in hex, of triangles of 2^26 samples:
+  1 draw: 4000000
+  63 draws: fc000000
+  64 draws: 0
+  100 draws: 90000000
+  1 draw of 100 instances: 90000000
+  1 draw of 100 triangles: 90000000
+two segments of 50 draws each:
+  50 + 50 draws: c8000000 c8000000

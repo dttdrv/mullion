@@ -1,4 +1,5 @@
 #include "mullion_command.hpp"
+#include "mullion_command_constants.hpp"
 #include "Metal.hpp"
 #include "mullion_context.hpp"
 #include "mullion_format.hpp"
@@ -454,7 +455,11 @@ DepthStencilBlitContext::copyFromTexture(
   auto &setpso = ctx_.encodeComputeCommand<wmtcmd_compute_setpso>();
   setpso.type = WMTComputeCommandSetPSO;
   setpso.pso = to_d24s8 ? pso_copy_to_buffer_d24s8_ : pso_copy_to_buffer_d32s8_;
-  setpso.threadgroup_size = {8, 4, 1};
+  setpso.threadgroup_size = {
+      kDepthReadbackThreadgroup[0],
+      kDepthReadbackThreadgroup[1],
+      kDepthReadbackThreadgroup[2],
+  };
 
   auto &setdepth = ctx_.encodeComputeCommand<wmtcmd_compute_settexture>();
   setdepth.type = WMTComputeCommandSetTexture;

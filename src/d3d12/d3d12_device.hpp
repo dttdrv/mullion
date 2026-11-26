@@ -648,7 +648,10 @@ public:
   // when an indirect command buffer draws them, so none is set
   bool unbiased = false;
   // the samples a pass without targets rasterizes (RasterSampleCount of ForcedSampleCount), 0 for its targets'
-  uint32_t forced_sample_count;
+  uint32_t forced_sample_count = 0;
+  // a pipeline that could not be made, given to the application with d3d12.ignoreFailedPipelines: its draws are dropped
+  // before they reach a pass
+  bool failed = false;
   // each raster sample stands for two of the description's (RasterSampleCount)
   bool paired_samples = false;
   // D3D12_DEPTH_STENCIL_DESC1::DepthBoundsTestEnable, on a device that has the test, and on one that has not, where the
@@ -1057,6 +1060,10 @@ public:
   // the tiers of what shaders emulate (d3d12.reportEmulatedFeatures): conservative rasterization, variable rate
   // shading, sampler feedback and programmed sample positions, reported as absent without it
   bool report_emulated_features = false;
+  // a pipeline Metal or the converter could not make, given to the application as one whose draws and dispatches
+  // are dropped, instead of failing its creation (d3d12.ignoreFailedPipelines): an application
+  // that does not expect CreateGraphicsPipelineState to fail keeps running without that pipeline's work
+  bool ignore_failed_pipelines = false;
 
   // the scratch area each list's indirect stream output commands share, from D3D11's start (kStagingBlockSize): a
   // command that lacked room was not run, and grows it for lists recorded later

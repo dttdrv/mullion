@@ -22,6 +22,8 @@ struct DeferredContextInternalState {
   std::unordered_map<DynamicLinearTexture *, std::pair<TextureAllocation *, uint32_t>> current_dynamic_texture_allocations;
   std::unordered_map<void *, std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> building_visibility_queries;
   std::unordered_set<uint32_t> pending_visibility_queries;
+  // of building_visibility_queries, the occlusion ones
+  unsigned building_occlusion_queries = 0;
 };
 
 template<typename Object> Rc<Object> forward_rc(Rc<Object>& obj) {
@@ -128,6 +130,24 @@ DeferredContextBase::VisibilityQueryBoundary(bool counting) {
   // an enclosing query can count before a deferred Begin is confirmed by a draw (D3D11.3 6.3.6)
   if (counting && began && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
     InvalidateCurrentPass(true);
+}
+
+// the list's own occlusion queries: one enclosing the list's execution counts its draws in one segment
+template <>
+bool
+DeferredContextBase::OcclusionCounting() {
+  return ctx_state.building_occlusion_queries;
+}
+
+template <>
+void
+DeferredContextBase::SplitVisibility() {
+  // a query begun since the last boundary is counted there
+  bool began = !ctx_state.pending_visibility_queries.empty();
+  VisibilityQueryBoundary(true);
+  if (!began && ++visibility_result_segments_ == VisibilityResultOffsetBumpState::kVisibilitySegments - 1)
+    InvalidateCurrentPass(true);
+  EmitST([](ArgumentEncodingContext &enc) { enc.splitVisibilityResult(); });
 }
 
 class MTLD3D11DeferredContext : public DeferredContextBase {
@@ -306,6 +326,7 @@ public:
       ctx_state.building_visibility_queries.insert(
           {(void *)pAsync, {static_cast<MTLD3D11OcclusionQuery *>(pAsync), query_id}}
       );
+      ctx_state.building_occlusion_queries += desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       if (desc.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
         auto &regions = ctx_state.current_cmdlist->regions;
         regions.back().pipeline_query = static_cast<MTLD3D11OcclusionQuery *>(pAsync);
@@ -389,6 +410,7 @@ public:
       });
       ctx_state.pending_visibility_queries.erase(query_id);
       ctx_state.building_visibility_queries.erase(building_query);
+      ctx_state.building_occlusion_queries -= desc.Query != D3D11_QUERY_PIPELINE_STATISTICS;
       if (desc.Query == D3D11_QUERY_PIPELINE_STATISTICS) {
         auto &regions = ctx_state.current_cmdlist->regions;
         regions.back().pipeline_query = static_cast<MTLD3D11OcclusionQuery *>(pAsync);

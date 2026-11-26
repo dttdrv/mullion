@@ -1,11 +1,16 @@
 --- a/src/mullion/mullion_texture.cpp
 +++ b/src/mullion/mullion_texture.cpp
-@@ -332,8 +332,2 @@
+@@ -442,13 +442,6 @@
+ 
+ Rc<TextureAllocation>
  Texture::rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRef> &retiredViews) {
 -  // view indices belong to this texture; encoded commands retain the old views until the chunk completes
 -  for (auto &view : newAllocation->cached_view_)
 -    retiredViews.push_back(std::move(view));
 -  newAllocation->cached_view_.clear();
+-  newAllocation->published_count_.store(0, std::memory_order_release);
 -  newAllocation->version_ = 0;
 -  newAllocation->descriptor = this;
    return rename(std::move(newAllocation));
+ }
+ 

@@ -1,0 +1,12 @@
+diff --git a/src/nvngx/nvngx.cpp b/src/nvngx/nvngx.cpp
+--- a/src/nvngx/nvngx.cpp
++++ b/src/nvngx/nvngx.cpp
+@@ -280,7 +280,7 @@
+ 
+   // the sizes a dynamic resolution may take: none smaller than the output at the largest scale, rounded up, nor larger
+   // than at the smallest, rounded down
+-  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, (unsigned int)std::ceil(width / max));
++  params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, (unsigned int)std::ceil(width / 3));
+   params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height, (unsigned int)std::ceil(height / max));
+ 
+   params->Set(NVNGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, (unsigned int)std::floor(width / min));
