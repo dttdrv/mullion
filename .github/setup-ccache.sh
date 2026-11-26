@@ -11,3 +11,6 @@ done
 export PATH="/tmp/ccache-bin:$PATH"
 export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
 export CCACHE_COMPILERCHECK=content
+# Depend mode skips running the compiler with -E (which fails for llvm-mingw -marm64x)
+# and reads the .d depfiles Meson already generates via -MD -MF.
+export CCACHE_DEPEND=true
