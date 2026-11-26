@@ -230,6 +230,8 @@ public:
   CompiledShader *
   get_pixel_shader(ShaderVariantPixel variant, std::span<const WMTPixelFormat> formats, IMTLD3D11BlendState *blend,
                    bool minmax_filtering) {
+    // UNORM correction is emitted only for declared pixel-shader outputs.
+    variant.unorm_output_reg_mask &= reflection().PixelShader.ValidRenderTargets;
     variant.no_minmax_filter = !minmax_filtering;
     variant.pixel_formats = PixelShaderOutputFormats(reflection().PixelShader, formats, variant.dual_source_blending);
     WMTRenderPipelineBlendInfo targets{};

@@ -115,6 +115,12 @@ bool IsUnorm8RenderTargetFormat(WMTPixelFormat format);
 
 bool IsIntegerFormat(WMTPixelFormat format);
 
+// the float format MetalFX's temporal scaler reads motion vectors through, or Invalid where it takes none: DLSS takes
+// them as floats (DLSS Programming Guide 3.6.1), held as such or, in a typeless resource, as unsigned integers. a
+// texture of another format that holds floats, normalized ones, is read through its own format first, as DLSS reads
+// its inputs (3.3)
+WMTPixelFormat MotionVectorFormat(WMTPixelFormat format);
+
 // whether a texture of the format may be viewed in another of its type group that Metal reinterprets only through a
 // pixel format view, which it waives for sRGB twins. `fully_typed` takes D3D12's casts of fully typed resources, which
 // keep _FLOAT and other formats apart (DirectX-Specs, D3D12 Relaxed Format Casting Rules)
