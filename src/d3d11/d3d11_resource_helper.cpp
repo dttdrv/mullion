@@ -339,6 +339,12 @@ CreateMTLTextureDescriptorInternal(
       (Dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D || Width != Height || ArraySize < cube_faces ||
        SampleCount != 1 || (pDevice->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_1 && ArraySize != cube_faces)))
     return E_INVALIDARG;
+  // a texture GDI draws on is in GPU memory and BGRA: Windows refuses staging ones and BGRX ones (Wine's test_getdc;
+  // D3D11_RESOURCE_MISC_GDI_COMPATIBLE: "D3D11_USAGE_DEFAULT", "one of the following types")
+  if ((MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) &&
+      (Usage != D3D11_USAGE_DEFAULT || (Format != DXGI_FORMAT_B8G8R8A8_UNORM && Format != DXGI_FORMAT_B8G8R8A8_TYPELESS &&
+                                        Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)))
+    return E_INVALIDARG;
 
   MTL_DXGI_FORMAT_DESC metal_format;
   if (FAILED(MTLQueryDXGIFormat(pDevice->GetMTLDevice(), Format, metal_format)) ||

@@ -454,6 +454,9 @@ public:
         !ValidUsage(desc.Usage, desc.BindFlags, desc.CPUAccessFlags, pInitialData) ||
         (desc.MiscFlags & (D3D11_RESOURCE_MISC_TILE_POOL | D3D11_RESOURCE_MISC_TILED)))
       return E_INVALIDARG;
+    // GDI draws on textures only (Wine's d3d10core test_create_buffer has Windows refuse a buffer of it)
+    if (desc.MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE)
+      return E_INVALIDARG;
 
     try {
       switch (pDesc->Usage) {
