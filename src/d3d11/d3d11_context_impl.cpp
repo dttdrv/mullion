@@ -294,6 +294,19 @@ public:
       break;
     }
   };
+
+  // a depth stencil or multisampled texture, which the runtime copies only whole
+  bool
+  WholeOnly() const {
+    switch (Dimension) {
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+      return Texture1DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+      return (Texture2DDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) || Texture2DDesc.SampleDesc.Count > 1;
+    default:
+      return false;
+    }
+  }
 };
 
 class TextureCopyCommand {
@@ -1266,6 +1279,10 @@ public:
       break;
     }
     default:
+      // the runtime passes a copy with a depth stencil or multisampled texture to a driver only with no box and no
+      // offsets (PFND3D11_1DDI_RESOURCECOPYREGION), and drops any other
+      if ((pSrcBox || DstX || DstY || DstZ) && (Dst.WholeOnly() || Src.WholeOnly()))
+        return;
       CopyTexture(TextureCopyCommand(Dst, DstSubresource, DstX, DstY, DstZ, Src, SrcSubresource, pSrcBox));
       break;
     }
@@ -6346,6 +6363,8 @@ class MTLD3D11ContextExt : public IMTLD3D11ContextExt1 {
     uint32_t input_height;
     uint32_t output_width;
     uint32_t output_height;
+    uint32_t pass_width;
+    uint32_t pass_height;
     Rc<TemporalScaler> scaler;
     Rc<Texture> mv_downscaled;
   };
@@ -6374,11 +6393,23 @@ public:
     if (pDesc->ExposureTexture && !(exposure = static_cast<D3D11ResourceCommon *>(pDesc->ExposureTexture)->texture()))
       return;
 
-    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_vector->pixelFormat());
-    if (motion_vector_format == WMTPixelFormatInvalid) {
-      ERR("TemporalUpscale: invalid motion vector format ", motion_vector->pixelFormat());
+    auto motion_pixel = motion_vector->pixelFormat();
+    WMTPixelFormat motion_vector_format = MotionVectorFormat(motion_pixel);
+    // DLSS reads motion vectors through their format ("DLSS uses formatted reads so should handle most input buffer
+    // formats", DLSS Programming Guide 3.3): those in one MetalFX does not take, which a shader reads as floats, are
+    // read so by the pass below, as Direct3D 12's upscale reads them
+    bool formatted = motion_vector_format == WMTPixelFormatInvalid && !IsIntegerFormat(motion_pixel) &&
+                     !DepthStencilPlanarFlags(motion_pixel);
+    if (motion_vector_format == WMTPixelFormatInvalid && !formatted) {
+      ERR("TemporalUpscale: motion vectors of format ", motion_pixel, " are not supported");
       return;
     }
+    // the pass writes the scaler's motion vectors as 32-bit floats in pixels: at the input resolution from those at the
+    // output's, or as many as it reads where they are at the input's already
+    bool motion_pass = pDesc->MotionVectorInDisplayRes || formatted;
+    WMTPixelFormat scaler_motion_format = motion_pass ? WMTPixelFormatRG32Float : motion_vector_format;
+    uint32_t pass_width = !motion_pass ? 0 : pDesc->MotionVectorInDisplayRes ? input->width() : motion_vector->width(),
+             pass_height = !motion_pass ? 0 : pDesc->MotionVectorInDisplayRes ? input->height() : motion_vector->height();
 
     Rc<TemporalScaler> scaler;
     Rc<Texture> mv_downscaled;
@@ -6393,7 +6424,8 @@ public:
       if(input->pixelFormat() != entry.color_pixel_format) continue;
       if(output->pixelFormat() != entry.output_pixel_format) continue;
       if(depth->pixelFormat() != entry.depth_pixel_format) continue;
-      if(motion_vector_format != entry.motion_vector_pixel_format) continue;
+      if(scaler_motion_format != entry.motion_vector_pixel_format) continue;
+      if(pass_width != entry.pass_width || pass_height != entry.pass_height) continue;
 
       scaler = entry.scaler;
       mv_downscaled = entry.mv_downscaled;
@@ -6405,12 +6437,14 @@ public:
       scaler_entry.color_pixel_format = input->pixelFormat();
       scaler_entry.output_pixel_format = output->pixelFormat();
       scaler_entry.depth_pixel_format = depth->pixelFormat();
-      scaler_entry.motion_vector_pixel_format = motion_vector_format;
+      scaler_entry.motion_vector_pixel_format = scaler_motion_format;
+      scaler_entry.pass_width = pass_width;
+      scaler_entry.pass_height = pass_height;
       WMTFXTemporalScalerInfo info{};
       info.color_format = scaler_entry.color_pixel_format;
       info.output_format = scaler_entry.output_pixel_format;
       info.depth_format = scaler_entry.depth_pixel_format;
-      info.motion_format = motion_vector_format;
+      info.motion_format = scaler_motion_format;
       scaler_entry.auto_exposure = pDesc->AutoExposure;
       scaler_entry.jittered = pDesc->MotionVectorJittered;
       info.jittered_motion_vectors = scaler_entry.jittered;
@@ -6430,10 +6464,10 @@ public:
       // the same image (MTLFXTemporalScalerDescriptor, requiresSynchronousInitialization)
       info.requires_synchronous_initialization = false;
       scaler_entry.scaler = new TemporalScaler(ctx_->device->GetMTLDevice(), info);
-      if (pDesc->MotionVectorInDisplayRes) {
+      if (motion_pass) {
         WMTTextureInfo tex_info{};
-        tex_info.width = scaler_entry.input_width;
-        tex_info.height = scaler_entry.input_height;
+        tex_info.width = pass_width;
+        tex_info.height = pass_height;
         tex_info.depth = 1;
         tex_info.array_length = 1;
         tex_info.mipmap_level_count = 1;
@@ -6455,12 +6489,13 @@ public:
     }
 
     // made before the textures' use, which moves a texture the view casts (Texture::deferFormatView)
-    if (!ctx_->device->PrepareFormatView(motion_vector.ptr(), motion_vector_format)) {
-      ERR("TemporalUpscale: out of memory for a motion vector view of ", motion_vector_format);
+    auto view_format = formatted ? motion_pixel : motion_vector_format;
+    if (!ctx_->device->PrepareFormatView(motion_vector.ptr(), view_format)) {
+      ERR("TemporalUpscale: out of memory for a motion vector view of ", view_format);
       return;
     }
     auto mv_view = motion_vector->createView(
-        {.format = motion_vector_format,
+        {.format = view_format,
          .type = WMTTextureType2D,
          .firstMiplevel = 0,
          .miplevelCount = 1,
@@ -6493,7 +6528,7 @@ public:
                           pDesc->JitterOffsetY,
                           pDesc->PreExposure,
                       },
-                  mv_view, mv_downscaled = std::move(mv_downscaled)
+                  mv_view, mv_downscaled = std::move(mv_downscaled), display = bool(pDesc->MotionVectorInDisplayRes)
                 ](ArgumentEncodingContext &enc) mutable {
       auto &scaler_info = enc.currentFrameStatistics().last_scaler_info;
       scaler_info.type = ScalerType::Temporal;
@@ -6503,16 +6538,16 @@ public:
       scaler_info.output_width = output->width();
       scaler_info.output_height = output->height();
 
-      scaler_info.motion_vector_highres = mv_downscaled != nullptr;
+      scaler_info.motion_vector_highres = display;
 
-      if (scaler_info.motion_vector_highres) {
+      if (mv_downscaled) {
         enc.mv_scale_cmd.dispatch(
-            motion_vector, mv_view, mv_downscaled, 0, props.motion_vector_scale_x, props.motion_vector_scale_y
+            motion_vector, mv_view, mv_downscaled, mv_downscaled->fullView, props.motion_vector_scale_x, props.motion_vector_scale_y
         );
         WMTFXTemporalScalerProps new_props = props;
         new_props.motion_vector_scale_x = 1.0;
         new_props.motion_vector_scale_y = 1.0;
-        enc.upscaleTemporal(input, output, depth, mv_downscaled, 0, exposure, scaler, new_props);
+        enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
       } else {
         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
       }

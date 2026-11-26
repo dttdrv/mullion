@@ -16,6 +16,10 @@ main() {
     check(format("x", uint8_t(value), 'y'), "x" + std::to_string(value) + "y");
   }
   check(format('a', "b"), "ab");
+  // The result owns the whole formatted sequence after the local stream is destroyed.
+  const std::string payload(4096, 'x');
+  check(mullion::str::format("shader:", payload, '/', 17), "shader:" + payload + "/17");
+  check(mullion::str::format(std::string("a\0b", 3), 7), std::string("a\0b7", 4));
   std::printf("%s: %u wrong results\n", failures ? "failed" : "passed", failures);
   return failures != 0;
 }

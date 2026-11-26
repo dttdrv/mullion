@@ -544,7 +544,7 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
           block_to_visit.push(cond.true_branch);
           block_to_visit.push(cond.false_branch);
         },
-        [&](BasicBlockSwitch swc)  {
+        [&](const BasicBlockSwitch &swc) {
           block_to_visit.push(swc.case_default);
           for (auto &[val, case_bb] : swc.cases) {
             block_to_visit.push(case_bb);
@@ -601,7 +601,7 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
               builder.CreateCondBr(test, target_true_bb, target_false_bb);
               return llvm::Error::success();
             },
-            [&](BasicBlockSwitch swc) -> llvm::Error {
+            [&](const BasicBlockSwitch &swc) -> llvm::Error {
               auto value = dxbc.LoadOperand(swc.value, kMaskComponentX);
               auto switch_inst = builder.CreateSwitch(
                 value, visited[swc.case_default], swc.cases.size()

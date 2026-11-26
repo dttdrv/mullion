@@ -9,7 +9,7 @@
  */
 
 #include <cstring>
-#include <cstdlib>
+#include <new>
 
 #include "com_private_data.hpp"
 
@@ -19,8 +19,9 @@ ComPrivateDataEntry::ComPrivateDataEntry() {}
 ComPrivateDataEntry::ComPrivateDataEntry(REFGUID guid, UINT size,
                                          const void *data)
     : m_guid(guid), m_type(ComPrivateDataType::Data), m_size(size),
-      m_data(std::malloc(size)) {
-  std::memcpy(m_data, data, size);
+      m_data(size ? std::make_unique_for_overwrite<BYTE[]>(size) : nullptr) {
+  if (size)
+    std::memcpy(m_data.get(), data, size);
 }
 
 ComPrivateDataEntry::ComPrivateDataEntry(REFGUID guid, const IUnknown *iface)
@@ -34,11 +35,10 @@ ComPrivateDataEntry::~ComPrivateDataEntry() { this->destroy(); }
 
 ComPrivateDataEntry::ComPrivateDataEntry(ComPrivateDataEntry &&other)
     : m_guid(other.m_guid), m_type(other.m_type), m_size(other.m_size),
-      m_data(other.m_data), m_iface(other.m_iface) {
+      m_data(std::move(other.m_data)), m_iface(other.m_iface) {
   other.m_guid = __uuidof(IUnknown);
   other.m_type = ComPrivateDataType::None;
   other.m_size = 0;
-  other.m_data = nullptr;
   other.m_iface = nullptr;
 }
 
@@ -48,13 +48,12 @@ ComPrivateDataEntry::operator=(ComPrivateDataEntry &&other) {
   this->m_guid = other.m_guid;
   this->m_type = other.m_type;
   this->m_size = other.m_size;
-  this->m_data = other.m_data;
+  this->m_data = std::move(other.m_data);
   this->m_iface = other.m_iface;
 
   other.m_guid = __uuidof(IUnknown);
   other.m_type = ComPrivateDataType::None;
   other.m_size = 0;
-  other.m_data = nullptr;
   other.m_iface = nullptr;
   return *this;
 }
@@ -79,8 +78,8 @@ HRESULT ComPrivateDataEntry::get(UINT &size, void *data) const {
       if (m_iface)
         m_iface->AddRef();
       std::memcpy(data, &m_iface, minSize);
-    } else {
-      std::memcpy(data, m_data, minSize);
+    } else if (minSize) {
+      std::memcpy(data, m_data.get(), minSize);
     }
   }
 
@@ -89,8 +88,6 @@ HRESULT ComPrivateDataEntry::get(UINT &size, void *data) const {
 }
 
 void ComPrivateDataEntry::destroy() {
-  if (m_data)
-    std::free(m_data);
   if (m_iface)
     m_iface->Release();
 }
@@ -105,13 +102,21 @@ HRESULT ComPrivateData::setData(REFGUID guid, UINT size, const void *data) {
     }
     return S_FALSE;
   }
-  this->insertEntry(ComPrivateDataEntry(guid, size, data));
-  return S_OK;
+  try {
+    this->insertEntry(ComPrivateDataEntry(guid, size, data));
+    return S_OK;
+  } catch (const std::bad_alloc &) {
+    return E_OUTOFMEMORY;
+  }
 }
 
 HRESULT ComPrivateData::setInterface(REFGUID guid, const IUnknown *iface) {
-  this->insertEntry(ComPrivateDataEntry(guid, iface));
-  return S_OK;
+  try {
+    this->insertEntry(ComPrivateDataEntry(guid, iface));
+    return S_OK;
+  } catch (const std::bad_alloc &) {
+    return E_OUTOFMEMORY;
+  }
 }
 
 HRESULT ComPrivateData::getData(REFGUID guid, UINT *size, void *data) {
@@ -149,23 +154,12 @@ void ComPrivateData::insertEntry(ComPrivateDataEntry &&entry) {
 
 HRESULT ConcurrentComPrivateData::setData(REFGUID guid, UINT size, const void *data) {
   std::lock_guard<mullion::mutex> lock(mutex_);
-  if (!data) {
-    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
-      if (it->hasGuid(guid)) {
-        m_entries.erase(it);
-        return S_OK;
-      }
-    }
-    return S_FALSE;
-  }
-  this->insertEntry(ComPrivateDataEntry(guid, size, data));
-  return S_OK;
+  return ComPrivateData::setData(guid, size, data);
 }
 
 HRESULT ConcurrentComPrivateData::setInterface(REFGUID guid, const IUnknown *iface) {
   std::lock_guard<mullion::mutex> lock(mutex_);
-  this->insertEntry(ComPrivateDataEntry(guid, iface));
-  return S_OK;
+  return ComPrivateData::setInterface(guid, iface);
 }
 
 HRESULT ConcurrentComPrivateData::getData(REFGUID guid, UINT *size, void *data) {

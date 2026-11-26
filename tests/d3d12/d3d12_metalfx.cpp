@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <vector>
 
 struct Texture {
@@ -98,6 +99,31 @@ main(int argc, char **argv) {
                 packed.resource && output.resource && display_motion.resource
             ? S_OK
             : E_FAIL);
+  CHECK(list->Reset(allocator.Get(), nullptr));
+  MTL_TEMPORAL_UPSCALE_D3D12_DESC valid{};
+  valid.Color = color.resource.Get();
+  valid.Output = output.resource.Get();
+  valid.Depth = depth.resource.Get();
+  valid.MotionVector = motion.resource.Get();
+  valid.ExposureTexture = exposure.resource.Get();
+  valid.PreExposure = valid.MotionVectorScaleX = valid.MotionVectorScaleY = 1;
+  // a missing input is refused; inputs DLSS would not be given are upscaled anyway, as a game's ray traced frame
+  // gives them (src/d3d12/d3d12_command_list.cpp, TemporalUpscale), so only the missing ones are tried here
+  auto refused = [&](auto change, const char *name) {
+    auto invalid = valid;
+    change(invalid);
+    IMTLD3D12Upscaler *cache = nullptr;
+    expect(ext->TemporalUpscale(&invalid, &cache) == E_INVALIDARG, "%s was accepted", name);
+    expect(!cache, "%s created a scaler", name);
+    if (cache)
+      cache->Destroy();
+  };
+  step("missing temporal MetalFX inputs");
+  refused([](auto &d) { d.Depth = nullptr; }, "no depth");
+  refused([](auto &d) { d.MotionVector = nullptr; }, "no motion vectors");
+  refused([](auto &d) { d.Output = nullptr; }, "no output");
+
+  CHECK(list->Close());
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
   UINT64 bytes;
   auto out_desc = output.resource->GetDesc();
@@ -353,8 +379,26 @@ main(int argc, char **argv) {
   params->Set("OutWidth", out_width);
   params->Set("OutHeight", out_height);
   params->Set("DLSS.Feature.Create.Flags", int(NVNGX_DLSS_FLAG_MV_LOWRES));
+  unsigned sentinel = 0;
+  unsigned *handle = &sentinel;
+  expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, nullptr, &handle) == NVNGX_RESULT_INVALID_PARAMETER &&
+             !handle, "DLSS creation with no parameters did not reject and clear the handle");
+  for (const char *name : {"Width", "Height", "OutWidth", "OutHeight"}) {
+    unsigned value = 0;
+    params->Get(name, &value);
+    params->Set(name, 0u);
+    handle = &sentinel;
+    auto result = create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &handle);
+    expect(result == NVNGX_RESULT_INVALID_PARAMETER && !handle, "DLSS creation with %s=0 returned %#x, handle %p",
+           name, result, (void *)handle);
+    if (result == NVNGX_RESULT_OK && handle && handle != &sentinel)
+      release(handle);
+    params->Set(name, value);
+  }
   if (expect(create(list.Get(), NVNGX_FEATURE_SUPERSAMPLING, params, &feature) == NVNGX_RESULT_OK && feature,
              "DLSS was not created")) {
+    expect(evaluate(list.Get(), feature, nullptr, nullptr) == NVNGX_RESULT_INVALID_PARAMETER,
+           "DLSS ran without parameters");
     params->Set("Color", color.resource.Get());
     params->Set("Output", (void *)output.resource.Get());
     params->Set("Depth", depth.resource.Get());

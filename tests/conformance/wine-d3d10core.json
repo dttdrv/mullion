@@ -141,9 +141,7 @@
   "verdict": "passed"
  },
  "test_format_compatibility": {
-  "verdict": "failed",
-  "failed": 54,
-  "first": "d3d10core.c:16453: Test failed: Test 26: Got unexpected colour 0x00ff0000 at (0, 1), expected 0x00000000."
+  "verdict": "passed"
  },
  "test_format_support": {
   "verdict": "passed"
