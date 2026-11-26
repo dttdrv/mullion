@@ -7,7 +7,9 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <algorithm>
 #include <map>
+#include <vector>
 #include <utility>
 
 namespace mullion::heartbeat {
@@ -32,13 +34,35 @@ struct State {
 };
 
 // the set Keep fills, under its own lock: allocations are made and freed while a D3D12 device's lock is held, and
-// that lock is taken under the state's
+// that lock is taken under the state's. Keep only lists its additions, each allocation kept until Settle adds them:
+// Settle holds `mutex` across the set's commit, a kernel call that makes new memory resident (about 1 ms for 64 MiB),
+// which a thread making textures should not wait for. Release takes back an addition still listed, or takes the
+// allocation out of the set at once
 struct Kept {
   mullion::mutex mutex;
   WMT::Reference<WMT::ResidencySet> set;
   bool dirty = false;
-  uint64_t count = 0;
+  mullion::mutex changes_mutex;
+  std::vector<WMT::Reference<WMT::Allocation>> additions;
+  std::atomic<int64_t> count = 0;
+  // the set is made, once, and never goes: Keep and Release need not take `mutex` to know it
+  std::atomic<bool> ready = false;
 };
+
+// the additions Keep listed, under `mutex`
+void
+Apply(Kept &k) {
+  std::vector<WMT::Reference<WMT::Allocation>> additions;
+  {
+    std::lock_guard lock(k.changes_mutex);
+    additions.swap(k.additions);
+  }
+  if (additions.empty())
+    return;
+  std::vector<WMT::Allocation> run(additions.begin(), additions.end());
+  k.set.addAllocations(run.data(), run.size());
+  k.dirty = true;
+}
 
 Kept &
 kept_set() {
@@ -53,6 +77,7 @@ Settle(bool idle) {
   std::lock_guard lock(k.mutex);
   if (!k.set)
     return;
+  Apply(k);
   if (std::exchange(k.dirty, false))
     k.set.commit();
   if (idle && k.count)
@@ -156,6 +181,7 @@ KeepAllocations(WMT::Device device) {
       WARN("residency heartbeat: no residency set for D3D11 allocations");
       return;
     }
+    k.ready = true;
   }
   // the thread runs while a set is watched; this one's work is done in Settle
   Watch([] {});
@@ -166,11 +192,10 @@ Keep(WMT::Allocation allocation, uint64_t bytes) {
   if (bytes < (1u << 20) || !allocation)
     return false;
   auto &k = kept_set();
-  std::lock_guard lock(k.mutex);
-  if (!k.set)
+  if (!k.ready)
     return false;
-  k.set.addAllocations(&allocation, 1);
-  k.dirty = true;
+  std::lock_guard lock(k.changes_mutex);
+  k.additions.emplace_back(allocation);
   k.count++;
   return true;
 }
@@ -178,12 +203,23 @@ Keep(WMT::Allocation allocation, uint64_t bytes) {
 void
 Release(WMT::Allocation allocation) {
   auto &k = kept_set();
-  std::lock_guard lock(k.mutex);
-  if (!k.set)
+  if (!k.ready)
     return;
+  k.count--;
+  // an addition still listed is taken back; otherwise the allocation leaves the set at once, so that nothing released
+  // is kept until the next Settle
+  {
+    std::lock_guard lock(k.changes_mutex);
+    auto listed = std::find_if(k.additions.begin(), k.additions.end(),
+                               [&](auto &added) { return added.handle == allocation.handle; });
+    if (listed != k.additions.end()) {
+      k.additions.erase(listed);
+      return;
+    }
+  }
+  std::lock_guard lock(k.mutex);
   k.set.removeAllocations(&allocation, 1);
   k.dirty = true;
-  k.count--;
 }
 
 void

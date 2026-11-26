@@ -3138,6 +3138,26 @@ public:
     return texture && std::ranges::find(targets_, texture) != targets_.end();
   }
 
+  // an aliasing barrier in a render pass whose draws wrote nothing but its targets, naming none of them, keeps the pass
+  // going: a resource it activates is none of the targets, which the draws after it go on writing, and the memory it
+  // takes was written by work before the pass (OrderingPoint orders the open pass after it) or is a target's, stored
+  // when the pass ends. one that names a target, or follows a draw's UAV or stream output writes, ends the pass
+  bool
+  KeptByAliasing(const D3D12_RESOURCE_BARRIER &barrier) {
+    auto pass = allocator_->encoder_current;
+    if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_ALIASING || !pass || pass->type != EncoderType::Render ||
+        pass != targets_pass_ || pass == uav_draw_pass_ || !KeepsAliasedPasses())
+      return false;
+    auto target = [&](ID3D12Resource *resource) { return resource && PassWrote(resource); };
+    return !target(barrier.Aliasing.pResourceBefore) && !target(barrier.Aliasing.pResourceAfter);
+  }
+
+  static bool
+  KeepsAliasedPasses() {
+    static const bool keeps = env::getEnvVar("MULLION_D3D12_ALIAS_KEEPS_PASS") != "0";
+    return keeps;
+  }
+
   // passes are already ordered by the queue's fence (each waits for the one before), so a barrier matters only inside
   // a pass, where draws and dispatches run unordered. one that orders writes a draw made (UAV, render target, depth,
   // stream output) or aliases memory ends the render pass, and the next draw opens one that loads what this one
@@ -3179,6 +3199,16 @@ public:
           return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
         }) && device_->HasSparseBuffers()) {
       va_found_ = nullptr;
+      // in a pass that keeps going, the work before it and its draws before the barrier are ordered before its draws
+      // after it, and what it stores before the work after it: one Settle before the pass and one after it, however
+      // many barriers it has (Starfield's 300 a frame were as many passes, each loading and storing its targets)
+      if (std::ranges::all_of(std::span(barriers, Count), [&](auto &barrier) { return KeptByAliasing(barrier); })) {
+        clears_.clear();
+        named_.clear();
+        allocator_->encoder_current->late = false;
+        allocator_->SettleAround();
+        return;
+      }
       clears_.clear();
       named_.clear();
       allocator_->InvalidateCurrentPass();
@@ -3204,6 +3234,10 @@ public:
                                                                             : nullptr);
       if (ordered || begins(barrier))
         continue;
+      if (KeptByAliasing(barrier)) {
+        allocator_->encoder_current->late = false;
+        continue;
+      }
       // a UAV barrier orders UAV accesses alone: a render pass whose draws used none keeps going, as a dispatch's would
       if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV && allocator_->encoder_current &&
           allocator_->encoder_current->type == EncoderType::Render &&
@@ -4099,6 +4133,14 @@ public:
     EndPredication();
     if (!pBuffer)
       return;
+    // the kernel of a region that begins in a render pass whose draws wrote nothing but its targets goes before the
+    // pass, which keeps going: nothing in it can have written the predicate, and the pass is ordered after the kernel
+    // as after the work before it (OrderingPoint). 100 regions of a frame were 100 passes, each loading and storing
+    // its targets
+    auto render = allocator_->encoder_current;
+    bool before = render && render->type == EncoderType::Render && render != uav_draw_pass_ && HoistsPredicates();
+    if (before)
+      allocator_->encoder_current = nullptr;
     StartComputePass();
     auto [mapped, offset] = allocator_->AllocateGPUHeap(sizeof(PredicationRegion), alignof(PredicationRegion));
     if (allocator_->records_) {
@@ -4127,7 +4169,17 @@ public:
     cmd_dispatch.type = WMTComputeCommandDispatch;
     cmd_dispatch.size = {1, 1, 1};
     allocator_->InvalidateCurrentPass();
+    if (before) {
+      allocator_->encoder_current = render;
+      render->late = false;
+    }
   };
+
+  static bool
+  HoistsPredicates() {
+    static const bool hoists = env::getEnvVar("MULLION_D3D12_HOIST_PREDICATES") != "0";
+    return hoists;
+  }
 
   // a marker is an instant, between passes or inside one, which no pass is named by
   void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {};

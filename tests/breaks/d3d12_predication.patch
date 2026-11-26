@@ -1,0 +1,13 @@
+# a predicate's kernel that goes before the open render pass runs no thread: its region's draws are never skipped
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -4082,7 +4082,7 @@
+     }
+     auto &cmd_dispatch = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
+     cmd_dispatch.type = WMTComputeCommandDispatch;
+-    cmd_dispatch.size = {1, 1, 1};
++    cmd_dispatch.size = {before ? 0u : 1u, 1, 1};
+     allocator_->InvalidateCurrentPass();
+     if (before) {
+       allocator_->encoder_current = render;
