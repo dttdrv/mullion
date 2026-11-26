@@ -204,9 +204,13 @@ static std::string
 verify(const std::string &module) {
   char path[] = "/tmp/texel_forms.XXXXXX";
   int fd = mkstemp(path);
-  if (fd < 0 || write(fd, module.data(), module.size()) != ssize_t(module.size()))
+  if (fd < 0)
     return "the module could not be written for the verifier";
-  close(fd);
+  const auto written = write(fd, module.data(), module.size());
+  if (close(fd) != 0 || written != ssize_t(module.size())) {
+    unlink(path);
+    return "the module could not be written for the verifier";
+  }
   // xcrun finds the verifier once: asked for each of the kernels, it took most of the test's time on CI's runners
   // (with the SDK xcrun would have given it)
   static const std::string tool = [] {

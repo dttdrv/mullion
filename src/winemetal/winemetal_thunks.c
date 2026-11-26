@@ -951,7 +951,8 @@ MTLDevice_newSpatialScaler(obj_handle_t device, const struct WMTFXSpatialScalerI
 WINEMETAL_API void
 MTLCommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 ) {
   struct unixcall_mtlcommandbuffer_temporal_scale params;
   params.cmdbuf = cmdbuf;
@@ -961,6 +962,7 @@ MTLCommandBuffer_encodeTemporalScale(
   params.depth = depth;
   params.motion = motion;
   params.exposure = exposure;
+  params.reactive = reactive;
   params.fence = fence;
   WMT_MEMPTR_SET(params.props, props);
   UNIX_CALL(58, &params);
@@ -1608,6 +1610,13 @@ MTLDevice_supportsFXDenoisedScaler(obj_handle_t device, bool metal4) {
   params.ret = 0;
   UNIX_CALL(WMTUnixDeviceSupportsFXDenoisedScaler, &params);
   return params.ret;
+}
+
+WINEMETAL_API void
+MTLDevice_temporalScalerSupport(obj_handle_t device, struct WMTFXTemporalScalerSupport *support) {
+  struct unixcall_mtldevice_fxtemporalscalersupport params = {.device = device};
+  UNIX_CALL(WMTUnixDeviceTemporalScalerSupport, &params);
+  *support = params.support;
 }
 
 WINEMETAL_API bool
@@ -2288,7 +2297,8 @@ MTLDevice_newTemporalScaler4(obj_handle_t device, const struct WMTFXTemporalScal
 WINEMETAL_API void
 MTL4CommandBuffer_encodeTemporalScale(
     obj_handle_t cmdbuf, obj_handle_t scaler, obj_handle_t color, obj_handle_t output, obj_handle_t depth,
-    obj_handle_t motion, obj_handle_t exposure, obj_handle_t fence, const struct WMTFXTemporalScalerProps *props
+    obj_handle_t motion, obj_handle_t exposure, obj_handle_t reactive, obj_handle_t fence,
+    const struct WMTFXTemporalScalerProps *props
 ) {
   struct unixcall_mtlcommandbuffer_temporal_scale params;
   params.cmdbuf = cmdbuf;
@@ -2298,6 +2308,7 @@ MTL4CommandBuffer_encodeTemporalScale(
   params.depth = depth;
   params.motion = motion;
   params.exposure = exposure;
+  params.reactive = reactive;
   params.fence = fence;
   WMT_MEMPTR_SET(params.props, props);
   UNIX_CALL(WMTUnixMetal4TemporalScale, &params);

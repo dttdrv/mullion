@@ -1,0 +1,12 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -5816,7 +5816,7 @@
+       return E_INVALIDARG;
+     auto color = UpscaleTexture(pDesc->Color), output = UpscaleTexture(pDesc->Output),
+          depth = UpscaleTexture(pDesc->Depth), motion = UpscaleTexture(pDesc->MotionVector),
+-         exposure = UpscaleTexture(pDesc->ExposureTexture), reactive = UpscaleTexture(pDesc->ReactiveMask);
++         exposure = UpscaleTexture(pDesc->ExposureTexture), reactive = (Texture *)nullptr;
+     const auto *motion_size = pDesc->MotionVectorInDisplayRes ? output : color;
+     if (!UpscaleImage(color) || !UpscaleImage(output) || color == output || !UpscaleSize(depth, color) ||
+         !UpscaleSize(motion, motion_size) || output->width() < color->width() || output->height() < color->height() ||

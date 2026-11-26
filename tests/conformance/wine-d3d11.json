@@ -222,9 +222,7 @@
   "verdict": "passed"
  },
  "test_format_compatibility": {
-  "verdict": "failed",
-  "failed": 44,
-  "first": "d3d11.c:29492: Test failed: Test 26: Got unexpected colour 0x00ff0000 at (0, 1), expected 0x00000000."
+  "verdict": "passed"
  },
  "test_format_support": {
   "verdict": "failed",
@@ -324,9 +322,7 @@
   "verdict": "passed"
  },
  "test_negative_viewports": {
-  "verdict": "failed",
-  "failed": 4,
-  "first": "d3d11.c:29083: Test failed: Feature level 0xa100: Got 0xffffffff, expected 0xff00ff00 at (639, 479, 0), sub-resource 0."
+  "verdict": "passed"
  },
  "test_null_sampler": {
   "verdict": "passed"
@@ -335,9 +331,7 @@
   "verdict": "passed"
  },
  "test_occlusion_query": {
-  "verdict": "failed",
-  "failed": 1,
-  "first": "d3d11.c:6266: Test failed: Got unexpected query result 0x0000000090000000."
+  "verdict": "passed"
  },
  "test_pipeline_statistics_query": {
   "verdict": "passed"

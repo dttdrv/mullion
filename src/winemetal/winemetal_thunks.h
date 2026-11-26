@@ -273,6 +273,11 @@ struct unixcall_mtldevice_newfxtemporalscaler {
   obj_handle_t ret;
 };
 
+struct unixcall_mtldevice_fxtemporalscalersupport {
+  obj_handle_t device;
+  struct WMTFXTemporalScalerSupport support;
+};
+
 struct unixcall_mtldevice_newfxspatialscaler {
   obj_handle_t device;
   struct WMTConstMemoryPointer info;
@@ -287,6 +292,7 @@ struct unixcall_mtlcommandbuffer_temporal_scale {
   obj_handle_t depth;
   obj_handle_t motion;
   obj_handle_t exposure;
+  obj_handle_t reactive;
   obj_handle_t fence;
   struct WMTConstMemoryPointer props;
 };

@@ -18,6 +18,10 @@ struct DxgiOptions {
   /// on a different GPU than they do and behave differently.
   int32_t customVendorId;
   int32_t customDeviceId;
+  /// the PCI subsystem ID and revision reported (dxgi.customSubSysId, up to
+  /// eight hex digits, and dxgi.customRevision, up to two), or -1 for 0
+  int64_t customSubSysId;
+  int32_t customRevision;
   std::string customDeviceDesc;
   bool forceSDR;
   /// The most memory the adapter reports, in bytes (dxgi.maxDeviceMemory, in MB, as DXVK names it; 0 for all Metal
