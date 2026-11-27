@@ -970,6 +970,8 @@ public:
       BufferAllocation *src, BufferAllocation *dst, const std::vector<WMTSparseBufferMappingCopy> &ranges
   ) = 0;
   virtual std::vector<uint64_t> SparseBufferMappings() = 0;
+  // cached Metal buffer holding the current SparseBufferMappings() snapshot; invalidated on mapping changes
+  virtual WMT::Reference<WMT::Buffer> SparseBufferMappingsBuffer() = 0;
   // whether a reserved buffer exists, which SparseBufferMappings has an entry for whatever it maps
   virtual bool HasSparseBuffers() = 0;
   // whether a reserved buffer's tile has ever been mapped (UpdateTileMappings, on any queue): until one has, nothing is

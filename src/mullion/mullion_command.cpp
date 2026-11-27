@@ -163,6 +163,37 @@ InternalCommandLibrary::ClearPipeline(WMTPixelFormat format, uint32_t sample_cou
   return at->second;
 }
 
+WMT::RenderPipelineState
+InternalCommandLibrary::InPassStencilClearPipeline(
+    const std::array<WMTPixelFormat, 8> &color_formats, WMTPixelFormat depth_format, WMTPixelFormat stencil_format,
+    uint32_t sample_count
+) {
+  InPassStencilClearKey key{color_formats, depth_format, stencil_format, sample_count};
+  std::lock_guard lock(clear_mutex_);
+  auto [at, fresh] = in_pass_stencil_clear_pipelines_.try_emplace(key);
+  if (!fresh)
+    return at->second;
+  WMTRenderPipelineInfo info;
+  WMT::InitializeRenderPipelineInfo(info);
+  info.raster_sample_count = sample_count;
+  for (unsigned i = 0; i < 8; i++) {
+    info.colors[i].pixel_format = color_formats[i];
+    info.colors[i].write_mask = WMTColorWriteMaskNone;
+  }
+  info.depth_pixel_format = depth_format;
+  info.stencil_pixel_format = stencil_format;
+  auto vertex_function = library_.newFunction("vs_clear_rt");
+  info.vertex_function = vertex_function;
+  info.fragment_function = {};
+  info.rasterization_enabled = true;
+  info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+  WMT::Reference<WMT::Error> error;
+  at->second = device_.newRenderPipelineState(info, error);
+  if (!at->second)
+    ERR("Failed to create in-pass stencil clear pipeline: ", error.description().getUTF8String());
+  return at->second;
+}
+
 WMT::DepthStencilState
 InternalCommandLibrary::ClearDepthStencilState(uint32_t dsv_flag) {
   std::lock_guard lock(clear_mutex_);
@@ -179,6 +210,7 @@ InternalCommandLibrary::ClearDepthStencilState(uint32_t dsv_flag) {
       info.front_stencil.stencil_compare_function = WMTCompareFunctionAlways;
       info.front_stencil.read_mask = 0xff;
       info.front_stencil.write_mask = 0xff;
+      info.back_stencil = info.front_stencil;
     }
     state = device_.newDepthStencilState(info);
   }
