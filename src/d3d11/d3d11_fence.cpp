@@ -44,7 +44,7 @@ public:
     // (tests/d3d11/d3d11_shared_fence.cpp)
     if (!pHandle || !shared || Access != GENERIC_ALL)
       return DXGI_ERROR_INVALID_CALL;
-    return shareHandle(mach_port_name, pAttributes, Name, pHandle);
+    return shareHandle(event, mach_port_name, pAttributes, Name, pHandle);
   };
 
   UINT64 STDMETHODCALLTYPE GetCompletedValue() final {

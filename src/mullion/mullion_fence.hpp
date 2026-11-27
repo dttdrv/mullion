@@ -101,8 +101,8 @@ private:
 // mach port, false if one cannot be made
 bool shareEvent(WMT::SharedEvent event, char (&name)[54]);
 // a new handle to the fence of `event_name`, named `name` among the session's objects when it has a name
-HRESULT shareHandle(const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes, const WCHAR *name,
-                    HANDLE *handle);
+HRESULT shareHandle(WMT::SharedEvent event, const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes,
+                    const WCHAR *name, HANDLE *handle);
 // the event of a handle shareHandle made, and its registered name; none if the handle shares something else
 WMT::Reference<WMT::SharedEvent> openSharedEvent(WMT::Device mtl, HANDLE handle, char (&event_name)[54]);
 // a new NT handle to what is shared under `name` among the session's objects

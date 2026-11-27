@@ -18,7 +18,10 @@
 
 #include "mullion_fence.hpp"
 #include "log/log.hpp"
+#include <array>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace mullion {
 
@@ -102,8 +105,54 @@ sessionName(const WCHAR *name, std::wstring &buffer, UNICODE_STRING &string, OBJ
   attributes.ObjectName = &string;
 }
 
+namespace {
+
+struct RetainedSharedFence {
+  HANDLE handle;
+  WMT::Reference<WMT::SharedEvent> event;
+  std::array<char, 54> name;
+};
+
+bool
+sharedHandleAlive(HANDLE handle, const std::array<char, 54> &name) {
+  auto *data = handle ? static_cast<const SharedFenceData *>(
+                            MapViewOfFile(handle, FILE_MAP_READ, 0, 0, sizeof(SharedFenceData))
+                        )
+                      : nullptr;
+  if (!data)
+    return false;
+  bool alive = !memcmp(data->tag, shared_fence_tag, sizeof(shared_fence_tag)) &&
+               !memcmp(data->mach_port_name, name.data(), name.size());
+  UnmapViewOfFile(data);
+  return alive;
+}
+
+std::mutex retained_fences_mutex;
+std::vector<RetainedSharedFence> retained_fences;
+
+void
+sweepRetainedSharedFencesLocked() {
+  std::erase_if(retained_fences, [](const RetainedSharedFence &entry) {
+    return !sharedHandleAlive(entry.handle, entry.name);
+  });
+}
+
+void
+retainSharedFence(HANDLE handle, WMT::SharedEvent event, const char (&event_name)[54]) {
+  std::scoped_lock lock(retained_fences_mutex);
+  sweepRetainedSharedFencesLocked();
+  std::array<char, 54> name{};
+  memcpy(name.data(), event_name, name.size());
+  retained_fences.push_back(RetainedSharedFence{handle, WMT::Reference<WMT::SharedEvent>(event), name});
+}
+
+} // namespace
+
 HRESULT
-shareHandle(const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) {
+shareHandle(
+    WMT::SharedEvent event, const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes, const WCHAR *name,
+    HANDLE *handle
+) {
   if (name && wcslen(name) > MAX_PATH)
     return DXGI_ERROR_INVALID_CALL;
   HANDLE mapping = CreateFileMappingW(
@@ -130,6 +179,9 @@ shareHandle(const char (&event_name)[54], const SECURITY_ATTRIBUTES *attributes,
   memcpy(data->mach_port_name, event_name, sizeof(event_name));
   UnmapViewOfFile(data);
   *handle = mapping;
+  // Keep the underlying MTLSharedEvent (and its bootstrap mach port registration) alive while the shared handle is
+  // open, even if the original ID3D12Fence/ID3D11Fence is released before OpenSharedHandle is called.
+  retainSharedFence(*handle, event, event_name);
   return S_OK;
 }
 
