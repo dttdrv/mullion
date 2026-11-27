@@ -1499,6 +1499,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::Present: {
       auto data = static_cast<PresentData *>(current);
+      data->state.layer_props.display_sync_enabled = data->after > 0;
       auto t0 = clock::now();
       auto drawable = data->presenter->encodeCommands(
           cmdbuf, data->backbuffer, data->state,
