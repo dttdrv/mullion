@@ -184,7 +184,7 @@ public:
 
   HRESULT
   CreateSharedHandle(const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) override {
-    return mach_port_name_[0] ? shareHandle(mach_port_name_, attributes, name, handle) : E_INVALIDARG;
+    return mach_port_name_[0] ? shareHandle(completion_->event, mach_port_name_, attributes, name, handle) : E_INVALIDARG;
   }
 
   ULONG STDMETHODCALLTYPE
