@@ -2704,6 +2704,7 @@ public:
       device_->first_present.compare_exchange_strong(unset, std::chrono::steady_clock::now());
     }
     auto state = presenter->synchronizeLayerProperties();
+    state.layer_props.display_sync_enabled = after > 0;
     if (Holding() &&
         Hold([this, swapchain = Com(swapchain), presenter, backbuffer = Com(backbuffer), view, hLantecyWaitable, after,
               id, number, state, previous = Com(previous), copies, scaler = Rc(scaler),

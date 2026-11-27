@@ -21,7 +21,7 @@ Presenter::Presenter(WMT::Device device, WMT::MetalLayer layer, InternalCommandL
   layer_props_.device = device;
   layer_props_.opaque = true;
   layer_props_.display_sync_enabled = false;
-  layer_props_.framebuffer_only = false; // how strangely setting it true results in worse performance
+  layer_props_.framebuffer_only = true;
   layer_props_.contents_scale = layer_props_.contents_scale * scale_factor;
 }
 
