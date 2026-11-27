@@ -1,0 +1,14 @@
+# a discard makes the next pass load nothing of the texture though a clear came between
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1218,8 +1218,7 @@
+       CountVisibility();
+     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
+       // what was discarded with nothing since loads nothing (DiscardTexture)
+-      bool discards = !discarded_.empty() && discard_last_ == allocator_->encoder_last &&
+-                      discard_current_ == allocator_->encoder_current;
++      bool discards = !discarded_.empty();
+       auto discarded = [&](const TextureViewRef &view) {
+         return discards && view && std::ranges::find(discarded_, view->allocation) != discarded_.end();
+       };

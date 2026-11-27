@@ -1,0 +1,13 @@
+# a discard stops the last pass storing every target it draws, not the discarded one alone
+# family native
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -3864,7 +3864,7 @@
+     if (!allocator_->encoder_current && uses(allocator_->encoder_last)) {
+       auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_last);
+       for (auto &color : pass->colors)
+-        if (color.attachment && color.attachment->allocation == allocation) {
++        if (color.attachment) {
+           if (color.store_action == WMTStoreActionStore)
+             color.store_action = WMTStoreActionDontCare;
+           else if (color.store_action == WMTStoreActionStoreAndMultisampleResolve)

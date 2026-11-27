@@ -135,6 +135,9 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // the resolves the render pass runs when it ends
   std::vector<std::pair<D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_PARAMETERS, D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS>>
       pass_resolves_;
+  // the textures the render pass discards when it ends (D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD, or a resolve's
+  // source it need not preserve)
+  std::vector<Texture *> pass_discards_;
 
   std::array<D3D12_VERTEX_BUFFER_VIEW, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertex_buffers_;
 
@@ -295,6 +298,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // wrote, unless they wrote through UAVs or stream output (PassWrote)
   const EncoderData *targets_pass_ = nullptr;
   std::array<const Texture *, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT + 1> targets_{};
+  // the allocations DiscardResource left undefined whole, which the next render pass loads nothing of: while the
+  // allocator's encoders are as they were then (discard_last_, discard_current_), as a clear, copy or other pass between
+  // would give them contents again (DiscardTexture)
+  std::vector<const TextureAllocation *> discarded_;
+  const EncoderData *discard_last_ = nullptr, *discard_current_ = nullptr;
   // what orders the passes (EncoderData::overlap): events that order work without a pass of their own (barriers,
   // queries, predication, stream output) so far; the last pass a draw or dispatch began, and how many such events
   // there had been then; and what render passes drew to since the last ordering point
@@ -863,6 +871,7 @@ public:
     ResetState(pInitialPipelineState);
     bundle_.clear();
     clears_.clear();
+    discarded_.clear();
     markers_.clear();
     plain_pass_ = nullptr;
     order_serial_ = 0;
@@ -1211,6 +1220,12 @@ public:
     if (visibility_drawn_ && !active_queries_.empty())
       CountVisibility();
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
+      // what was discarded with nothing since loads nothing (DiscardTexture)
+      bool discards = !discarded_.empty() && discard_last_ == allocator_->encoder_last &&
+                      discard_current_ == allocator_->encoder_current;
+      auto discarded = [&](const TextureViewRef &view) {
+        return discards && view && std::ranges::find(discarded_, view->allocation) != discarded_.end();
+      };
 
       allocator_->InvalidateCurrentPass();
       auto render = allocator_->AllocatePass<RenderEncoderData>();
@@ -1239,7 +1254,7 @@ public:
         auto &rt = render->colors[i];
         rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
         rt.depth_plane = AttachmentDesc.DepthPlane;
-        rt.load_action = WMTLoadActionLoad;
+        rt.load_action = discarded(rt.attachment) ? WMTLoadActionDontCare : WMTLoadActionLoad;
         rt.store_action = WMTStoreActionStore;
         render_target_width = std::min(render_target_width, AttachmentDesc.Width);
         render_target_height = std::min(render_target_height, AttachmentDesc.Height);
@@ -1259,14 +1274,14 @@ public:
           auto &rt = render->depth;
           rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
           rt.depth_plane = 0; // DSV cannot be 3D
-          rt.load_action = WMTLoadActionLoad;
+          rt.load_action = discarded(rt.attachment) ? WMTLoadActionDontCare : WMTLoadActionLoad;
           rt.store_action = WMTStoreActionStore;
         }
         if (dsv_planar_flags & 2) {
           auto &rt = render->stencil;
           rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
           rt.depth_plane = 0; // DSV cannot be 3D
-          rt.load_action = WMTLoadActionLoad;
+          rt.load_action = discarded(rt.attachment) ? WMTLoadActionDontCare : WMTLoadActionLoad;
           rt.store_action = WMTStoreActionStore;
         }
         render->dsv_planar_flags = dsv_planar_flags;
@@ -3683,9 +3698,74 @@ public:
     ClearUAVRectangles(Descriptor, RectCount, pRects);
   };
 
+  // DiscardResource of a whole texture: its contents are undefined from here (ID3D12GraphicsCommandList::
+  // DiscardResource), so the render pass that drew it last, with nothing after it, stores none of it (an MSAA target
+  // resolved in that pass resolves without storing its samples), and the next one loads none. a discard of rectangles
+  // or of some subresources does nothing, as before
   void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) {
-    // do nothing for now
+    auto resource = static_cast<MTLD3D12Resource *>(pResource);
+    if (!resource || !resource->texture || Bundled() || !DiscardsTextures())
+      return;
+    if (pRegion) {
+      auto desc = resource->GetDesc();
+      MTL_DXGI_FORMAT_DESC format;
+      UINT planes = 1;
+      if (SUCCEEDED(MTLQueryDXGIFormat(device_->GetMTLDevice(), desc.Format, format)))
+        planes = DepthStencilPlanarFlags(WMTPixelFormat(ORIGINAL_FORMAT(format.PixelFormat))) == 3 ? 2
+                 : (format.Flag & MTL_DXGI_FORMAT_VIDEO_PLANAR)                                    ? format.PlanarCount
+                                                                                                   : 1;
+      UINT all = desc.MipLevels * (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize) *
+                 std::max(planes, 1u);
+      if (pRegion->NumRects || pRegion->FirstSubresource || pRegion->NumSubresources < all)
+        return;
+    }
+    DiscardTexture(resource->texture.ptr());
   };
+
+  // MULLION_D3D12_DISCARDS (on unless 0, read once): DiscardResource and the render passes' discarding accesses store
+  // and load nothing of what they discard
+  static bool
+  DiscardsTextures() {
+    static const bool discards = env::getEnvVar("MULLION_D3D12_DISCARDS") != "0";
+    return discards;
+  }
+
+  void
+  DiscardTexture(Texture *texture) {
+    const TextureAllocation *allocation = texture->current();
+    auto uses = [&](const EncoderData *encoder) {
+      if (!encoder || encoder->type != EncoderType::Render)
+        return false;
+      auto pass = static_cast<const RenderEncoderData *>(encoder);
+      auto of = [&](const TextureViewRef &view) { return view && view->allocation == allocation; };
+      return std::ranges::any_of(pass->colors, [&](auto &color) { return of(color.attachment); }) ||
+             of(pass->depth.attachment) || of(pass->stencil.attachment);
+    };
+    // a pass that draws to it still ends here: what it drew is discarded, and a draw after starts the next
+    if (uses(allocator_->encoder_current))
+      allocator_->InvalidateCurrentPass();
+    if (!allocator_->encoder_current && uses(allocator_->encoder_last)) {
+      auto pass = static_cast<RenderEncoderData *>(allocator_->encoder_last);
+      for (auto &color : pass->colors)
+        if (color.attachment && color.attachment->allocation == allocation) {
+          if (color.store_action == WMTStoreActionStore)
+            color.store_action = WMTStoreActionDontCare;
+          else if (color.store_action == WMTStoreActionStoreAndMultisampleResolve)
+            color.store_action = WMTStoreActionMultisampleResolve;
+        }
+      if (pass->depth.attachment && pass->depth.attachment->allocation == allocation &&
+          pass->depth.store_action == WMTStoreActionStore)
+        pass->depth.store_action = WMTStoreActionDontCare;
+      if (pass->stencil.attachment && pass->stencil.attachment->allocation == allocation &&
+          pass->stencil.store_action == WMTStoreActionStore)
+        pass->stencil.store_action = WMTStoreActionDontCare;
+    }
+    if (discard_last_ != allocator_->encoder_last || discard_current_ != allocator_->encoder_current)
+      discarded_.clear();
+    discarded_.push_back(allocation);
+    discard_last_ = allocator_->encoder_last;
+    discard_current_ = allocator_->encoder_current;
+  }
 
   void STDMETHODCALLTYPE
   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
@@ -4715,6 +4795,26 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE targets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
     UINT target_count = 0;
     pass_resolves_.clear();
+    pass_discards_.clear();
+    // a view's texture, and the textures the pass discards as it begins (DiscardTexture, after its clears)
+    auto texture_of = [&](D3D12_CPU_DESCRIPTOR_HANDLE handle) -> Texture * {
+      auto [Heap, Index] = GetRenderTargetHeap(device_, handle);
+      return Heap ? Heap->GetRenderTarget(Index).Texture : nullptr;
+    };
+    std::vector<Texture *> begin_discards;
+    auto discards = [&](const D3D12_RENDER_PASS_BEGINNING_ACCESS &begin, const D3D12_RENDER_PASS_ENDING_ACCESS &end,
+                        D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+      if (!DiscardsTextures() || (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)))
+        return;
+      auto texture = texture_of(handle);
+      if (!texture)
+        return;
+      if (begin.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD)
+        begin_discards.push_back(texture);
+      if (end.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD ||
+          (end.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE && !end.Resolve.PreserveResolveSource))
+        pass_discards_.push_back(texture);
+    };
     auto resolve = [&](const D3D12_RENDER_PASS_ENDING_ACCESS &end) {
       if (end.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE)
         for (auto &sub : std::span(end.Resolve.pSubresourceParameters, end.Resolve.SubresourceCount))
@@ -4734,6 +4834,31 @@ public:
       if (bound(pRenderTargets[i].BeginningAccess, false))
         targets[target_count++] = pRenderTargets[i].cpuDescriptor;
       resolve(pRenderTargets[i].EndingAccess);
+      discards(pRenderTargets[i].BeginningAccess, pRenderTargets[i].EndingAccess, pRenderTargets[i].cpuDescriptor);
+    }
+    // a depth stencil buffer's planes are one texture: it is discarded where both are, or the format has one
+    if (pDepthStencil) {
+      auto planes = [&] {
+        auto texture = texture_of(pDepthStencil->cpuDescriptor);
+        return texture ? DepthStencilPlanarFlags(texture->pixelFormat()) : 0u;
+      }();
+      auto &db = pDepthStencil->DepthBeginningAccess, &sb = pDepthStencil->StencilBeginningAccess;
+      auto &de = pDepthStencil->DepthEndingAccess, &se = pDepthStencil->StencilEndingAccess;
+      auto discarding_begin = [](auto &b) { return b.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD; };
+      auto discarding_end = [](auto &e) {
+        return e.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD ||
+               (e.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE && !e.Resolve.PreserveResolveSource);
+      };
+      bool depth = planes & 1, stencil = planes & 2;
+      D3D12_RENDER_PASS_BEGINNING_ACCESS begin{};
+      D3D12_RENDER_PASS_ENDING_ACCESS end{};
+      if ((!depth || discarding_begin(db)) && (!stencil || discarding_begin(sb)) && planes)
+        begin.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
+      if ((!depth || discarding_end(de)) && (!stencil || discarding_end(se)) && planes) {
+        end.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE;
+        end.Resolve.PreserveResolveSource = FALSE;
+      }
+      discards(begin, end, pDepthStencil->cpuDescriptor);
     }
     bool depth_stencil = pDepthStencil &&
                          (bound(pDepthStencil->DepthBeginningAccess, Flags & D3D12_RENDER_PASS_FLAG_BIND_READ_ONLY_DEPTH) ||
@@ -4747,8 +4872,11 @@ public:
         ClearRenderTargetView(
             pRenderTargets[i].cpuDescriptor, pRenderTargets[i].BeginningAccess.Clear.ClearValue.Color, 0, nullptr
         );
-    if (!pDepthStencil)
+    if (!pDepthStencil) {
+      for (auto texture : begin_discards)
+        DiscardTexture(texture);
       return;
+    }
     auto &depth = pDepthStencil->DepthBeginningAccess, &stencil = pDepthStencil->StencilBeginningAccess;
     auto flags = (depth.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR ? D3D12_CLEAR_FLAG_DEPTH : 0) |
                  (stencil.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR ? D3D12_CLEAR_FLAG_STENCIL : 0);
@@ -4759,6 +4887,8 @@ public:
       );
     resolve(pDepthStencil->DepthEndingAccess);
     resolve(pDepthStencil->StencilEndingAccess);
+    for (auto texture : begin_discards)
+      DiscardTexture(texture);
   }
 
   void STDMETHODCALLTYPE
@@ -4769,6 +4899,9 @@ public:
           const_cast<D3D12_RECT *>(&sub.SrcRect), r.Format, r.ResolveMode
       );
     pass_resolves_.clear();
+    for (auto texture : pass_discards_)
+      DiscardTexture(texture);
+    pass_discards_.clear();
     // the pass's targets "are not propagated out to the Command List": a draw after it has none
     OMSetRenderTargets(0, nullptr, FALSE, nullptr);
   }
