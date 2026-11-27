@@ -68,7 +68,7 @@ main() {
     ComPtr<ID3D11GeometryShader> stream;
     CHECK(device->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &vs));
     CHECK(device->CreateGeometryShaderWithStreamOutput(code->GetBufferPointer(), code->GetBufferSize(), entries,
-        std::size(entries), &record_stride, 1, D3D11_SO_NO_RASTERIZED_STREAM, nullptr, &stream));
+        std::size(entries), &record_stride, 1, api == 11 ? D3D11_SO_NO_RASTERIZED_STREAM : 0, nullptr, &stream));
     ComPtr<ID3D10VertexShader> vs10;
     ComPtr<ID3D10GeometryShader> stream10;
     if (device10) {
