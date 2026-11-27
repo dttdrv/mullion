@@ -1264,6 +1264,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
   id<MTLRenderCommandEncoder> encoder = (id<MTLRenderCommandEncoder>)params->encoder;
   // a pipeline that could not be built is set as none: the draws after it are left out until another is set
   bool pipeline = true;
+  bool has_rs = false;
+  struct wmtcmd_render_setrasterizerstate last_rs = {0};
   while (next) {
     enum WMTRenderCommandType type = next->type;
     if (!pipeline && ((type >= WMTRenderCommandDraw && type <= WMTRenderCommandDrawMeshThreadgroupsIndirect) ||
@@ -1350,11 +1352,19 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTRenderCommandSetRasterizerState: {
       struct wmtcmd_render_setrasterizerstate *body = (struct wmtcmd_render_setrasterizerstate *)next;
-      [encoder setTriangleFillMode:(MTLTriangleFillMode)body->fill_mode];
-      [encoder setCullMode:(MTLCullMode)body->cull_mode];
-      [encoder setDepthClipMode:(MTLDepthClipMode)body->depth_clip_mode];
-      [encoder setDepthBias:body->depth_bias slopeScale:body->scole_scale clamp:body->depth_bias_clamp];
-      [encoder setFrontFacingWinding:(MTLWinding)body->winding];
+      if (!has_rs || body->fill_mode != last_rs.fill_mode)
+        [encoder setTriangleFillMode:(MTLTriangleFillMode)body->fill_mode];
+      if (!has_rs || body->cull_mode != last_rs.cull_mode)
+        [encoder setCullMode:(MTLCullMode)body->cull_mode];
+      if (!has_rs || body->depth_clip_mode != last_rs.depth_clip_mode)
+        [encoder setDepthClipMode:(MTLDepthClipMode)body->depth_clip_mode];
+      if (!has_rs || body->depth_bias != last_rs.depth_bias || body->scole_scale != last_rs.scole_scale ||
+          body->depth_bias_clamp != last_rs.depth_bias_clamp)
+        [encoder setDepthBias:body->depth_bias slopeScale:body->scole_scale clamp:body->depth_bias_clamp];
+      if (!has_rs || body->winding != last_rs.winding)
+        [encoder setFrontFacingWinding:(MTLWinding)body->winding];
+      last_rs = *body;
+      has_rs = true;
       break;
     }
     case WMTRenderCommandSetViewports: {
@@ -5762,7 +5772,7 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Buffer : NSObject {
   // asked about, by address: a pass binds the same few for each of its draws
   id<MTLResidencySet> residency;
   NSMutableSet *allocations;
-  id recent[64];
+  id recent[512];
   NSMutableSet *objects;
   id<MTLBuffer> bytes;
   uint64_t bytes_used;
@@ -5791,6 +5801,7 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Buffer : NSObject {
   // a render encoder clears the slots below those counts as it ends, so the next starts as a new table does
   id<MTL4ArgumentTable> tables[Metal4BindingStageCount];
   unsigned buffers_set[Metal4BindingStageCount], textures_set[Metal4BindingStageCount];
+  uint64_t buffers_mask[Metal4BindingStageCount];
 }
 - (void)closeCompute;
 - (void)fail:(NSError *)error;
@@ -5802,6 +5813,8 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Encoder : NSObject {
   id<MTL4CommandEncoder> encoder;
   bool tables_set[Metal4BindingStageCount];
   MTLGPUAddress *bases;
+  MTLGPUAddress inline_bases[Metal4BindingStageCount * 32];
+  MTLGPUAddress last_addr[Metal4BindingStageCount * 32];
   MTLSize threadgroup;
   struct WMTSampleBufferAttachmentInfo samples;
   bool render;
@@ -5815,7 +5828,8 @@ API_AVAILABLE(macos(26.0)) @interface MullionMetal4Encoder : NSObject {
   [encoder setLabel:label];
 }
 - (void)dealloc {
-  free(bases);
+  if (bases != inline_bases)
+    free(bases);
   [encoder release];
   [super dealloc];
 }
@@ -5909,11 +5923,20 @@ API_AVAILABLE(macos(26.0)) metal4_parts(id<MTL4CommandQueue> queue) {
   if (parts) {
     // the next buffer's passes start as with new tables, as a render pass leaves them (MTL4CommandEncoder_endEncoding)
     for (unsigned stage = 0; stage < Metal4BindingStageCount; stage++) {
-      for (unsigned i = 0; i < buffers_set[stage]; i++)
-        [tables[stage] setAddress:0 atIndex:i];
-      for (unsigned i = 0; i < textures_set[stage]; i++)
-        [tables[stage] setTexture:(MTLResourceID){0} atIndex:i];
-      parts->tables[stage] = tables[stage];
+      id<MTL4ArgumentTable> table = tables[stage];
+      if (table) {
+        uint64_t mask = buffers_mask[stage];
+        while (mask) {
+          unsigned i = (unsigned)__builtin_ctzll(mask);
+          mask &= mask - 1;
+          [table setAddress:0 atIndex:i];
+        }
+        for (unsigned i = 64; i < buffers_set[stage]; i++)
+          [table setAddress:0 atIndex:i];
+        for (unsigned i = 0; i < textures_set[stage]; i++)
+          [table setTexture:(MTLResourceID){0} atIndex:i];
+      }
+      parts->tables[stage] = table;
       tables[stage] = nil;
     }
     // a set gives its allocations up at its next commit
@@ -5956,8 +5979,8 @@ static void
 API_AVAILABLE(macos(26.0)) metal4_resident(MullionMetal4Buffer *state, id<MTLAllocation> resource) {
   if (!resource)
     return;
-  // an object's address is a multiple of 16
-  id *recent = &state->recent[((uintptr_t)resource >> 4) % (sizeof(state->recent) / sizeof(state->recent[0]))];
+  uintptr_t h = (uintptr_t)resource;
+  id *recent = &state->recent[((h >> 4) ^ (h >> 13)) & 511];
   if (*recent == resource)
     return;
   *recent = resource;
@@ -6015,16 +6038,32 @@ static void
 API_AVAILABLE(macos(26.0)) metal4_buffer(
     MullionMetal4Encoder *state, unsigned stage, obj_handle_t buffer, uint64_t offset, unsigned index
 ) {
-  MTLGPUAddress base = metal4_address(state->owner, buffer);
+  MTLGPUAddress base = buffer ? metal4_address(state->owner, buffer) : 0;
+  MTLGPUAddress addr = base ? base + offset : 0;
   state->bases[stage * state->owner->bindings.buffers + index] = base;
-  [metal4_table(state, stage) setAddress:base ? base + offset : 0 atIndex:index];
-  state->owner->buffers_set[stage] = MAX(state->owner->buffers_set[stage], index + 1);
+  if (index < 32 && state->tables_set[stage] && state->last_addr[stage * 32 + index] == addr)
+    return;
+  id<MTL4ArgumentTable> table = metal4_table(state, stage);
+  [table setAddress:addr atIndex:index];
+  if (index < 32)
+    state->last_addr[stage * 32 + index] = addr;
+  if (index < 64)
+    state->owner->buffers_mask[stage] |= 1ull << index;
+  else
+    state->owner->buffers_set[stage] = MAX(state->owner->buffers_set[stage], index + 1);
 }
 
 static void
 API_AVAILABLE(macos(26.0)) metal4_offset(MullionMetal4Encoder *state, unsigned stage, uint64_t offset, unsigned index) {
   MTLGPUAddress base = state->bases[stage * state->owner->bindings.buffers + index];
-  [metal4_table(state, stage) setAddress:base ? base + offset : 0 atIndex:index];
+  MTLGPUAddress addr = base ? base + offset : 0;
+  if (index < 32 && state->tables_set[stage] && state->last_addr[stage * 32 + index] == addr)
+    return;
+  [metal4_table(state, stage) setAddress:addr atIndex:index];
+  if (index < 32)
+    state->last_addr[stage * 32 + index] = addr;
+  if (index < 64)
+    state->owner->buffers_mask[stage] |= 1ull << index;
 }
 
 static void
@@ -6198,51 +6237,63 @@ _MTL4CommandBuffer_encoder(void *obj) {
     p->ret = (obj_handle_t)state;
     if (owner->feedback.error)
       return STATUS_SUCCESS;
-    state->bases =
-        calloc(owner->bindings.buffers * Metal4BindingStageCount, sizeof(MTLGPUAddress));
-    if (!state->bases) {
-      [owner fail:nil];
-      return STATUS_SUCCESS;
+    if (owner->bindings.buffers <= 32) {
+      state->bases = state->inline_bases;
+    } else {
+      state->bases =
+          calloc(owner->bindings.buffers * Metal4BindingStageCount, sizeof(MTLGPUAddress));
+      if (!state->bases) {
+        [owner fail:nil];
+        return STATUS_SUCCESS;
+      }
     }
     if (state->render) {
       [owner closeCompute];
       const struct WMTRenderPassInfo *info = p->render.ptr;
       MTL4RenderPassDescriptor *descriptor = [[MTL4RenderPassDescriptor alloc] init];
+      MTLRenderPassColorAttachmentDescriptorArray *colors = descriptor.colorAttachments;
       for (unsigned i = 0; i < sizeof(info->colors) / sizeof(info->colors[0]); i++) {
-        descriptor.colorAttachments[i].clearColor = MTLClearColorMake(
+        if (!info->colors[i].texture)
+          continue;
+        MTLRenderPassColorAttachmentDescriptor *att = colors[i];
+        att.clearColor = MTLClearColorMake(
             info->colors[i].clear_color.r, info->colors[i].clear_color.g, info->colors[i].clear_color.b,
             info->colors[i].clear_color.a
         );
-        descriptor.colorAttachments[i].level = info->colors[i].level;
-        descriptor.colorAttachments[i].slice = info->colors[i].slice;
-        descriptor.colorAttachments[i].depthPlane = info->colors[i].depth_plane;
-        descriptor.colorAttachments[i].texture = (id<MTLTexture>)info->colors[i].texture;
-        descriptor.colorAttachments[i].loadAction = (MTLLoadAction)info->colors[i].load_action;
-        descriptor.colorAttachments[i].storeAction = (MTLStoreAction)info->colors[i].store_action;
-        descriptor.colorAttachments[i].resolveTexture = (id<MTLTexture>)info->colors[i].resolve_texture;
-        descriptor.colorAttachments[i].resolveLevel = info->colors[i].resolve_level;
-        descriptor.colorAttachments[i].resolveSlice = info->colors[i].resolve_slice;
-        descriptor.colorAttachments[i].resolveDepthPlane = info->colors[i].resolve_depth_plane;
+        att.level = info->colors[i].level;
+        att.slice = info->colors[i].slice;
+        att.depthPlane = info->colors[i].depth_plane;
+        att.texture = (id<MTLTexture>)info->colors[i].texture;
+        att.loadAction = (MTLLoadAction)info->colors[i].load_action;
+        att.storeAction = (MTLStoreAction)info->colors[i].store_action;
+        if (info->colors[i].resolve_texture) {
+          att.resolveTexture = (id<MTLTexture>)info->colors[i].resolve_texture;
+          att.resolveLevel = info->colors[i].resolve_level;
+          att.resolveSlice = info->colors[i].resolve_slice;
+          att.resolveDepthPlane = info->colors[i].resolve_depth_plane;
+        }
       }
 
       if (info->depth.texture) {
-        descriptor.depthAttachment.clearDepth = info->depth.clear_depth;
-        descriptor.depthAttachment.depthPlane = info->depth.depth_plane;
-        descriptor.depthAttachment.level = info->depth.level;
-        descriptor.depthAttachment.slice = info->depth.slice;
-        descriptor.depthAttachment.texture = (id<MTLTexture>)info->depth.texture;
-        descriptor.depthAttachment.loadAction = (MTLLoadAction)info->depth.load_action;
-        descriptor.depthAttachment.storeAction = (MTLStoreAction)info->depth.store_action;
+        MTLRenderPassDepthAttachmentDescriptor *att = descriptor.depthAttachment;
+        att.clearDepth = info->depth.clear_depth;
+        att.depthPlane = info->depth.depth_plane;
+        att.level = info->depth.level;
+        att.slice = info->depth.slice;
+        att.texture = (id<MTLTexture>)info->depth.texture;
+        att.loadAction = (MTLLoadAction)info->depth.load_action;
+        att.storeAction = (MTLStoreAction)info->depth.store_action;
       }
 
       if (info->stencil.texture) {
-        descriptor.stencilAttachment.clearStencil = info->stencil.clear_stencil;
-        descriptor.stencilAttachment.depthPlane = info->stencil.depth_plane;
-        descriptor.stencilAttachment.level = info->stencil.level;
-        descriptor.stencilAttachment.slice = info->stencil.slice;
-        descriptor.stencilAttachment.texture = (id<MTLTexture>)info->stencil.texture;
-        descriptor.stencilAttachment.loadAction = (MTLLoadAction)info->stencil.load_action;
-        descriptor.stencilAttachment.storeAction = (MTLStoreAction)info->stencil.store_action;
+        MTLRenderPassStencilAttachmentDescriptor *att = descriptor.stencilAttachment;
+        att.clearStencil = info->stencil.clear_stencil;
+        att.depthPlane = info->stencil.depth_plane;
+        att.level = info->stencil.level;
+        att.slice = info->stencil.slice;
+        att.texture = (id<MTLTexture>)info->stencil.texture;
+        att.loadAction = (MTLLoadAction)info->stencil.load_action;
+        att.storeAction = (MTLStoreAction)info->stencil.store_action;
       }
 
       descriptor.defaultRasterSampleCount = info->default_raster_sample_count;
@@ -6342,10 +6393,20 @@ _MTL4CommandEncoder_endEncoding(void *obj) {
     if (state->render) {
       MullionMetal4Buffer *owner = state->owner;
       for (unsigned stage = 0; stage < Metal4ComputeBinding; stage++) {
-        for (unsigned i = 0; i < owner->buffers_set[stage]; i++)
-          [owner->tables[stage] setAddress:0 atIndex:i];
-        for (unsigned i = 0; i < owner->textures_set[stage]; i++)
-          [owner->tables[stage] setTexture:(MTLResourceID){0} atIndex:i];
+        id<MTL4ArgumentTable> table = owner->tables[stage];
+        if (table) {
+          uint64_t mask = owner->buffers_mask[stage];
+          while (mask) {
+            unsigned i = (unsigned)__builtin_ctzll(mask);
+            mask &= mask - 1;
+            [table setAddress:0 atIndex:i];
+          }
+          for (unsigned i = 64; i < owner->buffers_set[stage]; i++)
+            [table setAddress:0 atIndex:i];
+          for (unsigned i = 0; i < owner->textures_set[stage]; i++)
+            [table setTexture:(MTLResourceID){0} atIndex:i];
+        }
+        owner->buffers_mask[stage] = 0;
         owner->buffers_set[stage] = owner->textures_set[stage] = 0;
       }
       [state->encoder endEncoding];
@@ -6679,6 +6740,11 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
   id<MTL4RenderCommandEncoder> encoder = (id<MTL4RenderCommandEncoder>)state->encoder;
   // a pipeline that could not be built is set as none: the draws after it are left out until another is set
   bool pipeline = true;
+  obj_handle_t last_ib = 0;
+  MTLGPUAddress last_ib_addr = 0;
+  NSUInteger last_ib_len = 0;
+  bool has_rs = false;
+  struct wmtcmd_render_setrasterizerstate last_rs = {0};
   while (next && !state->owner->feedback.error) {
     enum WMTRenderCommandType type = next->type;
     if (!pipeline &&
@@ -6753,11 +6819,19 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
     }
     case WMTRenderCommandSetRasterizerState: {
       struct wmtcmd_render_setrasterizerstate *body = (struct wmtcmd_render_setrasterizerstate *)next;
-      [encoder setTriangleFillMode:(MTLTriangleFillMode)body->fill_mode];
-      [encoder setCullMode:(MTLCullMode)body->cull_mode];
-      [encoder setDepthClipMode:(MTLDepthClipMode)body->depth_clip_mode];
-      [encoder setDepthBias:body->depth_bias slopeScale:body->scole_scale clamp:body->depth_bias_clamp];
-      [encoder setFrontFacingWinding:(MTLWinding)body->winding];
+      if (!has_rs || body->fill_mode != last_rs.fill_mode)
+        [encoder setTriangleFillMode:(MTLTriangleFillMode)body->fill_mode];
+      if (!has_rs || body->cull_mode != last_rs.cull_mode)
+        [encoder setCullMode:(MTLCullMode)body->cull_mode];
+      if (!has_rs || body->depth_clip_mode != last_rs.depth_clip_mode)
+        [encoder setDepthClipMode:(MTLDepthClipMode)body->depth_clip_mode];
+      if (!has_rs || body->depth_bias != last_rs.depth_bias || body->scole_scale != last_rs.scole_scale ||
+          body->depth_bias_clamp != last_rs.depth_bias_clamp)
+        [encoder setDepthBias:body->depth_bias slopeScale:body->scole_scale clamp:body->depth_bias_clamp];
+      if (!has_rs || body->winding != last_rs.winding)
+        [encoder setFrontFacingWinding:(MTLWinding)body->winding];
+      last_rs = *body;
+      has_rs = true;
       break;
     }
     case WMTRenderCommandSetViewports: {
@@ -6827,12 +6901,16 @@ API_AVAILABLE(macos(26.0)) metal4_render(MullionMetal4Encoder *state, const stru
     }
     case WMTRenderCommandDrawIndexed: {
       struct wmtcmd_render_draw_indexed *body = (struct wmtcmd_render_draw_indexed *)next;
-      metal4_resident(state->owner, (id<MTLAllocation>)body->index_buffer);
+      if (body->index_buffer != last_ib) {
+        last_ib = body->index_buffer;
+        last_ib_addr = metal4_address(state->owner, last_ib);
+        last_ib_len = [(id<MTLBuffer>)last_ib length];
+      }
       [encoder drawIndexedPrimitives:(MTLPrimitiveType)body->primitive_type
                           indexCount:body->index_count
                            indexType:(MTLIndexType)body->index_type
-                         indexBuffer:metal4_address(state->owner, body->index_buffer) + body->index_buffer_offset
-                   indexBufferLength:[(id<MTLBuffer>)body->index_buffer length] - body->index_buffer_offset
+                         indexBuffer:last_ib_addr + body->index_buffer_offset
+                   indexBufferLength:last_ib_len - body->index_buffer_offset
                        instanceCount:body->instance_count
                           baseVertex:body->base_vertex
                         baseInstance:body->base_instance];
