@@ -20,6 +20,7 @@
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
 #include "../airconv_thunks.h"
+#include "mullion_placement.h"
 
 typedef int NTSTATUS;
 #define STATUS_SUCCESS 0
@@ -2590,22 +2591,20 @@ struct macdrv_functions_t {
 // puts a host's view over its window's client area, making it when it is not there yet. on the main thread
 static void
 MullionPlace(MullionMetalHost *host, struct WMTWindowPlacement placement) {
+  NSScreen *primary = NSScreen.screens.firstObject;
+  if (!primary || primary.frame.size.width <= 0 || primary.frame.size.height <= 0)
+    return;
   for (NSWindow *window in [NSApp windows]) {
     // a 32-bit program's handle is the low half of Wine's
     if (![window respondsToSelector:@selector(hwnd)] ||
         (uint32_t)(uintptr_t)((void *(*)(id, SEL))objc_msgSend)(window, @selector(hwnd)) != (uint32_t)placement.top_level)
       continue;
-    // the content view is the top-level window less what Cocoa draws around it. what Wine draws there itself
-    // is a border as wide below as beside the client area, and the rest (caption, menu) above
     NSView *content = window.contentView;
-    CGFloat scale = placement.screen_width / NSScreen.screens.firstObject.frame.size.width;
-    CGFloat border = (content.bounds.size.width - placement.top_level_width / scale) / 2;
-    CGFloat above = content.bounds.size.height - placement.top_level_height / scale - border;
-    NSRect area = NSMakeRect(
-        border + placement.x / scale, above + placement.y / scale, placement.width / scale, placement.height / scale
+    struct WMTPlacementRect rect = WMTComputeWindowPlacementRect(
+        placement, primary.frame.size.width, primary.frame.size.height, content.bounds.size.width,
+        content.bounds.size.height, content.isFlipped
     );
-    if (!content.isFlipped)
-      area.origin.y = content.bounds.size.height - NSMaxY(area);
+    NSRect area = NSMakeRect(rect.x, rect.y, rect.width, rect.height);
     if (!host->view) {
       host->view = [[MullionMetalView alloc] initWithFrame:area];
       host->view.layer = host->layer;
