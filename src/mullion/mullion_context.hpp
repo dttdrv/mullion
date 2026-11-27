@@ -280,6 +280,7 @@ struct ClearEncoderData : EncoderData {
     std::pair<float, uint8_t> depth_stencil;
   };
   TextureViewRef attachment;
+  WMTPixelFormat format = WMTPixelFormatInvalid;
   unsigned clear_dsv;
   unsigned array_length;
   unsigned depth_plane = 0;

@@ -603,7 +603,8 @@ ArgumentEncodingContext::clearColor(
   encoder_info->clear_dsv = 0;
   encoder_info->color = color;
   encoder_info->depth_plane = depthPlane;
-  SanitizeRTVClearColor(texture->pixelFormat(viewId), encoder_info->color);
+  encoder_info->format = texture->pixelFormat(viewId);
+  SanitizeRTVClearColor(encoder_info->format, encoder_info->color);
   encoder_info->array_length = arrayLength;
   encoder_info->width = texture->width();
   encoder_info->height = texture->height();
@@ -1705,6 +1706,32 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 template QueryReadbacks ArgumentEncodingContext::flushCommands<false>(WMT::CommandBuffer, uint64_t, uint64_t);
 template QueryReadbacks ArgumentEncodingContext::flushCommands<true>(WMT::CommandBuffer, uint64_t, uint64_t);
 
+namespace {
+
+bool
+sameTextureSubresource(const TextureViewRef &a, const TextureViewRef &b) {
+  if (a == b)
+    return true;
+  if (!a || !b)
+    return false;
+  return a->allocation == b->allocation && a->key.mip_start == b->key.mip_start && a->key.mip_end == b->key.mip_end &&
+         a->key.array_start == b->key.array_start && a->key.array_end == b->key.array_end;
+}
+
+bool
+clearColorCompatible(WMTPixelFormat clear_format, WMTPixelFormat render_format, const WMTClearColor &color) {
+  if (clear_format == render_format)
+    return true;
+  if (Forget_sRGB(clear_format) != Forget_sRGB(render_format))
+    return false;
+  // sRGB and linear views of the same UNORM format encode identical bytes at [0, 1] RGB endpoints
+  // (alpha is always linear in sRGB formats).
+  auto is_endpoint = [](double c) { return c <= 0.0 || c >= 1.0; };
+  return is_endpoint(color.r) && is_endpoint(color.g) && is_endpoint(color.b);
+}
+
+} // namespace
+
 MULLION_ENCODER_LIST_OP
 ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *latter) {
 
@@ -1782,10 +1809,21 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
 
       // DontCare can be used because it's going to be cleared anyway
       // just keep in mind DontCare != DontStore
-      if (clear->clear_dsv & 1 && render->depth.attachment == clear->attachment)
-        render->depth.store_action = WMTStoreActionDontCare;
-      if (clear->clear_dsv & 2 && render->stencil.attachment == clear->attachment)
-        render->stencil.store_action = WMTStoreActionDontCare;
+      if (render->render_target_array_length == clear->array_length) {
+        if (clear->clear_dsv) {
+          if ((clear->clear_dsv & 1) && sameTextureSubresource(render->depth.attachment, clear->attachment))
+            render->depth.store_action = WMTStoreActionDontCare;
+          if ((clear->clear_dsv & 2) && sameTextureSubresource(render->stencil.attachment, clear->attachment))
+            render->stencil.store_action = WMTStoreActionDontCare;
+        } else {
+          for (unsigned i = 0; i < render->render_target_count; i++) {
+            auto &color = render->colors[i];
+            if (color.store_action == WMTStoreActionStore && color.depth_plane == clear->depth_plane &&
+                sameTextureSubresource(color.attachment, clear->attachment))
+              color.store_action = WMTStoreActionDontCare;
+          }
+        }
+      }
     }
     if (former->type == EncoderType::Render && latter->type == EncoderType::Resolve) {
       auto render = reinterpret_cast<RenderEncoderData *>(former);
@@ -1806,6 +1844,37 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       }
     }
     return hasDataDependency(latter, former) ? MULLION_ENCODER_LIST_OP_SYNCHRONIZE : MULLION_ENCODER_LIST_OP_SWAP;
+  }
+
+  if (former->type == EncoderType::Clear) {
+    auto c0 = reinterpret_cast<ClearEncoderData *>(former);
+    auto c1 = reinterpret_cast<ClearEncoderData *>(latter);
+    if (c0->array_length == c1->array_length && c0->depth_plane == c1->depth_plane &&
+        sameTextureSubresource(c0->attachment, c1->attachment)) {
+      if (!c0->clear_dsv && !c1->clear_dsv) {
+        c1->fence_update.merge(c0->fence_update);
+        c1->fence_wait.merge(c0->fence_wait);
+        c1->fence_wait.subtract(c0->fence_update);
+        currentFrameStatistics().clear_pass_optimized++;
+        c0->~ClearEncoderData();
+        c0->next = nullptr;
+        c0->type = EncoderType::Null;
+        return MULLION_ENCODER_LIST_OP_SYNCHRONIZE;
+      }
+      if (c0->clear_dsv && c1->clear_dsv) {
+        c0->clear_dsv &= ~c1->clear_dsv;
+        if (c0->clear_dsv == 0) {
+          c1->fence_update.merge(c0->fence_update);
+          c1->fence_wait.merge(c0->fence_wait);
+          c1->fence_wait.subtract(c0->fence_update);
+          currentFrameStatistics().clear_pass_optimized++;
+          c0->~ClearEncoderData();
+          c0->next = nullptr;
+          c0->type = EncoderType::Null;
+        }
+        return MULLION_ENCODER_LIST_OP_SYNCHRONIZE;
+      }
+    }
   }
 
   if (former->type == EncoderType::Render) {
@@ -1997,7 +2066,9 @@ RenderEncoderColorAttachmentData *
 ArgumentEncodingContext::isClearColorSignatureMatched(ClearEncoderData *clear, RenderEncoderData *render) {
   for (unsigned i = 0; i < render->render_target_count; i++) {
     auto &attachment = render->colors[i];
-    if (attachment.attachment == clear->attachment && attachment.depth_plane == clear->depth_plane) {
+    if (attachment.depth_plane == clear->depth_plane &&
+        sameTextureSubresource(attachment.attachment, clear->attachment) &&
+        clearColorCompatible(clear->format, render->tile_barrier_pso_key.color_formats[i], clear->color)) {
       return &attachment;
     }
   }
@@ -2008,7 +2079,7 @@ RenderEncoderDepthAttachmentData *
 ArgumentEncodingContext::isClearDepthSignatureMatched(ClearEncoderData *clear, RenderEncoderData *render) {
   if ((clear->clear_dsv & 1) == 0)
     return nullptr;
-  if (render->depth.attachment != clear->attachment)
+  if (!sameTextureSubresource(render->depth.attachment, clear->attachment))
     return nullptr;
   return &render->depth;
 }
@@ -2017,7 +2088,7 @@ RenderEncoderStencilAttachmentData *
 ArgumentEncodingContext::isClearStencilSignatureMatched(ClearEncoderData *clear, RenderEncoderData *render) {
   if ((clear->clear_dsv & 2) == 0)
     return nullptr;
-  if (render->stencil.attachment != clear->attachment)
+  if (!sameTextureSubresource(render->stencil.attachment, clear->attachment))
     return nullptr;
   return &render->stencil;
 }
