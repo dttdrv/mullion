@@ -6,7 +6,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 132
+#define AIRCONV_VERSION 133
 
 #ifdef __cplusplus
 #include <string>
@@ -472,6 +472,10 @@ enum SM50_SHADER_METAL_VERSION {
    no 96-bit pixel format, so an R32G32B32 view is one of R32 texels, three to an element, marked by the count's top
    bit: a view has at most 2^27 elements (D3D11_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP) */
 #define SM50_TEXEL_BUFFER_METADATA_RGB32 (1u << 31)
+// in the low 32 bits of a texel buffer's metadata: Metal cannot create a texture buffer view on a placement sparse
+// buffer, so the descriptor stores this bit | WMTPixelFormat in the low half and shaders load/store through the
+// buffer's raw GPU address in padding[1]
+#define SM50_TEXEL_BUFFER_METADATA_SPARSE (1u << 31)
 // a texture's or texel buffer's metadata: its texture stands for an unbound one, and what it answers is dropped. the
 // bit is above every array length, W slice and element count the metadata holds
 #define SM50_TEXTURE_METADATA_UNBOUND (1ull << 62)

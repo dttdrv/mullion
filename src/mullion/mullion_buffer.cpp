@@ -201,14 +201,20 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
     info.usage = usage;
 
     std::unique_ptr<BufferView> first;
-    for (uint64_t start = 0; !first || start + kTextureBufferWidth - kTextureBufferStep < texels;
-         start += kTextureBufferStep) {
-      info.width = std::min(texels - start, kTextureBufferWidth);
-      auto view = allocation->obj_.newTexture(info, start * texel_size, info.width * texel_size);
-      auto window = std::make_unique<BufferView>(
-          std::move(view), info.gpu_resource_id, allocation->suballocation_size_ / texel_size
-      );
-      first ? (void)first->windows.push_back(std::move(window)) : (void)(first = std::move(window));
+    if (allocation->sparse_tile_bytes) {
+      // Metal does not support creating a MTLTextureTypeTextureBuffer on a placement sparse MTLBuffer
+      // (newTextureWithDescriptor returns nil); shaders fall back to raw device-pointer loads/stores.
+      first = std::make_unique<BufferView>(WMT::Reference<WMT::Texture>{}, 0, texels);
+    } else {
+      for (uint64_t start = 0; !first || start + kTextureBufferWidth - kTextureBufferStep < texels;
+           start += kTextureBufferStep) {
+        info.width = std::min(texels - start, kTextureBufferWidth);
+        auto view = allocation->obj_.newTexture(info, start * texel_size, info.width * texel_size);
+        auto window = std::make_unique<BufferView>(
+            std::move(view), info.gpu_resource_id, allocation->suballocation_size_ / texel_size
+        );
+        first ? (void)first->windows.push_back(std::move(window)) : (void)(first = std::move(window));
+      }
     }
     allocation->cached_view_.push_back(std::move(first));
   }

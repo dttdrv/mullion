@@ -344,8 +344,11 @@ public:
       auto &gpu_storage = mapped_argument_buffer_[Index];
       if (UAVBuffer) {
         auto [buffer_view, first] = UAVBuffer->view_(View, UAVBuffer->current(), Slice.firstElement);
+        uint32_t low = buffer_view.gpu_resource_id
+            ? uint32_t(first)
+            : (SM50_TEXEL_BUFFER_METADATA_SPARSE | uint32_t(ORIGINAL_FORMAT(UAVBuffer->pixelFormat(View))));
         gpu_storage.UAVTexelBuffer.resource_id = buffer_view.gpu_resource_id;
-        gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | first;
+        gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | low;
         gpu_storage.UAVTexelBuffer.padding[0] = UAVBuffer->current()->gpuAddress();
         gpu_storage.UAVTexelBuffer.padding[1] = UAVBuffer->current()->gpuAddress() + Slice.byteOffset;
       } else {
@@ -393,8 +396,11 @@ public:
       auto &gpu_storage = mapped_argument_buffer_[Index];
       if (Buffer) {
         auto [buffer_view, first] = Buffer->view_(View, Buffer->current(), Slice.firstElement);
+        uint32_t low = buffer_view.gpu_resource_id
+            ? uint32_t(first)
+            : (SM50_TEXEL_BUFFER_METADATA_SPARSE | uint32_t(ORIGINAL_FORMAT(Buffer->pixelFormat(View))));
         gpu_storage.UAVTexelBuffer.resource_id = buffer_view.gpu_resource_id;
-        gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | first;
+        gpu_storage.UAVTexelBuffer.metadata = ((uint64_t)Slice.elementCount << 32) | low;
         gpu_storage.UAVTexelBuffer.padding[1] = Buffer->current()->gpuAddress() + Slice.byteOffset;
       } else {
         gpu_storage.UAVTexelBuffer.resource_id = 0;
