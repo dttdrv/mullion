@@ -86,6 +86,9 @@ struct MTL_FRAME_INTERPOLATE_D3D12_DESC {
   FLOAT Far;
   FLOAT FieldOfView; // vertical, in degrees
   FLOAT AspectRatio;
+  // the camera, row-major, of row vectors (D3D's); both identity where the game gives none
+  FLOAT WorldToView[16];
+  FLOAT ViewToClip[16];
 };
 
 // a feature's MetalFX scaler, which its owner destroys when it is done with the feature

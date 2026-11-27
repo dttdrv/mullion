@@ -6733,6 +6733,21 @@ _MTLCommandBuffer_encodeDenoisedScale(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* the camera the frame was rendered with, from which MetalFX derives camera motion (macOS 27; by name, as the
+ * properties came with the macOS 27 SDK). the args' matrices are row-major of row vectors, so as simd's column-major
+ * matrices they are the same ones of column vectors */
+static void
+frame_interpolator_camera(id interpolator, const struct WMTFXFrameInterpolateArgs *args) {
+  SEL world_to_view = sel_registerName("setWorldToViewMatrix:"), view_to_clip = sel_registerName("setViewToClipMatrix:");
+  simd_float4x4 matrix;
+  if (![interpolator respondsToSelector:world_to_view] || ![interpolator respondsToSelector:view_to_clip])
+    return;
+  memcpy(&matrix, args->world_to_view, sizeof(matrix));
+  ((void (*)(id, SEL, simd_float4x4))objc_msgSend)(interpolator, world_to_view, matrix);
+  memcpy(&matrix, args->view_to_clip, sizeof(matrix));
+  ((void (*)(id, SEL, simd_float4x4))objc_msgSend)(interpolator, view_to_clip, matrix);
+}
+
 /* both kinds of interpolator share their properties (MTLFXFrameInterpolatorBase) */
 #define SET_FRAME_INTERPOLATOR(interpolator, a)                                                                        \
   do {                                                                                                                 \
@@ -6755,6 +6770,7 @@ _MTLCommandBuffer_encodeDenoisedScale(void *obj) {
     (interpolator).shouldResetHistory = (a)->reset;                                                                    \
     (interpolator).depthReversed = (a)->depth_reversed;                                                                \
     (interpolator).uiTextureComposited = (a)->ui_composited;                                                           \
+    frame_interpolator_camera((interpolator), (a));                                                                    \
   } while (0)
 
 static NTSTATUS

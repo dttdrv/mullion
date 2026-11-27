@@ -399,6 +399,43 @@ ReadCamera(const ParametersImpl *params, MTL_FRAME_INTERPOLATE_D3D12_DESC &desc)
     desc.Near = 0.1f;
 }
 
+// the camera matrices Frame Generation is given, row-major of row vectors: world to view from Streamline's camera
+// position and its right, up and forward vectors (world space), and the projection without jitter. MetalFX derives
+// camera-only motion from them; without them it has the motion vectors alone, and what the camera moves past ghosts.
+// both identity, which MetalFX takes as none, where the game gives no camera
+static void
+ReadCameraMatrices(const ParametersImpl *params, MTL_FRAME_INTERPOLATE_D3D12_DESC &desc) {
+  float *pos = nullptr, *right = nullptr, *up = nullptr, *forward = nullptr, *view_to_clip = nullptr;
+  params->Get("DLSSG.CameraPos", (void **)&pos);
+  params->Get("DLSSG.CameraRight", (void **)&right);
+  params->Get("DLSSG.CameraUp", (void **)&up);
+  params->Get("DLSSG.CameraFwd", (void **)&forward);
+  params->Get("DLSSG.CameraViewToClip", (void **)&view_to_clip);
+  static std::atomic_flag logged;
+  if (!logged.test_and_set())
+    Logger::info(str::format(
+        "NGX: Frame Generation's camera:", pos ? " position" : "", right ? " right" : "", up ? " up" : "",
+        forward ? " forward" : "", view_to_clip ? " projection" : "",
+        pos && right && up && forward && view_to_clip ? "" : "; MetalFX derives camera motion from motion vectors only"
+    ));
+  static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  if (!pos || !right || !up || !forward || !view_to_clip) {
+    memcpy(desc.WorldToView, identity, sizeof(identity));
+    memcpy(desc.ViewToClip, identity, sizeof(identity));
+    return;
+  }
+  const float *axes[3] = {right, up, forward};
+  for (int row = 0; row < 3; row++)
+    for (int column = 0; column < 3; column++)
+      desc.WorldToView[row * 4 + column] = axes[column][row];
+  for (int column = 0; column < 3; column++)
+    desc.WorldToView[12 + column] =
+        -(pos[0] * axes[column][0] + pos[1] * axes[column][1] + pos[2] * axes[column][2]);
+  desc.WorldToView[3] = desc.WorldToView[7] = desc.WorldToView[11] = 0;
+  desc.WorldToView[15] = 1;
+  memcpy(desc.ViewToClip, view_to_clip, sizeof(desc.ViewToClip));
+}
+
 static NVNGX_RESULT
 EvaluateFrameGeneration(
     ID3D12GraphicsCommandList *list, IMTLD3D12CommandListExt *ext, DLSSGFeature *dlssg, ParametersImpl *params
@@ -446,6 +483,7 @@ EvaluateFrameGeneration(
       desc.DepthReversed = GetOr(params, "DLSSG.DepthInverted", 0u) != 0;
       desc.InReset = GetOr(params, "DLSSG.Reset", 0u) != 0 || !dlssg->last_counter;
       ReadCamera(params, desc);
+      ReadCameraMatrices(params, desc);
       auto output = desc.Output->GetDesc();
       desc.AspectRatio = GetOr(params, "DLSSG.CameraAspectRatio", 0.0f);
       if (!(desc.AspectRatio > 0.0f))

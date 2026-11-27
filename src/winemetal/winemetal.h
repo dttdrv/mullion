@@ -2030,6 +2030,9 @@ struct WMTFXFrameInterpolateArgs {
   bool reset;
   bool depth_reversed;
   bool ui_composited; /* the UI is in `color` too, and MetalFX takes it out */
+  /* the camera, as WMTFXDenoisedScaleArgs has it: MetalFX derives camera motion from it; identity is none */
+  float world_to_view[16];
+  float view_to_clip[16];
 };
 
 WINEMETAL_API void
