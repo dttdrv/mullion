@@ -420,11 +420,14 @@ EvaluateFrameGeneration(
   if (GetOr(params, "DLSSG.EnableInterp", 0u)) {
     MTL_FRAME_INTERPOLATE_D3D12_DESC desc = {};
     auto hudless = GetResource(params, "DLSSG.HUDLess");
-    desc.UI = GetResource(params, "DLSSG.UI");
-    // the frame without its UI, and the UI on top, where the game gives both; else the frame as presented, with the
-    // UI it has in it where the game gives that
-    desc.Color = hudless && desc.UI ? hudless : backbuffer;
-    desc.UIComposited = desc.Color == backbuffer;
+    // the frame without its UI, and the frame as presented as MetalFX's composited UI: what the presented frame has
+    // over the one without UI is kept, not only DLSSG.UI's widgets. Unreal blurs and darkens the scene behind its
+    // menus after the frame without UI, so the frames made from that and DLSSG.UI were sharp and bright between
+    // presented ones that were blurred and dark (Phantom Blade Zero's menus flickered). without a frame without UI,
+    // the frame as presented alone
+    desc.Color = hudless ? hudless : backbuffer;
+    desc.UI = hudless && hudless != backbuffer ? backbuffer : nullptr;
+    desc.UIComposited = desc.UI != nullptr;
     desc.Depth = GetResource(params, "DLSSG.Depth");
     desc.MotionVector = GetResource(params, "DLSSG.MVecs");
     desc.Output = GetResource(params, "DLSSG.OutputInterpolated");
