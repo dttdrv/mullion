@@ -12,13 +12,23 @@ inline WMTWindowPlacement
 windowPlacement(HWND hWindow) {
   auto awareness = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   auto top_level = GetAncestor(hWindow, GA_ROOT);
-  RECT client{}, around{};
+  RECT client{}, around{}, win_rect{};
   GetClientRect(hWindow, &client);
   GetClientRect(top_level, &around);
+  GetWindowRect(top_level, &win_rect);
   MapWindowPoints(hWindow, top_level, reinterpret_cast<POINT *>(&client), 2);
   WMTWindowPlacement placement{
-      (uint64_t)(uintptr_t)top_level, client.left, client.top, client.right - client.left, client.bottom - client.top,
-      around.right, around.bottom, (uint32_t)GetSystemMetrics(SM_CXSCREEN)
+      (uint64_t)(uintptr_t)top_level,
+      client.left,
+      client.top,
+      client.right - client.left,
+      client.bottom - client.top,
+      around.right,
+      around.bottom,
+      win_rect.right - win_rect.left,
+      win_rect.bottom - win_rect.top,
+      (uint32_t)GetSystemMetrics(SM_CXSCREEN),
+      (uint32_t)GetSystemMetrics(SM_CYSCREEN),
   };
   SetThreadDpiAwarenessContext(awareness);
   return placement;

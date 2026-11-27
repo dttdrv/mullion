@@ -2053,12 +2053,13 @@ WINEMETAL_API void MetalLayer_setProps(obj_handle_t layer, const struct WMTLayer
 WINEMETAL_API void MetalLayer_getProps(obj_handle_t layer, struct WMTLayerProps *props);
 
 // where a window's client area is, for a Wine that does not say: its top-level window, the area within that
-// window's client area and that area's size, in the window system's pixels, and the primary screen's width in them
+// window's client area, the top-level client and outer window sizes, and the primary screen's size in Wine pixels
 struct WMTWindowPlacement {
   uint64_t top_level;
   int32_t x, y, width, height;
   int32_t top_level_width, top_level_height;
-  uint32_t screen_width;
+  int32_t window_width, window_height;
+  uint32_t screen_width, screen_height;
 };
 
 WINEMETAL_API obj_handle_t CreateMetalViewFromHWND(
