@@ -3985,12 +3985,30 @@ convert_dxil(
       break;
     }
     case BufferUpdateCounter: {
-      // IncrementCounter returns the value before, DecrementCounter the value after
+      // IncrementCounter returns the value before, DecrementCounter the value after.
+      // Guard against null counter pointers (e.g. UAV created without a counter resource): return 0 without faulting.
       auto &h = handles[a(1)];
+      if (!h.counter) {
+        ret = ir.getInt32(0);
+        break;
+      }
       bool increment = cast<ConstantInt>(a(2))->getSExtValue() > 0;
-      auto old =
-          air.CreateAtomicRMW(increment ? AtomicRMWInst::Add : AtomicRMWInst::Sub, h.counter->Pointer, ir.getInt32(1));
-      ret = increment ? old : ir.CreateSub(old, ir.getInt32(1));
+      auto *ptr = h.counter->Pointer;
+      auto *orig_bb = ir.GetInsertBlock();
+      auto *merge_bb = SplitBlock(orig_bb, call);
+      auto *then_bb = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, merge_bb);
+      orig_bb->getTerminator()->eraseFromParent();
+      ir.SetInsertPoint(orig_bb);
+      ir.CreateCondBr(ir.CreateIsNotNull(ptr), then_bb, merge_bb);
+      ir.SetInsertPoint(then_bb);
+      auto *old =
+          air.CreateAtomicRMW(increment ? AtomicRMWInst::Add : AtomicRMWInst::Sub, ptr, ir.getInt32(1));
+      auto *updated = increment ? old : ir.CreateSub(old, ir.getInt32(1));
+      ir.CreateBr(merge_bb);
+      auto *phi = PHINode::Create(ir.getInt32Ty(), 2, "", &merge_bb->front());
+      phi->addIncoming(ir.getInt32(0), orig_bb);
+      phi->addIncoming(updated, then_bb);
+      ret = phi;
       break;
     }
     case ThreadId:
@@ -4269,8 +4287,9 @@ convert_dxil(
       break;
     }
     case Dot2AddHalf: {
+      // Complete the dot product before accumulating into acc (SM 6.4 dot2add: acc + (a.x * b.x + a.y * b.y)).
       auto f = [&](unsigned i) { return ir.CreateFPExt(a(i), ir.getFloatTy()); };
-      ret = air.CreateFMA(f(3), f(5), air.CreateFMA(f(2), f(4), a(1)));
+      ret = ir.CreateFAdd(a(1), air.CreateFMA(f(3), f(5), ir.CreateFMul(f(2), f(4))));
       break;
     }
     case Dot4AddI8Packed:
