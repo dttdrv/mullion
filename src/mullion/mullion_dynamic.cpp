@@ -3,6 +3,10 @@
 #include "mullion_ring_bump_allocator.hpp"
 
 namespace mullion {
+// Keep at most 2 idle allocations queued for reuse (enough for triple-buffered
+// frames in flight) so burst MAP_DISCARD spikes don't pin GPU memory forever.
+constexpr size_t kMaxIdleDynamicAllocations = 2;
+
 DynamicBuffer::DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags) :
     buffer(buffer),
     flags_(flags),
@@ -25,6 +29,9 @@ DynamicBuffer::allocate(uint64_t coherent_seq_id, std::optional<uint32_t> filled
   if (!fifo.empty() && fifo.front().will_free_at <= coherent_seq_id) {
     auto ret = std::move(fifo.front().allocation);
     fifo.pop();
+    while (fifo.size() > kMaxIdleDynamicAllocations && fifo.front().will_free_at <= coherent_seq_id) {
+      fifo.pop();
+    }
     return ret;
   }
   // a command list's filled allocation, or an immediate one with an older name pending, doubles within a staging block
@@ -94,6 +101,9 @@ DynamicLinearTexture::allocate(uint64_t coherent_seq_id) {
     }
     ret = std::move(entry.allocation);
     fifo.pop();
+    while (fifo.size() > kMaxIdleDynamicAllocations && fifo.front().will_free_at <= coherent_seq_id) {
+      fifo.pop();
+    }
     break;
   }
   if (!ret.ptr())
