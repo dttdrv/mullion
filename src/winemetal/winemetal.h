@@ -2033,6 +2033,13 @@ struct WMTFXFrameInterpolateArgs {
   /* the camera, as WMTFXDenoisedScaleArgs has it: MetalFX derives camera motion from it; identity is none */
   float world_to_view[16];
   float view_to_clip[16];
+  /* the depth's and motion's content, in their pixels: its size (0: all of the textures) and where it starts */
+  uint32_t content_width;
+  uint32_t content_height;
+  uint32_t depth_offset_x;
+  uint32_t depth_offset_y;
+  uint32_t motion_offset_x;
+  uint32_t motion_offset_y;
 };
 
 WINEMETAL_API void

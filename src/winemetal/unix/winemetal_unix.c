@@ -6748,6 +6748,21 @@ frame_interpolator_camera(id interpolator, const struct WMTFXFrameInterpolateArg
   ((void (*)(id, SEL, simd_float4x4))objc_msgSend)(interpolator, view_to_clip, matrix);
 }
 
+/* the part of the depth and motion textures their content fills (macOS 27; by name, as the properties came with the
+ * macOS 27 SDK): contentWidth and contentHeight are in their pixels, and 0 is all of them */
+static void
+frame_interpolator_content(id interpolator, const struct WMTFXFrameInterpolateArgs *args) {
+  static const char *names[] = {"setContentWidth:",       "setContentHeight:",      "setDepthContentOffsetX:",
+                                "setDepthContentOffsetY:", "setMotionContentOffsetX:", "setMotionContentOffsetY:"};
+  const NSUInteger values[] = {args->content_width,  args->content_height,  args->depth_offset_x,
+                               args->depth_offset_y, args->motion_offset_x, args->motion_offset_y};
+  for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    SEL set = sel_registerName(names[i]);
+    if ([interpolator respondsToSelector:set])
+      ((void (*)(id, SEL, NSUInteger))objc_msgSend)(interpolator, set, values[i]);
+  }
+}
+
 /* both kinds of interpolator share their properties (MTLFXFrameInterpolatorBase) */
 #define SET_FRAME_INTERPOLATOR(interpolator, a)                                                                        \
   do {                                                                                                                 \
@@ -6771,6 +6786,7 @@ frame_interpolator_camera(id interpolator, const struct WMTFXFrameInterpolateArg
     (interpolator).depthReversed = (a)->depth_reversed;                                                                \
     (interpolator).uiTextureComposited = (a)->ui_composited;                                                           \
     frame_interpolator_camera((interpolator), (a));                                                                    \
+    frame_interpolator_content((interpolator), (a));                                                                   \
   } while (0)
 
 static NTSTATUS

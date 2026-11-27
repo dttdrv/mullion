@@ -89,6 +89,13 @@ struct MTL_FRAME_INTERPOLATE_D3D12_DESC {
   // the camera, row-major, of row vectors (D3D's); both identity where the game gives none
   FLOAT WorldToView[16];
   FLOAT ViewToClip[16];
+  // the size of the depth's and motion vectors' content, 0 for all of their textures, and where it starts in each
+  UINT ContentWidth;
+  UINT ContentHeight;
+  UINT DepthOffsetX;
+  UINT DepthOffsetY;
+  UINT MotionVectorOffsetX;
+  UINT MotionVectorOffsetY;
 };
 
 // a feature's MetalFX scaler, which its owner destroys when it is done with the feature

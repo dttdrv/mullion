@@ -6396,6 +6396,22 @@ public:
     args.ui_composited = ui && pDesc->UIComposited;
     memcpy(args.world_to_view, pDesc->WorldToView, sizeof(args.world_to_view));
     memcpy(args.view_to_clip, pDesc->ViewToClip, sizeof(args.view_to_clip));
+    // the content of depth and motion where it fills part of their textures (a game with dynamic resolution renders
+    // into the top left of textures of the largest size): as far in as it fits
+    uint32_t content_width = pDesc->ContentWidth && pDesc->ContentWidth < depth->width() ? pDesc->ContentWidth : 0,
+             content_height = pDesc->ContentHeight && pDesc->ContentHeight < depth->height() ? pDesc->ContentHeight : 0;
+    args.content_width = args.content_height = 0;
+    args.depth_offset_x = args.depth_offset_y = args.motion_offset_x = args.motion_offset_y = 0;
+    if (content_width || content_height) {
+      content_width = content_width ? content_width : depth->width();
+      content_height = content_height ? content_height : depth->height();
+      args.content_width = content_width;
+      args.content_height = content_height;
+      args.depth_offset_x = ContentOffset(pDesc->DepthOffsetX, content_width, depth->width());
+      args.depth_offset_y = ContentOffset(pDesc->DepthOffsetY, content_height, depth->height());
+      args.motion_offset_x = ContentOffset(pDesc->MotionVectorOffsetX, content_width, motion->width());
+      args.motion_offset_y = ContentOffset(pDesc->MotionVectorOffsetY, content_height, motion->height());
+    }
     return S_OK;
   }
 

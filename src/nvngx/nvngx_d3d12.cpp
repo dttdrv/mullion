@@ -484,6 +484,30 @@ EvaluateFrameGeneration(
       desc.InReset = GetOr(params, "DLSSG.Reset", 0u) != 0 || !dlssg->last_counter;
       ReadCamera(params, desc);
       ReadCameraMatrices(params, desc);
+      // where the depth and the motion vectors fill part of their textures, their content (a game with dynamic
+      // resolution renders into the top left of textures of the largest size): without it MetalFX read all of each
+      // texture as the frame, and every pixel's depth and motion were another's (ghosting wherever anything moved)
+      desc.ContentWidth = GetOr(params, "DLSSG.MVecsSubrectWidth", 0u);
+      desc.ContentHeight = GetOr(params, "DLSSG.MVecsSubrectHeight", 0u);
+      if (!desc.ContentWidth || !desc.ContentHeight) {
+        desc.ContentWidth = GetOr(params, "DLSSG.DepthSubrectWidth", 0u);
+        desc.ContentHeight = GetOr(params, "DLSSG.DepthSubrectHeight", 0u);
+      }
+      desc.MotionVectorOffsetX = GetOr(params, "DLSSG.MVecsSubrectBaseX", 0u);
+      desc.MotionVectorOffsetY = GetOr(params, "DLSSG.MVecsSubrectBaseY", 0u);
+      desc.DepthOffsetX = GetOr(params, "DLSSG.DepthSubrectBaseX", 0u);
+      desc.DepthOffsetY = GetOr(params, "DLSSG.DepthSubrectBaseY", 0u);
+      {
+        static std::atomic_flag logged;
+        if (!logged.test_and_set()) {
+          auto depth = desc.Depth->GetDesc();
+          Logger::info(str::format(
+              "NGX: Frame Generation's depth and motion: ", desc.ContentWidth, "x", desc.ContentHeight, " of ",
+              depth.Width, "x", depth.Height, ", motion from ", desc.MotionVectorOffsetX, ",", desc.MotionVectorOffsetY,
+              ", depth from ", desc.DepthOffsetX, ",", desc.DepthOffsetY
+          ));
+        }
+      }
       auto output = desc.Output->GetDesc();
       desc.AspectRatio = GetOr(params, "DLSSG.CameraAspectRatio", 0.0f);
       if (!(desc.AspectRatio > 0.0f))
