@@ -2904,18 +2904,16 @@ convert_dxil(
       break;
     case WaveReadLaneFirst:
       if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves) {
-        // the first lane that is not a helper, as D3D has it, and its value for every lane, the helpers' too: in a
-        // loop that runs until a lane's value is the first lane's (a "waterfall" over the wave's distinct values), a
-        // helper given zero, or a first lane that is a helper, never matches, and the loop never ends (Dragon's
-        // Dogma 2's PS_Culltest hung the GPU). a loop only helpers are still in takes the first of them
+        // Return the first non-helper lane's value, or 0 when all active lanes are helpers
+        // (vkd3d-proton test_sm67_helper_lane_only_wave_ops).
         auto ctz = ctx.module.getOrInsertFunction(
             "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
         );
         auto helper = simd("simd_is_helper_thread", ir.getInt1Ty(), {});
         auto real = lanes_where(ir.CreateNot(helper));
-        auto active = lanes_where(ir.getTrue());
-        auto lanes = ir.CreateSelect(ir.CreateICmpNE(real, ir.getInt64(0)), real, active);
-        ret = move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {lanes, ir.getFalse()}))});
+        auto has_real = ir.CreateICmpNE(real, ir.getInt64(0));
+        auto lane = i16(ir.CreateCall(ctz, {ir.CreateSelect(has_real, real, ir.getInt64(1)), ir.getFalse()}));
+        ret = ir.CreateSelect(has_real, move("simd_shuffle", a(1), {lane}), Constant::getNullValue(ty));
       } else
         ret = move("simd_broadcast_first", a(1), {});
       break;
@@ -3985,12 +3983,30 @@ convert_dxil(
       break;
     }
     case BufferUpdateCounter: {
-      // IncrementCounter returns the value before, DecrementCounter the value after
+      // IncrementCounter returns the value before, DecrementCounter the value after.
+      // Guard against null counter pointers (e.g. UAV created without a counter resource): return 0 without faulting.
       auto &h = handles[a(1)];
+      if (!h.counter) {
+        ret = ir.getInt32(0);
+        break;
+      }
       bool increment = cast<ConstantInt>(a(2))->getSExtValue() > 0;
-      auto old =
-          air.CreateAtomicRMW(increment ? AtomicRMWInst::Add : AtomicRMWInst::Sub, h.counter->Pointer, ir.getInt32(1));
-      ret = increment ? old : ir.CreateSub(old, ir.getInt32(1));
+      auto *ptr = h.counter->Pointer;
+      auto *orig_bb = ir.GetInsertBlock();
+      auto *merge_bb = SplitBlock(orig_bb, call);
+      auto *then_bb = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, merge_bb);
+      orig_bb->getTerminator()->eraseFromParent();
+      ir.SetInsertPoint(orig_bb);
+      ir.CreateCondBr(ir.CreateIsNotNull(ptr), then_bb, merge_bb);
+      ir.SetInsertPoint(then_bb);
+      auto *old =
+          air.CreateAtomicRMW(increment ? AtomicRMWInst::Add : AtomicRMWInst::Sub, ptr, ir.getInt32(1));
+      auto *updated = increment ? old : ir.CreateSub(old, ir.getInt32(1));
+      ir.CreateBr(merge_bb);
+      auto *phi = PHINode::Create(ir.getInt32Ty(), 2, "", &merge_bb->front());
+      phi->addIncoming(ir.getInt32(0), orig_bb);
+      phi->addIncoming(updated, then_bb);
+      ret = phi;
       break;
     }
     case ThreadId:
@@ -4269,8 +4285,9 @@ convert_dxil(
       break;
     }
     case Dot2AddHalf: {
+      // Complete the dot product before accumulating into acc (SM 6.4 dot2add: acc + (a.x * b.x + a.y * b.y)).
       auto f = [&](unsigned i) { return ir.CreateFPExt(a(i), ir.getFloatTy()); };
-      ret = air.CreateFMA(f(3), f(5), air.CreateFMA(f(2), f(4), a(1)));
+      ret = ir.CreateFAdd(a(1), air.CreateFMA(f(3), f(5), ir.CreateFMul(f(2), f(4))));
       break;
     }
     case Dot4AddI8Packed:

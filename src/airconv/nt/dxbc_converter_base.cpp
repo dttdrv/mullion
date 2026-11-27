@@ -3673,8 +3673,23 @@ Converter::operator()(const InstAtomicImmIncrement &atomic) {
   if (!Ctr)
     return;
 
-  auto Value = air.CreateAtomicRMW(AtomicRMWInst::Add, Ctr->Pointer, ir.getInt32(1));
-  StoreOperand(atomic.dst, Value);
+  auto *ptr = Ctr->Pointer;
+  auto *orig_bb = ir.GetInsertBlock();
+  auto *merge_bb = ir.GetInsertPoint() == orig_bb->end() ? llvm::BasicBlock::Create(ctx.llvm, "", ctx.function)
+                                                         : llvm::SplitBlock(orig_bb, &*ir.GetInsertPoint());
+  if (auto *term = orig_bb->getTerminator())
+    term->eraseFromParent();
+  auto *then_bb = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, merge_bb);
+  ir.SetInsertPoint(orig_bb);
+  ir.CreateCondBr(ir.CreateIsNotNull(ptr), then_bb, merge_bb);
+  ir.SetInsertPoint(then_bb);
+  auto *Value = air.CreateAtomicRMW(AtomicRMWInst::Add, ptr, ir.getInt32(1));
+  ir.CreateBr(merge_bb);
+  merge_bb->empty() ? ir.SetInsertPoint(merge_bb) : ir.SetInsertPoint(&*merge_bb->getFirstInsertionPt());
+  auto *phi = ir.CreatePHI(ir.getInt32Ty(), 2);
+  phi->addIncoming(ir.getInt32(0), orig_bb);
+  phi->addIncoming(Value, then_bb);
+  StoreOperand(atomic.dst, phi);
 }
 void
 Converter::operator()(const InstAtomicImmDecrement &atomic) {
@@ -3685,9 +3700,25 @@ Converter::operator()(const InstAtomicImmDecrement &atomic) {
   if (!Ctr)
     return;
 
-  auto Value = air.CreateAtomicRMW(AtomicRMWInst::Sub, Ctr->Pointer, ir.getInt32(1));
+  auto *ptr = Ctr->Pointer;
+  auto *orig_bb = ir.GetInsertBlock();
+  auto *merge_bb = ir.GetInsertPoint() == orig_bb->end() ? llvm::BasicBlock::Create(ctx.llvm, "", ctx.function)
+                                                         : llvm::SplitBlock(orig_bb, &*ir.GetInsertPoint());
+  if (auto *term = orig_bb->getTerminator())
+    term->eraseFromParent();
+  auto *then_bb = llvm::BasicBlock::Create(ctx.llvm, "", ctx.function, merge_bb);
+  ir.SetInsertPoint(orig_bb);
+  ir.CreateCondBr(ir.CreateIsNotNull(ptr), then_bb, merge_bb);
+  ir.SetInsertPoint(then_bb);
+  auto *Value = air.CreateAtomicRMW(AtomicRMWInst::Sub, ptr, ir.getInt32(1));
   // imm_atomic_consume returns new value
-  StoreOperand(atomic.dst, ir.CreateSub(Value, ir.getInt32(1)));
+  auto *Updated = ir.CreateSub(Value, ir.getInt32(1));
+  ir.CreateBr(merge_bb);
+  merge_bb->empty() ? ir.SetInsertPoint(merge_bb) : ir.SetInsertPoint(&*merge_bb->getFirstInsertionPt());
+  auto *phi = ir.CreatePHI(ir.getInt32Ty(), 2);
+  phi->addIncoming(ir.getInt32(0), orig_bb);
+  phi->addIncoming(Updated, then_bb);
+  StoreOperand(atomic.dst, phi);
 }
 
 llvm::Optional<InterpolantHandle>
