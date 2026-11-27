@@ -1024,11 +1024,13 @@ public:
     samples.buffer = depth_bounds_samples_;
     samples.offset = 0;
     samples.index = 1;
-    // DepthBounds, mullion_command.metal
-    struct {
+    // DepthBounds, mullion_command.metal (float2 has 8-byte alignment in MSL, so sizeof(DepthBounds) == 16)
+    struct alignas(8) {
       float range[2];
       uint32_t pitch;
-    } bounds{{std::clamp(depth_bounds_[0], 0.0f, 1.0f), std::clamp(depth_bounds_[1], 0.0f, 1.0f)}, dsv.Width};
+      uint32_t pad;
+    } bounds{{std::clamp(depth_bounds_[0], 0.0f, 1.0f), std::clamp(depth_bounds_[1], 0.0f, 1.0f)}, dsv.Width, 0};
+    static_assert(sizeof(bounds) == 16);
     auto &bytes = allocator_->EncodeComputeCommand<wmtcmd_compute_setbytes>();
     bytes.type = WMTComputeCommandSetBytes;
     bytes.bytes.set(memcpy(allocator_->AllocateCPUHeap(sizeof(bounds), 16), &bounds, sizeof(bounds)));
