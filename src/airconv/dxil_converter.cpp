@@ -2904,16 +2904,18 @@ convert_dxil(
       break;
     case WaveReadLaneFirst:
       if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves) {
-        // Return the first non-helper lane's value, or 0 when all active lanes are helpers
-        // (vkd3d-proton test_sm67_helper_lane_only_wave_ops).
+        // the first lane that is not a helper, as D3D has it, and its value for every lane, the helpers' too: in a
+        // loop that runs until a lane's value is the first lane's (a "waterfall" over the wave's distinct values), a
+        // helper given zero, or a first lane that is a helper, never matches, and the loop never ends (Dragon's
+        // Dogma 2's PS_Culltest hung the GPU). a loop only helpers are still in takes the first of them
         auto ctz = ctx.module.getOrInsertFunction(
             "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
         );
         auto helper = simd("simd_is_helper_thread", ir.getInt1Ty(), {});
         auto real = lanes_where(ir.CreateNot(helper));
-        auto has_real = ir.CreateICmpNE(real, ir.getInt64(0));
-        auto lane = i16(ir.CreateCall(ctz, {ir.CreateSelect(has_real, real, ir.getInt64(1)), ir.getFalse()}));
-        ret = ir.CreateSelect(has_real, move("simd_shuffle", a(1), {lane}), Constant::getNullValue(ty));
+        auto active = lanes_where(ir.getTrue());
+        auto lanes = ir.CreateSelect(ir.CreateICmpNE(real, ir.getInt64(0)), real, active);
+        ret = move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {lanes, ir.getFalse()}))});
       } else
         ret = move("simd_broadcast_first", a(1), {});
       break;
