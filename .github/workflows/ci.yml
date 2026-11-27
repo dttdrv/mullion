@@ -3,7 +3,9 @@ name: CI Build
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**', '.github/ISSUE_TEMPLATE/**', '.github/DISCUSSION_TEMPLATE/**']
   # every pull request builds each variant, runs the host tests (including ASan+UBSan) and leaves its archive as an
   # artifact. the GPU tests do not run for one: GitHub's Macs have no GPU Mullion runs on, and a self-hosted one must
   # not run a fork's code
@@ -14,9 +16,9 @@ on:
   schedule:
     - cron: '17 3 */5 * *'
 
-# a pull request's newer push ends the run of the one before
+# a pull request's newer push (or a newer merge to main) ends the run of the one before
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  group: ci-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && 'main') || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -916,7 +918,7 @@ jobs:
   # not for a pull request: the native library does not build yet (src/mullion uses Windows' clock and thread calls),
   # and a check that always fails teaches nobody anything
   build-clang-release-arm64-macos:
-    if: github.event_name != 'schedule' && github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: macos-26
     steps:
       - name: Checkout
