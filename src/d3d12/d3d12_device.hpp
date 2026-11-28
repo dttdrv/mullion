@@ -1143,7 +1143,9 @@ CreatePlacedBuffer(
 );
 
 HRESULT
-OpenHeap(MTLD3D12Device *pDevice, const void *Address, HANDLE Mapping, REFIID riid, void **ppHeap);
+OpenHeap(
+    MTLD3D12Device *pDevice, const void *Address, HANDLE Mapping, REFIID riid, void **ppHeap, SIZE_T Size = 0
+);
 
 HRESULT
 CreateHeap(MTLD3D12Device *pDevice, const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap);
