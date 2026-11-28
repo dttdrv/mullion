@@ -3010,7 +3010,7 @@ PipelineStateStream::Parse(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc) {
     desc_graphics.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   }
 
-  uint32_t defined_type = 0;
+  uint64_t defined_type = 0;
 
   while (stream_start < stream_end) {
     if (stream_start + sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) > stream_end) {
@@ -3020,11 +3020,12 @@ PipelineStateStream::Parse(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc) {
     auto type = *reinterpret_cast<const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE *>(stream_start);
 
     if ((uint32_t(type) >= D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MAX_VALID &&
-         type != D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2) || (defined_type & (1 << type))) {
+         type != D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2) ||
+        uint32_t(type) >= 64 || (defined_type & (uint64_t(1) << uint32_t(type)))) {
       ERR("CreatePipelineState: unknown or duplicated subobject type ", type);
       return E_INVALIDARG;
     }
-    defined_type |= (1 << type);
+    defined_type |= (uint64_t(1) << uint32_t(type));
 
 #define GET_STREAM_DATA(data_type)                                                                                     \
   using subobject_t = struct {                                                                                         \
@@ -3202,6 +3203,15 @@ PipelineStateStream::Parse(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc) {
       ERR("CreatePipelineState: unhandled subobject type ", type);
       return E_INVALIDARG;
     }
+  }
+
+  constexpr uint64_t depth_stencil_mask =
+      (uint64_t(1) << uint32_t(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL)) |
+      (uint64_t(1) << uint32_t(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1)) |
+      (uint64_t(1) << uint32_t(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2));
+  if (std::popcount(defined_type & depth_stencil_mask) > 1) {
+    ERR("CreatePipelineState: conflicting depth-stencil subobject types");
+    return E_INVALIDARG;
   }
 
   // a stream may list every shader, the unused ones empty (as D3DX12's stream helper does): the shaders present
