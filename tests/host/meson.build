@@ -7,7 +7,8 @@ test('host_window_placement', executable('host_window_placement', 'window_placem
 test('host_geometry_budget', executable('host_geometry_budget', 'geometry_budget.cpp',
                                       include_directories : mullion_native_include_path,
                                       override_options : ['cpp_std=c++20'], native : true), suite : 'host')
-test('host_format', executable('host_format', 'format.cpp', include_directories : mullion_native_include_path,
+test('host_format', executable('host_format', ['format.cpp', '../../src/util/util_string.cpp'],
+                             include_directories : mullion_native_include_path,
                              override_options : ['cpp_std=c++20'], native : true), suite : 'host')
 test('host_rc_self_move', executable('host_rc_self_move', 'rc.cpp',
                                     override_options : ['cpp_std=c++20'], native : true), suite : 'host')
