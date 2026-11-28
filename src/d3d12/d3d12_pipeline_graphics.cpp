@@ -1171,6 +1171,8 @@ public:
       const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, RenderPipelineInfo &info, bool &dual_source_blending,
       SM50_SHADER_BLEND (&blend)[8]
   ) {
+    if (pDesc->NumRenderTargets > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT)
+      return FAIL(E_INVALIDARG);
     HRESULT hr;
     MTL_DXGI_FORMAT_DESC format_desc;
     uint32_t effective_dual_source_rtvs = 0;
