@@ -2591,6 +2591,9 @@ public:
     __ret->SizeInBytes = 0;
     __ret->Alignment = 1;
 
+    if (ResourceDestCount && !pDescs)
+      goto invalid;
+
     for (unsigned i = 0; i < ResourceDestCount; i++) {
       const D3D12_RESOURCE_DESC *desc = &pDescs[i];
       has_msaa_resource |= desc->SampleDesc.Count > 1;
