@@ -1184,6 +1184,8 @@ public:
         continue;
       }
       // out of the list, which only clear passes leave: the next one, if a clear, follows the one before now
+      if (plain_pass_ == clear)
+        plain_pass_ = clear->overlap == PassOverlap::Ordered ? nullptr : clear->previous;
       clear->previous->next = clear->next;
       if (clear->next && clear->next->type == EncoderType::Clear)
         static_cast<RenderEncoderData *>(clear->next)->previous = clear->previous;
@@ -3422,12 +3424,102 @@ public:
       allocator_->clear_rtv_.end();
       return;
     }
+    // If we are inside an active render pass that already has draws and binds this exact DSV with
+    // other attachments (e.g. color or depth), clearing stencil-only in-pass via a fullscreen triangle
+    // avoids ending and restarting the TBDR render pass (preventing full color+depth store/load traffic).
+    static const bool inpass_stencil_clear = env::getEnvVar("MULLION_INPASS_STENCIL_CLEAR") != "0";
+    if (inpass_stencil_clear && CheckedFlags == D3D12_CLEAR_FLAG_STENCIL && !predication_region_ && active_queries_.empty() &&
+        active_statistics_.empty() && allocator_->encoder_current &&
+        allocator_->encoder_current->type == EncoderType::Render) {
+      auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+      auto &dsv_view = AttachmentDesc.Texture->view(AttachmentDesc.View);
+      bool has_other_attachment = bool(render->depth.attachment);
+      for (unsigned i = 0; !has_other_attachment && i < 8; i++)
+        has_other_attachment = bool(render->colors[i].attachment);
+      if (has_other_attachment && !render->rasterless && !render->use_visibility_result &&
+          !(render->dsv_readonly_flags & D3D12_DSV_FLAG_READ_ONLY_STENCIL) &&
+          render->stencil.attachment.ptr() == &dsv_view && render->cmd_head.next.ptr != nullptr &&
+          render->render_target_array_length <= 1 && AttachmentDesc.Texture->arrayLength(AttachmentDesc.View) <= 1 &&
+          render->viewports + 1 <= WMT::kPassRectangles && render->scissors + 1 <= WMT::kPassRectangles) {
+        std::array<WMTPixelFormat, 8> color_formats{};
+        color_formats.fill(WMTPixelFormatInvalid);
+        for (unsigned i = 0; i < 8; i++) {
+          if (render->colors[i].attachment && i < num_rtvs && rtvs[i].Texture)
+            color_formats[i] = rtvs[i].Texture->pixelFormat(rtvs[i].View);
+        }
+        auto dsv_fmt = AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View);
+        auto depth_fmt = render->depth.attachment ? dsv_fmt : WMTPixelFormatInvalid;
+        auto pso = device_->GetLib().InPassStencilClearPipeline(
+            color_formats, depth_fmt, dsv_fmt, AttachmentDesc.Texture->sampleCount()
+        );
+        if (pso) {
+          auto &cmd_pso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+          cmd_pso.type = WMTRenderCommandSetPSO;
+          cmd_pso.pso = pso;
+
+          auto &cmd_ds = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
+          cmd_ds.type = WMTRenderCommandSetDepthStencilState;
+          cmd_ds.depth_stencil_state = device_->GetLib().ClearDepthStencilState(D3D12_CLEAR_FLAG_STENCIL);
+
+          auto &cmd_rs = allocator_->EncodeRenderCommand<wmtcmd_render_setrasterizerstate>();
+          cmd_rs.type = WMTRenderCommandSetRasterizerState;
+          cmd_rs.cull_mode = WMTCullModeNone;
+          cmd_rs.depth_clip_mode = WMTDepthClipModeClip;
+          cmd_rs.fill_mode = WMTTriangleFillModeFill;
+          cmd_rs.depth_bias = 0.0f;
+          cmd_rs.depth_bias_clamp = 0.0f;
+          cmd_rs.scole_scale = 0.0f;
+          cmd_rs.winding = WMTWindingClockwise;
+
+          auto &cmd_sref = allocator_->EncodeRenderCommand<wmtcmd_render_setstencilref>();
+          cmd_sref.type = WMTRenderCommandSetStencilRef;
+          cmd_sref.stencil_ref = Stencil;
+          cmd_sref.back_stencil_ref = Stencil;
+
+          auto vp = allocator_->AllocateCommandData<WMTViewport>(1);
+          vp[0] = {0.0, 0.0, double(render->render_target_width), double(render->render_target_height), 0.0, 1.0};
+          auto &cmd_vp = allocator_->EncodeRenderCommand<wmtcmd_render_setviewports>();
+          cmd_vp.type = WMTRenderCommandSetViewports;
+          cmd_vp.viewports.set(vp);
+          cmd_vp.viewport_count = 1;
+          render->viewports += 1;
+
+          auto sc = allocator_->AllocateCommandData<WMTScissorRect>(1);
+          sc[0] = {0, 0, render->render_target_width, render->render_target_height};
+          auto &cmd_sc = allocator_->EncodeRenderCommand<wmtcmd_render_setscissorrects>();
+          cmd_sc.type = WMTRenderCommandSetScissorRects;
+          cmd_sc.scissor_rects.set(sc);
+          cmd_sc.rect_count = 1;
+          render->scissors += 1;
+
+          auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
+          cmd_draw.type = WMTRenderCommandDraw;
+          cmd_draw.primitive_type = WMTPrimitiveTypeTriangle;
+          cmd_draw.vertex_start = 0;
+          cmd_draw.vertex_count = 3;
+          cmd_draw.base_instance = 0;
+          cmd_draw.instance_count = 1;
+
+          dirty_state_.set(
+              DirtyState::GraphicsPipelineState, DirtyState::Viewport, DirtyState::ScissorRect, DirtyState::StencilRef
+          );
+          return;
+        }
+      }
+    }
     auto encoder_info = JoinableClear(AttachmentDesc);
     if (encoder_info && (encoder_info->depth.attachment || encoder_info->stencil.attachment ||
                          ClearTextures(encoder_info, AttachmentDesc.Texture)))
       encoder_info = nullptr;
-    if (!encoder_info)
+    if (!encoder_info) {
       encoder_info = StartClearPass(AttachmentDesc);
+    } else if (AttachmentDesc.Texture) {
+      const Texture *tex = AttachmentDesc.Texture;
+      if (encoder_info->overlap == PassOverlap::Independent &&
+          std::ranges::find(overlap_targets_, tex) != overlap_targets_.end())
+        encoder_info->overlap = PassOverlap::Shared;
+      overlap_targets_.push_back(tex);
+    }
     if (!clears_.empty() && clears_.back().pass == encoder_info)
       clears_.back().textures.back() = AttachmentDesc.Texture;
     if (CheckedFlags & D3D12_CLEAR_FLAG_DEPTH) {
@@ -3489,6 +3581,12 @@ public:
     if (!encoder_info) {
       encoder_info = StartClearPass(AttachmentDesc);
       slot = 0;
+    } else if (AttachmentDesc.Texture) {
+      const Texture *tex = AttachmentDesc.Texture;
+      if (encoder_info->overlap == PassOverlap::Independent &&
+          std::ranges::find(overlap_targets_, tex) != overlap_targets_.end())
+        encoder_info->overlap = PassOverlap::Shared;
+      overlap_targets_.push_back(tex);
     }
     if (!clears_.empty() && clears_.back().pass == encoder_info)
       clears_.back().textures[slot] = AttachmentDesc.Texture;
@@ -3512,6 +3610,8 @@ public:
     clear->render_target_width = Desc.Width;
     clear->render_target_height = Desc.Height;
     clear->clear_sample_count = Desc.Texture->sampleCount();
+    const Texture *tex = Desc.Texture;
+    Overlap(clear, {&tex, 1});
     allocator_->InvalidateCurrentPass();
     clear_joinable_ = true;
     clears_.push_back({clear});

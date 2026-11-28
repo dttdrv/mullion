@@ -337,6 +337,7 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device, ID3DD
   mullion::shared_mutex va_lock_;
   std::map<uint64_t, BufferAllocation *> interval_map_;
   std::map<uint64_t, std::vector<uint64_t>> sparse_buffer_mappings_;
+  WMT::Reference<WMT::Buffer> cached_sparse_mappings_;
   // whether a tile of a reserved buffer has ever been mapped, by UpdateTileMappings on any queue: never false again
   std::atomic<bool> sparse_tiles_mapped_ = false;
   // what a null acceleration structure is to a ray query: a top-level structure of nothing
@@ -2770,10 +2771,12 @@ public:
     {
       std::unique_lock<mullion::shared_mutex> lock(va_lock_);
       interval_map_.emplace(allocation->gpuAddress(), allocation);
-      if (allocation->sparse_tile_bytes)
+      if (allocation->sparse_tile_bytes) {
         sparse_buffer_mappings_.emplace(
             allocation->gpuAddress(), std::vector<uint64_t>(allocation->sparse_tile_count)
         );
+        cached_sparse_mappings_ = nullptr;
+      }
     }
     if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
       return S_OK;
@@ -2806,7 +2809,8 @@ public:
       acceleration_structures_.erase(first, last);
     }
     interval_map_.erase(allocation->gpuAddress());
-    sparse_buffer_mappings_.erase(allocation->gpuAddress());
+    if (sparse_buffer_mappings_.erase(allocation->gpuAddress()))
+      cached_sparse_mappings_ = nullptr;
   }
 
   BufferAllocation *
@@ -2840,6 +2844,7 @@ public:
       if (range.mode == WMTSparseMappingModeMap && range.tile_count)
         sparse_tiles_mapped_.store(true, std::memory_order_release);
     }
+    cached_sparse_mappings_ = nullptr;
   }
 
   bool
@@ -2856,6 +2861,7 @@ public:
     auto &to = sparse_buffer_mappings_.at(dst->gpuAddress());
     for (auto &range : ranges)
       memmove(&to[range.destination_tile], &from[range.first_tile], range.tile_count * sizeof(from[0]));
+    cached_sparse_mappings_ = nullptr;
   }
 
   bool
@@ -2878,6 +2884,37 @@ public:
       words.insert(words.end(), tiles.begin(), tiles.end());
     }
     return words;
+  }
+
+  WMT::Reference<WMT::Buffer>
+  SparseBufferMappingsBuffer() override {
+    {
+      std::shared_lock<mullion::shared_mutex> lock(va_lock_);
+      if (sparse_buffer_mappings_.empty())
+        return {};
+      if (cached_sparse_mappings_)
+        return cached_sparse_mappings_;
+    }
+    std::unique_lock<mullion::shared_mutex> lock(va_lock_);
+    if (sparse_buffer_mappings_.empty())
+      return {};
+    if (cached_sparse_mappings_)
+      return cached_sparse_mappings_;
+    std::vector<uint64_t> words{sparse_buffer_mappings_.size()};
+    for (auto &[address, tiles] : sparse_buffer_mappings_) {
+      SM50_SPARSE_BUFFER_MAPPING header{address, tiles.size(), interval_map_.at(address)->sparse_tile_bytes};
+      auto first = words.size();
+      words.resize(first + sizeof(header) / sizeof(words[0]));
+      memcpy(&words[first], &header, sizeof(header));
+      words.insert(words.end(), tiles.begin(), tiles.end());
+    }
+    WMTBufferInfo info{words.size() * sizeof(words[0]), WMTResourceStorageModeShared};
+    auto buf = GetMTLDevice().newBuffer(info);
+    if (!buf)
+      return {};
+    buf.updateContents(0, words.data(), info.length);
+    cached_sparse_mappings_ = buf;
+    return buf;
   }
 
   std::shared_ptr<AccelerationStructure>

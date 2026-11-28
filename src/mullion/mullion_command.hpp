@@ -202,6 +202,11 @@ public:
   // resolve's (vs_clear_rt with fs_clear_rt_* or fs_resolve_*), made once for the device; none when Metal makes none.
   // `dsv_flag` has the planes written of a depth stencil target, depth 1 and stencil 2, and is 0 for a color target
   WMT::RenderPipelineState ClearPipeline(WMTPixelFormat format, uint32_t sample_count, uint32_t dsv_flag, bool resolve);
+  // stencil-only clear pipeline compatible with an already-open render pass's attachment formats (color write mask 0)
+  WMT::RenderPipelineState InPassStencilClearPipeline(
+      const std::array<WMTPixelFormat, 8> &color_formats, WMTPixelFormat depth_format, WMTPixelFormat stencil_format,
+      uint32_t sample_count
+  );
   // the depth stencil state such a pipeline writes the planes of `dsv_flag` with: depth always, stencil replaced
   WMT::DepthStencilState ClearDepthStencilState(uint32_t dsv_flag);
 
@@ -228,6 +233,25 @@ private:
   // every thread that records a clear or a resolve reads these, and one of them makes each
   mullion::mutex clear_mutex_;
   std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> clear_pipelines_;
+  struct InPassStencilClearKey {
+    std::array<WMTPixelFormat, 8> colors;
+    WMTPixelFormat depth;
+    WMTPixelFormat stencil;
+    uint32_t sample_count;
+    bool operator==(const InPassStencilClearKey &) const = default;
+  };
+  struct InPassStencilClearKeyHash {
+    size_t operator()(const InPassStencilClearKey &k) const noexcept {
+      size_t h = std::hash<uint32_t>{}(k.sample_count);
+      h ^= std::hash<uint32_t>{}(uint32_t(k.depth)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint32_t>{}(uint32_t(k.stencil)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      for (auto f : k.colors)
+        h ^= std::hash<uint32_t>{}(uint32_t(f)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  std::unordered_map<InPassStencilClearKey, WMT::Reference<WMT::RenderPipelineState>, InPassStencilClearKeyHash>
+      in_pass_stencil_clear_pipelines_;
   WMT::Reference<WMT::DepthStencilState> clear_depth_stencil_states_[4];
   struct Unbound {
     WMT::Reference<WMT::Texture> texture;

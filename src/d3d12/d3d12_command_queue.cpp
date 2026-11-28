@@ -1550,20 +1550,15 @@ public:
       if (!scope.inflight->cmdbuf)
         return;
     WMT::Reference<WMT::Buffer> sparse_mappings;
-    auto mappings = device_->SparseBufferMappings();
-    // another queue's mappings change the table, and a Wait may be for them: it is read past the Wait's fence
-    if (!mappings.empty() && gate_->closed) {
-      gate_->closed.wait(true);
-      mappings = device_->SparseBufferMappings();
-    }
-    if (!mappings.empty()) {
-      WMTBufferInfo info{mappings.size() * sizeof(mappings[0]), WMTResourceStorageModeShared};
-      sparse_mappings = device_->GetMTLDevice().newBuffer(info);
-      if (!sparse_mappings) {
+    if (device_->HasSparseBuffers()) {
+      // another queue's mappings change the table, and a Wait may be for them: it is read past the Wait's fence
+      if (gate_->closed)
+        gate_->closed.wait(true);
+      sparse_mappings = device_->SparseBufferMappingsBuffer();
+      if (!sparse_mappings && device_->HasSparseBuffers()) {
         device_->LoseDevice();
         return;
       }
-      sparse_mappings.updateContents(0, mappings.data(), info.length);
     }
     static const bool isolate = !env::getEnvVar("MULLION_D3D12_ISOLATE").empty();
     MetalCommandBuffer cmdbuf = scope.inflight->cmdbuf;
