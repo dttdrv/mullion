@@ -20,6 +20,7 @@
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "config/config.hpp"
+#include "../mullion/mullion_router.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_on12.hpp"
 #include <bit>
@@ -112,11 +113,33 @@ SelectFeatureLevel(
   return S_OK;
 }
 
+// the bit d3d10core makes its Direct3D 11 device with: what says the asker is another layer of this build, so the
+// router is not asked about a request the application never made (D3D10CoreCreateDevice decides about its own)
+inline constexpr UINT MULLION_D3D10_DEVICE = 0x80000000u;
+
+// the highest feature level a request names, as the record says it
+static uint32_t
+asked_feature_level(const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels) {
+  uint32_t asked = 0;
+  for (UINT at = 0; at < FeatureLevels; at++)
+    if (pFeatureLevels && uint32_t(pFeatureLevels[at]) > asked)
+      asked = uint32_t(pFeatureLevels[at]);
+  return asked;
+}
+
 extern "C" HRESULT WINAPI
 D3D11CoreCreateDevice(IDXGIFactory *pFactory, IDXGIAdapter *pAdapter,
                       UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels,
                       UINT FeatureLevels, ID3D11Device **ppDevice) {
   InitReturnPtr(ppDevice);
+
+  // every public entry point reaches the device here, so this is the one place one request is decided about once:
+  // `router.d3d11 = False` must not take away the device the Direct3D 10 layer needs, and the bit is what says the
+  // asker is that layer rather than the application
+  if (!(Flags & MULLION_D3D10_DEVICE) &&
+      !mullion::router::offered(
+          mullion::router::Request{mullion::router::Api::D3D11, false, false, asked_feature_level(pFeatureLevels, FeatureLevels)}))
+    return E_NOINTERFACE;
 
   Com<IMTLDXGIAdapter> dxgi_adapter;
 
