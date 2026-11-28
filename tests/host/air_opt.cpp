@@ -188,15 +188,32 @@ convert_and_disassemble(const std::vector<uint8_t> &bytecode, SM50_SHADER_METAL_
       return std::string("xcrun -sdk macosx metal-opt");
     return "SDKROOT='" + sdk + "' '" + found + "'";
   }();
-  std::string ir, cmd = tool + " -S '" + path + "' -o - 2>&1";
+  char outpath[] = "/tmp/air_opt_ir.XXXXXX";
+  int outfd = mkstemp(outpath);
+  if (outfd < 0) {
+    unlink(path);
+    err = "mkstemp out failed";
+    return "";
+  }
+  close(outfd);
+  std::string diag, cmd = tool + " -S '" + path + "' -o '" + outpath + "' </dev/null 2>&1";
   FILE *out = popen(cmd.c_str(), "r");
   char buf[4096];
   while (out && fgets(buf, sizeof(buf), out))
-    ir += buf;
+    diag += buf;
   int status = out ? pclose(out) : -1;
   unlink(path);
+  std::string ir;
+  if (status == 0) {
+    if (FILE *f = fopen(outpath, "r")) {
+      while (size_t n = fread(buf, 1, sizeof(buf), f))
+        ir.append(buf, n);
+      fclose(f);
+    }
+  }
+  unlink(outpath);
   if (status != 0) {
-    err = ir.empty() ? "metal-opt failed" : ir.substr(0, ir.find('\n'));
+    err = diag.empty() ? "metal-opt failed" : diag.substr(0, diag.find('\n'));
     return "";
   }
   return ir;

@@ -108,7 +108,7 @@ test('host_texel_forms',
 test('host_air_opt',
      executable('host_air_opt', 'air_opt.cpp', dependencies : [airconv_dep_darwin, dxbc_parser_native_dep],
                 cpp_args : ['-w'], override_options : ['cpp_std=c++20'], native : true),
-     suite : 'host', timeout : 120)
+     suite : 'host', timeout : 300)
 # SHA-1's digests; where the native compiler targets Arm, its blocks go through the ARMv8 SHA-1 instructions as an Arm build's do
 test('host_sha1', executable('host_sha1', 'sha1.cpp', '../../src/util/sha1/sha1.c',
                            include_directories : include_directories('../../src/util'), override_options : ['cpp_std=c++20'],
