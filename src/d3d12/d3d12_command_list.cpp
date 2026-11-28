@@ -3051,10 +3051,20 @@ public:
       return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION &&
              (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY);
     };
-    if (!std::ranges::all_of(std::span(barriers, Count), begins))
+    constexpr auto write_states = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                                  D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT |
+                                  D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST |
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+    auto read_to_read = [&](const D3D12_RESOURCE_BARRIER &barrier) {
+      return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION &&
+             barrier.Transition.StateBefore != D3D12_RESOURCE_STATE_COMMON &&
+             !(barrier.Transition.StateBefore & write_states) && !(barrier.Transition.StateAfter & write_states);
+    };
+    auto no_order = [&](const D3D12_RESOURCE_BARRIER &barrier) { return begins(barrier) || read_to_read(barrier); };
+    if (!std::ranges::all_of(std::span(barriers, Count), no_order))
       OrderingPoint(std::ranges::any_of(std::span(barriers, Count), [&](auto &barrier) {
         auto after = barrier.Transition.StateAfter;
-        return !begins(barrier) &&
+        return !no_order(barrier) &&
                (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !after || (after & ~pixels));
       }));
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |

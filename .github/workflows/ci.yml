@@ -702,7 +702,8 @@ jobs:
 
       - name: Build and run host tests under ASan + UBSan
         env:
-          ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1"
+          # libLLVM*.a is prebuilt without ASan; std::vector shared across the boundary triggers container-overflow false positives.
+          ASAN_OPTIONS: "detect_leaks=0:detect_container_overflow=0:halt_on_error=1"
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
         run: |
           export PATH="$PATH:$GITHUB_WORKSPACE/toolchains/${{ env.LLVM_MINGW_DIR }}/bin"
@@ -713,14 +714,14 @@ jobs:
             -Dbuild.c_link_args="-fsanitize=address,undefined" \
             -Dbuild.cpp_link_args="-fsanitize=address,undefined" \
             -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine build-san --buildtype debugoptimized
-          python3 .github/compile-host-tests.py build-san
-          # Run every host test under ASan+UBSan except host_tessellator (4+ min exhaustive math, already verified above)
+          python3 .github/compile-host-tests.py build-san --skip host_tessellator host_tessellation_templates host_metal_target
+          # Run every host test under ASan+UBSan except the exhaustive tessellator math tests (already verified above)
           # and host_metal_target (inspects the cross-compiled Windows DLL).
           meson test -C build-san --suite host --no-rebuild --print-errorlogs \
             $(python3 -c '
           import json, subprocess
           tests = json.loads(subprocess.check_output(["meson", "introspect", "--tests", "build-san"], text=True))
-          skip = {"host_tessellator", "host_metal_target"}
+          skip = {"host_tessellator", "host_tessellation_templates", "host_metal_target"}
           print(" ".join(t["name"] for t in tests if any(s == "host" or s.endswith(":host") for s in t.get("suite", [])) and t["name"] not in skip))
           ')
           ccache -s
