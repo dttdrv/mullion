@@ -1293,6 +1293,26 @@ public:
     info.support_indirect_command_buffers = std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo> ||
                                             device_->GetMTLDevice().supportsFamily(WMTGPUFamilyApple9);
 
+    uint32_t static_samplers_bit =
+        (pDesc->pRootSignature && static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->NumStaticSamplers)
+            ? (1u << SM50_BINDING_INDEX_STATIC_SAMPLERS)
+            : 0u;
+    uint32_t common_immutable = (1u << SM50_BINDING_INDEX_ROOT_ARGUMENTS) | static_samplers_bit;
+    info.immutable_fragment_buffers = common_immutable | (1u << SM50_BINDING_INDEX_DEPTH_RANGES) |
+                                      (1u << SM50_BINDING_INDEX_DEPTH_BOUNDS) |
+                                      (1u << SM50_BINDING_INDEX_SHADING_RATE);
+    if constexpr (std::is_same_v<RenderPipelineInfo, WMTRenderPipelineInfo>) {
+      info.immutable_vertex_buffers =
+          common_immutable | (1u << SM50_BINDING_INDEX_VERTEX_BUFFER) | (1u << SM50_BINDING_INDEX_RASTER_SCALE);
+    } else {
+      info.immutable_object_buffers =
+          common_immutable | (1u << SM50_BINDING_INDEX_VERTEX_BUFFER) |
+          (1u << SM50_BINDING_INDEX_TESSELLATION_TEMPLATES);
+      info.immutable_mesh_buffers =
+          common_immutable | (1u << SM50_BINDING_INDEX_VERTEX_BUFFER) | (1u << SM50_BINDING_INDEX_VIEWPORTS) |
+          (1u << SM50_BINDING_INDEX_RASTER_SCALE) | (1u << SM50_BINDING_INDEX_TESSELLATION_TEMPLATES);
+    }
+
     // Metal takes no alpha-to-coverage with an integer target 0, and takes it from the color the fragment function
     // returns, which a target 0 the pixel shader blends itself (ShaderBlend) has blended: the pixel shader makes the
     // coverage then
@@ -1898,8 +1918,14 @@ public:
       mesh_info.mesh_function = ms_func.handle;
       mesh_info.fragment_function = ps_func.handle;
       mesh_info.rasterization_enabled = true;
+      uint64_t ms_threads = uint64_t(ref_ms.ThreadgroupSize[0]) * ref_ms.ThreadgroupSize[1] * ref_ms.ThreadgroupSize[2];
+      mesh_info.mesh_tgsize_is_multiple_of_sgwidth = ms_threads > 0 && (ms_threads % device_->GetSIMDWidth()) == 0;
+      if (AS.pShaderBytecode) {
+        uint64_t as_threads = uint64_t(ref_as.ThreadgroupSize[0]) * ref_as.ThreadgroupSize[1] * ref_as.ThreadgroupSize[2];
+        mesh_info.object_tgsize_is_multiple_of_sgwidth = as_threads > 0 && (as_threads % device_->GetSIMDWidth()) == 0;
+      }
       // the most a payload may be (D3D12 mesh shader specification, "Amplification shader output payload")
-      mesh_info.payload_memory_length = 16384;
+      mesh_info.payload_memory_length = as_func ? 16384 : 0;
       // DispatchMesh splits a grid by what the pipeline itself says one may have
       if (DeferredPipeline::Enabled()) {
         // Metal's compile of it on a compile thread, with its functions, as a plain pipeline's below

@@ -645,7 +645,7 @@ struct WMTComputePipelineInfo {
   bool support_indirect_command_buffers;
   bool tgsize_is_multiple_of_sgwidth;
   uint32_t immutable_buffers;
-  uint8_t padding[4];
+  uint32_t max_total_threads_per_threadgroup;
 };
 
 WINEMETAL_API obj_handle_t MTLDevice_newComputePipelineState(

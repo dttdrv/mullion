@@ -1303,8 +1303,8 @@ read_dxil(
   };
   bool compute = shader->shader_type == D3D11_SB_COMPUTE_SHADER;
   if (shader->shader_type != D3D10_SB_VERTEX_SHADER &&
-      (used({WaveIsFirstLane, WaveGetLaneIndex, WaveGetLaneCount, WavePrefixOp, WaveMultiPrefixOp,
-             WaveMultiPrefixBitCount}) ||
+      (used({WaveIsFirstLane, WaveGetLaneIndex, WaveGetLaneCount, WavePrefixOp, WavePrefixBitCount,
+             WaveMultiPrefixOp, WaveMultiPrefixBitCount}) ||
        (compute && used({DerivFineX, DerivFineY})) ||
        (!feedback_merge_skipped() &&
         used({WriteSamplerFeedback, WriteSamplerFeedbackBias, WriteSamplerFeedbackLevel, WriteSamplerFeedbackGrad})))) {
@@ -2329,7 +2329,7 @@ convert_dxil(
   // "The bits corresponding to inactive or helper lanes will be zero" (DXC Wave Intrinsics); not every GPU's ballot
   // leaves helpers out
   auto ballot = [&](Value *condition) {
-    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER)
+    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves)
       condition = ir.CreateAnd(condition, ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {})));
     return lanes_where(condition);
   };
@@ -2729,12 +2729,16 @@ convert_dxil(
     Value *ret = nullptr;
     auto a = [&](unsigned i) { return arg(call, i); };
     // Metal's SIMD-group functions take every active lane, a helper's too: where D3D leaves helpers out, they skip
-    // the operation, and get zero for its undefined result. WaveReadLaneFirst they take part in (below)
+    // the operation, and get zero for its undefined result. WaveReadLaneFirst they take part in (below); ballot-based
+    // ops already mask helpers out inside ballot()
     llvm::BasicBlock *skipped = nullptr;
-    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves &&
+    auto uses_ballot = op == WaveIsFirstLane || op == WaveAnyTrue || op == WaveAllTrue || op == WaveActiveAllEqual ||
+                       op == WaveActiveBallot || op == WaveAllBitCount || op == WavePrefixBitCount ||
+                       op == WaveMultiPrefixBitCount;
+    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves && !uses_ballot &&
         ((op >= WaveIsFirstLane && op <= WavePrefixOp && op != WaveGetLaneIndex && op != WaveGetLaneCount &&
           op != WaveReadLaneFirst) ||
-         op == WaveAllBitCount || op == WavePrefixBitCount || (op >= WaveMatch && op <= WaveMultiPrefixBitCount))) {
+         (op >= WaveMatch && op <= WaveMultiPrefixBitCount))) {
       skipped = ir.GetInsertBlock();
       auto join = SplitBlock(skipped, call);
       auto lanes = llvm::BasicBlock::Create(ctx.llvm, "wave_op", ctx.function, join);
@@ -2873,7 +2877,7 @@ convert_dxil(
       auto ctz = ctx.module.getOrInsertFunction(
           "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
       );
-      auto first = ctx.shader_type == D3D10_SB_PIXEL_SHADER
+      auto first = ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves
                        ? move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {ballot(ir.getTrue()), ir.getFalse()}))})
                        : move("simd_broadcast_first", a(1), {});
       auto equal = a(1)->getType()->isFPOrFPVectorTy() ? ir.CreateFCmpOEQ(a(1), first) : ir.CreateICmpEQ(a(1), first);
@@ -3016,10 +3020,13 @@ convert_dxil(
     }
     case WaveAllBitCount:
     case WavePrefixBitCount: {
-      auto one = ir.CreateZExt(a(1), ir.getInt32Ty());
-      ret = simd(
-          op == WaveAllBitCount ? "simd_sum" : "simd_prefix_exclusive_sum", ir.getInt32Ty(), {one}, ir.getInt32Ty()
-      );
+      auto set = ballot(a(1));
+      if (op == WavePrefixBitCount) {
+        auto before =
+            ir.CreateSub(ir.CreateShl(ir.getInt64(1), ir.CreateZExt(lane_index(), ir.getInt64Ty())), ir.getInt64(1));
+        set = ir.CreateAnd(set, before);
+      }
+      ret = ir.CreateTrunc(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, set), ir.getInt32Ty());
       break;
     }
     case StoreOutput: {
@@ -4306,13 +4313,11 @@ convert_dxil(
       // two bytes fits 16 bits
       ret = a(1);
       for (unsigned shift : {0u, 8u}) {
-        auto x = halves(a(2), shift), y = halves(a(3), shift);
+        auto prod = ir.CreateMul(halves(a(2), shift), halves(a(3), shift), "", !is_signed, true);
         for (unsigned i = 0; i < 2; i++) {
-          auto wide = [&](Value *h) {
-            auto e = ir.CreateExtractElement(h, i);
-            return is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
-          };
-          ret = ir.CreateAdd(ret, ir.CreateMul(wide(x), wide(y), "", !is_signed, true));
+          auto e = ir.CreateExtractElement(prod, i);
+          auto w = is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
+          ret = ir.CreateAdd(ret, w);
         }
       }
       break;

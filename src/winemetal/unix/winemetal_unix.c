@@ -536,6 +536,8 @@ CREATES(_MTLDevice_newComputePipelineState)(void *obj) {
   NSError *err = NULL;
   descriptor.computeFunction = (id<MTLFunction>)info->compute_function;
   descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = info->tgsize_is_multiple_of_sgwidth;
+  if (info->max_total_threads_per_threadgroup)
+    descriptor.maxTotalThreadsPerThreadgroup = info->max_total_threads_per_threadgroup;
   descriptor.supportIndirectCommandBuffers = info->support_indirect_command_buffers;
   for (unsigned i = 0; i < 31; i++) {
     if (info->immutable_buffers & (1 << i))

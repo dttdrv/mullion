@@ -1313,7 +1313,9 @@ AIRBuilder::CreateDerivative(Value *Val, bool YAxis) {
   auto &Context = getContext();
   auto Attrs = AttributeList::get(
       Context, {{~0U, Attribute::get(Context, Attribute::AttrKind::NoUnwind)},
-                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)}}
+                {~0U, Attribute::get(Context, Attribute::AttrKind::WillReturn)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::ReadNone)},
+                {~0U, Attribute::get(Context, Attribute::AttrKind::Convergent)}}
   );
 
   SmallVector<Value *> Ops;

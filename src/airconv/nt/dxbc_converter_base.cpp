@@ -1712,9 +1712,16 @@ Converter::TexelAddress(const TextureResourceHandle &Tex, llvm::Value *Coord, co
   } else if (!Tex.IsUAV && Level && Info.is_mipmaped) {
     // the view keeps the mip that holds its min-LOD clamp and every smaller one, and has no mip past its last ("out
     // of the range [0...(num miplevels in resource-1)]", ld): Metal reads a texture of one mip at any level as that mip
-    auto MinLevel = air.CreateFPUnOp(llvm::air::AIRBuilder::floor, DecodeTextureMinLODClamp(Tex.Metadata));
-    auto Mips = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::num_mip_levels, ir.getInt32(0));
-    OOB = ir.CreateOr(ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel)), ir.CreateICmpUGE(Level, Mips));
+    auto MinLOD = DecodeTextureMinLODClamp(Tex.Metadata);
+    if (auto *C = llvm::dyn_cast<llvm::ConstantInt>(Level); C && C->isZero()) {
+      // mip 0 always exists on any bound Metal texture (unbound slots are zeroed by Texture.Unbound),
+      // and 0 < uint(floor(MinLOD)) iff MinLOD >= 1.0f
+      OOB = ir.CreateFCmpOGE(MinLOD, llvm::ConstantFP::get(MinLOD->getType(), 1.0f));
+    } else {
+      auto MinLevel = air.CreateFPUnOp(llvm::air::AIRBuilder::floor, MinLOD);
+      auto Mips = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::num_mip_levels, ir.getInt32(0));
+      OOB = ir.CreateOr(ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel)), ir.CreateICmpUGE(Level, Mips));
+    }
   }
   if (!OffsetValue->isNullValue())
     Address = ir.CreateAdd(Address, OffsetValue);
