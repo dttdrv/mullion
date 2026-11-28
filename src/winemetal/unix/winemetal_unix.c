@@ -2281,6 +2281,7 @@ CREATES(_MTLDevice_newSpatialScaler4)(void *obj) {
 static NTSTATUS _MTL4CommandBuffer_encodeSpatialScale(void *obj);
 static NTSTATUS _MTL4CommandBuffer_encodeTemporalScale(void *obj);
 static NTSTATUS _MTLCommandBuffer_encodeDenoisedScale(void *obj);
+static NTSTATUS _MTLCommandBuffer_encodeFrameInterpolation(void *obj);
 
 static id<MTL4Compiler>
 API_AVAILABLE(macos(26.0)) metalfx_compiler(id<MTLDevice> device) {
@@ -2361,6 +2362,50 @@ CREATES(_MTLDevice_newDenoisedScaler)(void *obj) {
     desc.requiresSynchronousInitialization = info->requires_synchronous_initialization;
     params->ret = params->metal4 ? (obj_handle_t)[desc newTemporalDenoisedScalerWithDevice:device compiler:compiler]
                                  : (obj_handle_t)[desc newTemporalDenoisedScalerWithDevice:device];
+    [desc release];
+    [compiler release];
+  }
+  return STATUS_SUCCESS;
+}
+
+/* the interpolator keeps the last frame's color itself (requiresPrevColorTexture, macOS 27) */
+static NTSTATUS
+CREATES(_MTLDevice_newFrameInterpolator)(void *obj) {
+  struct unixcall_mtldevice_newfxframeinterpolator *params = obj;
+  params->ret = NULL_OBJECT_HANDLE;
+  if (@available(macOS 27.0, *)) {
+    id<MTLDevice> device = (id<MTLDevice>)params->device;
+    const struct WMTFXFrameInterpolatorInfo *info = params->info.ptr;
+    MTLFXFrameInterpolatorDescriptor *desc;
+    id<MTL4Compiler> compiler = nil;
+
+    if (params->metal4 ? ![MTLFXFrameInterpolatorDescriptor supportsMetal4FX:device]
+                       : ![MTLFXFrameInterpolatorDescriptor supportsDevice:device])
+      return STATUS_SUCCESS;
+    if (params->metal4 && !(compiler = metalfx_compiler(device)))
+      return STATUS_SUCCESS;
+    desc = [[MTLFXFrameInterpolatorDescriptor alloc] init];
+    desc.colorTextureFormat = to_metal_pixel_format(info->color_format);
+    desc.outputTextureFormat = to_metal_pixel_format(info->output_format);
+    desc.depthTextureFormat = to_metal_pixel_format(info->depth_format);
+    desc.motionTextureFormat = to_metal_pixel_format(info->motion_format);
+    if (info->ui_format != WMTPixelFormatInvalid)
+      desc.uiTextureFormat = to_metal_pixel_format(info->ui_format);
+    desc.inputWidth = info->input_width;
+    desc.inputHeight = info->input_height;
+    desc.outputWidth = info->output_width;
+    desc.outputHeight = info->output_height;
+    // by name: the property came with the macOS 27 SDK, and a build with an earlier one still makes interpolators
+    // where the system has it. a descriptor without it would want the last frame's color from us, so makes none
+    SEL keeps_color = sel_registerName("setRequiresPrevColorTexture:");
+    if (![desc respondsToSelector:keeps_color]) {
+      [desc release];
+      [compiler release];
+      return STATUS_SUCCESS;
+    }
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(desc, keeps_color, NO);
+    params->ret = params->metal4 ? (obj_handle_t)[desc newFrameInterpolatorWithDevice:device compiler:compiler]
+                                 : (obj_handle_t)[desc newFrameInterpolatorWithDevice:device];
     [desc release];
     [compiler release];
   }
@@ -6688,6 +6733,86 @@ _MTLCommandBuffer_encodeDenoisedScale(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* the camera the frame was rendered with, from which MetalFX derives camera motion (macOS 27; by name, as the
+ * properties came with the macOS 27 SDK). the args' matrices are row-major of row vectors, so as simd's column-major
+ * matrices they are the same ones of column vectors */
+static void
+frame_interpolator_camera(id interpolator, const struct WMTFXFrameInterpolateArgs *args) {
+  SEL world_to_view = sel_registerName("setWorldToViewMatrix:"), view_to_clip = sel_registerName("setViewToClipMatrix:");
+  simd_float4x4 matrix;
+  if (![interpolator respondsToSelector:world_to_view] || ![interpolator respondsToSelector:view_to_clip])
+    return;
+  memcpy(&matrix, args->world_to_view, sizeof(matrix));
+  ((void (*)(id, SEL, simd_float4x4))objc_msgSend)(interpolator, world_to_view, matrix);
+  memcpy(&matrix, args->view_to_clip, sizeof(matrix));
+  ((void (*)(id, SEL, simd_float4x4))objc_msgSend)(interpolator, view_to_clip, matrix);
+}
+
+/* the part of the depth and motion textures their content fills (macOS 27; by name, as the properties came with the
+ * macOS 27 SDK): contentWidth and contentHeight are in their pixels, and 0 is all of them */
+static void
+frame_interpolator_content(id interpolator, const struct WMTFXFrameInterpolateArgs *args) {
+  static const char *names[] = {"setContentWidth:",       "setContentHeight:",      "setDepthContentOffsetX:",
+                                "setDepthContentOffsetY:", "setMotionContentOffsetX:", "setMotionContentOffsetY:"};
+  const NSUInteger values[] = {args->content_width,  args->content_height,  args->depth_offset_x,
+                               args->depth_offset_y, args->motion_offset_x, args->motion_offset_y};
+  for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    SEL set = sel_registerName(names[i]);
+    if ([interpolator respondsToSelector:set])
+      ((void (*)(id, SEL, NSUInteger))objc_msgSend)(interpolator, set, values[i]);
+  }
+}
+
+/* both kinds of interpolator share their properties (MTLFXFrameInterpolatorBase) */
+#define SET_FRAME_INTERPOLATOR(interpolator, a)                                                                        \
+  do {                                                                                                                 \
+    (interpolator).colorTexture = (id<MTLTexture>)(a)->color;                                                          \
+    (interpolator).prevColorTexture = nil;                                                                             \
+    (interpolator).depthTexture = (id<MTLTexture>)(a)->depth;                                                          \
+    (interpolator).motionTexture = (id<MTLTexture>)(a)->motion;                                                        \
+    (interpolator).uiTexture = (id<MTLTexture>)(a)->ui;                                                                \
+    (interpolator).outputTexture = (id<MTLTexture>)(a)->output;                                                        \
+    (interpolator).fence = (id<MTLFence>)(a)->fence;                                                                   \
+    (interpolator).motionVectorScaleX = (a)->motion_vector_scale_x;                                                    \
+    (interpolator).motionVectorScaleY = (a)->motion_vector_scale_y;                                                    \
+    (interpolator).deltaTime = (a)->delta_time;                                                                        \
+    (interpolator).nearPlane = (a)->near_plane;                                                                        \
+    (interpolator).farPlane = (a)->far_plane;                                                                          \
+    (interpolator).fieldOfView = (a)->field_of_view;                                                                   \
+    (interpolator).aspectRatio = (a)->aspect_ratio;                                                                    \
+    (interpolator).jitterOffsetX = (a)->jitter_offset_x;                                                               \
+    (interpolator).jitterOffsetY = (a)->jitter_offset_y;                                                               \
+    (interpolator).shouldResetHistory = (a)->reset;                                                                    \
+    (interpolator).depthReversed = (a)->depth_reversed;                                                                \
+    (interpolator).uiTextureComposited = (a)->ui_composited;                                                           \
+    frame_interpolator_camera((interpolator), (a));                                                                    \
+    frame_interpolator_content((interpolator), (a));                                                                   \
+  } while (0)
+
+static NTSTATUS
+_MTLCommandBuffer_encodeFrameInterpolation(void *obj) {
+  struct unixcall_mtlcommandbuffer_frame_interpolate *params = obj;
+  if (@available(macOS 27.0, *)) {
+    const struct WMTFXFrameInterpolateArgs *args = params->args.ptr;
+    if (params->metal4) {
+      MullionMetal4Buffer *state = (MullionMetal4Buffer *)params->cmdbuf;
+      id<MTL4FXFrameInterpolator> interpolator = (id<MTL4FXFrameInterpolator>)params->interpolator;
+      const obj_handle_t textures[] = {args->color, args->depth, args->motion, args->ui, args->output};
+
+      [state closeCompute];
+      for (unsigned i = 0; i < sizeof(textures) / sizeof(textures[0]); i++)
+        metal4_resident(state, (id<MTLTexture>)textures[i]);
+      SET_FRAME_INTERPOLATOR(interpolator, args);
+      [interpolator encodeToCommandBuffer:state->buffer];
+    } else {
+      id<MTLFXFrameInterpolator> interpolator = (id<MTLFXFrameInterpolator>)params->interpolator;
+      SET_FRAME_INTERPOLATOR(interpolator, args);
+      [interpolator encodeToCommandBuffer:(id<MTLCommandBuffer>)params->cmdbuf];
+    }
+  }
+  return STATUS_SUCCESS;
+}
+
 static void
 API_AVAILABLE(macos(26.0)) metal4_draw_geometry_parts(
     MullionMetal4Encoder *state, uint32_t warps, uint32_t instances, uint32_t threads, uint32_t max, bool mesh_only,
@@ -7797,6 +7922,8 @@ const void *__wine_unix_call_funcs[] = {
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
     &_MTLDevice_temporalScalerSupport,
+    &_MTLDevice_newFrameInterpolator,
+    &_MTLCommandBuffer_encodeFrameInterpolation,
 };
 
 #ifndef MULLION_NATIVE
@@ -8019,6 +8146,8 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_WMTGetMemoryState,
     &_MTLResidencySet_requestResidency,
     &_MTLDevice_temporalScalerSupport,
+    &_MTLDevice_newFrameInterpolator,
+    &_MTLCommandBuffer_encodeFrameInterpolation,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0]) == WMTUnixCallCount,
                "32-bit bridge call count");

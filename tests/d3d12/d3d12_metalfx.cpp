@@ -474,12 +474,6 @@ main(int argc, char **argv) {
   expect(capabilities(&caps) == NVNGX_RESULT_OK && caps->Get("SuperSampling.Available", &available) == NVNGX_RESULT_OK &&
              available == 1,
          "DLSS is not offered");
-  // Ray Reconstruction where MetalFX has its denoiser, and nowhere else
-  unsigned int denoising = 2;
-  expect(caps && caps->Get("SuperSamplingDenoising.Available", &denoising) == NVNGX_RESULT_OK &&
-             denoising == unsigned(ext->SupportsDenoisedUpscale()),
-         "Ray Reconstruction is offered as %u where the denoiser is %s", denoising,
-         ext->SupportsDenoisedUpscale() ? "there" : "not");
   // the render sizes of DLSS's optimal settings, a game's choice of render size, are ones MetalFX's scaler takes: the
   // output's size over each is within the scales MetalFX takes on the device, as are the dynamic range's bounds
   step("DLSS's optimal render sizes for %ux%u", out_width, out_height);
@@ -517,6 +511,34 @@ main(int argc, char **argv) {
   }
   if (caps)
     destroy(caps);
+  // Ray Reconstruction where MetalFX has its denoiser and the application ships nvngx_dlssd.dll, as NVIDIA's core
+  // offers it (HasFeatureLibrary, src/nvngx/nvngx_d3d12.cpp), and nowhere else. the test is the application: an empty
+  // file of that name beside it stands for the library, and without one nothing is offered or made
+  wchar_t exe[MAX_PATH];
+  std::wstring snippet(exe, GetModuleFileNameW(nullptr, exe, MAX_PATH));
+  snippet = snippet.substr(0, snippet.find_last_of(L"\\/") + 1) + L"nvngx_dlssd.dll";
+  DeleteFileW(snippet.c_str());
+  auto denoising_offered = [&] {
+    NVNGXParameter *now = nullptr;
+    unsigned int denoising = 2;
+    if (capabilities(&now) == NVNGX_RESULT_OK && now)
+      now->Get("SuperSamplingDenoising.Available", &denoising);
+    if (now)
+      destroy(now);
+    return denoising;
+  };
+  unsigned int denoising = denoising_offered();
+  expect(denoising == 0, "Ray Reconstruction is offered as %u to an application without nvngx_dlssd.dll", denoising);
+  bool shipped = false;
+  if (HANDLE file = CreateFileW(snippet.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+      expect(file != INVALID_HANDLE_VALUE, "no nvngx_dlssd.dll could be put beside the test: %lu", GetLastError())) {
+    CloseHandle(file);
+    shipped = true;
+  }
+  denoising = denoising_offered();
+  expect(!shipped || denoising == unsigned(ext->SupportsDenoisedUpscale()),
+         "Ray Reconstruction is offered as %u where the denoiser is %s", denoising,
+         ext->SupportsDenoisedUpscale() ? "there" : "not");
   step("a DLSS feature for %ux%u to %ux%u", width, height, out_width, out_height);
   if (!expect(allocate(&params) == NVNGX_RESULT_OK, "no parameters"))
     return verdict();
@@ -598,6 +620,15 @@ main(int argc, char **argv) {
          "Ray Reconstruction's creation answered %#x", made);
   if (denoiser)
     release(denoiser);
+  if (shipped) {
+    DeleteFileW(snippet.c_str());
+    denoiser = nullptr;
+    made = create(list.Get(), NVNGX_FEATURE_RAYRECONSTRUCTION, params, &denoiser);
+    expect(made == NVNGX_RESULT_FEATURE_NOT_SUPPORTED,
+           "Ray Reconstruction's creation answered %#x for an application without nvngx_dlssd.dll", made);
+    if (denoiser)
+      release(denoiser);
+  }
   destroy(params);
   expect(shutdown(device.Get()) == NVNGX_RESULT_OK, "NGX did not shut down");
   return verdict();

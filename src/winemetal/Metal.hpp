@@ -768,6 +768,10 @@ class FXDenoisedScaler : public Object {
 public:
 };
 
+class FXFrameInterpolator : public Object {
+public:
+};
+
 class LogContainer : public Object {
 public:
   std::vector<Object>
@@ -935,6 +939,11 @@ public:
   void
   encodeDenoisedScale(FXDenoisedScaler scaler, const WMTFXDenoisedScaleArgs &args) {
     MTLCommandBuffer_encodeDenoisedScale(handle, scaler, &args, false);
+  }
+
+  void
+  encodeFrameInterpolation(FXFrameInterpolator interpolator, const WMTFXFrameInterpolateArgs &args) {
+    MTLCommandBuffer_encodeFrameInterpolation(handle, interpolator, &args, false);
   }
 
   void
@@ -1116,6 +1125,10 @@ public:
   void
   encodeDenoisedScale(FXDenoisedScaler scaler, const WMTFXDenoisedScaleArgs &args) {
     MTLCommandBuffer_encodeDenoisedScale(handle, scaler, &args, true);
+  }
+  void
+  encodeFrameInterpolation(FXFrameInterpolator interpolator, const WMTFXFrameInterpolateArgs &args) {
+    MTLCommandBuffer_encodeFrameInterpolation(handle, interpolator, &args, true);
   }
 };
 
@@ -1519,6 +1532,12 @@ public:
   Reference<FXDenoisedScaler>
   newDenoisedScaler(const WMTFXDenoisedScalerInfo &info, bool metal4) {
     return Reference<FXDenoisedScaler>(MTLDevice_newDenoisedScaler(handle, &info, metal4));
+  }
+
+  // empty where the device has none (before macOS 27)
+  Reference<FXFrameInterpolator>
+  newFrameInterpolator(const WMTFXFrameInterpolatorInfo &info, bool metal4) {
+    return Reference<FXFrameInterpolator>(MTLDevice_newFrameInterpolator(handle, &info, metal4));
   }
 
   Reference<BinaryArchive>
