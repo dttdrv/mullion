@@ -126,7 +126,7 @@ enum WMTResourceOptions : uint64_t {
   WMTResourceOptionCPUCacheModeWriteCombined = 1,
 };
 
-struct WMTMemoryPointer {
+struct __attribute__((aligned(8))) WMTMemoryPointer {
   void *ptr;
 #if defined(__i386__)
   uint32_t high_part;
@@ -160,7 +160,7 @@ struct WMTMemoryPointer {
 #endif
 };
 
-struct WMTConstMemoryPointer {
+struct __attribute__((aligned(8))) WMTConstMemoryPointer {
   const void *ptr;
 #if defined(__i386__)
   uint32_t high_part;
@@ -195,6 +195,13 @@ struct WMTConstMemoryPointer {
 
 STATIC_ASSERT(sizeof(WMTMemoryPointer) == 8);
 STATIC_ASSERT(sizeof(WMTConstMemoryPointer) == 8);
+#ifdef __cplusplus
+STATIC_ASSERT(alignof(WMTMemoryPointer) == 8);
+STATIC_ASSERT(alignof(WMTConstMemoryPointer) == 8);
+#else
+STATIC_ASSERT(_Alignof(struct WMTMemoryPointer) == 8);
+STATIC_ASSERT(_Alignof(struct WMTConstMemoryPointer) == 8);
+#endif
 
 struct WMTBufferInfo {
   uint64_t length;                 // in
