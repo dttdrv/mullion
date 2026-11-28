@@ -724,6 +724,122 @@ lower_lib_handles(Module &M) {
   }
 }
 
+// Narrow purely constant-sourced scalar double expressions that only escape via fptrunc (e.g. unsuffixed HLSL float
+// literals selected/multiplied as double and immediately truncated to float, as in Spider-Man 2's
+// CS_RayTracingReflectionBlur). Genuine double-precision operations with runtime double inputs or non-fptrunc uses are
+// left untouched so read_dxil still refuses them.
+static void
+lower_constant_doubles(Module &M) {
+  auto is_narrowable_op = [](const llvm::Instruction &I) {
+    if (!I.getType()->isDoubleTy())
+      return false;
+    if (isa<SelectInst>(&I))
+      return true;
+    if (auto *U = dyn_cast<UnaryOperator>(&I))
+      return U->getOpcode() == llvm::Instruction::FNeg;
+    if (auto *B = dyn_cast<BinaryOperator>(&I)) {
+      switch (B->getOpcode()) {
+      case llvm::Instruction::FAdd:
+      case llvm::Instruction::FSub:
+      case llvm::Instruction::FMul:
+      case llvm::Instruction::FDiv:
+      case llvm::Instruction::FRem:
+        return true;
+      default:
+        return false;
+      }
+    }
+    return false;
+  };
+
+  Type *f32 = Type::getFloatTy(M.getContext());
+  for (auto &F : M) {
+    SmallPtrSet<llvm::Instruction *, 16> cand;
+    for (auto &I : instructions(F))
+      if (is_narrowable_op(I))
+        cand.insert(&I);
+    if (cand.empty())
+      continue;
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<llvm::Instruction *, 8> drop;
+      for (llvm::Instruction *I : cand) {
+        bool ok = true;
+        for (const Use &U : I->operands()) {
+          Value *V = U.get();
+          if (!V->getType()->isDoubleTy())
+            continue;
+          if (!isa<ConstantFP>(V) && !(isa<llvm::Instruction>(V) && cand.contains(cast<llvm::Instruction>(V)))) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          for (const User *Usr : I->users()) {
+            auto *UI = dyn_cast<llvm::Instruction>(Usr);
+            if (!UI || (!cand.contains(UI) && !isa<FPTruncInst>(UI))) {
+              ok = false;
+              break;
+            }
+          }
+        }
+        if (!ok)
+          drop.push_back(I);
+      }
+      for (llvm::Instruction *I : drop) {
+        cand.erase(I);
+        changed = true;
+      }
+    }
+    if (cand.empty())
+      continue;
+
+    DenseMap<Value *, Value *> narrowed;
+    std::function<Value *(Value *)> lower = [&](Value *V) -> Value * {
+      if (auto it = narrowed.find(V); it != narrowed.end())
+        return it->second;
+      if (auto *C = dyn_cast<ConstantFP>(V)) {
+        Value *res = ConstantFP::get(f32, float(C->getValueAPF().convertToDouble()));
+        return narrowed[V] = res;
+      }
+      auto *I = cast<llvm::Instruction>(V);
+      IRBuilder<> ir(I);
+      if (auto *FPMO = dyn_cast<FPMathOperator>(I))
+        ir.setFastMathFlags(FPMO->getFastMathFlags());
+      Value *res = nullptr;
+      if (auto *Sel = dyn_cast<SelectInst>(I)) {
+        res = ir.CreateSelect(Sel->getCondition(), lower(Sel->getTrueValue()), lower(Sel->getFalseValue()));
+      } else if (auto *U = dyn_cast<UnaryOperator>(I)) {
+        res = ir.CreateFNeg(lower(U->getOperand(0)));
+      } else if (auto *B = dyn_cast<BinaryOperator>(I)) {
+        res = ir.CreateBinOp(B->getOpcode(), lower(B->getOperand(0)), lower(B->getOperand(1)));
+      }
+      return narrowed[V] = res;
+    };
+
+    SmallVector<llvm::Instruction *, 8> truncs;
+    for (auto &I : instructions(F)) {
+      if (auto *T = dyn_cast<FPTruncInst>(&I)) {
+        if (auto *Op = dyn_cast<llvm::Instruction>(T->getOperand(0)); Op && cand.contains(Op))
+          truncs.push_back(T);
+      }
+    }
+    for (llvm::Instruction *T : truncs) {
+      Value *f = lower(T->getOperand(0));
+      if (!T->getType()->isFloatTy())
+        f = IRBuilder<>(T).CreateFPTrunc(f, T->getType());
+      T->replaceAllUsesWith(f);
+      T->eraseFromParent();
+    }
+    for (llvm::Instruction *I : cand)
+      I->dropAllReferences();
+    for (llvm::Instruction *I : cand)
+      I->eraseFromParent();
+  }
+}
+
 Expected<std::unique_ptr<Module>>
 parse(const std::string &bitcode, LLVMContext &context) {
   auto module = parseBitcodeFile(MemoryBufferRef(bitcode, "dxil"), context);
@@ -731,6 +847,7 @@ parse(const std::string &bitcode, LLVMContext &context) {
     lower_lib_handles(**module);
     lower_bound_handles(**module);
     lower_heap_handles(**module);
+    lower_constant_doubles(**module);
   }
   return module;
 }
