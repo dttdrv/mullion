@@ -119,16 +119,36 @@ public:
   }
 
   HRESULT
-  Import(const void *Address, HANDLE Mapping) {
+  Import(const void *Address, HANDLE Mapping, SIZE_T Size) {
     void *address = Mapping ? MapViewOfFile(Mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0) : const_cast<void *>(Address);
     memory = std::shared_ptr<void>(address, [Mapping](void *pointer) { if (Mapping && pointer) UnmapViewOfFile(pointer); });
     MEMORY_BASIC_INFORMATION region, next;
-    if (!address || !VirtualQuery(address, &region, sizeof(region)) || region.AllocationBase != address ||
-        region.BaseAddress != address || region.State != MEM_COMMIT || region.Protect & (PAGE_NOACCESS | PAGE_GUARD))
-      return FAIL(E_INVALIDARG);
-    if (VirtualQuery((char *)address + region.RegionSize, &next, sizeof(next)) && next.AllocationBase == address)
-      return FAIL(E_INVALIDARG);
-    desc_ = {region.RegionSize,
+    if (Size) {
+      if (!address || Size > UINTPTR_MAX - reinterpret_cast<uintptr_t>(address))
+        return FAIL(E_INVALIDARG);
+      SIZE_T covered = 0;
+      const auto *cursor = static_cast<const char *>(address);
+      while (covered < Size) {
+        if (!VirtualQuery(cursor, &region, sizeof(region)) || region.State != MEM_COMMIT ||
+            (region.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !region.RegionSize)
+          return FAIL(E_INVALIDARG);
+        const auto *region_base = static_cast<const char *>(region.BaseAddress);
+        const auto *region_end = region_base + region.RegionSize;
+        if (cursor < region_base || cursor >= region_end)
+          return FAIL(E_INVALIDARG);
+        SIZE_T chunk = std::min(Size - covered, static_cast<SIZE_T>(region_end - cursor));
+        covered += chunk;
+        cursor += chunk;
+      }
+    } else {
+      if (!address || !VirtualQuery(address, &region, sizeof(region)) || region.AllocationBase != address ||
+          region.BaseAddress != address || region.State != MEM_COMMIT || (region.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return FAIL(E_INVALIDARG);
+      if (VirtualQuery(static_cast<const char *>(address) + region.RegionSize, &next, sizeof(next)) &&
+          next.AllocationBase == address)
+        return FAIL(E_INVALIDARG);
+    }
+    desc_ = {Size ? Size : region.RegionSize,
              {D3D12_HEAP_TYPE_CUSTOM, D3D12_CPU_PAGE_PROPERTY_WRITE_BACK, D3D12_MEMORY_POOL_L0, 1, 1},
              D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
              D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS | D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER};
@@ -143,10 +163,10 @@ public:
 };
 
 HRESULT
-OpenHeap(MTLD3D12Device *pDevice, const void *Address, HANDLE Mapping, REFIID riid, void **ppHeap) {
+OpenHeap(MTLD3D12Device *pDevice, const void *Address, HANDLE Mapping, REFIID riid, void **ppHeap, SIZE_T Size) {
   InitReturnPtr(ppHeap);
   auto heap = Com(new MTLD3D12HeapImpl(pDevice));
-  HRESULT hr = heap->Import(Address, Mapping);
+  HRESULT hr = heap->Import(Address, Mapping, Size);
   if (FAILED(hr))
     return hr;
   return ppHeap ? heap->QueryInterface(riid, ppHeap) : S_FALSE;

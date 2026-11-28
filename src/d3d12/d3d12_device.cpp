@@ -2152,10 +2152,14 @@ public:
     return OpenHeap(this, pAddress, nullptr, riid, ppHeap);
   }
 
-  // ID3D12Device13: the address's allocation, whose size the heap takes as OpenExistingHeapFromAddress does
+  // ID3D12Device13: the address's allocation, with an explicit size
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromAddress1(const void *pAddress, SIZE_T size, REFIID riid, void **ppHeap) final {
-    return OpenExistingHeapFromAddress(pAddress, riid, ppHeap);
+    if (!size) {
+      InitReturnPtr(ppHeap);
+      return FAIL(E_INVALIDARG);
+    }
+    return OpenHeap(this, pAddress, nullptr, riid, ppHeap, size);
   }
 
   // ID3D12Device14: the root signature a DXIL library's subobject of that name defines
