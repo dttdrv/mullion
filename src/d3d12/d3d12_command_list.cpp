@@ -3479,7 +3479,10 @@ public:
     if (Value != (Value & 0xff) * 0x01010101u || View.buffer->current()->sparse_tile_bytes ||
         (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Compute))
       return false;
-    UINT element_stride = View.slice.byteLength / (View.slice.elementCount * sizeof(uint32_t));
+    if (!View.slice.elementCount || View.slice.byteLength < sizeof(uint32_t))
+      return true;
+    UINT element_stride =
+        std::max<UINT>(1u, UINT(View.slice.byteLength / (uint64_t(View.slice.elementCount) * sizeof(uint32_t))));
     int64_t first = View.slice.byteOffset >> 2, words = View.slice.byteLength >> 2;
     D3D12_RECT whole{0, 0, (LONG)(words / element_stride), 1};
     for (auto &rect : RectCount ? std::span(pRects, RectCount) : std::span(&whole, 1)) {
@@ -3585,7 +3588,12 @@ public:
     switch (Descriptor.type) {
     case ShaderVisibleDescriptorType::UAVBuffer: {
       auto &slice = Descriptor.UAVBuffer.slice;
-      element_stride = slice.byteLength / (slice.elementCount * sizeof(uint32_t));
+      if (!slice.elementCount || slice.byteLength < sizeof(uint32_t)) {
+        width = 0;
+        break;
+      }
+      element_stride =
+          std::max<UINT>(1u, UINT(slice.byteLength / (uint64_t(slice.elementCount) * sizeof(uint32_t))));
       first = slice.byteOffset / sizeof(uint32_t);
       width = slice.byteLength / sizeof(uint32_t) / element_stride;
       break;
