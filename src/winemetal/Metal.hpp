@@ -1340,6 +1340,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = false;
     info.immutable_buffers = 0;
+    info.max_total_threads_per_threadgroup = 0;
     info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
@@ -1356,6 +1357,7 @@ public:
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
     info.immutable_buffers = 0;
+    info.max_total_threads_per_threadgroup = 0;
     info.keep_for_binary_archive = false;
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
@@ -1751,6 +1753,7 @@ InitializeComputePipelineInfo(WMTComputePipelineInfo &info) {
   info.fail_on_binary_archive_miss = false;
   info.tgsize_is_multiple_of_sgwidth = false;
   info.immutable_buffers = 0;
+  info.max_total_threads_per_threadgroup = 0;
   info.support_indirect_command_buffers = false;
 }
 

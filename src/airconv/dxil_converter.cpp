@@ -1303,8 +1303,8 @@ read_dxil(
   };
   bool compute = shader->shader_type == D3D11_SB_COMPUTE_SHADER;
   if (shader->shader_type != D3D10_SB_VERTEX_SHADER &&
-      (used({WaveIsFirstLane, WaveGetLaneIndex, WaveGetLaneCount, WavePrefixOp, WaveMultiPrefixOp,
-             WaveMultiPrefixBitCount}) ||
+      (used({WaveIsFirstLane, WaveGetLaneIndex, WaveGetLaneCount, WavePrefixOp, WavePrefixBitCount,
+             WaveMultiPrefixOp, WaveMultiPrefixBitCount}) ||
        (compute && used({DerivFineX, DerivFineY})) ||
        (!feedback_merge_skipped() &&
         used({WriteSamplerFeedback, WriteSamplerFeedbackBias, WriteSamplerFeedbackLevel, WriteSamplerFeedbackGrad})))) {
@@ -2329,7 +2329,7 @@ convert_dxil(
   // "The bits corresponding to inactive or helper lanes will be zero" (DXC Wave Intrinsics); not every GPU's ballot
   // leaves helpers out
   auto ballot = [&](Value *condition) {
-    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER)
+    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves)
       condition = ir.CreateAnd(condition, ir.CreateNot(simd("simd_is_helper_thread", ir.getInt1Ty(), {})));
     return lanes_where(condition);
   };
@@ -2729,12 +2729,16 @@ convert_dxil(
     Value *ret = nullptr;
     auto a = [&](unsigned i) { return arg(call, i); };
     // Metal's SIMD-group functions take every active lane, a helper's too: where D3D leaves helpers out, they skip
-    // the operation, and get zero for its undefined result. WaveReadLaneFirst they take part in (below)
+    // the operation, and get zero for its undefined result. WaveReadLaneFirst they take part in (below); ballot-based
+    // ops already mask helpers out inside ballot()
     llvm::BasicBlock *skipped = nullptr;
-    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves &&
+    auto uses_ballot = op == WaveIsFirstLane || op == WaveAnyTrue || op == WaveAllTrue || op == WaveActiveAllEqual ||
+                       op == WaveActiveBallot || op == WaveAllBitCount || op == WavePrefixBitCount ||
+                       op == WaveMultiPrefixBitCount;
+    if (ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves && !uses_ballot &&
         ((op >= WaveIsFirstLane && op <= WavePrefixOp && op != WaveGetLaneIndex && op != WaveGetLaneCount &&
           op != WaveReadLaneFirst) ||
-         op == WaveAllBitCount || op == WavePrefixBitCount || (op >= WaveMatch && op <= WaveMultiPrefixBitCount))) {
+         (op >= WaveMatch && op <= WaveMultiPrefixBitCount))) {
       skipped = ir.GetInsertBlock();
       auto join = SplitBlock(skipped, call);
       auto lanes = llvm::BasicBlock::Create(ctx.llvm, "wave_op", ctx.function, join);
@@ -2873,7 +2877,7 @@ convert_dxil(
       auto ctz = ctx.module.getOrInsertFunction(
           "air.ctz.i64", FunctionType::get(ir.getInt64Ty(), {ir.getInt64Ty(), ir.getInt1Ty()}, false)
       );
-      auto first = ctx.shader_type == D3D10_SB_PIXEL_SHADER
+      auto first = ctx.shader_type == D3D10_SB_PIXEL_SHADER && !helper_waves
                        ? move("simd_shuffle", a(1), {i16(ir.CreateCall(ctz, {ballot(ir.getTrue()), ir.getFalse()}))})
                        : move("simd_broadcast_first", a(1), {});
       auto equal = a(1)->getType()->isFPOrFPVectorTy() ? ir.CreateFCmpOEQ(a(1), first) : ir.CreateICmpEQ(a(1), first);
@@ -3016,10 +3020,13 @@ convert_dxil(
     }
     case WaveAllBitCount:
     case WavePrefixBitCount: {
-      auto one = ir.CreateZExt(a(1), ir.getInt32Ty());
-      ret = simd(
-          op == WaveAllBitCount ? "simd_sum" : "simd_prefix_exclusive_sum", ir.getInt32Ty(), {one}, ir.getInt32Ty()
-      );
+      auto set = ballot(a(1));
+      if (op == WavePrefixBitCount) {
+        auto before =
+            ir.CreateSub(ir.CreateShl(ir.getInt64(1), ir.CreateZExt(lane_index(), ir.getInt64Ty())), ir.getInt64(1));
+        set = ir.CreateAnd(set, before);
+      }
+      ret = ir.CreateTrunc(air.CreateIntUnOp(llvm::air::AIRBuilder::popcount, set), ir.getInt32Ty());
       break;
     }
     case StoreOutput: {
@@ -3449,7 +3456,79 @@ convert_dxil(
       if (feedback)
         mask |= op == RawBufferLoad ? constant(a(4)) : (mask & kMaskAll ? 0 : kMaskAll);
       Value *residency = ir.getInt32(0);
+      auto space = b.Pointer->getType()->getPointerAddressSpace();
+      uint32_t unit_bytes = unit->getBitWidth() / 8, stride = b.StructureStride;
+      auto read = mask & kMaskAll;
+      uint32_t unit_mask = 0;
+      for (unsigned i = 0; i < 4; i++)
+        if (read & (1u << i))
+          unit_mask |= llvm::maskTrailingOnes<uint32_t>(parts) << (i * parts);
+      unsigned first_unit = unit_mask ? std::countr_zero(unit_mask) : 0;
+      unsigned last_unit = unit_mask ? llvm::Log2_32(unit_mask) : 0;
+      unsigned span_units = unit_mask ? (last_unit - first_unit + 1) : 0;
+      bool contiguous_vec = !b.GlobalCoherent && !feedback && space != 3 && span_units >= 2 &&
+                            unit_mask == (llvm::maskTrailingOnes<uint32_t>(span_units) << first_unit);
+      auto emit_vec_load = [&](Value *base) {
+        Value *loaded_units[8] = {};
+        for (unsigned off = 0; off < span_units;) {
+          unsigned chunk = std::min(span_units - off, 4u);
+          auto ptr = unit_ptr(b, unit, ir.CreateAdd(base, ir.getInt64(first_unit + off)), true);
+          if (chunk == 1) {
+            loaded_units[off] = ir.CreateAlignedLoad(unit, ptr, Align(unit_bytes));
+          } else {
+            auto vty = FixedVectorType::get(unit, chunk);
+            auto vec = ir.CreateAlignedLoad(vty, ir.CreatePointerCast(ptr, vty->getPointerTo(space)), Align(unit_bytes));
+            for (unsigned c = 0; c < chunk; c++)
+              loaded_units[off + c] = ir.CreateExtractElement(vec, c);
+          }
+          off += chunk;
+        }
+        Value *v = UndefValue::get(FixedVectorType::get(element, 4));
+        for (unsigned i = 0; i < 4; i++) {
+          if (!(read & (1u << i)))
+            continue;
+          unsigned u0 = i * parts - first_unit;
+          Value *val = nullptr;
+          if (parts == 1) {
+            val = loaded_units[u0];
+          } else {
+            val = ir.CreateOr(
+                ir.CreateZExt(loaded_units[u0], element),
+                ir.CreateShl(ir.CreateZExt(loaded_units[u0 + 1], element), unit->getBitWidth())
+            );
+          }
+          v = ir.CreateInsertElement(v, val, i);
+        }
+        return v;
+      };
+      auto emit_vec_store = [&](Value *base) {
+        Value *store_units[8] = {};
+        for (unsigned i = 0; i < 4; i++) {
+          if (!(read & (1u << i)))
+            continue;
+          auto x = ir.CreateBitCast(a(4 + i), element);
+          unsigned u0 = i * parts - first_unit;
+          for (unsigned part = 0; part < parts; part++)
+            store_units[u0 + part] = ir.CreateTrunc(ir.CreateLShr(x, part * unit->getBitWidth()), unit);
+        }
+        for (unsigned off = 0; off < span_units;) {
+          unsigned chunk = std::min(span_units - off, 4u);
+          auto ptr = unit_ptr(b, unit, ir.CreateAdd(base, ir.getInt64(first_unit + off)), true);
+          if (chunk == 1) {
+            ir.CreateAlignedStore(store_units[off], ptr, Align(unit_bytes));
+          } else {
+            auto vty = FixedVectorType::get(unit, chunk);
+            Value *vec = UndefValue::get(vty);
+            for (unsigned c = 0; c < chunk; c++)
+              vec = ir.CreateInsertElement(vec, store_units[off + c], c);
+            ir.CreateAlignedStore(vec, ir.CreatePointerCast(ptr, vty->getPointerTo(space)), Align(unit_bytes));
+          }
+          off += chunk;
+        }
+      };
       auto units = [&](Value *base, bool inside) {
+        if (!store && (inside || !b.Bounds()) && contiguous_vec)
+          return emit_vec_load(base);
         Value *v = UndefValue::get(FixedVectorType::get(element, 4));
         for (unsigned i = 0; i < 4; i++) {
           if (!(mask & (1u << i)))
@@ -3477,20 +3556,91 @@ convert_dxil(
         }
         return v;
       };
-      auto read = mask & kMaskAll, last = llvm::Log2_32(read) * parts + parts - 1;
-      // a structured load that a constant offset keeps inside its element is inside a bounded view where its element is
-      // (an offset past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every unit,
+      auto last = llvm::Log2_32(read) * parts + parts - 1;
+      // a structured access that a constant offset keeps inside its element is inside a bounded view where its element
+      // is (an offset past the element is undefined, D3D11.3 22.4.12): one compare of the element index for every unit,
       // and the address in 32 bits, which an element below the count of a view of 32-bit length keeps from wrapping.
       // a view without bounds may pass 4 GB and keeps the 64-bit address
       auto inner = dyn_cast<ConstantInt>(a(3));
-      uint32_t unit_bytes = unit->getBitWidth() / 8, stride = b.StructureStride;
-      if (!store && !feedback && read && stride && inner && b.Bounds() &&
+      if (!feedback && read && stride && inner && b.Bounds() &&
           inner->getZExtValue() + (last + 1) * unit_bytes <= stride) {
         auto at = ir.CreateUDiv(ir.CreateAdd(ir.CreateMul(a(2), ir.getInt32(stride)), inner), ir.getInt32(unit_bytes));
         auto within =
             ir.CreateICmpULT(a(2), ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(stride)));
-        auto v = units(ir.CreateZExt(ir.CreateSelect(within, at, ir.getInt32(0)), ir.getInt64Ty()), true);
-        ret = to_struct(ty, ir.CreateSelect(within, v, Constant::getNullValue(v->getType())), residency);
+        if (!store) {
+          auto v = units(ir.CreateZExt(ir.CreateSelect(within, at, ir.getInt32(0)), ir.getInt64Ty()), true);
+          ret = to_struct(ty, ir.CreateSelect(within, v, Constant::getNullValue(v->getType())), residency);
+          break;
+        }
+        if (contiguous_vec) {
+          auto head = ir.GetInsertBlock();
+          auto join = SplitBlock(head, call);
+          auto body = llvm::BasicBlock::Create(ctx.llvm, "store_vec", ctx.function, join);
+          head->getTerminator()->eraseFromParent();
+          ir.SetInsertPoint(head);
+          ir.CreateCondBr(within, body, join);
+          ir.SetInsertPoint(body);
+          emit_vec_store(ir.CreateZExt(at, ir.getInt64Ty()));
+          ir.CreateBr(join);
+          ir.SetInsertPoint(call);
+          break;
+        }
+      }
+      if (store && contiguous_vec) {
+        if (!b.Bounds()) {
+          emit_vec_store(base);
+          break;
+        }
+        if (!stride) {
+          // fast-path: single vector store when all units are in bounds, scalar partial-OOB fallback at buffer end
+          auto raw_base = ir.CreateAnd(base, ir.getInt64(UINT32_MAX / unit_bytes));
+          auto total_units = ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(unit_bytes));
+          auto all_in = ir.CreateICmpULE(
+              ir.CreateAdd(raw_base, ir.getInt64(first_unit + span_units)), ir.CreateZExt(total_units, ir.getInt64Ty())
+          );
+          auto head = ir.GetInsertBlock();
+          auto join = SplitBlock(head, call);
+          auto fast = llvm::BasicBlock::Create(ctx.llvm, "store_vec", ctx.function, join);
+          auto slow = llvm::BasicBlock::Create(ctx.llvm, "store_oob", ctx.function, join);
+          head->getTerminator()->eraseFromParent();
+          ir.SetInsertPoint(head);
+          ir.CreateCondBr(all_in, fast, slow);
+          ir.SetInsertPoint(fast);
+          emit_vec_store(raw_base);
+          ir.CreateBr(join);
+          ir.SetInsertPoint(slow);
+          units(base, false);
+          ir.CreateBr(join);
+          ir.SetInsertPoint(call);
+          break;
+        }
+      }
+      if (!store && b.Bounds() && !stride && contiguous_vec) {
+        auto raw_base = ir.CreateAnd(base, ir.getInt64(UINT32_MAX / unit_bytes));
+        auto total_units = ir.CreateUDiv(dxbc.DecodeRawBufferByteLength(b.Metadata), ir.getInt32(unit_bytes));
+        auto all_in = ir.CreateICmpULE(
+            ir.CreateAdd(raw_base, ir.getInt64(first_unit + span_units)), ir.CreateZExt(total_units, ir.getInt64Ty())
+        );
+        auto head = ir.GetInsertBlock();
+        auto join = SplitBlock(head, call);
+        auto fast = llvm::BasicBlock::Create(ctx.llvm, "load_vec", ctx.function, join);
+        auto slow = llvm::BasicBlock::Create(ctx.llvm, "load_oob", ctx.function, join);
+        head->getTerminator()->eraseFromParent();
+        ir.SetInsertPoint(head);
+        ir.CreateCondBr(all_in, fast, slow);
+        ir.SetInsertPoint(fast);
+        auto fast_v = emit_vec_load(raw_base);
+        auto fast_end = ir.GetInsertBlock();
+        ir.CreateBr(join);
+        ir.SetInsertPoint(slow);
+        auto slow_v = units(base, false);
+        auto slow_end = ir.GetInsertBlock();
+        ir.CreateBr(join);
+        ir.SetInsertPoint(call);
+        auto phi = ir.CreatePHI(fast_v->getType(), 2);
+        phi->addIncoming(fast_v, fast_end);
+        phi->addIncoming(slow_v, slow_end);
+        ret = to_struct(ty, phi, residency);
         break;
       }
       // one bound for a load of several units where its last unit is inside
@@ -4306,13 +4456,11 @@ convert_dxil(
       // two bytes fits 16 bits
       ret = a(1);
       for (unsigned shift : {0u, 8u}) {
-        auto x = halves(a(2), shift), y = halves(a(3), shift);
+        auto prod = ir.CreateMul(halves(a(2), shift), halves(a(3), shift), "", !is_signed, true);
         for (unsigned i = 0; i < 2; i++) {
-          auto wide = [&](Value *h) {
-            auto e = ir.CreateExtractElement(h, i);
-            return is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
-          };
-          ret = ir.CreateAdd(ret, ir.CreateMul(wide(x), wide(y), "", !is_signed, true));
+          auto e = ir.CreateExtractElement(prod, i);
+          auto w = is_signed ? ir.CreateSExt(e, ir.getInt32Ty()) : ir.CreateZExt(e, ir.getInt32Ty());
+          ret = ir.CreateAdd(ret, w);
         }
       }
       break;

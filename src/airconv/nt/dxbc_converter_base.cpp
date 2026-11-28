@@ -1712,9 +1712,16 @@ Converter::TexelAddress(const TextureResourceHandle &Tex, llvm::Value *Coord, co
   } else if (!Tex.IsUAV && Level && Info.is_mipmaped) {
     // the view keeps the mip that holds its min-LOD clamp and every smaller one, and has no mip past its last ("out
     // of the range [0...(num miplevels in resource-1)]", ld): Metal reads a texture of one mip at any level as that mip
-    auto MinLevel = air.CreateFPUnOp(llvm::air::AIRBuilder::floor, DecodeTextureMinLODClamp(Tex.Metadata));
-    auto Mips = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::num_mip_levels, ir.getInt32(0));
-    OOB = ir.CreateOr(ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel)), ir.CreateICmpUGE(Level, Mips));
+    auto MinLOD = DecodeTextureMinLODClamp(Tex.Metadata);
+    if (auto *C = llvm::dyn_cast<llvm::ConstantInt>(Level); C && C->isZero()) {
+      // mip 0 always exists on any bound Metal texture (unbound slots are zeroed by Texture.Unbound),
+      // and 0 < uint(floor(MinLOD)) iff MinLOD >= 1.0f
+      OOB = ir.CreateFCmpOGE(MinLOD, llvm::ConstantFP::get(MinLOD->getType(), 1.0f));
+    } else {
+      auto MinLevel = air.CreateFPUnOp(llvm::air::AIRBuilder::floor, MinLOD);
+      auto Mips = air.CreateTextureQuery(Tex.Texture, Tex.Handle, llvm::air::Texture::num_mip_levels, ir.getInt32(0));
+      OOB = ir.CreateOr(ir.CreateICmpULT(Level, air.CreateConvertToUnsigned(MinLevel)), ir.CreateICmpUGE(Level, Mips));
+    }
   }
   if (!OffsetValue->isNullValue())
     Address = ir.CreateAdd(Address, OffsetValue);
@@ -3412,14 +3419,31 @@ Converter::LoadBufferWords(
   auto At = [&](unsigned Word, llvm::Value *Index) {
     return ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), Word));
   };
-  if (Within) {
+  auto Space = cast<llvm::PointerType>(Buf.Pointer->getType())->getAddressSpace();
+  unsigned FirstWord = Words ? std::countr_zero(Words) : 0;
+  unsigned LastWord = Words ? llvm::Log2_32(Words) : 0;
+  unsigned SpanWords = Words ? (LastWord - FirstWord + 1) : 0;
+  bool ContiguousVec = !Buf.GlobalCoherent && !Feedback && Space != 3 && SpanWords >= 2 &&
+                       Words == (llvm::maskTrailingOnes<uint32_t>(SpanWords) << FirstWord);
+  auto LoadVecWords = [&](llvm::Value *Idx) {
+    auto VecTy = llvm::FixedVectorType::get(ir.getInt32Ty(), SpanWords);
+    auto Ptr0 = CreateGEPInt32WithBoundCheck(Buf, At(FirstWord, Idx), true);
+    auto Loaded = ir.CreateAlignedLoad(VecTy, ir.CreatePointerCast(Ptr0, VecTy->getPointerTo(Space)), llvm::Align(4));
     llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
-    for (auto [DstComp, _] : EnumerateComponents(Words))
-      ValueVec = ir.CreateInsertElement(
-          ValueVec,
-          LoadBufferValue(Buf, ir.getInt32Ty(), CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), true), true),
-          DstComp
-      );
+    for (unsigned c = 0; c < SpanWords; c++)
+      ValueVec = ir.CreateInsertElement(ValueVec, ir.CreateExtractElement(Loaded, c), FirstWord + c);
+    return ValueVec;
+  };
+  if (Within) {
+    llvm::Value *ValueVec = ContiguousVec ? LoadVecWords(Index) : [&] {
+      llvm::Value *V = llvm::PoisonValue::get(air.getIntTy(4));
+      for (auto [DstComp, _] : EnumerateComponents(Words))
+        V = ir.CreateInsertElement(
+            V, LoadBufferValue(Buf, ir.getInt32Ty(), CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), true), true),
+            DstComp
+        );
+      return V;
+    }();
     auto Value = ir.CreateSelect(Within, ValueVec, llvm::Constant::getNullValue(ValueVec->getType()));
     return StoreOperand(Dst, MaskSwizzle(Value, Mask, Buf.Swizzle));
   }
@@ -3429,8 +3453,39 @@ Converter::LoadBufferWords(
       StoreFeedback(Feedback, BufferResidency(Ptr));
     return StoreOperand(Dst, MaskSwizzle(LoadBufferValue(Buf, ir.getInt32Ty(), Ptr), Mask));
   }
+  if (Buf.Bounds() && !Buf.StructureStride && ContiguousVec) {
+    auto TotalDwords = ir.CreateLShr(DecodeRawBufferByteLength(Buf.Metadata), 2);
+    auto AllIn = ir.CreateICmpULE(
+        ir.CreateAdd(ir.CreateZExt(Index, ir.getInt64Ty()), ir.getInt64(FirstWord + SpanWords)),
+        ir.CreateZExt(TotalDwords, ir.getInt64Ty())
+    );
+    auto Head = ir.GetInsertBlock();
+    auto Fast = llvm::BasicBlock::Create(air.getContext(), "load_vec", Head->getParent());
+    auto Slow = llvm::BasicBlock::Create(air.getContext(), "load_oob", Head->getParent());
+    auto Join = llvm::BasicBlock::Create(air.getContext(), "load_join", Head->getParent());
+    ir.CreateCondBr(AllIn, Fast, Slow);
+    ir.SetInsertPoint(Fast);
+    auto FastVal = LoadVecWords(Index);
+    auto FastEnd = ir.GetInsertBlock();
+    ir.CreateBr(Join);
+    ir.SetInsertPoint(Slow);
+    llvm::Value *SlowVal = llvm::PoisonValue::get(air.getIntTy(4));
+    for (auto [DstComp, _] : EnumerateComponents(Words)) {
+      auto Ptr = CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), false);
+      SlowVal = ir.CreateInsertElement(SlowVal, LoadBufferValue(Buf, ir.getInt32Ty(), Ptr, false), DstComp);
+    }
+    auto SlowEnd = ir.GetInsertBlock();
+    ir.CreateBr(Join);
+    ir.SetInsertPoint(Join);
+    auto Phi = ir.CreatePHI(air.getIntTy(4), 2);
+    Phi->addIncoming(FastVal, FastEnd);
+    Phi->addIncoming(SlowVal, SlowEnd);
+    return StoreOperand(Dst, MaskSwizzle(Phi, Mask, Buf.Swizzle));
+  }
   auto Last = Feedback ? nullptr : At(llvm::Log2_32(Words), Index);
   auto ValueVec = LoadBufferUnits(Buf, Index, Last, sizeof(uint32_t), [&](llvm::Value *Index, bool Inside) {
+    if ((Inside || !Buf.Bounds()) && ContiguousVec)
+      return LoadVecWords(Index);
     llvm::Value *ValueVec = llvm::PoisonValue::get(air.getIntTy(4));
     for (auto [DstComp, _] : EnumerateComponents(Words)) {
       auto Ptr = CreateGEPInt32WithBoundCheck(Buf, At(DstComp, Index), Inside);
@@ -3502,6 +3557,43 @@ Converter::operator()(const InstStoreRaw &store) {
   auto Index = ir.CreateLShr(LoadOperand(store.dst_byte_offset, kMaskComponentX), 2);
 
   auto Value = LoadOperand(store.src, Buf->Mask);
+  unsigned Span = std::popcount(Buf->Mask);
+  auto Space = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace();
+  if (!Volatile && !Buf->GlobalCoherent && Span >= 2) {
+    auto EmitVec = [&](llvm::Value *BaseIdx) {
+      auto VecTy = llvm::FixedVectorType::get(ir.getInt32Ty(), Span);
+      llvm::Value *Vec = llvm::UndefValue::get(VecTy);
+      for (unsigned i = 0; i < Span; i++)
+        Vec = ir.CreateInsertElement(Vec, ExtractElement(Value, i), i);
+      auto Ptr0 = ir.CreateGEP(ir.getInt32Ty(), ir.CreatePointerCast(Buf->Pointer, ir.getInt32Ty()->getPointerTo(Space)), {BaseIdx});
+      ir.CreateAlignedStore(Vec, ir.CreatePointerCast(Ptr0, VecTy->getPointerTo(Space)), llvm::Align(4));
+    };
+    if (!Buf->Bounds()) {
+      EmitVec(Index);
+      return;
+    }
+    auto TotalDwords = ir.CreateLShr(DecodeRawBufferByteLength(Buf->Metadata), 2);
+    auto AllIn = ir.CreateICmpULE(
+        ir.CreateAdd(ir.CreateZExt(Index, ir.getInt64Ty()), ir.getInt64(Span)),
+        ir.CreateZExt(TotalDwords, ir.getInt64Ty())
+    );
+    auto Head = ir.GetInsertBlock();
+    auto Fast = llvm::BasicBlock::Create(air.getContext(), "store_vec", Head->getParent());
+    auto Slow = llvm::BasicBlock::Create(air.getContext(), "store_oob", Head->getParent());
+    auto Join = llvm::BasicBlock::Create(air.getContext(), "store_join", Head->getParent());
+    ir.CreateCondBr(AllIn, Fast, Slow);
+    ir.SetInsertPoint(Fast);
+    EmitVec(Index);
+    ir.CreateBr(Join);
+    ir.SetInsertPoint(Slow);
+    for (auto [DstComp, _] : EnumerateComponents(Buf->Mask)) {
+      auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), DstComp)));
+      ir.CreateStore(ExtractElement(Value, DstComp), Ptr, false);
+    }
+    ir.CreateBr(Join);
+    ir.SetInsertPoint(Join);
+    return;
+  }
 
   for (auto [DstComp, _] : EnumerateComponents(Buf->Mask)) {
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), DstComp)));
@@ -3533,15 +3625,47 @@ Converter::operator()(const InstStoreStructured &store) {
   if (air.DiscardWrites && !Volatile)
     return;
 
-  // in 64 bits: an element index scaled by the stride can wrap 32 and pass the bounds check
-  auto IndexStruct = ir.CreateMul(
-      ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(LoadOperand(store.dst_address, kMaskComponentX), ir.getInt64Ty())
-  );
-  auto Index = ir.CreateAdd(
-      IndexStruct, ir.CreateZExt(ir.CreateLShr(LoadOperand(store.dst_byte_offset, kMaskComponentX), 2), ir.getInt64Ty())
-  );
-
+  auto Element = LoadOperand(store.dst_address, kMaskComponentX);
+  auto Inner = LoadOperand(store.dst_byte_offset, kMaskComponentX);
   auto Value = LoadOperand(store.src, Buf->Mask);
+  unsigned Span = std::popcount(Buf->Mask);
+  auto Space = cast<llvm::PointerType>(Buf->Pointer->getType())->getAddressSpace();
+  if (!Volatile && !Buf->GlobalCoherent && Span >= 2) {
+    auto EmitVec = [&](llvm::Value *BaseIdx) {
+      auto VecTy = llvm::FixedVectorType::get(ir.getInt32Ty(), Span);
+      llvm::Value *Vec = llvm::UndefValue::get(VecTy);
+      for (unsigned i = 0; i < Span; i++)
+        Vec = ir.CreateInsertElement(Vec, ExtractElement(Value, i), i);
+      auto Ptr0 = ir.CreateGEP(ir.getInt32Ty(), ir.CreatePointerCast(Buf->Pointer, ir.getInt32Ty()->getPointerTo(Space)), {BaseIdx});
+      ir.CreateAlignedStore(Vec, ir.CreatePointerCast(Ptr0, VecTy->getPointerTo(Space)), llvm::Align(4));
+    };
+    if (!Buf->Bounds()) {
+      auto IndexStruct = ir.CreateMul(ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(Element, ir.getInt64Ty()));
+      auto Index = ir.CreateAdd(IndexStruct, ir.CreateZExt(ir.CreateLShr(Inner, 2), ir.getInt64Ty()));
+      EmitVec(Index);
+      return;
+    }
+    if (auto Fixed = dyn_cast<llvm::ConstantInt>(Inner);
+        Fixed && Fixed->getZExtValue() + 4 * Span <= Buf->StructureStride) {
+      auto At = ir.CreateLShr(ir.CreateAdd(ir.CreateMul(Element, ir.getInt32(Buf->StructureStride)), Fixed), 2);
+      auto Within = ir.CreateICmpULT(
+          Element, ir.CreateUDiv(DecodeRawBufferByteLength(Buf->Metadata), ir.getInt32(Buf->StructureStride))
+      );
+      auto Head = ir.GetInsertBlock();
+      auto Body = llvm::BasicBlock::Create(air.getContext(), "store_vec", Head->getParent());
+      auto Join = llvm::BasicBlock::Create(air.getContext(), "store_join", Head->getParent());
+      ir.CreateCondBr(Within, Body, Join);
+      ir.SetInsertPoint(Body);
+      EmitVec(ir.CreateZExt(At, ir.getInt64Ty()));
+      ir.CreateBr(Join);
+      ir.SetInsertPoint(Join);
+      return;
+    }
+  }
+
+  // in 64 bits: an element index scaled by the stride can wrap 32 and pass the bounds check
+  auto IndexStruct = ir.CreateMul(ir.getInt64(Buf->StructureStride >> 2), ir.CreateZExt(Element, ir.getInt64Ty()));
+  auto Index = ir.CreateAdd(IndexStruct, ir.CreateZExt(ir.CreateLShr(Inner, 2), ir.getInt64Ty()));
 
   for (auto [DstComp, _] : EnumerateComponents(Buf->Mask)) {
     auto Ptr = CreateGEPInt32WithBoundCheck(Buf.value(), ir.CreateAdd(Index, llvm::ConstantInt::get(Index->getType(), DstComp)));

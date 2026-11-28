@@ -291,6 +291,19 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   // OMSetDepthBounds' range, NaN as 0; the pass has a range set when depth_bounds_set_
   FLOAT depth_bounds_[2];
   bool depth_bounds_set_ = false;
+  // state last encoded in the open render/compute pass, to skip redundant Metal calls
+  obj_handle_t pass_dsso_ = 0;
+  bool pass_rasterizer_set_ = false;
+  struct PassRasterizerState {
+    WMTCullMode cull_mode;
+    WMTDepthClipMode depth_clip_mode;
+    WMTTriangleFillMode fill_mode;
+    FLOAT depth_bias;
+    FLOAT depth_bias_clamp;
+    FLOAT scole_scale;
+    WMTWinding winding;
+  } pass_rasterizer_{};
+  obj_handle_t compute_root_buf_ = 0;
   // the last render pass a draw of a pipeline that uses UAVs or stream output was in: a UAV barrier orders nothing
   // inside another
   EncoderData *uav_draw_pass_ = nullptr;
@@ -838,6 +851,9 @@ public:
     // again
     depth_bounds_pass_ = nullptr;
     depth_bounds_stale_ = true;
+    pass_dsso_ = 0;
+    pass_rasterizer_set_ = false;
+    compute_root_buf_ = 0;
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
@@ -1317,6 +1333,8 @@ public:
       dirty_state_.set(DirtyState::Viewport, DirtyState::ScissorRect);
       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef, DirtyState::DepthBounds);
       depth_bounds_set_ = false;
+      pass_dsso_ = 0;
+      pass_rasterizer_set_ = false;
       dirty_state_.set(DirtyState::GraphicsPipelineState);
       if (bounds_found) {
         depth_bounds_pass_ = allocator_->encoder_current;
@@ -1347,29 +1365,46 @@ public:
       if (device_->NamesPasses())
         device_->NamePass(allocator_->encoder_current, pso_graphics_->name, pipeline);
 
-      auto &cmd_setdsso = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
-      cmd_setdsso.type = WMTRenderCommandSetDepthStencilState;
-      cmd_setdsso.depth_stencil_state = pso_graphics_->GetDepthStencilState(
-        static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags,
-        static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_readonly_flags
+      auto dsso = pso_graphics_->GetDepthStencilState(
+          static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags,
+          static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_readonly_flags
       );
+      if (dsso.handle != pass_dsso_) {
+        auto &cmd_setdsso = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
+        cmd_setdsso.type = WMTRenderCommandSetDepthStencilState;
+        cmd_setdsso.depth_stencil_state = dsso;
+        pass_dsso_ = dsso.handle;
+      }
 
-      auto &cmd_setrs = allocator_->EncodeRenderCommand<wmtcmd_render_setrasterizerstate>();
-      cmd_setrs.type = WMTRenderCommandSetRasterizerState;
-      cmd_setrs.cull_mode = pso_graphics_->cull_mode;
-      // a conservative rasterizer clips depth itself, and its grown triangles' depth goes past the polygon's
-      cmd_setrs.depth_clip_mode = pso_graphics_->conservative ? WMTDepthClipModeClamp : pso_graphics_->depth_clip_mode;
-      cmd_setrs.fill_mode = pso_graphics_->fill_mode;
       // one by one: libstdc++ assigns no std::array to a std::tuple of references
       auto [depth_bias, depth_bias_clamp, scole_scale] =
           pso_graphics_->unbiased ? std::array<FLOAT, 3>{}
                                   : depth_bias_.value_or(std::array{
                                         pso_graphics_->depth_bias, pso_graphics_->depth_bias_clamp, pso_graphics_->scole_scale
                                     });
-      cmd_setrs.depth_bias = depth_bias;
-      cmd_setrs.depth_bias_clamp = depth_bias_clamp;
-      cmd_setrs.scole_scale = scole_scale;
-      cmd_setrs.winding = pso_graphics_->winding;
+      // a conservative rasterizer clips depth itself, and its grown triangles' depth goes past the polygon's
+      PassRasterizerState rs{
+          pso_graphics_->cull_mode,
+          pso_graphics_->conservative ? WMTDepthClipModeClamp : pso_graphics_->depth_clip_mode,
+          pso_graphics_->fill_mode,
+          depth_bias,
+          depth_bias_clamp,
+          scole_scale,
+          pso_graphics_->winding,
+      };
+      if (!pass_rasterizer_set_ || memcmp(&pass_rasterizer_, &rs, sizeof(rs)) != 0) {
+        auto &cmd_setrs = allocator_->EncodeRenderCommand<wmtcmd_render_setrasterizerstate>();
+        cmd_setrs.type = WMTRenderCommandSetRasterizerState;
+        cmd_setrs.cull_mode = rs.cull_mode;
+        cmd_setrs.depth_clip_mode = rs.depth_clip_mode;
+        cmd_setrs.fill_mode = rs.fill_mode;
+        cmd_setrs.depth_bias = rs.depth_bias;
+        cmd_setrs.depth_bias_clamp = rs.depth_bias_clamp;
+        cmd_setrs.scole_scale = rs.scole_scale;
+        cmd_setrs.winding = rs.winding;
+        pass_rasterizer_ = rs;
+        pass_rasterizer_set_ = true;
+      }
 
       dirty_state_.clr(DirtyState::GraphicsPipelineState);
     }
@@ -1418,7 +1453,7 @@ public:
     }
 
     if (dirty_state_.test(DirtyState::GraphicsRootSignature) && !SkipResourceBinding) {
-      if (rootsig_graphics_)
+      if (rootsig_graphics_ && rootsig_graphics_->NumStaticSamplers)
         geometry_buffer(EncodeStaticSamplers(rootsig_graphics_.ptr()), SM50_BINDING_INDEX_STATIC_SAMPLERS);
       dirty_state_.clr(DirtyState::GraphicsRootSignature);
     }
@@ -2094,6 +2129,7 @@ public:
     compute->cmd_tail = (wmtcmd_base *)&compute->cmd_head;
     dirty_state_.set(DirtyState::ComputeRootArguments, DirtyState::ComputeRootSignature);
     dirty_state_.set(DirtyState::ComputePipelineState);
+    compute_root_buf_ = 0;
     return compute;
   }
 
@@ -2135,17 +2171,25 @@ public:
       if (rootsig_compute_) {
         auto uploaded =
             UploadRootArguments(rootsig_compute_.ptr(), rootarg_compute_staging_, rootarg_compute_uploaded_);
-        auto &cmd_argbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
-        cmd_argbuf.type = WMTComputeCommandSetBuffer;
-        cmd_argbuf.buffer = uploaded.buffer;
-        cmd_argbuf.offset = uploaded.offset;
-        cmd_argbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+        if (uploaded.buffer == compute_root_buf_) {
+          auto &cmd_argbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbufferoffset>();
+          cmd_argbuf.type = WMTComputeCommandSetBufferOffset;
+          cmd_argbuf.offset = uploaded.offset;
+          cmd_argbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+        } else {
+          auto &cmd_argbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
+          cmd_argbuf.type = WMTComputeCommandSetBuffer;
+          cmd_argbuf.buffer = uploaded.buffer;
+          cmd_argbuf.offset = uploaded.offset;
+          cmd_argbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+          compute_root_buf_ = uploaded.buffer;
+        }
       }
       dirty_state_.clr(DirtyState::ComputeRootArguments);
     }
 
     if (dirty_state_.test(DirtyState::ComputeRootSignature) && !SkipResourceBinding) {
-      if (rootsig_compute_) {
+      if (rootsig_compute_ && rootsig_compute_->NumStaticSamplers) {
         auto Offset = EncodeStaticSamplers(rootsig_compute_.ptr());
         auto &cmd_argbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
         cmd_argbuf.type = WMTComputeCommandSetBuffer;
@@ -2815,6 +2859,9 @@ public:
   RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) {
     if (NumViewports > D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE)
       return;
+    if (num_viewports == NumViewports &&
+        (!NumViewports || memcmp(viewports, pViewports, NumViewports * sizeof(D3D12_VIEWPORT)) == 0))
+      return;
     num_viewports = NumViewports;
     for (auto i = 0u; i < NumViewports; i++) {
       viewports[i] = pViewports[i];
@@ -2826,6 +2873,8 @@ public:
   void STDMETHODCALLTYPE
   RSSetScissorRects(UINT NumRects, const D3D12_RECT *rects) {
     if (NumRects > D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE)
+      return;
+    if (num_scissors == NumRects && (!NumRects || memcmp(scissors, rects, NumRects * sizeof(D3D12_RECT)) == 0))
       return;
     num_scissors = NumRects;
     for (auto i = 0u; i < NumRects; i++) {
@@ -2840,6 +2889,8 @@ public:
     decltype(blend_factor_) f;
     BlendFactors ? (void)std::copy_n(BlendFactors, std::size(f), f) : (void)std::fill_n(f, std::size(f), 1.0f);
     if (Bundled() && Record([=](auto *l) { l->OMSetBlendFactor(f); }))
+      return;
+    if (memcmp(blend_factor_, f, sizeof(f)) == 0)
       return;
     std::copy_n(f, std::size(f), blend_factor_);
     dirty_state_.set(DirtyState::BlendFactor);
@@ -2865,7 +2916,10 @@ public:
   RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) {
     if (Bundled() && Record([=](auto *l) { l->RSSetDepthBias(DepthBias, DepthBiasClamp, SlopeScaledDepthBias); }))
       return;
-    depth_bias_ = {DepthBias, DepthBiasClamp, SlopeScaledDepthBias};
+    std::array<FLOAT, 3> next{DepthBias, DepthBiasClamp, SlopeScaledDepthBias};
+    if (depth_bias_ && memcmp(depth_bias_->data(), next.data(), sizeof(next)) == 0)
+      return;
+    depth_bias_ = next;
     dirty_state_.set(DirtyState::GraphicsPipelineState);
   }
 
@@ -2961,8 +3015,7 @@ public:
     if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_ALIASING || !pass || pass->type != EncoderType::Render ||
         pass != targets_pass_ || pass == uav_draw_pass_ || !KeepsAliasedPasses())
       return false;
-    auto target = [&](ID3D12Resource *resource) { return resource && PassWrote(resource); };
-    return !target(barrier.Aliasing.pResourceBefore) && !target(barrier.Aliasing.pResourceAfter);
+    return !PassWrote(barrier.Aliasing.pResourceBefore) && !PassWrote(barrier.Aliasing.pResourceAfter);
   }
 
   static bool
@@ -2998,10 +3051,20 @@ public:
       return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION &&
              (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY);
     };
-    if (!std::ranges::all_of(std::span(barriers, Count), begins))
+    constexpr auto write_states = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                                  D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT |
+                                  D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST |
+                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+    auto read_to_read = [&](const D3D12_RESOURCE_BARRIER &barrier) {
+      return barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION &&
+             barrier.Transition.StateBefore != D3D12_RESOURCE_STATE_COMMON &&
+             !(barrier.Transition.StateBefore & write_states) && !(barrier.Transition.StateAfter & write_states);
+    };
+    auto no_order = [&](const D3D12_RESOURCE_BARRIER &barrier) { return begins(barrier) || read_to_read(barrier); };
+    if (!std::ranges::all_of(std::span(barriers, Count), no_order))
       OrderingPoint(std::ranges::any_of(std::span(barriers, Count), [&](auto &barrier) {
         auto after = barrier.Transition.StateAfter;
-        return !begins(barrier) &&
+        return !no_order(barrier) &&
                (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !after || (after & ~pixels));
       }));
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS, draw_writes = uav | D3D12_RESOURCE_STATE_RENDER_TARGET |

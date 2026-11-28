@@ -101,6 +101,13 @@ public:
       WMT::InitializeComputePipelineInfo(info);
       info.compute_function = cs_func;
       info.support_indirect_command_buffers = true;
+      uint64_t total_threads = uint64_t(threadgroup_size.width) * threadgroup_size.height * threadgroup_size.depth;
+      info.tgsize_is_multiple_of_sgwidth = total_threads > 0 && (total_threads % device_->GetSIMDWidth()) == 0;
+      if (total_threads > 0 && total_threads <= 1024)
+        info.max_total_threads_per_threadgroup = uint32_t(total_threads);
+      auto *rs = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature);
+      info.immutable_buffers = (1u << SM50_BINDING_INDEX_ROOT_ARGUMENTS) |
+                               (rs->NumStaticSamplers ? (1u << SM50_BINDING_INDEX_STATIC_SAMPLERS) : 0u);
 
       // a pipeline whose threadgroups work together is measured below (GroupsAtOnce), so it is made here
       if (DeferredPipeline::Enabled() && !groups_work_together) {

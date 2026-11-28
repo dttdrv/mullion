@@ -20,6 +20,9 @@
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/LICM.h"
+#include "llvm/Transforms/Scalar/ADCE.h"
+#include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/IPO/DeadArgumentElimination.h"
@@ -409,6 +412,9 @@ runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
     if (!skip || !strstr(skip, "simdgroup-barrier"))
       GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
     GlobalCleanupPM.addPass(air::GuardOutOfBoundsPass());
+    GlobalCleanupPM.addPass(createFunctionToLoopPassAdaptor(LICMPass(LICMOptions()), /*UseMemorySSA=*/true));
+    GlobalCleanupPM.addPass(EarlyCSEPass(/*UseMemorySSA=*/true));
+    GlobalCleanupPM.addPass(ADCEPass());
     // loads move ahead of what uses them, at most 32 registers of values ahead (MULLION_AIRCONV_HOIST_LOADS, which
     // the shader cache's key has, for another window): more, and Metal's compiler spills them
     if (!skip || !strstr(skip, "hoist-loads")) {

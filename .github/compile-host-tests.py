@@ -7,9 +7,14 @@ import sys
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: compile-host-tests.py <build-dir>")
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: compile-host-tests.py <build-dir> [--skip <test> ...]")
     build = os.path.abspath(sys.argv[1])
+    skip = set()
+    if len(sys.argv) > 2:
+        if sys.argv[2] != "--skip":
+            raise SystemExit("usage: compile-host-tests.py <build-dir> [--skip <test> ...]")
+        skip = set(sys.argv[3:])
     tests = json.loads(subprocess.check_output(["meson", "introspect", "--tests", build], text=True))
     targets = {
         t["id"]: t for t in json.loads(subprocess.check_output(["meson", "introspect", "--targets", build], text=True))
@@ -18,6 +23,8 @@ def main():
     seen = set()
     for test in tests:
         if not any(s == "host" or s.endswith(":host") for s in test.get("suite", [])):
+            continue
+        if test["name"] in skip:
             continue
         for dep_id in test.get("depends", []):
             target = targets.get(dep_id)
