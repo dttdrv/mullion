@@ -2016,24 +2016,25 @@ public:
         auto Height = align(Extent.bottom, BlockWidth) / SubsampleHeight[Plane];
         auto RowCount = Height / BlockWidth;
         auto Depth = Extent.back;
-        auto RowSize = (Width / BlockWidth) * PlaneBytesPerTexel[Plane];
-        auto RowPitch = align(RowSize, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * PlaneCount);
+        uint64_t RowSize = uint64_t(Width / BlockWidth) * PlaneBytesPerTexel[Plane];
+        auto RowPitch = align<uint64_t>(RowSize, uint64_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) * PlaneCount);
         if (pLayouts) {
           pLayouts[i].Offset = BaseOffset + Offset;
           pLayouts[i].Footprint.Format = PlaneFormats[Plane];
           pLayouts[i].Footprint.Width = Width;
           pLayouts[i].Footprint.Height = Height;
           pLayouts[i].Footprint.Depth = Depth;
-          pLayouts[i].Footprint.RowPitch = RowPitch;
+          pLayouts[i].Footprint.RowPitch = UINT(RowPitch);
         }
         if (pNumRows)
           pNumRows[i] = RowCount;
         if (pRowSizeInBytes)
           pRowSizeInBytes[i] = RowSize;
 
-        auto SubresourceSize = RowPitch * (RowCount - 1) + RowSize;
+        uint64_t SubresourceSize = RowPitch * (RowCount - 1) + RowSize;
         SubresourceSize =
-            align(SubresourceSize, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * PlaneCount) * (Depth - 1) + SubresourceSize;
+            align<uint64_t>(SubresourceSize, uint64_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) * PlaneCount) * (Depth - 1) +
+            SubresourceSize;
 
         TotalBytes = Offset + SubresourceSize;
         Offset = align(TotalBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
