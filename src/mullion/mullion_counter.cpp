@@ -29,10 +29,17 @@ CounterSet::CounterSet(WMT::Device device, Rc<BufferAllocation> &&allocation) : 
 };
 
 void
+CounterSet::release() {
+  if (live_refs_.fetch_sub(1u, std::memory_order_acq_rel) == 1u)
+    delete this;
+}
+
+void
 CounterSet::recycle(uint32_t index) {
-  auto previous = used_counter_.fetch_and(~(1ull << index));
+  auto previous = used_counter_.fetch_and(~(1ull << index), std::memory_order_release);
   (void)previous;
   assert(previous & (1ull << index));
+  release();
 };
 
 Rc<CounterAllocation>
@@ -45,6 +52,7 @@ CounterSet::tryAllocate(uint32_t initial_value) {
     uint32_t index = bit::tzcnt(free_mask);
     uint64_t new_used = used | (1ull << index);
     if (used_counter_.compare_exchange_weak(used, new_used, std::memory_order_acquire, std::memory_order_relaxed)) {
+      live_refs_.fetch_add(1u, std::memory_order_relaxed);
       auto counter = &counters_[index];
       allocation_->updateContents(counter->offset(), &initial_value, sizeof(initial_value));
       return counter;
@@ -67,12 +75,12 @@ CounterPool::CounterPool(WMT::Device device) : device_(device) {
   counter_sets_.push_back(allocateCounterSet());
 }
 
-std::unique_ptr<CounterSet>
+CounterPool::CounterSetPtr
 CounterPool::allocateCounterSet() {
   Flags<BufferAllocationFlag> flags;
   flags.set(BufferAllocationFlag::GpuManaged);
   flags.set(BufferAllocationFlag::NoTracking);
-  return std::make_unique<CounterSet>(device_, buffer_->allocate(flags));
+  return CounterSetPtr(new CounterSet(device_, buffer_->allocate(flags)));
 }
 
 Rc<CounterAllocation>
