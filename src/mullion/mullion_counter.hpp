@@ -60,11 +60,15 @@ class CounterSet {
 public:
   CounterSet(WMT::Device device, Rc<BufferAllocation> &&allocation);
 
+  void release();
+
 private:
   friend class CounterAllocation;
   friend class CounterPool;
   std::array<CounterAllocation, kCounterSetSize> counters_;
   std::atomic<uint64_t> used_counter_ = {};
+  // 1 owned by CounterPool + 1 per live CounterAllocation so a set outlives any counter referencing it
+  std::atomic<uint32_t> live_refs_ = {1u};
   Rc<BufferAllocation> allocation_;
 
   void recycle(uint32_t index);
@@ -101,11 +105,19 @@ public:
   void updateCounter(const Rc<Counter> &counter, uint32_t new_value);
 
 private:
+  struct CounterSetDeleter {
+    void operator()(CounterSet *set) const {
+      if (set)
+        set->release();
+    }
+  };
+  using CounterSetPtr = std::unique_ptr<CounterSet, CounterSetDeleter>;
+
   Rc<CounterAllocation> allocate(uint32_t initial_value);
 
-  std::unique_ptr<CounterSet> allocateCounterSet();
+  CounterSetPtr allocateCounterSet();
 
-  small_vector<std::unique_ptr<CounterSet>, 4> counter_sets_;
+  small_vector<CounterSetPtr, 4> counter_sets_;
   mullion::mutex mutex_;
   size_t next_set_index_ = 0;
   WMT::Device device_;
