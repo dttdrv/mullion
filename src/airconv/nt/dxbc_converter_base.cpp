@@ -1614,11 +1614,423 @@ Converter::WritableResidency(
   return Merged;
 }
 
+llvm::Value *
+Converter::ReadSparseTexelBuffer(const TextureResourceHandle &Tex, llvm::Value *Address) {
+  auto TexelTy = air.getTexelType(Tex.Texture);
+  bool IsFloat = Tex.Texture.sample_type == llvm::air::Texture::sample_float;
+  auto Module = air.getModule();
+  const char *FnName = IsFloat ? "mullion.sparse_texel_read.f32" : "mullion.sparse_texel_read.i32";
+  auto Function = Module->getFunction(FnName);
+  if (!Function) {
+    auto I64 = ir.getInt64Ty();
+    auto I32 = ir.getInt32Ty();
+    auto I16 = ir.getInt16Ty();
+    auto I8 = ir.getInt8Ty();
+    auto F32 = ir.getFloatTy();
+    auto F16 = ir.getHalfTy();
+    Function = llvm::Function::Create(
+        llvm::FunctionType::get(TexelTy, {I64, I32, I32}, false),
+        llvm::GlobalValue::InternalLinkage, FnName, Module
+    );
+    auto Entry = llvm::BasicBlock::Create(ctx.llvm, "entry", Function);
+    auto Dispatch = llvm::BasicBlock::Create(ctx.llvm, "dispatch", Function);
+    auto DefaultBB = llvm::BasicBlock::Create(ctx.llvm, "default", Function);
+    llvm::IRBuilder<> B(Entry);
+    auto BaseAddr = Function->getArg(0);
+    auto Fmt = Function->getArg(1);
+    auto Idx = Function->getArg(2);
+    auto ZeroVec = llvm::ConstantAggregateZero::get(TexelTy);
+    auto OOB = B.CreateOr(B.CreateICmpEQ(Idx, B.getInt32(~0u)), B.CreateICmpEQ(BaseAddr, B.getInt64(0)));
+    B.CreateCondBr(OOB, DefaultBB, Dispatch);
+
+    B.SetInsertPoint(DefaultBB);
+    B.CreateRet(ZeroVec);
+
+    B.SetInsertPoint(Dispatch);
+    auto Idx64 = B.CreateZExt(Idx, I64);
+    auto Sw = B.CreateSwitch(Fmt, DefaultBB, 24);
+
+    auto PtrAt = [&](llvm::IRBuilder<> &C, llvm::Type *ElemTy, uint64_t StrideBytes, uint64_t ElemOff = 0) {
+      auto ByteOff = C.CreateAdd(C.CreateMul(Idx64, C.getInt64(StrideBytes)), C.getInt64(ElemOff));
+      auto Addr = C.CreateAdd(BaseAddr, ByteOff);
+      return C.CreateIntToPtr(Addr, llvm::PointerType::get(ElemTy, 1));
+    };
+    auto MakeVec = [&](llvm::IRBuilder<> &C, llvm::Value *r, llvm::Value *g, llvm::Value *b, llvm::Value *a) {
+      llvm::Value *v = llvm::UndefValue::get(TexelTy);
+      v = C.CreateInsertElement(v, r, uint64_t(0));
+      v = C.CreateInsertElement(v, g, uint64_t(1));
+      v = C.CreateInsertElement(v, b, uint64_t(2));
+      v = C.CreateInsertElement(v, a, uint64_t(3));
+      return v;
+    };
+
+    if (!IsFloat) {
+      auto Z = B.getInt32(0), One = B.getInt32(1);
+      auto AddIntCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps, bool Signed) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        llvm::Value *Vals[4] = {Z, Z, Z, One};
+        for (unsigned i = 0; i < Comps; i++) {
+          llvm::Value *v = C.CreateAlignedLoad(ElemTy, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+          if (Bytes < 4)
+            v = Signed ? C.CreateSExt(v, I32) : C.CreateZExt(v, I32);
+          Vals[i] = v;
+        }
+        C.CreateRet(MakeVec(C, Vals[0], Vals[1], Vals[2], Vals[3]));
+      };
+      AddIntCase(13, I8, 1, false);   // R8Uint
+      AddIntCase(14, I8, 1, true);    // R8Sint
+      AddIntCase(23, I16, 1, false);  // R16Uint
+      AddIntCase(24, I16, 1, true);   // R16Sint
+      AddIntCase(33, I8, 2, false);   // RG8Uint
+      AddIntCase(34, I8, 2, true);    // RG8Sint
+      AddIntCase(53, I32, 1, false);  // R32Uint
+      AddIntCase(54, I32, 1, true);   // R32Sint
+      AddIntCase(63, I16, 2, false);  // RG16Uint
+      AddIntCase(64, I16, 2, true);   // RG16Sint
+      AddIntCase(73, I8, 4, false);   // RGBA8Uint
+      AddIntCase(74, I8, 4, true);    // RGBA8Sint
+      AddIntCase(103, I32, 2, false); // RG32Uint
+      AddIntCase(104, I32, 2, true);  // RG32Sint
+      AddIntCase(113, I16, 4, false); // RGBA16Uint
+      AddIntCase(114, I16, 4, true);  // RGBA16Sint
+      AddIntCase(123, I32, 4, false); // RGBA32Uint
+      AddIntCase(124, I32, 4, true);  // RGBA32Sint
+      // RGB10A2Uint (91)
+      {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(91), BB);
+        llvm::IRBuilder<> C(BB);
+        auto w = C.CreateAlignedLoad(I32, PtrAt(C, I32, 4), llvm::Align(4));
+        auto r = C.CreateAnd(w, C.getInt32(0x3ff));
+        auto g = C.CreateAnd(C.CreateLShr(w, 10), C.getInt32(0x3ff));
+        auto b = C.CreateAnd(C.CreateLShr(w, 20), C.getInt32(0x3ff));
+        auto a = C.CreateLShr(w, 30);
+        C.CreateRet(MakeVec(C, r, g, b, a));
+      }
+    } else {
+      auto Zf = llvm::ConstantFP::get(F32, 0.0), Onef = llvm::ConstantFP::get(F32, 1.0);
+      auto NegOnef = llvm::ConstantFP::get(F32, -1.0);
+      auto UnpackUnorm = [&](llvm::IRBuilder<> &C, llvm::Value *v, double Scale) {
+        return C.CreateFMul(C.CreateUIToFP(v, F32), llvm::ConstantFP::get(F32, Scale));
+      };
+      auto UnpackSnorm = [&](llvm::IRBuilder<> &C, llvm::Value *v, double Scale) {
+        auto f = C.CreateFMul(C.CreateSIToFP(v, F32), llvm::ConstantFP::get(F32, Scale));
+        return C.CreateSelect(C.CreateFCmpOLT(f, NegOnef), NegOnef, f);
+      };
+      auto AddNormCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps, bool Signed, bool BGRA = false) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        double Scale = Bytes == 1 ? (Signed ? 1.0 / 127.0 : 1.0 / 255.0) : (Signed ? 1.0 / 32767.0 : 1.0 / 65535.0);
+        llvm::Value *Vals[4] = {Zf, Zf, Zf, Onef};
+        for (unsigned i = 0; i < Comps; i++) {
+          auto raw = C.CreateAlignedLoad(ElemTy, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+          Vals[i] = Signed ? UnpackSnorm(C, raw, Scale) : UnpackUnorm(C, raw, Scale);
+        }
+        if (BGRA)
+          std::swap(Vals[0], Vals[2]);
+        C.CreateRet(MakeVec(C, Vals[0], Vals[1], Vals[2], Vals[3]));
+      };
+      auto AddFloatCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        llvm::Value *Vals[4] = {Zf, Zf, Zf, Onef};
+        for (unsigned i = 0; i < Comps; i++) {
+          llvm::Value *v = C.CreateAlignedLoad(ElemTy, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+          if (ElemTy == F16)
+            v = C.CreateFPExt(v, F32);
+          Vals[i] = v;
+        }
+        C.CreateRet(MakeVec(C, Vals[0], Vals[1], Vals[2], Vals[3]));
+      };
+      AddNormCase(10, I8, 1, false);  // R8Unorm
+      AddNormCase(12, I8, 1, true);   // R8Snorm
+      AddNormCase(20, I16, 1, false); // R16Unorm
+      AddNormCase(22, I16, 1, true);  // R16Snorm
+      AddFloatCase(25, F16, 1);       // R16Float
+      AddNormCase(30, I8, 2, false);  // RG8Unorm
+      AddNormCase(32, I8, 2, true);   // RG8Snorm
+      AddFloatCase(55, F32, 1);       // R32Float
+      AddNormCase(60, I16, 2, false); // RG16Unorm
+      AddNormCase(62, I16, 2, true);  // RG16Snorm
+      AddFloatCase(65, F16, 2);       // RG16Float
+      AddNormCase(70, I8, 4, false);  // RGBA8Unorm
+      AddNormCase(72, I8, 4, true);   // RGBA8Snorm
+      AddNormCase(80, I8, 4, false, true); // BGRA8Unorm
+      AddFloatCase(105, F32, 2);      // RG32Float
+      AddNormCase(110, I16, 4, false); // RGBA16Unorm
+      AddNormCase(112, I16, 4, true);  // RGBA16Snorm
+      AddFloatCase(115, F16, 4);       // RGBA16Float
+      AddFloatCase(125, F32, 4);       // RGBA32Float
+      // RGB10A2Unorm (90)
+      {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(90), BB);
+        llvm::IRBuilder<> C(BB);
+        auto w = C.CreateAlignedLoad(I32, PtrAt(C, I32, 4), llvm::Align(4));
+        auto r = UnpackUnorm(C, C.CreateAnd(w, C.getInt32(0x3ff)), 1.0 / 1023.0);
+        auto g = UnpackUnorm(C, C.CreateAnd(C.CreateLShr(w, 10), C.getInt32(0x3ff)), 1.0 / 1023.0);
+        auto b = UnpackUnorm(C, C.CreateAnd(C.CreateLShr(w, 20), C.getInt32(0x3ff)), 1.0 / 1023.0);
+        auto a = UnpackUnorm(C, C.CreateLShr(w, 30), 1.0 / 3.0);
+        C.CreateRet(MakeVec(C, r, g, b, a));
+      }
+    }
+  }
+  auto BaseAddr = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Fmt = ir.CreateAnd(ir.CreateTrunc(Tex.Metadata, ir.getInt32Ty()), ir.getInt32(0x7fffffff));
+  return ir.CreateCall(Function, {BaseAddr, Fmt, Address});
+}
+
+void
+Converter::WriteSparseTexelBuffer(const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *Value) {
+  if (air.DiscardWrites)
+    return;
+  auto TexelTy = Value->getType();
+  bool IsFloat = Tex.Texture.sample_type == llvm::air::Texture::sample_float;
+  auto Module = air.getModule();
+  const char *FnName = IsFloat ? "mullion.sparse_texel_write.f32" : "mullion.sparse_texel_write.i32";
+  auto Function = Module->getFunction(FnName);
+  if (!Function) {
+    auto I64 = ir.getInt64Ty();
+    auto I32 = ir.getInt32Ty();
+    auto I16 = ir.getInt16Ty();
+    auto I8 = ir.getInt8Ty();
+    auto F32 = ir.getFloatTy();
+    auto F16 = ir.getHalfTy();
+    Function = llvm::Function::Create(
+        llvm::FunctionType::get(ir.getVoidTy(), {I64, I32, I32, TexelTy}, false),
+        llvm::GlobalValue::InternalLinkage, FnName, Module
+    );
+    auto Entry = llvm::BasicBlock::Create(ctx.llvm, "entry", Function);
+    auto Dispatch = llvm::BasicBlock::Create(ctx.llvm, "dispatch", Function);
+    auto DoneBB = llvm::BasicBlock::Create(ctx.llvm, "done", Function);
+    llvm::IRBuilder<> B(Entry);
+    auto BaseAddr = Function->getArg(0);
+    auto Fmt = Function->getArg(1);
+    auto Idx = Function->getArg(2);
+    auto Val = Function->getArg(3);
+    auto OOB = B.CreateOr(B.CreateICmpEQ(Idx, B.getInt32(~0u)), B.CreateICmpEQ(BaseAddr, B.getInt64(0)));
+    B.CreateCondBr(OOB, DoneBB, Dispatch);
+
+    B.SetInsertPoint(DoneBB);
+    B.CreateRetVoid();
+
+    B.SetInsertPoint(Dispatch);
+    auto Idx64 = B.CreateZExt(Idx, I64);
+    auto Sw = B.CreateSwitch(Fmt, DoneBB, 24);
+
+    auto PtrAt = [&](llvm::IRBuilder<> &C, llvm::Type *ElemTy, uint64_t StrideBytes, uint64_t ElemOff = 0) {
+      auto ByteOff = C.CreateAdd(C.CreateMul(Idx64, C.getInt64(StrideBytes)), C.getInt64(ElemOff));
+      auto Addr = C.CreateAdd(BaseAddr, ByteOff);
+      return C.CreateIntToPtr(Addr, llvm::PointerType::get(ElemTy, 1));
+    };
+
+    if (!IsFloat) {
+      auto AddIntCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        for (unsigned i = 0; i < Comps; i++) {
+          llvm::Value *v = C.CreateExtractElement(Val, uint64_t(i));
+          if (Bytes < 4)
+            v = C.CreateTrunc(v, ElemTy);
+          C.CreateAlignedStore(v, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+        }
+        C.CreateRetVoid();
+      };
+      AddIntCase(13, I8, 1);  AddIntCase(14, I8, 1);
+      AddIntCase(23, I16, 1); AddIntCase(24, I16, 1);
+      AddIntCase(33, I8, 2);  AddIntCase(34, I8, 2);
+      AddIntCase(53, I32, 1); AddIntCase(54, I32, 1);
+      AddIntCase(63, I16, 2); AddIntCase(64, I16, 2);
+      AddIntCase(73, I8, 4);  AddIntCase(74, I8, 4);
+      AddIntCase(103, I32, 2); AddIntCase(104, I32, 2);
+      AddIntCase(113, I16, 4); AddIntCase(114, I16, 4);
+      AddIntCase(123, I32, 4); AddIntCase(124, I32, 4);
+      {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(91), BB);
+        llvm::IRBuilder<> C(BB);
+        auto r = C.CreateAnd(C.CreateExtractElement(Val, uint64_t(0)), C.getInt32(0x3ff));
+        auto g = C.CreateShl(C.CreateAnd(C.CreateExtractElement(Val, uint64_t(1)), C.getInt32(0x3ff)), 10);
+        auto b = C.CreateShl(C.CreateAnd(C.CreateExtractElement(Val, uint64_t(2)), C.getInt32(0x3ff)), 20);
+        auto a = C.CreateShl(C.CreateAnd(C.CreateExtractElement(Val, uint64_t(3)), C.getInt32(0x3)), 30);
+        C.CreateAlignedStore(C.CreateOr(C.CreateOr(r, g), C.CreateOr(b, a)), PtrAt(C, I32, 4), llvm::Align(4));
+        C.CreateRetVoid();
+      }
+    } else {
+      auto Zf = llvm::ConstantFP::get(F32, 0.0), Onef = llvm::ConstantFP::get(F32, 1.0);
+      auto NegOnef = llvm::ConstantFP::get(F32, -1.0), Halff = llvm::ConstantFP::get(F32, 0.5);
+      auto Clamp = [&](llvm::IRBuilder<> &C, llvm::Value *x, llvm::Value *lo, llvm::Value *hi) {
+        x = C.CreateSelect(C.CreateFCmpOLT(x, lo), lo, x);
+        return C.CreateSelect(C.CreateFCmpOGT(x, hi), hi, x);
+      };
+      auto PackUnorm = [&](llvm::IRBuilder<> &C, llvm::Value *x, llvm::Type *DstTy, double MaxVal) {
+        auto c = Clamp(C, x, Zf, Onef);
+        return C.CreateFPToUI(C.CreateFAdd(C.CreateFMul(c, llvm::ConstantFP::get(F32, MaxVal)), Halff), DstTy);
+      };
+      auto PackSnorm = [&](llvm::IRBuilder<> &C, llvm::Value *x, llvm::Type *DstTy, double MaxVal) {
+        auto c = Clamp(C, x, NegOnef, Onef);
+        return C.CreateFPToSI(C.CreateFMul(c, llvm::ConstantFP::get(F32, MaxVal)), DstTy);
+      };
+      auto AddNormCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps, bool Signed, bool BGRA = false) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        double MaxVal = Bytes == 1 ? (Signed ? 127.0 : 255.0) : (Signed ? 32767.0 : 65535.0);
+        for (unsigned i = 0; i < Comps; i++) {
+          unsigned srcIdx = (BGRA && (i == 0 || i == 2)) ? (2 - i) : i;
+          auto f = C.CreateExtractElement(Val, uint64_t(srcIdx));
+          auto p = Signed ? PackSnorm(C, f, ElemTy, MaxVal) : PackUnorm(C, f, ElemTy, MaxVal);
+          C.CreateAlignedStore(p, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+        }
+        C.CreateRetVoid();
+      };
+      auto AddFloatCase = [&](uint32_t Code, llvm::Type *ElemTy, unsigned Comps) {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(Code), BB);
+        llvm::IRBuilder<> C(BB);
+        unsigned Bytes = ElemTy->getPrimitiveSizeInBits() / 8;
+        for (unsigned i = 0; i < Comps; i++) {
+          llvm::Value *v = C.CreateExtractElement(Val, uint64_t(i));
+          if (ElemTy == F16)
+            v = C.CreateFPTrunc(v, F16);
+          C.CreateAlignedStore(v, PtrAt(C, ElemTy, Bytes * Comps, Bytes * i), llvm::Align(Bytes));
+        }
+        C.CreateRetVoid();
+      };
+      AddNormCase(10, I8, 1, false);  AddNormCase(12, I8, 1, true);
+      AddNormCase(20, I16, 1, false); AddNormCase(22, I16, 1, true);
+      AddFloatCase(25, F16, 1);
+      AddNormCase(30, I8, 2, false);  AddNormCase(32, I8, 2, true);
+      AddFloatCase(55, F32, 1);
+      AddNormCase(60, I16, 2, false); AddNormCase(62, I16, 2, true);
+      AddFloatCase(65, F16, 2);
+      AddNormCase(70, I8, 4, false);  AddNormCase(72, I8, 4, true);
+      AddNormCase(80, I8, 4, false, true);
+      AddFloatCase(105, F32, 2);
+      AddNormCase(110, I16, 4, false); AddNormCase(112, I16, 4, true);
+      AddFloatCase(115, F16, 4);
+      AddFloatCase(125, F32, 4);
+      {
+        auto BB = llvm::BasicBlock::Create(ctx.llvm, "", Function);
+        Sw->addCase(B.getInt32(90), BB);
+        llvm::IRBuilder<> C(BB);
+        auto r = PackUnorm(C, C.CreateExtractElement(Val, uint64_t(0)), I32, 1023.0);
+        auto g = C.CreateShl(PackUnorm(C, C.CreateExtractElement(Val, uint64_t(1)), I32, 1023.0), 10);
+        auto b = C.CreateShl(PackUnorm(C, C.CreateExtractElement(Val, uint64_t(2)), I32, 1023.0), 20);
+        auto a = C.CreateShl(PackUnorm(C, C.CreateExtractElement(Val, uint64_t(3)), I32, 3.0), 30);
+        C.CreateAlignedStore(C.CreateOr(C.CreateOr(r, g), C.CreateOr(b, a)), PtrAt(C, I32, 4), llvm::Align(4));
+        C.CreateRetVoid();
+      }
+    }
+  }
+  auto BaseAddr = ir.CreateLoad(ir.getInt64Ty(), ir.CreateConstGEP1_32(ir.getInt64Ty(), Tex.Range, 1));
+  auto Fmt = ir.CreateAnd(ir.CreateTrunc(Tex.Metadata, ir.getInt32Ty()), ir.getInt32(0x7fffffff));
+  ir.CreateCall(Function, {BaseAddr, Fmt, Address, Value});
+}
+
+void
+Converter::WriteTexel(
+    const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Value
+) {
+  if (Tex.Logical == llvm::air::Texture::texture_buffer && Tex.Range) {
+    auto From = ir.GetInsertBlock();
+    auto Done = ir.GetInsertPoint() == From->end() ? llvm::BasicBlock::Create(ctx.llvm, "", From->getParent())
+                                                   : llvm::SplitBlock(From, &*ir.GetInsertPoint());
+    if (auto Branch = From->getTerminator())
+      Branch->eraseFromParent();
+    auto SparseBB = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+    auto HWBB = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+    ir.SetInsertPoint(From);
+    ir.CreateCondBr(DecodeTextureBufferSparse(Tex.Metadata), SparseBB, HWBB);
+
+    ir.SetInsertPoint(SparseBB);
+    WriteSparseTexelBuffer(Tex, Address, Value);
+    ir.CreateBr(Done);
+
+    ir.SetInsertPoint(HWBB);
+    air.CreateWrite(Tex.Texture, Tex.Handle, Address, ArrayIndex, nullptr, ir.getInt32(0), Value, Tex.GlobalCoherent);
+    ir.CreateBr(Done);
+
+    ir.SetInsertPoint(Done, Done->begin());
+    return;
+  }
+  air.CreateWrite(Tex.Texture, Tex.Handle, Address, ArrayIndex, nullptr, ir.getInt32(0), Value, Tex.GlobalCoherent);
+}
+
 std::pair<llvm::Value *, llvm::Value *>
 Converter::ReadTexel(
     const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
     llvm::Value *Level, mask_t Used
 ) {
+  if (Tex.Logical == llvm::air::Texture::texture_buffer && Tex.Range) {
+    auto From = ir.GetInsertBlock();
+    auto Done = ir.GetInsertPoint() == From->end() ? llvm::BasicBlock::Create(ctx.llvm, "", From->getParent())
+                                                   : llvm::SplitBlock(From, &*ir.GetInsertPoint());
+    if (auto Branch = From->getTerminator())
+      Branch->eraseFromParent();
+    auto SparseBB = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+    auto HWBB = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+    ir.SetInsertPoint(From);
+    ir.CreateCondBr(DecodeTextureBufferSparse(Tex.Metadata), SparseBB, HWBB);
+
+    ir.SetInsertPoint(SparseBB);
+    auto SparseVal = ReadSparseTexelBuffer(Tex, Address);
+    auto SparseEnd = ir.GetInsertBlock();
+    ir.CreateBr(Done);
+
+    ir.SetInsertPoint(HWBB);
+    auto [HWVal, HWRes] =
+        air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
+    llvm::Value *HWOut = HWVal;
+    if (!Tex.IsUAV && (Used & (kMaskComponentY | kMaskComponentZ))) {
+      auto HWFrom = ir.GetInsertBlock();
+      auto Three = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+      auto HWMerge = llvm::BasicBlock::Create(ctx.llvm, "", From->getParent(), Done);
+      ir.CreateCondBr(DecodeTextureBufferRGB32(Tex.Metadata), Three, HWMerge);
+      ir.SetInsertPoint(Three);
+      auto Past = ir.CreateICmpEQ(Address, llvm::ConstantInt::getAllOnesValue(Address->getType()));
+      auto Wide = HWVal;
+      for (unsigned i = 1; i < 3; i++) {
+        if (!(Used & (1 << i)))
+          continue;
+        auto At = ir.CreateSelect(Past, Address, ir.CreateAdd(Address, air.getInt(i)));
+        auto Texel = air.CreateRead(Tex.Texture, Tex.Handle, At, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent).first;
+        Wide = ir.CreateInsertElement(Wide, ir.CreateExtractElement(Texel, uint64_t(0)), i);
+      }
+      auto ThreeEnd = ir.GetInsertBlock();
+      ir.CreateBr(HWMerge);
+      ir.SetInsertPoint(HWMerge);
+      auto P = ir.CreatePHI(HWVal->getType(), 2);
+      P->addIncoming(HWVal, HWFrom);
+      P->addIncoming(Wide, ThreeEnd);
+      HWOut = P;
+    }
+    auto HWEnd = ir.GetInsertBlock();
+    ir.CreateBr(Done);
+
+    ir.SetInsertPoint(Done, Done->begin());
+    auto Merged = ir.CreatePHI(SparseVal->getType(), 2);
+    Merged->addIncoming(SparseVal, SparseEnd);
+    Merged->addIncoming(HWOut, HWEnd);
+    llvm::Value *MergedRes = nullptr;
+    if (HWRes) {
+      auto ResPhi = ir.CreatePHI(HWRes->getType(), 2);
+      ResPhi->addIncoming(llvm::ConstantInt::get(HWRes->getType(), 0), SparseEnd);
+      ResPhi->addIncoming(HWRes, HWEnd);
+      MergedRes = ResPhi;
+    }
+    return {Merged, MergedRes};
+  }
   auto [Value, Residency] =
       air.CreateRead(Tex.Texture, Tex.Handle, Address, ArrayIndex, SampleIndex, Level, Tex.GlobalCoherent);
   if (Tex.Range && Residency && !Tex.IsUAV && !SampleIndex && Address->getType()->isVectorTy())
@@ -1664,8 +2076,7 @@ Converter::operator()(const InstLoadUAVTyped &load) {
   const int32_t NoOffset[3] = {};
   auto [Address, ArrayIndex] = TexelAddress(*Tex, LoadOperand(load.src_address, kMaskAll), NoOffset, nullptr);
 
-  auto [Value, Residency] =
-      air.CreateRead(Tex->Texture, Tex->Handle, Address, ArrayIndex, nullptr, air.getInt(0), Tex->GlobalCoherent);
+  auto [Value, Residency] = ReadTexel(*Tex, Address, ArrayIndex, nullptr, air.getInt(0));
 
   StoreOperand(load.dst, MaskSwizzle(Value, GetMask(load.dst), Tex->Swizzle));
   StoreFeedback(load.feedback, Residency);
@@ -1681,7 +2092,7 @@ Converter::operator()(const InstStoreUAVTyped &store) {
 
   auto Value = LoadOperand(store.src, kMaskAll);
 
-  air.CreateWrite(Tex->Texture, Tex->Handle, Address, ArrayIndex, nullptr, ir.getInt32(0), Value, Tex->GlobalCoherent);
+  WriteTexel(*Tex, Address, ArrayIndex, Value);
 }
 
 std::pair<llvm::Value *, llvm::Value *>
@@ -1707,8 +2118,10 @@ Converter::TexelAddress(const TextureResourceHandle &Tex, llvm::Value *Coord, co
   llvm::Value *OOB = nullptr;
   if (Tex.Logical == llvm::air::Texture::texture_buffer) {
     OOB = ir.CreateICmpUGE(ir.CreateAdd(Address, OffsetValue), DecodeTextureBufferElement(Tex.Metadata));
+    auto Sparse = DecodeTextureBufferSparse(Tex.Metadata);
     auto Texels = ir.CreateSelect(DecodeTextureBufferRGB32(Tex.Metadata), air.getInt(3), air.getInt(1));
-    Address = ir.CreateAdd(ir.CreateMul(Address, Texels), DecodeTextureBufferOffset(Tex.Metadata));
+    auto HWAddr = ir.CreateAdd(ir.CreateMul(Address, Texels), DecodeTextureBufferOffset(Tex.Metadata));
+    Address = ir.CreateSelect(Sparse, Address, HWAddr);
   } else if (!Tex.IsUAV && Level && Info.is_mipmaped) {
     // the view keeps the mip that holds its min-LOD clamp and every smaller one, and has no mip past its last ("out
     // of the range [0...(num miplevels in resource-1)]", ld): Metal reads a texture of one mip at any level as that mip
